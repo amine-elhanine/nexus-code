@@ -19,6 +19,7 @@ import {
   revertAllWorkspaceChanges,
   createWorkspaceCheckpoint,
   restoreWorkspaceCheckpoint,
+  getWorkspaceDiffFiles,
 } from '../dist-electron/diff-service.js';
 import { parseSymbolsFromCode, formatOutline, createCodeIntelligenceTools } from '../dist-electron/code-tools.js';
 import { SUBAGENT_CONFIGS, createSubagentDelegationTool, calculateAgentUsage } from '../dist-electron/subagent-service.js';
@@ -406,6 +407,63 @@ app.whenReady().then(async () => {
     let extraExists = true;
     try { await fs.access(path.join(tempDir, 'extra.ts')); } catch { extraExists = false; }
     assert.equal(extraExists, false);
+
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  await test('restoreWorkspaceCheckpoint restores the snapshot\'s own root regardless of caller path', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-cp-root-'));
+    const { execSync } = await import('node:child_process');
+    execSync('git init && git config user.name "Test" && git config user.email "test@test.com"', { cwd: tempDir, stdio: 'ignore' });
+    await fs.writeFile(path.join(tempDir, 'file.txt'), 'original content\n', 'utf8');
+    execSync('git add . && git commit -m "init"', { cwd: tempDir, stdio: 'ignore' });
+
+    const cpId = await createWorkspaceCheckpoint(tempDir, 'cp-root-test');
+    await fs.writeFile(path.join(tempDir, 'file.txt'), 'modified content\n', 'utf8');
+
+    // Pass a bogus root to restore, it should use the snapshot\'s own recorded projectRoot
+    const restored = await restoreWorkspaceCheckpoint('/invalid/bogus/path', cpId);
+    assert.equal(restored, true);
+    assert.equal((await fs.readFile(path.join(tempDir, 'file.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'original content\n');
+
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  await test('restoreWorkspaceCheckpoint returns false and does not wipe uncommitted changes when checkpoint is unknown', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-cp-unknown-'));
+    const { execSync } = await import('node:child_process');
+    execSync('git init && git config user.name "Test" && git config user.email "test@test.com"', { cwd: tempDir, stdio: 'ignore' });
+    await fs.writeFile(path.join(tempDir, 'keep.txt'), 'uncommitted keep\n', 'utf8');
+
+    const restored = await restoreWorkspaceCheckpoint(tempDir, 'non-existent-checkpoint');
+    assert.equal(restored, false);
+
+    // Verify uncommitted file was NOT wiped
+    let exists = true;
+    try { await fs.access(path.join(tempDir, 'keep.txt')); } catch { exists = false; }
+    assert.equal(exists, true);
+    assert.equal((await fs.readFile(path.join(tempDir, 'keep.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'uncommitted keep\n');
+
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  await test('getWorkspaceDiffFiles ignores .nexus, .forgepilot, and .deepagents files', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-diff-ignore-'));
+    const { execSync } = await import('node:child_process');
+    execSync('git init && git config user.name "Test" && git config user.email "test@test.com"', { cwd: tempDir, stdio: 'ignore' });
+    await fs.writeFile(path.join(tempDir, 'src.ts'), 'export const x = 1;\n', 'utf8');
+    execSync('git add . && git commit -m "init"', { cwd: tempDir, stdio: 'ignore' });
+
+    // Modify src.ts and create .nexus internal telemetry files
+    await fs.writeFile(path.join(tempDir, 'src.ts'), 'export const x = 2;\n', 'utf8');
+    await fs.mkdir(path.join(tempDir, '.nexus'), { recursive: true });
+    await fs.writeFile(path.join(tempDir, '.nexus', 'state.json'), '{"telemetry":true}', 'utf8');
+    await fs.mkdir(path.join(tempDir, '.deepagents'), { recursive: true });
+    await fs.writeFile(path.join(tempDir, '.deepagents', 'skills.json'), '{}', 'utf8');
+
+    const diffs = await getWorkspaceDiffFiles(tempDir);
+    assert.equal(diffs.length, 1);
+    assert.equal(diffs[0].path, 'src.ts');
 
     await fs.rm(tempDir, { recursive: true, force: true });
   });

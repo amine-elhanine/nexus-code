@@ -200,6 +200,7 @@ Working rules:
 
 export async function runProjectAgent(options: {
   projectRoot: string;
+  telemetryRoot?: string;
   sessionId?: string;
   request: string;
   images?: string[];
@@ -211,12 +212,13 @@ export async function runProjectAgent(options: {
   onEvent: (event: AgentEvent) => void;
   isCancelled: () => boolean;
 }) {
-  const { projectRoot, sessionId, request, images, settings, memory, history, mode, sandboxBackend, onEvent, isCancelled } = options;
+  const { projectRoot, telemetryRoot, sessionId, request, images, settings, memory, history, mode, sandboxBackend, onEvent, isCancelled } = options;
+  const targetTelemetryRoot = telemetryRoot || projectRoot;
   const emit = (type: AgentEvent["type"], text: string, items?: PlanItem[], usage?: AgentUsage, subagent?: SubagentItem, artifact?: ArtifactItem) => {
     if (text || items?.length || usage || subagent || artifact) onEvent({ type, text, timestamp: new Date().toISOString(), items, usage, subagent, artifact });
   };
 
-  const trajectory = sessionId ? new TrajectoryLogger(projectRoot, sessionId) : null;
+  const trajectory = sessionId ? new TrajectoryLogger(targetTelemetryRoot, sessionId) : null;
   if (trajectory) {
     await trajectory.init();
     await trajectory.log({ source: "USER", type: "USER_INPUT", content: request });
@@ -474,7 +476,7 @@ export async function runProjectAgent(options: {
   if (sessionId) {
     try {
       if (mode === "plan") {
-        artifact = await saveArtifact(projectRoot, sessionId, "implementation_plan.md", result.response, {
+        artifact = await saveArtifact(targetTelemetryRoot, sessionId, "implementation_plan.md", result.response, {
           status: "pending_approval",
           requestFeedback: true,
           name: "Implementation Plan",
@@ -485,7 +487,7 @@ export async function runProjectAgent(options: {
         if (diffFiles.length > 0) {
           const changedSummary = `### Files Modified (${diffFiles.length})\n` + diffFiles.map((d) => `- \`${d.path}\` (+${d.additions} / -${d.deletions})`).join("\n");
           const walkthroughContent = `# Walkthrough - ${request.slice(0, 60)}\n\n## Changes Summary\n${changedSummary}\n\n## Verification\nStatus: **${result.verification}**\n\n## Outcome\n${result.response}`;
-          artifact = await saveArtifact(projectRoot, sessionId, "walkthrough.md", walkthroughContent, {
+          artifact = await saveArtifact(targetTelemetryRoot, sessionId, "walkthrough.md", walkthroughContent, {
             status: "completed",
             requestFeedback: false,
             name: "Walkthrough Report",

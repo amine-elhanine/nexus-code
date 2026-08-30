@@ -242,22 +242,38 @@ app.whenReady().then(() => {
   ipcMain.handle("workspace:list", () => listWorkspaceFiles(requireRoot()));
   ipcMain.handle("workspace:read", (_event, file: string) => readWorkspaceFile(requireRoot(), file));
   ipcMain.handle("workspace:write", (_event, file: string, content: string) => writeWorkspaceFile(requireRoot(), file, content));
-  ipcMain.handle("workspace:diff", () => getWorkspaceDiffFiles(requireRoot()));
+  ipcMain.handle("workspace:diff", async () => {
+    const root = requireRoot();
+    const wt = activeSessionId ? await getSessionWorktree(root, activeSessionId) : null;
+    return getWorkspaceDiffFiles(wt?.worktreePath || root);
+  });
   ipcMain.handle("workspace:git", () => getWorkspaceGit(requireRoot()));
   ipcMain.handle("workspace:command", async (_event, command: string) => {
     const project = activeProjectId ? await getProject(activeProjectId) : null;
     let config = await getSandboxConfig();
     if (!config?.enabled || config.provider !== "local") {
-      config = await saveSandboxConfig({ enabled: true, provider: "local", requireApproval: false, allowNetwork: false, commandTimeoutSeconds: 120 });
+      config = await saveSandboxConfig({ enabled: true, provider: "local", requireApproval: true, allowNetwork: false, commandTimeoutSeconds: 120 });
     }
     if (!project) throw new Error("Active project not found.");
     const result = await runSandboxCommand(project, config, command);
     return result.output || "Command completed successfully.";
   });
 
-  ipcMain.handle("workspace:revert-file", (_event, file: string) => revertWorkspaceFile(requireRoot(), file));
-  ipcMain.handle("workspace:revert-all", () => revertAllWorkspaceChanges(requireRoot()));
-  ipcMain.handle("checkpoint:restore", (_event, checkpointId: string) => restoreWorkspaceCheckpoint(requireRoot(), checkpointId));
+  ipcMain.handle("workspace:revert-file", async (_event, file: string) => {
+    const root = requireRoot();
+    const wt = activeSessionId ? await getSessionWorktree(root, activeSessionId) : null;
+    return revertWorkspaceFile(wt?.worktreePath || root, file);
+  });
+  ipcMain.handle("workspace:revert-all", async () => {
+    const root = requireRoot();
+    const wt = activeSessionId ? await getSessionWorktree(root, activeSessionId) : null;
+    return revertAllWorkspaceChanges(wt?.worktreePath || root);
+  });
+  ipcMain.handle("checkpoint:restore", async (_event, checkpointId: string) => {
+    const root = requireRoot();
+    const wt = activeSessionId ? await getSessionWorktree(root, activeSessionId) : null;
+    return restoreWorkspaceCheckpoint(wt?.worktreePath || root, checkpointId);
+  });
 
   // Worktree IPC handlers
   ipcMain.handle("worktree:create", async (_event, sessionId: string) => {
@@ -381,19 +397,19 @@ app.whenReady().then(() => {
       const runSettings: AgentSettings = provider ? { provider, model: payload.model || session.model?.model } : settings;
       let sandboxConfig = await getSandboxConfig();
       if (!sandboxConfig || !sandboxConfig.enabled || sandboxConfig.provider !== "local") {
-        sandboxConfig = await saveSandboxConfig({ enabled: true, provider: "local", requireApproval: false, allowNetwork: false, commandTimeoutSeconds: 120 });
+        sandboxConfig = await saveSandboxConfig({ enabled: true, provider: "local", requireApproval: true, allowNetwork: false, commandTimeoutSeconds: 120 });
       }
 
       if (session.title === "New coding task" && payload.request) {
         await updateSession(activeProjectId, activeSessionId, { title: payload.request.slice(0, 60) });
       }
 
-      // Check if session has or can use a worktree
+      // Check if session has an explicit active worktree
       let executionRoot = root;
       if (await isGitRepo(root)) {
         try {
-          const wt = await createSessionWorktree(root, activeSessionId);
-          executionRoot = wt.worktreePath;
+          const wt = await getSessionWorktree(root, activeSessionId);
+          if (wt) executionRoot = wt.worktreePath;
         } catch {
           executionRoot = root;
         }
@@ -414,6 +430,7 @@ app.whenReady().then(() => {
       try {
         result = await runProjectAgent({
           projectRoot: executionRoot,
+          telemetryRoot: root,
           sessionId: activeSessionId,
           request: payload.request,
           images: payload.images,

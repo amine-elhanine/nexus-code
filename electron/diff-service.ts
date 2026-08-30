@@ -14,22 +14,32 @@ function parseNumstat(output: string) {
   });
 }
 
+const IGNORED_PREFIXES = [".nexus/", ".forgepilot/", ".deepagents/", ".git/"];
+function isIgnoredPath(p: string): boolean {
+  const normalized = p.replace(/\\/g, "/");
+  return IGNORED_PREFIXES.some((prefix) => normalized === prefix.slice(0, -1) || normalized.startsWith(prefix) || normalized.includes(`/${prefix}`));
+}
+
 export async function getWorkspaceDiffFiles(projectRoot: string): Promise<WorkspaceDiffFile[]> {
   try {
     let numstat = "";
     try { numstat = (await execFileAsync("git", ["diff", "HEAD", "--no-ext-diff", "--no-renames", "--numstat", "--", "."], { cwd: projectRoot, maxBuffer: 4_000_000 })).stdout; }
     catch { numstat = (await execFileAsync("git", ["diff", "--no-ext-diff", "--no-renames", "--numstat", "--", "."], { cwd: projectRoot, maxBuffer: 4_000_000 })).stdout; }
-    const tracked = parseNumstat(numstat);
+    const tracked = parseNumstat(numstat).filter((item) => !isIgnoredPath(item.path));
     const statusOutput = (await execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: projectRoot, maxBuffer: 4_000_000 })).stdout;
     const statusByPath = new Map<string, string>();
     for (const line of statusOutput.split(/\r?\n/).filter(Boolean)) {
       const code = line.slice(0, 2).trim() || "M";
       const filePath = line.slice(3).replace(/^"|"$/g, "");
-      statusByPath.set(filePath.replace(/\\/g, "/"), code);
+      const normalizedPath = filePath.replace(/\\/g, "/");
+      if (!isIgnoredPath(normalizedPath)) {
+        statusByPath.set(normalizedPath, code);
+      }
     }
     const entries = new Map<string, WorkspaceDiffFile>();
     for (const item of tracked) {
       const normalized = item.path.replace(/\\/g, "/");
+      if (isIgnoredPath(normalized)) continue;
       const name = path.posix.basename(normalized); const directory = path.posix.dirname(normalized) === "." ? "" : `${path.posix.dirname(normalized)}/`;
       entries.set(normalized, { ...item, path: normalized, name, directory, status: statusByPath.get(normalized) || "M", patch: "" });
     }
@@ -121,11 +131,11 @@ export async function createWorkspaceCheckpoint(projectRoot: string, checkpointI
 }
 
 export async function restoreWorkspaceCheckpoint(projectRoot: string, checkpointId: string): Promise<boolean> {
-  const root = path.resolve(projectRoot);
   const checkpoint = checkpoints.get(checkpointId);
   if (!checkpoint) {
-    return await revertAllWorkspaceChanges(root);
+    return false;
   }
+  const root = checkpoint.projectRoot;
   const currentDiffs = await getWorkspaceDiffFiles(root);
   for (const file of currentDiffs) {
     const priorContent = checkpoint.files.get(file.path);

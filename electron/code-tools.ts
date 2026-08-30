@@ -12,7 +12,9 @@ export type SymbolEntry = {
 
 const IGNORED_DIRS = new Set([
   ".git",
+  ".nexus",
   ".forgepilot",
+  ".deepagents",
   "node_modules",
   "dist",
   "dist-electron",
