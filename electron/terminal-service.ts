@@ -89,6 +89,21 @@ class TerminalService {
     return true;
   }
 
+  public resize(id: string, cols: number, rows: number): boolean {
+    const session = this.sessions.get(id);
+    if (!session || !session.alive) return false;
+    if ((session.process as any).resize) {
+      try { (session.process as any).resize(cols, rows); } catch { /* ignore */ }
+    }
+    return true;
+  }
+
+  public killAll(): void {
+    for (const id of [...this.sessions.keys()]) {
+      this.killSession(id);
+    }
+  }
+
   public getSession(id: string): TerminalSession | undefined {
     return this.sessions.get(id);
   }

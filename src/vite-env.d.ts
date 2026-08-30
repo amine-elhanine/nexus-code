@@ -63,7 +63,9 @@ export interface NexusApi {
   stopSandbox: () => Promise<boolean>;
   listWorkspace: () => Promise<string[]>;
   readFile: (file: string) => Promise<{ file: string; content: string; lines: number }>;
+  readHead: (file: string) => Promise<string>;
   writeFile: (file: string, content: string) => Promise<{ file: string; content: string; lines: number }>;
+  saveAttachment: (data: string, filename?: string) => Promise<{ fileName: string; filePath: string; url: string }>;
   getDiff: () => Promise<WorkspaceDiffFile[]>;
   revertFile: (file: string) => Promise<boolean>;
   revertAll: () => Promise<boolean>;
@@ -104,6 +106,7 @@ export interface NexusApi {
   createTerminal: (id: string, cwd?: string) => Promise<boolean>;
   writeTerminal: (id: string, data: string) => Promise<boolean>;
   killTerminal: (id: string) => Promise<boolean>;
+  resizeTerminal: (id: string, cols: number, rows: number) => Promise<boolean>;
   onTerminalData: (listener: (payload: { id: string; data: string }) => void) => () => void;
 
   // Trajectories

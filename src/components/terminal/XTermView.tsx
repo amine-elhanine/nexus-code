@@ -54,42 +54,48 @@ export const XTermView: React.FC<XTermViewProps> = ({ projectRoot }) => {
     termRef.current = term;
     fitAddonRef.current = fitAddon;
 
+    const api = window.nexus || window.forgepilot;
+
     // Start shell session
-    void window.forgepilot.createTerminal("main", projectRoot);
+    void api?.createTerminal?.("main", projectRoot);
 
     // Listen for incoming data from the backend shell
-    const cleanupListener = window.forgepilot.onTerminalData(({ id, data }) => {
+    const cleanupListener = api?.onTerminalData?.(({ id, data }: { id: string; data: string }) => {
       if (id === "main") {
         term.write(data);
       }
-    });
+    }) ?? (() => {});
 
-    // Forward keystrokes to the backend shell
-    const onDataDisposable = term.onData((data) => {
-      void window.forgepilot.writeTerminal("main", data);
+    // Send user keystrokes to the shell process
+    term.onData((data) => {
+      void api?.writeTerminal?.("main", data);
     });
 
     const handleResize = () => {
-      fitAddon.fit();
+      try {
+        fitAddon.fit();
+        api?.resizeTerminal?.("main", term.cols, term.rows);
+      } catch { /* ignore */ }
     };
     window.addEventListener("resize", handleResize);
 
     return () => {
       window.removeEventListener("resize", handleResize);
-      onDataDisposable.dispose();
       cleanupListener();
       term.dispose();
     };
   }, [projectRoot]);
 
   const sendQuickCommand = (cmd: string) => {
-    void window.forgepilot.writeTerminal("main", `${cmd}\r\n`);
+    const api = window.nexus || window.forgepilot;
+    void api?.writeTerminal?.("main", `${cmd}\r\n`);
   };
 
   const restartShell = () => {
+    const api = window.nexus || window.forgepilot;
     termRef.current?.clear();
-    void window.forgepilot.killTerminal("main");
-    void window.forgepilot.createTerminal("main", projectRoot);
+    void api?.killTerminal?.("main");
+    void api?.createTerminal?.("main", projectRoot);
   };
 
   const clearTerminal = () => {
@@ -102,7 +108,7 @@ export const XTermView: React.FC<XTermViewProps> = ({ projectRoot }) => {
         <div className="xterm-title">
           <Terminal size={14} className="text-purple-400" />
           <span>Interactive Terminal</span>
-          <span className="xterm-badge">Live PTY</span>
+          <span className="xterm-badge">Interactive Shell</span>
         </div>
 
         <div className="xterm-actions">

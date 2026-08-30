@@ -91,18 +91,26 @@ export const MonacoDiffModal: React.FC<MonacoDiffModalProps> = ({
     let active = true;
     async function loadCurrent() {
       try {
-        const fileData = await window.forgepilot.readFile(filePath);
+        const api = window.nexus || window.forgepilot;
+        const [fileData, headContent] = await Promise.all([
+          api.readFile(filePath).catch(() => ({ content: "" })),
+          api.readHead ? api.readHead(filePath).catch(() => "") : Promise.resolve(""),
+        ]);
         if (active) {
-          const { original, modified } = parseOriginalAndModified(patch, fileData.content);
-          setOriginalCode(original);
-          setModifiedCode(modified);
+          if (headContent) {
+            setOriginalCode(headContent);
+            setModifiedCode(fileData.content || "");
+          } else {
+            const { original, modified } = parseOriginalAndModified(patch, fileData.content || "");
+            setOriginalCode(original);
+            setModifiedCode(modified);
+          }
           setLoading(false);
         }
       } catch {
         if (active) {
-          const { original, modified } = parseOriginalAndModified(patch, "");
-          setOriginalCode(original);
-          setModifiedCode(modified);
+          setOriginalCode("");
+          setModifiedCode("");
           setLoading(false);
         }
       }

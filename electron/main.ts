@@ -1,7 +1,12 @@
-import { app, BrowserWindow, dialog, ipcMain, shell, session } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell, session, protocol, net } from "electron";
 import path from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
+import crypto from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 import { runProjectAgent, RunCancelledError, type AgentMode, type AgentSettings, type AgentTurn } from "./agent-service.js";
 import { PROVIDERS, fetchRemoteModels } from "./providers.js";
 import {
@@ -26,6 +31,10 @@ import { discoverProjectRules } from "./rules-service.js";
 import { terminalService } from "./terminal-service.js";
 import { discoverCustomCommands, substituteCommandPlaceholders } from "./custom-commands-service.js";
 import { daemonService } from "./daemon-service.js";
+
+protocol.registerSchemesAsPrivileged([
+  { scheme: "nexus-attachment", privileges: { standard: true, secure: true, supportFetchAPI: true } }
+]);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let mainWindow: BrowserWindow | null = null;
@@ -116,6 +125,12 @@ app.whenReady().then(() => {
       );
     }
     callback({ responseHeaders });
+  });
+
+  protocol.handle("nexus-attachment", (request) => {
+    const fileName = path.basename(new URL(request.url).pathname);
+    const filePath = path.join(app.getPath("userData"), "attachments", fileName);
+    return net.fetch(`file://${filePath}`);
   });
 
   ipcMain.handle("projects:list", () => listProjects());
@@ -243,6 +258,35 @@ app.whenReady().then(() => {
 
   ipcMain.handle("workspace:list", () => listWorkspaceFiles(requireRoot()));
   ipcMain.handle("workspace:read", (_event, file: string) => readWorkspaceFile(requireRoot(), file));
+  ipcMain.handle("workspace:readHead", async (_event, file: string) => {
+    const root = requireRoot();
+    const wt = activeSessionId ? await getSessionWorktree(root, activeSessionId) : null;
+    const targetRoot = wt?.worktreePath || root;
+    const normalized = file.replace(/\\/g, "/").replace(/^\.\//, "");
+    try {
+      const { stdout } = await execFileAsync("git", ["show", `HEAD:${normalized}`], { cwd: targetRoot, maxBuffer: 4_000_000 });
+      return stdout;
+    } catch {
+      return "";
+    }
+  });
+  ipcMain.handle("attachments:save", async (_event, payload: { data: string; filename?: string }) => {
+    const attachmentsDir = path.join(app.getPath("userData"), "attachments");
+    await fs.mkdir(attachmentsDir, { recursive: true });
+
+    let base64Data = payload.data;
+    let ext = "png";
+    const match = payload.data.match(/^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/);
+    if (match) {
+      ext = match[1] === "jpeg" ? "jpg" : match[1];
+      base64Data = match[2];
+    }
+    const hash = crypto.createHash("sha256").update(base64Data).digest("hex").slice(0, 16);
+    const fileName = `${hash}.${ext}`;
+    const filePath = path.join(attachmentsDir, fileName);
+    await fs.writeFile(filePath, Buffer.from(base64Data, "base64"));
+    return { fileName, filePath, url: `nexus-attachment://${fileName}` };
+  });
   ipcMain.handle("workspace:write", (_event, file: string, content: string) => writeWorkspaceFile(requireRoot(), file, content));
   ipcMain.handle("workspace:diff", async () => {
     const root = requireRoot();
@@ -341,6 +385,10 @@ app.whenReady().then(() => {
 
   ipcMain.handle("terminal:kill", (_event, id: string) => {
     return terminalService.killSession(id);
+  });
+
+  ipcMain.handle("terminal:resize", (_event, { id, cols, rows }: { id: string; cols: number; rows: number }) => {
+    return terminalService.resize(id, cols, rows);
   });
 
   // Custom Slash Commands

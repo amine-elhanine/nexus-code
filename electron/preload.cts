@@ -46,7 +46,9 @@ const nexusApi = {
   stopSandbox: () => invoke("sandbox:stop"),
   listWorkspace: () => invoke("workspace:list"),
   readFile: (file: string) => invoke("workspace:read", file),
+  readHead: (file: string) => invoke("workspace:readHead", file),
   writeFile: (file: string, content: string) => invoke("workspace:write", file, content),
+  saveAttachment: (data: string, filename?: string) => invoke("attachments:save", { data, filename }),
   getDiff: () => invoke("workspace:diff"),
   revertFile: (file: string) => invoke("workspace:revert-file", file),
   revertAll: () => invoke("workspace:revert-all"),
@@ -91,6 +93,7 @@ const nexusApi = {
   createTerminal: (id: string, cwd?: string) => invoke("terminal:create", { id, cwd }),
   writeTerminal: (id: string, data: string) => invoke("terminal:write", { id, data }),
   killTerminal: (id: string) => invoke("terminal:kill", id),
+  resizeTerminal: (id: string, cols: number, rows: number) => invoke("terminal:resize", { id, cols, rows }),
   onTerminalData: (listener: (payload: { id: string; data: string }) => void) => {
     const handler = (_event: IpcRendererEvent, payload: { id: string; data: string }) => listener(payload);
     ipcRenderer.on("terminal:data", handler);

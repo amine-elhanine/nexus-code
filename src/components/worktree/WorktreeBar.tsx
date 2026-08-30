@@ -19,14 +19,17 @@ export const WorktreeBar: React.FC<WorktreeBarProps> = ({
   const [merging, setMerging] = useState(false);
   const [discarding, setDiscarding] = useState(false);
   const [mergeStatus, setMergeStatus] = useState<string | null>(null);
+  const [showConfirmDiscard, setShowConfirmDiscard] = useState(false);
 
   if (!isGit || !worktree) return null;
+
+  const api = window.nexus || window.forgepilot;
 
   const handleMerge = async () => {
     try {
       setMerging(true);
       setMergeStatus(null);
-      const result = await window.forgepilot.mergeWorktree(sessionId);
+      const result = await api.mergeWorktree(sessionId);
       if (result.success) {
         setMergeStatus("Merged successfully!");
         onMergeSuccess?.();
@@ -41,11 +44,11 @@ export const WorktreeBar: React.FC<WorktreeBarProps> = ({
     }
   };
 
-  const handleDiscard = async () => {
-    if (!window.confirm("Are you sure you want to discard this worktree and all its changes?")) return;
+  const handleConfirmDiscard = async () => {
+    setShowConfirmDiscard(false);
     try {
       setDiscarding(true);
-      const ok = await window.forgepilot.discardWorktree(sessionId);
+      const ok = await api.discardWorktree(sessionId);
       if (ok) {
         onDiscardSuccess?.();
       }
@@ -55,40 +58,64 @@ export const WorktreeBar: React.FC<WorktreeBarProps> = ({
   };
 
   return (
-    <div className="worktree-status-bar">
-      <div className="worktree-info">
-        <GitBranch size={14} className="text-emerald-400" />
-        <span className="worktree-badge">Isolated Worktree</span>
-        <span className="worktree-branch-name">{worktree.branch}</span>
+    <>
+      <div className="worktree-status-bar">
+        <div className="worktree-info">
+          <GitBranch size={14} className="text-emerald-400" />
+          <span className="worktree-badge">Isolated Worktree</span>
+          <span className="worktree-branch-name">{worktree.branch}</span>
+        </div>
+
+        <div className="worktree-actions">
+          {mergeStatus && (
+            <span className={`worktree-status-msg ${mergeStatus.includes("failed") || mergeStatus.includes("Error") ? "text-rose-400" : "text-emerald-400"}`}>
+              {mergeStatus}
+            </span>
+          )}
+          <button
+            type="button"
+            className="btn-worktree-merge"
+            onClick={handleMerge}
+            disabled={merging || discarding}
+            title="Merge isolated session changes into the main working tree"
+          >
+            {merging ? <Loader2 size={13} className="animate-spin" /> : <GitMerge size={13} />}
+            Merge to Main
+          </button>
+          <button
+            type="button"
+            className="btn-worktree-discard"
+            onClick={() => setShowConfirmDiscard(true)}
+            disabled={merging || discarding}
+            title="Discard this isolated worktree"
+          >
+            {discarding ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+            Discard
+          </button>
+        </div>
       </div>
 
-      <div className="worktree-actions">
-        {mergeStatus && (
-          <span className={`worktree-status-msg ${mergeStatus.includes("failed") || mergeStatus.includes("Error") ? "text-rose-400" : "text-emerald-400"}`}>
-            {mergeStatus}
-          </span>
-        )}
-        <button
-          type="button"
-          className="btn-worktree-merge"
-          onClick={handleMerge}
-          disabled={merging || discarding}
-          title="Merge isolated session changes into the main working tree"
-        >
-          {merging ? <Loader2 size={13} className="animate-spin" /> : <GitMerge size={13} />}
-          Merge to Main
-        </button>
-        <button
-          type="button"
-          className="btn-worktree-discard"
-          onClick={handleDiscard}
-          disabled={merging || discarding}
-          title="Discard this isolated worktree"
-        >
-          {discarding ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
-          Discard
-        </button>
-      </div>
-    </div>
+      {showConfirmDiscard && (
+        <div className="modal-layer confirm-layer" onClick={() => setShowConfirmDiscard(false)}>
+          <div className="modal-card confirm-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-card-head" style={{ marginBottom: "10px" }}>
+              <div>
+                <span className="view-kicker" style={{ color: "var(--red)" }}>CONFIRM ACTION</span>
+                <h2 style={{ fontSize: "16px", margin: "6px 0 4px" }}>Discard Worktree</h2>
+              </div>
+            </div>
+            <p style={{ color: "#a6b2c2", fontSize: "11px", lineHeight: "1.5", margin: "0 0 18px" }}>
+              Are you sure you want to discard this isolated worktree and all its changes? This action cannot be undone.
+            </p>
+            <div className="modal-actions" style={{ marginTop: "0" }}>
+              <button className="secondary" onClick={() => setShowConfirmDiscard(false)}>Cancel</button>
+              <button className="primary danger-confirm-btn" onClick={handleConfirmDiscard}>
+                <Trash2 size={13} /> Discard Worktree
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 };
