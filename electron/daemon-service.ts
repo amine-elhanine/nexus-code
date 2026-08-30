@@ -1,5 +1,4 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import treeKill from "node:child_process";
 
 export interface DaemonProcessInfo {
   id: string;

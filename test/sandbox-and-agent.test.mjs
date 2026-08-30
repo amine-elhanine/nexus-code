@@ -24,7 +24,7 @@ import { parseSymbolsFromCode, formatOutline, createCodeIntelligenceTools } from
 import { SUBAGENT_CONFIGS, createSubagentDelegationTool, calculateAgentUsage } from '../dist-electron/subagent-service.js';
 import { createSkill, importSkill, listSkills, deleteSkill, readSkillContent } from '../dist-electron/skills-service.js';
 import { isGitRepo, createSessionWorktree, getSessionWorktree, mergeWorktreeToMain, discardSessionWorktree } from '../dist-electron/worktree-service.js';
-import { compactHistory, estimateTokens, injectPromptCacheControl } from '../dist-electron/context-service.js';
+import { compactHistory, estimateTokens } from '../dist-electron/context-service.js';
 import { saveArtifact, getArtifact, listArtifacts, updateArtifactStatus } from '../dist-electron/artifacts-service.js';
 import { TrajectoryLogger, readSessionTrajectory } from '../dist-electron/trajectory-service.js';
 import { discoverProjectRules } from '../dist-electron/rules-service.js';
@@ -910,13 +910,6 @@ pub async fn execute_task(task: &str) -> bool { true }
   await test('estimateTokens provides consistent character to token approximations', () => {
     assert.equal(estimateTokens(''), 0);
     assert.ok(estimateTokens('Hello world this is a test of tokenizer estimation') > 5);
-  });
-
-  await test('injectPromptCacheControl adds cache_control for Anthropic models', () => {
-    const msg = { role: 'system', content: 'You are an agent with very long instructions '.repeat(30) };
-    const injected = injectPromptCacheControl([msg], 'anthropic');
-    assert.ok(Array.isArray(injected[0].content));
-    assert.equal(injected[0].content[0].cache_control?.type, 'ephemeral');
   });
 
   console.log('\n=== 14. Artifacts Lifecycle & Status Tests ===');

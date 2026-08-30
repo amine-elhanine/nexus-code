@@ -1,5 +1,3 @@
-import { HumanMessage, AIMessage, SystemMessage } from "@langchain/core/messages";
-
 export type CompactTurn = {
   role: "user" | "assistant";
   text: string;
@@ -96,28 +94,4 @@ export function compactHistory(
   result.push(...recentTurns.map((t) => ({ role: t.role as "user" | "assistant", text: t.text })));
 
   return result;
-}
-
-/**
- * Injects prompt caching markers for providers that support it (Anthropic, Google Gemini).
- */
-export function injectPromptCacheControl(messages: any[], providerType: string): any[] {
-  if (providerType !== "anthropic") return messages;
-
-  // In Anthropic, we can attach cache_control: { type: "ephemeral" } to message content blocks
-  return messages.map((msg, index) => {
-    // Cache the system prompt or early long context messages
-    if (index === 0 && typeof msg.content === "string" && msg.content.length > 1000) {
-      return new SystemMessage({
-        content: [
-          {
-            type: "text",
-            text: msg.content,
-            cache_control: { type: "ephemeral" },
-          },
-        ],
-      });
-    }
-    return msg;
-  });
 }

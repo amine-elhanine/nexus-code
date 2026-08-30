@@ -166,7 +166,7 @@ async function executeLocal(projectRoot: string, command: string, config: Sandbo
   if (violation) return { output: violation, exitCode: 126, truncated: false };
   const trimmed = command.trim();
   if (fromAgent && config.requireApproval && APPROVAL_REQUIRED.test(trimmed)) {
-    const approval = await dialog.showMessageBox({ type: "question", title: "ForgePilot approval required", message: "Allow this command inside the local workspace sandbox?", detail: trimmed, buttons: ["Allow once", "Block"], defaultId: 1, cancelId: 1 });
+    const approval = await dialog.showMessageBox({ type: "question", title: "Nexus approval required", message: "Allow this command inside the local workspace sandbox?", detail: trimmed, buttons: ["Allow once", "Block"], defaultId: 1, cancelId: 1 });
     if (approval.response !== 0) return { output: "Command blocked by user approval.", exitCode: 126, truncated: false };
   }
   const runCommand = trimmed.toLowerCase().startsWith("node ") || trimmed.toLowerCase() === "node"

@@ -874,7 +874,7 @@ function AgentView({
       <div>
         <span className="view-kicker">CODING AGENT</span>
         <h1>{running ? "Working on your task" : hasProject ? "Ready for your task" : "Open a project to begin"}</h1>
-        <p>{running ? "The agent is using the selected project context." : hasProject ? "Describe the outcome. ForgePilot will inspect, plan, implement and validate." : "Create or open a local project. Nothing is preloaded."}</p>
+        <p>{running ? "The agent is using the selected project context." : hasProject ? "Describe the outcome. Nexus will inspect, plan, implement and validate." : "Create or open a local project. Nothing is preloaded."}</p>
       </div>
       <div className="agent-view-meta">
         {sessionUsage && sessionUsage.totalTokens > 0 && (
@@ -987,7 +987,7 @@ function AgentView({
           <button className={`send-button${running ? " stop" : ""}`} disabled={!running && !draft.trim() && attachedImages.length === 0} onClick={running ? onStop : () => submit()} title={running ? "Stop the agent" : "Send"}>{running ? <Square size={13} fill="currentColor" /> : <ArrowUp size={16} />}</button>
         </div>
       </div>
-      <div className="input-note"><ShieldCheck size={12} /> ForgePilot can edit files, inspect websites, and run safe commands inside this workspace</div>
+      <div className="input-note"><ShieldCheck size={12} /> Nexus can edit files, inspect websites, and run safe commands inside this workspace</div>
     </div>
   </div>;
 }
@@ -1117,7 +1117,7 @@ function ChatItemView({ message, onOpenArtifact }: { message: ChatItem; onOpenAr
   }
   return <div className={`chat-message ${message.role}`}>
     <div className="chat-author">
-      {message.role === "assistant" ? <><span className="agent-avatar"><Bot size={13} /></span> ForgePilot</> : <><span className="you-avatar">ME</span> You</>}
+      {message.role === "assistant" ? <><span className="agent-avatar"><Bot size={13} /></span> Nexus</> : <><span className="you-avatar">ME</span> You</>}
       <time>{timeLabel(message.createdAt)}</time>
     </div>
     {message.images && message.images.length > 0 && (
@@ -1218,18 +1218,9 @@ function FileRow({ entry, active, expanded, onClick }: { entry: FileEntry; activ
   </button>;
 }
 
-function EditorView({ activeFile, openFiles, setActiveFile, setOpenFiles, content, setContent, dirty, save }: { activeFile: string; openFiles: string[]; setActiveFile: (file: string) => void; setOpenFiles: (files: string[]) => void; content: string; setContent: (value: string) => void; dirty: boolean; save: () => void }) {
-  return <div className="editor-view">
-    <div className="editor-tabs">{openFiles.map((file) => <button key={file} className={file === activeFile ? "active" : ""} onClick={() => setActiveFile(file)}>{fileIcon(file)}<span>{file.split("/").pop()}</span>{file === activeFile && dirty && <i />}<X size={12} onClick={(event) => { event.stopPropagation(); setOpenFiles(openFiles.filter((item) => item !== file)); }} /></button>)}</div>
-    <div className="editor-toolbar"><span>{activeFile || "No file"}</span><div><span className={dirty ? "unsaved" : "saved"}>{dirty ? "Unsaved" : "Saved"}</span><button disabled={!dirty} onClick={save}><Save size={13} /> Save</button></div></div>
-    <div className="editor-content"><div className="line-numbers">{content.split("\n").map((_, index) => <span key={index}>{index + 1}</span>)}</div><textarea spellCheck={false} value={content} onChange={(event) => setContent(event.target.value)} /></div>
-  </div>;
-}
-
 function parseDiffPatch(patch: string): SplitDiffRow[] { let oldLine = 0; let newLine = 0; const rows: SplitDiffRow[] = []; let deleted: DiffSide[] = []; let added: DiffSide[] = []; const flushChanges = () => { const count = Math.max(deleted.length, added.length); for (let index = 0; index < count; index++) { const old = deleted[index]; const next = added[index]; rows.push({ kind: old && next ? "change" : old ? "deleted" : "added", old, new: next }); } deleted = []; added = []; }; for (const line of patch.split(/\r?\n/)) { if (line.startsWith("@@")) { flushChanges(); const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/); if (match) { oldLine = Number(match[1]); newLine = Number(match[2]); } rows.push({ kind: "hunk", text: line }); continue; } if (!line || line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("---") || line.startsWith("+++") || line.startsWith("\\\\ No newline")) continue; if (line.startsWith("+")) { added.push({ number: newLine++, text: line.slice(1) }); continue; } if (line.startsWith("-")) { deleted.push({ number: oldLine++, text: line.slice(1) }); continue; } flushChanges(); const text = line.startsWith(" ") ? line.slice(1) : line; rows.push({ kind: "context", old: { number: oldLine++, text }, new: { number: newLine++, text } }); } flushChanges(); return rows; }
 function DiffLineView({ side, kind }: { side?: DiffSide; kind: "context" | "added" | "deleted" }) { return <div className={`diff-line-view ${kind}`}><span className="diff-line-number">{side?.number ?? ""}</span><span className="diff-line-bar" /><code>{side?.text || "\u00a0"}</code></div>; }
 function DiffPatch({ patch }: { patch: string }) { const rows = parseDiffPatch(patch); const rendered: ReactNode[] = []; rows.forEach((row, index) => { if (row.kind === "hunk") rendered.push(<div className="diff-hunk-row" key={`${index}-hunk`}>{row.text}</div>); else if (row.kind === "context") rendered.push(<DiffLineView key={`${index}-context`} side={row.new} kind="context" />); else { if (row.old) rendered.push(<DiffLineView key={`${index}-old`} side={row.old} kind="deleted" />); if (row.new) rendered.push(<DiffLineView key={`${index}-new`} side={row.new} kind="added" />); } }); return <div className="diff-code-panel">{rendered.length ? rendered : <div className="diff-code-empty">No patch available for this file.</div>}</div>; }
-function TerminalView({ input, setInput, output, run }: { input: string; setInput: (value: string) => void; output: string; run: () => void }) { return <div className="artifact-view terminal-view"><div className="artifact-head"><div><span className="view-kicker">EXECUTION ARTIFACT</span><h2>Integrated terminal</h2><p>Run validation commands in the selected project root.</p></div><button className="secondary" onClick={run}><Play size={13} fill="currentColor" /> Run</button></div><div className="terminal-box"><pre>{output}</pre><div className="terminal-command"><span>$</span><input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") run(); }} /><button onClick={run}><ArrowUp size={14} /></button></div></div></div>; }
 function MemoryView({ project, session, onSave }: { project: ProjectRecord | null; session: SessionRecord | null; onSave: (projectMemory: string, sessionMemory: string) => void }) { const [projectMemory, setProjectMemory] = useState(project?.memory || ""); const [sessionMemory, setSessionMemory] = useState(session?.memory || ""); useEffect(() => { setProjectMemory(project?.memory || ""); setSessionMemory(session?.memory || ""); }, [project?.id, session?.id, project?.memory, session?.memory]); return <div className="memory-view artifact-view"><div className="artifact-head"><div><span className="view-kicker">PERSISTENT CONTEXT</span><h2>Memory</h2><p>Project memory is shared by every session. Session memory stays local to this task.</p></div><button className="primary" onClick={() => onSave(projectMemory, sessionMemory)}><Save size={13} /> Save memory</button></div><div className="memory-grid"><MemoryEditor label="Project memory" description="Shared conventions, architecture decisions and long-term project facts." value={projectMemory} onChange={setProjectMemory} /><MemoryEditor label="Session memory" description="Decisions, discoveries and progress for this coding session." value={sessionMemory} onChange={setSessionMemory} /></div><div className="memory-note"><Sparkles size={14} /><span>The agent appends useful task outcomes to both memory levels after a run. You can edit them at any time.</span></div></div>; }
 function MemoryEditor({ label, description, value, onChange }: { label: string; description: string; value: string; onChange: (value: string) => void }) { return <div className="memory-card"><div className="memory-card-head"><div><strong>{label}</strong><p>{description}</p></div><Brain size={15} /></div><textarea value={value} onChange={(event) => onChange(event.target.value)} placeholder="No memory written yet…" /></div>; }
 function ContextRow({ icon, label, detail, active }: { icon: ReactNode; label: string; detail: string; active: boolean }) { return <div className="context-row"><span className={active ? "context-icon active" : "context-icon"}>{icon}</span><div><strong>{label}</strong><small>{detail}</small></div><span className={active ? "context-check" : "context-dash"}>{active ? <Check size={12} /> : "—"}</span></div>; }
