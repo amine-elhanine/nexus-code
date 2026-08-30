@@ -58,11 +58,13 @@ export class DaemonService {
     const { info } = active;
 
     try {
+      const isWin = process.platform === "win32";
       const child = spawn(info.command, {
         shell: true,
         cwd: info.cwd,
         env: { ...process.env, FORCE_COLOR: "1" },
         windowsHide: true,
+        detached: !isWin,
       });
 
       info.pid = child.pid;

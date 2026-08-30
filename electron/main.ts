@@ -181,7 +181,8 @@ app.whenReady().then(() => {
   ipcMain.handle("session:update", (_event, projectId: string, sessionId: string, patch: Parameters<typeof updateSession>[2]) => updateSession(projectId, sessionId, patch));
   ipcMain.handle("session:delete", async (_event, projectId: string, sessionId: string) => {
     const project = await deleteSession(projectId, sessionId);
-    if (activeProjectRoot) await discardSessionWorktree(activeProjectRoot, sessionId);
+    const root = project.root || activeProjectRoot;
+    if (root) await discardSessionWorktree(root, sessionId);
     if (sessionId === activeSessionId) {
       const next = project.sessions[0] || await createSession(projectId);
       activeSessionId = next.id;
@@ -527,5 +528,9 @@ app.whenReady().then(() => {
 
   createWindow();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+});
+app.on("before-quit", () => {
+  daemonService.stopAllDaemons();
+  terminalService.killAll();
 });
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
