@@ -341,7 +341,25 @@ export function AgentView({
       }
     }
 
-    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    if (event.key === "Enter") {
+      if (event.ctrlKey || event.metaKey || event.shiftKey) {
+        if (event.ctrlKey || event.metaKey) {
+          event.preventDefault();
+          const target = event.currentTarget;
+          const start = target.selectionStart || 0;
+          const end = target.selectionEnd || 0;
+          const val = draft;
+          const nextVal = val.substring(0, start) + "\n" + val.substring(end);
+          setDraft(nextVal);
+          setTimeout(() => {
+            if (textareaRef.current) {
+              textareaRef.current.selectionStart = textareaRef.current.selectionEnd = start + 1;
+            }
+          }, 0);
+        }
+        return;
+      }
+      event.preventDefault();
       submit();
     }
   }
