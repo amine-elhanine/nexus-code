@@ -628,21 +628,30 @@ pub async fn execute_task(task: &str) -> bool { true }
     await fs.mkdir(path.join(tempDir, 'src'), { recursive: true });
     await fs.mkdir(path.join(tempDir, 'test'), { recursive: true });
 
+    await fs.writeFile(path.join(tempDir, 'package.json'), JSON.stringify({ name: 'test-app', scripts: { test: 'vitest' } }), 'utf8');
     await fs.writeFile(path.join(tempDir, 'src', 'auth.ts'), 'export const auth = true;', 'utf8');
     await fs.writeFile(path.join(tempDir, 'test', 'auth.test.ts'), 'test("auth", () => {});', 'utf8');
     await fs.writeFile(path.join(tempDir, 'src', 'user.ts'), 'export const user = true;', 'utf8');
     await fs.writeFile(path.join(tempDir, 'src', 'user.spec.ts'), 'test("user", () => {});', 'utf8');
 
     const testsForAuth = findTargetedTests(tempDir, ['src/auth.ts']);
-    assert.ok(testsForAuth.includes('test/auth.test.ts') || testsForAuth.includes('test\\auth.test.ts'));
+    assert.equal(testsForAuth, 'npm test -- test/auth.test.ts');
 
     const testsForUser = findTargetedTests(tempDir, ['src/user.ts']);
-    assert.ok(testsForUser.includes('src/user.spec.ts') || testsForUser.includes('src\\user.spec.ts'));
+    assert.equal(testsForUser, 'npm test -- src/user.spec.ts');
 
     const testsForNone = findTargetedTests(tempDir, ['package.json', 'README.md']);
     assert.equal(testsForNone, null);
 
+    // Fallback returns null when no test runner or script is configured
+    const tempDirNoPkg = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-no-test-runner-'));
+    await fs.mkdir(path.join(tempDirNoPkg, 'src'), { recursive: true });
+    await fs.writeFile(path.join(tempDirNoPkg, 'src', 'auth.ts'), 'export const auth = true;', 'utf8');
+    const testsNoRunner = findTargetedTests(tempDirNoPkg, ['src/auth.ts']);
+    assert.equal(testsNoRunner, null);
+
     await fs.rm(tempDir, { recursive: true, force: true });
+    await fs.rm(tempDirNoPkg, { recursive: true, force: true });
   });
 
   console.log('\n=== 8. Subagent Delegation & Isolation Tests ===');
@@ -662,13 +671,18 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.match(SUBAGENT_CONFIGS.coder.systemPrompt('/app'), /Coder Subagent/);
   });
 
-  await test('calculateAgentUsage computes accurate token pricing ($0.15/1M input, $0.60/1M output)', () => {
-    const usage = calculateAgentUsage(10000, 5000);
-    assert.equal(usage.inputTokens, 10000);
-    assert.equal(usage.outputTokens, 5000);
-    assert.equal(usage.totalTokens, 15000);
-    // (10000 * 0.00015 + 5000 * 0.0006) / 1000 = (1.5 + 3.0) / 1000 = 0.0045
-    assert.equal(usage.estimatedCost, 0.0045);
+  await test('calculateAgentUsage computes accurate token pricing ($0.15/1M input, $0.60/1M output and model-aware)', () => {
+    const defaultUsage = calculateAgentUsage(10000, 5000);
+    assert.equal(defaultUsage.inputTokens, 10000);
+    assert.equal(defaultUsage.outputTokens, 5000);
+    assert.equal(defaultUsage.totalTokens, 15000);
+    assert.equal(defaultUsage.estimatedCost, 0.0045);
+
+    // Test model-aware pricing (e.g. claude-3-5-sonnet: $3.00/1M in, $15.00/1M out)
+    const claudeUsage = calculateAgentUsage(100000, 20000, 'claude-3-5-sonnet');
+    assert.equal(claudeUsage.totalTokens, 120000);
+    // (100000 / 1000000) * 3.00 + (20000 / 1000000) * 15.00 = 0.30 + 0.30 = 0.60
+    assert.equal(claudeUsage.estimatedCost, 0.6);
   });
 
   await test('createSubagentDelegationTool exports delegate_task with schema validation', () => {

@@ -53,6 +53,7 @@ const AgentState = Annotation.Root({
   verifyFeedback: Annotation<string>({ reducer: (_, value) => value, default: () => "" }),
   repairs: Annotation<number>({ reducer: (_, value) => value, default: () => 0 }),
   verification: Annotation<string>({ reducer: (_, value) => value, default: () => "" }),
+  runMessages: Annotation<any[]>({ reducer: (_, value) => value, default: () => [] }),
 });
 
 function textFromMessage(message: any) {
@@ -121,7 +122,7 @@ export function findTargetedTests(projectRoot: string, modifiedFiles: string[]):
           if (parsed.ext === ".py") return `pytest ${rel}`;
           if (parsed.ext === ".rs") return `cargo test ${parsed.name}`;
           if (parsed.ext === ".go") return `go test ./${path.dirname(rel)}`;
-          return `node ${rel}`;
+          return null;
         }
       }
     }
@@ -333,10 +334,15 @@ export async function runProjectAgent(options: {
     (priorMessages.reduce((sum, m) => sum + (typeof m.content === "string" ? m.content.length : 0), 0) + request.length + 1500) / 4
   );
 
+  let runMessages: any[] = [...priorMessages, initialHumanMessage];
+
   const streamDeepAgent = async (extra: HumanMessage[]) => {
     let finalMessages: any[] = [];
+    if (extra.length > 0) {
+      runMessages = [...runMessages, ...extra];
+    }
     const stream = await (deepAgent as any).stream(
-      { messages: [...priorMessages, initialHumanMessage, ...extra] },
+      { messages: runMessages },
       { streamMode: ["values", "updates", "messages"], recursionLimit: MODE_LIMITS[mode] }
     );
     for await (const item of stream as AsyncIterable<any>) {
@@ -388,6 +394,9 @@ export async function runProjectAgent(options: {
         }
       }
     }
+    if (finalMessages.length > 0) {
+      runMessages = finalMessages;
+    }
     return textFromMessage(finalMessages[finalMessages.length - 1]) || "Agent finished without a textual response.";
   };
 
@@ -403,7 +412,7 @@ export async function runProjectAgent(options: {
       const extra = state.verifyFeedback ? [new HumanMessage(state.verifyFeedback)] : [];
       emit("status", state.verifyFeedback ? "Repairing verification failures" : "Agent is working on the task");
       const answer = await streamDeepAgent(extra);
-      return { response: answer, verifyFeedback: "" };
+      return { response: answer, verifyFeedback: "", runMessages };
     })
     .addNode("verify", async (state: any) => {
       if (isCancelled()) throw new RunCancelledError();
@@ -461,7 +470,7 @@ export async function runProjectAgent(options: {
     .compile();
 
   const result: any = await graph.invoke({ projectRoot, request });
-  const usage: AgentUsage = calculateAgentUsage(totalInputTokens, totalOutputTokens);
+  const usage: AgentUsage = calculateAgentUsage(totalInputTokens, totalOutputTokens, modelName);
   emit("assistant", result.response, undefined, usage);
   emit("usage", `Token usage · ${usage.totalTokens} tokens (~$${usage.estimatedCost})`, undefined, usage);
 

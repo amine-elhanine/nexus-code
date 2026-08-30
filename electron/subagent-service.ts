@@ -103,10 +103,53 @@ function toolCallSummary(call: any): string {
   return "";
 }
 
-export function calculateAgentUsage(inputTokens: number, outputTokens: number): AgentUsage {
+import { extractStreamUsage } from "./context-service.js";
+
+export type ModelPricing = { inputPerMillion: number; outputPerMillion: number };
+
+export const MODEL_PRICING: Record<string, ModelPricing> = {
+  "gpt-4o": { inputPerMillion: 2.50, outputPerMillion: 10.00 },
+  "gpt-4o-mini": { inputPerMillion: 0.15, outputPerMillion: 0.60 },
+  "gpt-4.1": { inputPerMillion: 2.00, outputPerMillion: 8.00 },
+  "gpt-4.1-mini": { inputPerMillion: 0.15, outputPerMillion: 0.60 },
+  "gpt-5.5": { inputPerMillion: 3.00, outputPerMillion: 12.00 },
+  "gpt-5.5-mini": { inputPerMillion: 0.20, outputPerMillion: 0.80 },
+  "o3": { inputPerMillion: 5.00, outputPerMillion: 20.00 },
+  "o4-mini": { inputPerMillion: 1.10, outputPerMillion: 4.40 },
+  "claude-3-5-sonnet": { inputPerMillion: 3.00, outputPerMillion: 15.00 },
+  "claude-sonnet-4-6": { inputPerMillion: 3.00, outputPerMillion: 15.00 },
+  "claude-opus-4-6": { inputPerMillion: 15.00, outputPerMillion: 75.00 },
+  "claude-haiku-4-5": { inputPerMillion: 0.80, outputPerMillion: 4.00 },
+  "gemini-1.5-pro": { inputPerMillion: 1.25, outputPerMillion: 5.00 },
+  "gemini-1.5-flash": { inputPerMillion: 0.075, outputPerMillion: 0.30 },
+  "gemini-2.5-flash": { inputPerMillion: 0.10, outputPerMillion: 0.40 },
+  "gemini-3.7-pro": { inputPerMillion: 1.25, outputPerMillion: 5.00 },
+  "gemini-3.7-flash": { inputPerMillion: 0.10, outputPerMillion: 0.40 },
+  "deepseek-chat": { inputPerMillion: 0.14, outputPerMillion: 0.28 },
+  "deepseek-reasoner": { inputPerMillion: 0.55, outputPerMillion: 2.19 },
+  "mistral-large-latest": { inputPerMillion: 2.00, outputPerMillion: 6.00 },
+  "codestral-latest": { inputPerMillion: 0.30, outputPerMillion: 0.90 },
+};
+
+export function getModelPricing(modelName?: string): ModelPricing {
+  if (!modelName) return { inputPerMillion: 0.15, outputPerMillion: 0.60 };
+  const normalized = modelName.toLowerCase();
+  for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
+    if (normalized.includes(key.toLowerCase())) return pricing;
+  }
+  return { inputPerMillion: 0.15, outputPerMillion: 0.60 };
+}
+
+export function calculateAgentUsage(inputTokens: number, outputTokens: number, modelName?: string): AgentUsage {
+  const pricing = getModelPricing(modelName);
   const totalTokens = inputTokens + outputTokens;
-  const estimatedCost = Number(((inputTokens * 0.00015 + outputTokens * 0.0006) / 1000).toFixed(4));
-  return { inputTokens, outputTokens, totalTokens, estimatedCost };
+  const cost = (inputTokens / 1_000_000) * pricing.inputPerMillion + (outputTokens / 1_000_000) * pricing.outputPerMillion;
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    estimatedCost: Number(cost.toFixed(4)),
+  };
 }
 
 export async function executeSubagentTask(options: {
@@ -158,11 +201,12 @@ export async function executeSubagentTask(options: {
 
     const stream = await (subAgent as any).stream(
       { messages: [new HumanMessage(task)] },
-      { streamMode: ["values", "updates"], recursionLimit: config.recursionLimit }
+      { streamMode: ["values", "updates", "messages"], recursionLimit: config.recursionLimit }
     );
 
     let finalMessages: any[] = [];
-    let outputTokens = 0;
+    let totalInputTokens = Math.max(1, Math.round((task.length + 800) / 4));
+    let totalOutputTokens = 0;
 
     for await (const item of stream as AsyncIterable<any>) {
       if (isCancelled?.()) throw new Error("Subagent cancelled by user");
@@ -170,6 +214,13 @@ export async function executeSubagentTask(options: {
 
       if (streamMode === "values" && Array.isArray(payload?.messages)) {
         finalMessages = payload.messages;
+      }
+
+      if (streamMode === "messages") {
+        const [chunk] = Array.isArray(payload) ? payload : [payload];
+        const exact = extractStreamUsage(chunk);
+        if (exact?.inputTokens) totalInputTokens = exact.inputTokens;
+        if (exact?.outputTokens) totalOutputTokens = exact.outputTokens;
       }
 
       if (streamMode === "updates" && payload && typeof payload === "object") {
@@ -195,12 +246,11 @@ export async function executeSubagentTask(options: {
 
     const lastMsg = finalMessages[finalMessages.length - 1];
     const answer = textFromMessage(lastMsg) || `Subagent [${config.title}] completed task without text output.`;
-    outputTokens = Math.max(1, Math.round(answer.length / 4));
-    const inputTokens = Math.max(1, Math.round((task.length + 800) / 4));
+    if (!totalOutputTokens) totalOutputTokens = Math.max(1, Math.round(answer.length / 4));
 
     subagentItem.status = "completed";
     subagentItem.output = answer;
-    subagentItem.usage = calculateAgentUsage(inputTokens, outputTokens);
+    subagentItem.usage = calculateAgentUsage(totalInputTokens, totalOutputTokens, modelName);
 
     onEvent?.({ type: "subagent_finish", subagent: { ...subagentItem } });
     return `[Subagent: ${config.title}]\n${answer}`;

@@ -55,7 +55,18 @@ export async function createChatModel(config: ProviderConfig, modelName: string)
     });
   }
   if (provider === "deepseek") { const { ChatDeepSeek } = await import("@langchain/deepseek"); return new ChatDeepSeek({ apiKey: key, model: modelName, temperature: 0.1 }); }
-  if (provider === "azure") { const { AzureChatOpenAI } = await import("@langchain/openai"); const AzureModel = AzureChatOpenAI as any; return new AzureModel({ azureOpenAIApiKey: key, azureOpenAIApiDeploymentName: modelName, azureOpenAIApiVersion: "2024-10-21", azureOpenAIApiInstanceName: config.baseUrl, temperature: 0.1 }); }
+  if (provider === "azure") {
+    const { AzureChatOpenAI } = await import("@langchain/openai");
+    const AzureModel = AzureChatOpenAI as any;
+    const isUrl = config.baseUrl && /^https?:\/\//i.test(config.baseUrl);
+    return new AzureModel({
+      azureOpenAIApiKey: key,
+      azureOpenAIApiDeploymentName: modelName,
+      azureOpenAIApiVersion: "2024-10-21",
+      ...(isUrl ? { azureOpenAIEndpoint: config.baseUrl } : { azureOpenAIApiInstanceName: config.baseUrl }),
+      temperature: 0.1,
+    });
+  }
   if (provider === "bedrock") { const { ChatBedrockConverse } = await import("@langchain/aws"); return new ChatBedrockConverse({ model: modelName, region: process.env.AWS_REGION || "us-east-1", temperature: 0.1 }); }
   const baseUrl = config.baseUrl || (provider === "together" ? "https://api.together.xyz/v1" : "https://api.fireworks.ai/inference/v1");
   return new ChatOpenAI({ apiKey: key, model: modelName, temperature: 0.1, configuration: { baseURL: baseUrl } });
