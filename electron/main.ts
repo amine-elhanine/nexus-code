@@ -372,12 +372,11 @@ app.whenReady().then(() => {
     return await discoverProjectRules(project.root);
   });
 
-  ipcMain.handle("terminal:create", (_event, { id, cwd }: { id: string; cwd?: string }) => {
+  ipcMain.handle("terminal:create", (_event, { id, cwd, cols, rows }: { id: string; cwd?: string; cols?: number; rows?: number }) => {
     const root = cwd || activeProjectRoot || process.cwd();
-    terminalService.createSession(id, root, (data) => {
+    return terminalService.createSession(id, root, (data) => {
       mainWindow?.webContents.send("terminal:data", { id, data });
-    });
-    return true;
+    }, { cols, rows });
   });
 
   ipcMain.handle("terminal:write", (_event, { id, data }: { id: string; data: string }) => {

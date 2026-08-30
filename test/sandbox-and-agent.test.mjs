@@ -1157,7 +1157,7 @@ pub async fn execute_task(task: &str) -> bool { true }
     const sessionId = 'test_shell_1';
     let outputReceived = '';
 
-    const session = terminalService.createSession(sessionId, process.cwd(), (data) => {
+    const session = await terminalService.createSession(sessionId, process.cwd(), (data) => {
       outputReceived += data;
     });
 

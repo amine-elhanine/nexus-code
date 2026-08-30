@@ -90,7 +90,7 @@ const nexusApi = {
   openExternal: (url: string) => invoke("browser:openExternal", url),
 
   // Interactive Terminal
-  createTerminal: (id: string, cwd?: string) => invoke("terminal:create", { id, cwd }),
+  createTerminal: (id: string, cwd?: string, cols?: number, rows?: number) => invoke("terminal:create", { id, cwd, cols, rows }),
   writeTerminal: (id: string, data: string) => invoke("terminal:write", { id, data }),
   killTerminal: (id: string) => invoke("terminal:kill", id),
   resizeTerminal: (id: string, cols: number, rows: number) => invoke("terminal:resize", { id, cols, rows }),

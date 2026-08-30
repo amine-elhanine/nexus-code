@@ -56,8 +56,8 @@ export const XTermView: React.FC<XTermViewProps> = ({ projectRoot }) => {
 
     const api = window.nexus || window.forgepilot;
 
-    // Start shell session
-    void api?.createTerminal?.("main", projectRoot);
+    // Start shell session with initial dimensions
+    void api?.createTerminal?.("main", projectRoot, term.cols, term.rows);
 
     // Listen for incoming data from the backend shell
     const cleanupListener = api?.onTerminalData?.(({ id, data }: { id: string; data: string }) => {
