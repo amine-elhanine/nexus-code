@@ -277,7 +277,7 @@ export async function runProjectAgent(options: {
     : sandboxBackend;
 
   const codeTools = createCodeIntelligenceTools(projectRoot);
-  const browserTools = createBrowserTools(projectRoot);
+  const browserTools = createBrowserTools(projectRoot, settings.sandboxConfig);
   const subagentTool = createSubagentDelegationTool({
     projectRoot,
     provider,

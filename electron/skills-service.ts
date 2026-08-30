@@ -217,16 +217,34 @@ export async function openSkillsFolder(scope: "global" | "project", projectRoot:
   if (errorMessage) throw new Error(errorMessage);
 }
 
-export async function deleteSkill(skillPath: string) {
-  const stat = await fs.stat(skillPath);
-  let targetDir = skillPath;
+function validateSkillPathAllowed(skillPath: string, projectRoot?: string | null): string {
+  const resolved = path.resolve(skillPath);
+  const globalRoot = path.resolve(globalSkillsDir());
+  const projectRootResolved = projectRoot ? path.resolve(projectSkillsDir(projectRoot)) : null;
+
+  const isInsideGlobal = resolved === globalRoot || resolved.startsWith(`${globalRoot}${path.sep}`);
+  const isInsideProject = projectRootResolved
+    ? (resolved === projectRootResolved || resolved.startsWith(`${projectRootResolved}${path.sep}`))
+    : /[\\/](\.deepagents|\.nexus|\.forgepilot)[\\/]skills([\\/]|$)/i.test(resolved);
+
+  if (!isInsideGlobal && !isInsideProject) {
+    throw new Error(`Security violation: skill path '${skillPath}' is outside the authorized skills directories.`);
+  }
+  return resolved;
+}
+
+export async function deleteSkill(skillPath: string, projectRoot?: string | null) {
+  const validated = validateSkillPathAllowed(skillPath, projectRoot);
+  const stat = await fs.stat(validated);
+  let targetDir = validated;
   if (stat.isFile()) {
-    targetDir = path.dirname(skillPath);
+    targetDir = path.dirname(validated);
   }
   await fs.rm(targetDir, { recursive: true, force: true });
 }
 
-export async function readSkillContent(skillPath: string): Promise<string> {
-  return fs.readFile(skillPath, "utf8");
+export async function readSkillContent(skillPath: string, projectRoot?: string | null): Promise<string> {
+  const validated = validateSkillPathAllowed(skillPath, projectRoot);
+  return fs.readFile(validated, "utf8");
 }
 

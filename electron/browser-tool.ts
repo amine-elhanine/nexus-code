@@ -68,7 +68,43 @@ function extractHeadingsAndControls(html: string) {
   return { title, headings, buttons, links, inputs };
 }
 
-export function createBrowserTools(projectRoot: string) {
+function isLoopbackOrPrivateHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0") {
+    return true;
+  }
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  const match172 = host.match(/^172\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
+  if (match172) {
+    const octet = Number(match172[1]);
+    if (octet >= 16 && octet <= 31) return true;
+  }
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  return false;
+}
+
+export function checkUrlNetworkAllowed(url: string, allowNetwork: boolean): string | null {
+  if (allowNetwork) return null;
+  let target = url.trim();
+  if (!target.startsWith("http://") && !target.startsWith("https://")) {
+    target = `http://${target}`;
+  }
+  try {
+    const parsed = new URL(target);
+    if (!isLoopbackOrPrivateHost(parsed.hostname)) {
+      return `Network access blocked by sandbox policy: external URL '${url}' is not allowed when allowNetwork is disabled. Only loopback/private hosts (localhost, 127.0.0.1, RFC1918) are permitted.`;
+    }
+    return null;
+  } catch {
+    return `Invalid URL format: ${url}`;
+  }
+}
+
+export function createBrowserTools(projectRoot?: string, config?: { allowNetwork?: boolean }) {
+  const allowNetwork = config?.allowNetwork ?? false;
+
   const browserInspectTool = tool(
     async ({ url }: { url: string }) => {
       try {
@@ -77,6 +113,9 @@ export function createBrowserTools(projectRoot: string) {
           targetUrl = `http://${targetUrl}`;
         }
 
+        const networkViolation = checkUrlNetworkAllowed(targetUrl, allowNetwork);
+        if (networkViolation) return networkViolation;
+
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
 
@@ -84,7 +123,7 @@ export function createBrowserTools(projectRoot: string) {
         const response = await fetch(targetUrl, {
           signal: controller.signal,
           headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 ForgePilot/1.0",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Nexus/1.0",
             Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
           },
         });
@@ -144,6 +183,9 @@ export function createBrowserTools(projectRoot: string) {
           targetUrl = `http://${targetUrl}`;
         }
 
+        const networkViolation = checkUrlNetworkAllowed(targetUrl, allowNetwork);
+        if (networkViolation) return networkViolation;
+
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
 
@@ -151,7 +193,7 @@ export function createBrowserTools(projectRoot: string) {
         const response = await fetch(targetUrl, {
           method: method.toUpperCase(),
           headers: {
-            "User-Agent": "ForgePilot-Agent/1.0",
+            "User-Agent": "Nexus-Agent/1.0",
             ...headers,
           },
           body: body && method.toUpperCase() !== "GET" && method.toUpperCase() !== "HEAD" ? body : undefined,

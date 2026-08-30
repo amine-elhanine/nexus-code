@@ -98,8 +98,10 @@ app.whenReady().then(() => {
   ipcMain.handle("window:close", () => { mainWindow?.close(); });
   ipcMain.handle("window:isMaximized", () => mainWindow?.isMaximized() ?? false);
 
-  // Allow embedded live browser to display any web page without frame-ancestor / X-Frame-Options restrictions
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+  // Configure dedicated browser webview partition
+  const browserSession = session.fromPartition("persist:browser");
+  browserSession.setUserAgent(CHROME_UA);
+  browserSession.webRequest.onHeadersReceived((details, callback) => {
     const responseHeaders = { ...details.responseHeaders };
     delete responseHeaders["x-frame-options"];
     delete responseHeaders["X-Frame-Options"];
@@ -209,7 +211,7 @@ app.whenReady().then(() => {
     await ensureSkillSourceDirs(activeProjectRoot);
     return listSkills(activeProjectRoot);
   });
-  ipcMain.handle("skills:read", async (_event, skillPath: string) => readSkillContent(skillPath));
+  ipcMain.handle("skills:read", async (_event, skillPath: string) => readSkillContent(skillPath, activeProjectRoot));
   ipcMain.handle("skills:pick-file", async () => {
     const result = await dialog.showOpenDialog({ properties: ["openFile", "multiSelections"], filters: [{ name: "Skill definition", extensions: ["md"] }] });
     return result.canceled ? [] : result.filePaths;
@@ -226,7 +228,7 @@ app.whenReady().then(() => {
     const root = input.scope === "project" ? requireRoot() : (activeProjectRoot || "");
     return createSkill(root, input);
   });
-  ipcMain.handle("skills:delete", async (_event, skillPath: string) => deleteSkill(skillPath));
+  ipcMain.handle("skills:delete", async (_event, skillPath: string) => deleteSkill(skillPath, activeProjectRoot));
   ipcMain.handle("skills:open-folder", async (_event, scope: "global" | "project") => {
     const root = scope === "project" ? requireRoot() : (activeProjectRoot || "");
     return openSkillsFolder(scope, root);

@@ -32,7 +32,7 @@ const ENV_PASSTHROUGH = [
   "LC_ALL", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "ALLUSERSPROFILE",
 ];
 
-const APPROVAL_REQUIRED = /^(npm|pnpm|yarn|npx|bun|deno|cargo|uv|poetry)\s+(install|add|remove|update|upgrade|publish|login)|^git\s+(commit|push|reset|checkout|switch|merge|rebase)|^python\s+-m\s+pip/i;
+export const APPROVAL_REQUIRED = /^npx(\s|$)|^(npm|pnpm|yarn|bun|deno|cargo|uv|poetry)\s+(install|add|remove|update|upgrade|publish|login)|^git\s+(commit|push|reset|checkout|switch|merge|rebase|clean|remote|config|stash\s+(drop|clear)|branch\s+-D|worktree\s+remove)|^python\s+-m\s+pip/i;
 
 // Node's built-in permission model (no external sandbox required) restricts a
 // spawned `node` script's filesystem access to the project root. Detected once.
@@ -93,7 +93,7 @@ function tokenize(command: string): string[] | null {
 }
 
 function quoteForShell(token: string) {
-  return /[\s"]/.test(token) ? `"${token.replace(/"/g, '\\"')}"` : token;
+  return /\s/.test(token) ? `"${token}"` : token;
 }
 
 async function supportsNodePermission() {
@@ -134,6 +134,9 @@ export function commandPolicy(command: string, config: SandboxConfig) {
   if (SHELL_SYNTAX.test(trimmed)) return "Command blocked: shell chaining, substitution and redirection characters are not allowed in the local sandbox.";
   const argv = tokenize(trimmed);
   if (!argv) return "Command blocked: unmatched quotes.";
+  if (argv.some((arg) => arg.includes('"'))) {
+    return "Command blocked: tokens with embedded quotes are not allowed in the local sandbox.";
+  }
   const tool = argv[0].toLowerCase().replace(/\.(cmd|exe|bat)$/, "");
   if (!ALLOWED_TOOLS.has(tool)) return `Command blocked: "${argv[0]}" is not an approved development tool.`;
   if (tool === "node") {

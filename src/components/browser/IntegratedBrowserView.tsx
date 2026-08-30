@@ -535,13 +535,14 @@ export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
             </div>
           )}
 
-          {typeof window !== "undefined" && window.forgepilot ? (
+          {typeof window !== "undefined" && (window.nexus || window.forgepilot) ? (
             <webview
               key={`${activeTab.id}-${reloadKey}`}
               src={activeTab.url}
               useragent={CHROME_DESKTOP_UA}
               className="browser-iframe"
               allowpopups={true}
+              partition="persist:browser"
               webpreferences="contextIsolation=yes"
             />
           ) : (

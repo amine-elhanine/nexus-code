@@ -18,7 +18,7 @@ type PersistedState = { projects: ProjectRecord[]; providers: ProviderConfig[]; 
 export const DEFAULT_SANDBOX_CONFIG: SandboxConfig = {
   provider: "local",
   enabled: true,
-  requireApproval: false,
+  requireApproval: true,
   allowNetwork: false,
   commandTimeoutSeconds: 120,
 };

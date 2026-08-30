@@ -11,6 +11,7 @@ import {
   isSandboxRunCancelled,
   runSandboxCommand,
   getSandboxAgentBackend,
+  APPROVAL_REQUIRED,
 } from '../dist-electron/sandbox-service.js';
 import { upsertProject, upsertProvider, removeProvider, listProviders, createSession, updateSession, getSession, appendSessionMessage, calculateSessionUsage } from '../dist-electron/store.js';
 import { pickVerificationCommand, findTargetedTests } from '../dist-electron/agent-service.js';
@@ -188,6 +189,25 @@ app.whenReady().then(async () => {
     assert.match(commandPolicy('yarn add lodash', { ...defaultConfig, allowNetwork: false }), /Network-dependent package operations/i);
     assert.match(commandPolicy('pnpm update', { ...defaultConfig, allowNetwork: false }), /Network-dependent package operations/i);
     assert.equal(commandPolicy('npm install', { ...defaultConfig, allowNetwork: true }), null);
+  });
+
+  await test('Policy 23: Tokens with embedded quotes are rejected', () => {
+    assert.match(commandPolicy('node script.js \'hello "world" test\'', defaultConfig), /embedded quotes/i);
+    assert.match(commandPolicy('git commit -m \'feat: "new" feature\'', defaultConfig), /embedded quotes/i);
+  });
+
+  await test('Policy 24: APPROVAL_REQUIRED gate triggers for git clean, npx, branch -D, stash drop, remote, config', () => {
+    assert.match('npx prisma migrate', APPROVAL_REQUIRED);
+    assert.match('npx', APPROVAL_REQUIRED);
+    assert.match('git clean -fd', APPROVAL_REQUIRED);
+    assert.match('git branch -D feat', APPROVAL_REQUIRED);
+    assert.match('git stash drop', APPROVAL_REQUIRED);
+    assert.match('git stash clear', APPROVAL_REQUIRED);
+    assert.match('git worktree remove temp', APPROVAL_REQUIRED);
+    assert.match('git remote add origin https://example.com', APPROVAL_REQUIRED);
+    assert.match('git config user.name "Nexus"', APPROVAL_REQUIRED);
+    assert.doesNotMatch('git status', APPROVAL_REQUIRED);
+    assert.doesNotMatch('npm test', APPROVAL_REQUIRED);
   });
 
   console.log('\n=== 2. Cancellation & Process Tree Termination Tests ===');
@@ -825,6 +845,24 @@ pub async fn execute_task(task: &str) -> bool { true }
     await fs.rm(externalDir, { recursive: true, force: true });
   });
 
+  await test('skills:read and skills:delete reject paths outside allowed directories', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-skill-sec-'));
+    const outsideFile = path.join(tempDir, 'secret.txt');
+    await fs.writeFile(outsideFile, 'secret content', 'utf8');
+
+    await assert.rejects(
+      async () => readSkillContent(outsideFile),
+      /outside the authorized skills directories/i
+    );
+
+    await assert.rejects(
+      async () => deleteSkill(outsideFile),
+      /outside the authorized skills directories/i
+    );
+
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
   console.log('\n=== 11. Consumed Tokens & Session Tracking Tests ===');
 
   await test('session accumulates total tokens across multiple requests while messages store per-turn usage', async () => {
@@ -1081,6 +1119,22 @@ pub async fn execute_task(task: &str) -> bool { true }
 
     const apiRes = await apiTool.invoke({ url: 'http://127.0.0.1:59999/api/health' });
     assert.match(apiRes, /API Request.*failed/i);
+  });
+
+  await test('browser tools restrict network access when allowNetwork is false', async () => {
+    const restrictedTools = createBrowserTools('/test', { allowNetwork: false });
+    const inspectTool = restrictedTools.find((t) => t.name === 'browser_inspect');
+    const apiTool = restrictedTools.find((t) => t.name === 'browser_fetch_api');
+
+    const blockedInspect = await inspectTool.invoke({ url: 'https://example.com/page' });
+    assert.match(blockedInspect, /Network access blocked by sandbox policy/i);
+
+    const blockedApi = await apiTool.invoke({ url: 'https://api.external.com/v1/health' });
+    assert.match(blockedApi, /Network access blocked by sandbox policy/i);
+
+    // Loopback should NOT be blocked by policy check (even though offline port fails connection)
+    const loopbackInspect = await inspectTool.invoke({ url: 'http://127.0.0.1:59999/status' });
+    assert.doesNotMatch(loopbackInspect, /Network access blocked by sandbox policy/i);
   });
 
   console.log('\n=== 19. Interactive Streaming Terminal Service Tests ===');
