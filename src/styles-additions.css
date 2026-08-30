@@ -1,0 +1,256 @@
+
+/* --- Artifact Viewer Modal --- */
+.artifact-modal {
+  width: 820px;
+  max-width: 95vw;
+  height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+.artifact-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.modal-actions-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.tab-group-mini {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: #0d121a;
+  border: 1px solid #202b3a;
+  border-radius: 5px;
+}
+.tab-mini {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 0;
+  background: transparent;
+  color: #7b889b;
+  font-size: 10px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.tab-mini.active {
+  background: #242b3b;
+  color: #dce4f0;
+}
+.badge-status {
+  font: 9px 'DM Mono', monospace;
+  padding: 2px 7px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.status-draft { background: #1f2735; color: #8fa0b5; border: 1px solid #2c394c; }
+.status-pending_approval { background: #352812; color: #ffbe6b; border: 1px solid #5a401c; }
+.status-approved { background: #162f22; color: #5ddda2; border: 1px solid #225239; }
+.status-completed { background: #162f22; color: #5ddda2; border: 1px solid #225239; }
+.status-rejected { background: #351a20; color: #f08b94; border: 1px solid #5a2630; }
+
+.artifact-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px;
+  background: #0a0e14;
+  border-top: 1px solid #1c2532;
+  border-bottom: 1px solid #1c2532;
+}
+.artifact-raw {
+  margin: 0;
+  font: 11px/1.6 'DM Mono', monospace;
+  color: #c5d0df;
+  white-space: pre-wrap;
+}
+.artifact-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+}
+.artifact-meta-text {
+  font: 10px 'DM Mono', monospace;
+  color: #637286;
+  display: flex;
+  gap: 6px;
+}
+.artifact-meta-text code {
+  color: #a3b2c7;
+}
+.artifact-button-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* --- Worktree Status Bar --- */
+.worktree-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
+  background: #0f1816;
+  border-bottom: 1px solid #1c362c;
+  font-size: 11px;
+}
+.worktree-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.worktree-badge {
+  background: #19382b;
+  color: #63e2ab;
+  border: 1px solid #275945;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font: 9px 'DM Mono', monospace;
+  text-transform: uppercase;
+}
+.worktree-branch-name {
+  font: 11px 'DM Mono', monospace;
+  color: #cce9dc;
+}
+.worktree-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.worktree-status-msg {
+  font: 10px 'DM Mono', monospace;
+}
+.btn-worktree-merge {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: #193e30;
+  border: 1px solid #28644e;
+  color: #72f0b9;
+  border-radius: 4px;
+  padding: 4px 9px;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.btn-worktree-merge:hover:not(:disabled) {
+  background: #205340;
+  color: #fff;
+}
+.btn-worktree-discard {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 1px solid #362228;
+  color: #a87980;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 10px;
+  cursor: pointer;
+}
+.btn-worktree-discard:hover:not(:disabled) {
+  background: #2a171c;
+  color: #f0858e;
+  border-color: #552731;
+}
+
+/* --- Slash Command Menu --- */
+.slash-command-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  width: 380px;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid #323d4e;
+  border-radius: 7px;
+  background: #111721;
+  box-shadow: 0 16px 45px rgba(0,0,0,0.7);
+  z-index: 40;
+  padding: 4px;
+}
+.slash-command-header {
+  padding: 4px 8px 6px;
+  font: 9px 'DM Mono', monospace;
+  text-transform: uppercase;
+  color: #5f6e82;
+  border-bottom: 1px solid #1c2532;
+  margin-bottom: 3px;
+}
+.slash-command-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 9px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.slash-command-item:hover, .slash-command-item.selected {
+  background: #211c3c;
+}
+.slash-command-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  background: #181d28;
+  flex: none;
+}
+.slash-command-details {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.slash-command-name {
+  font: 11px 'DM Mono', monospace;
+  color: #dbe2ef;
+  font-weight: 600;
+}
+.slash-command-desc {
+  font-size: 9.5px;
+  color: #7b889b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Artifact Card in Chat */
+.chat-artifact-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  margin: 10px 0 14px;
+  border: 1px solid #3c3258;
+  background: #151325;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.chat-artifact-card:hover {
+  background: #1d1a33;
+  border-color: #584880;
+}
+.chat-artifact-left {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.chat-artifact-name {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #e2dbff;
+}
+.chat-artifact-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

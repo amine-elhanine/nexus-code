@@ -1,0 +1,9 @@
+node_modules
+dist
+dist-electron
+release
+.nexus
+.forgepilot
+.deepagents
+.DS_Store
+*.log
