@@ -13,7 +13,7 @@ export interface TerminalSession {
 }
 
 type SessionEntry = TerminalSession & { onData: (data: string) => void; proc?: ChildProcess };
-type PtyHost = { child: ChildProcess; ready: boolean };
+type PtyHost = { child: ChildProcess; ready: boolean; generation: number };
 
 // Terminals run through an out-of-process PTY host (electron/pty-host.cjs)
 // because native PTY bindings target system Node's ABI and cannot load inside
@@ -24,6 +24,7 @@ class TerminalService {
   private sessions = new Map<string, SessionEntry>();
   private host: PtyHost | null = null;
   private hostStarting: Promise<PtyHost | null> | null = null;
+  private hostGeneration = 0;
 
   private hostPath() {
     return path.join(path.dirname(fileURLToPath(import.meta.url)), "pty-host.cjs");
@@ -32,6 +33,7 @@ class TerminalService {
   private startHost(): Promise<PtyHost | null> {
     if (this.host?.ready) return Promise.resolve(this.host);
     if (this.hostStarting) return this.hostStarting;
+    const generation = ++this.hostGeneration;
     this.hostStarting = new Promise((resolve) => {
       let child: ChildProcess;
       try {
@@ -41,15 +43,15 @@ class TerminalService {
         resolve(null);
         return;
       }
-      const state: PtyHost = { child, ready: false };
+      const state: PtyHost = { child, ready: false, generation };
       let buffer = "";
       let settled = false;
       const finish = (result: PtyHost | null) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        child.stdout?.off("data", onStdout);
         this.hostStarting = null;
+        this.host = result;
         resolve(result);
       };
       const onStdout = (chunk: Buffer) => {
@@ -61,23 +63,30 @@ class TerminalService {
           if (!line.trim()) continue;
           let msg: any;
           try { msg = JSON.parse(line); } catch { continue; }
-          if (msg.ev === "ready") { state.ready = true; finish(state); return; }
-          if (msg.ev === "fatal") { child.kill(); finish(null); return; }
-          this.onHostEvent(msg);
+          if (!settled) {
+            if (msg.ev === "ready") { state.ready = true; finish(state); return; }
+            if (msg.ev === "fatal") { child.kill(); finish(null); return; }
+          }
+          if (settled) this.onHostEvent(msg);
         }
       };
       const timer = setTimeout(() => { if (!state.ready) { child.kill(); finish(null); } }, 5000);
+      // Stays attached for the host's lifetime: after `ready` the same
+      // listener carries all terminal data and exit events.
       child.stdout?.on("data", onStdout);
       child.on("error", () => finish(null));
       child.on("exit", () => {
+        // Only the current host's exit may clear state; a stale host dying
+        // after killAll()+restart must not tear down its replacement.
+        if (this.host?.generation !== generation) { finish(null); return; }
         this.host = null;
-        for (const session of this.sessions.values()) {
+        for (const [id, session] of this.sessions) {
           if (session.mode === "pty" && session.alive) {
             session.alive = false;
             session.onData("\r\n[PTY host terminated]\r\n");
+            this.sessions.delete(id);
           }
         }
-        this.sessions.clear();
         finish(null);
       });
     });

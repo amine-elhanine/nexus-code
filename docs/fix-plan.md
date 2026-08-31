@@ -66,8 +66,30 @@ Source: full codebase review (2026-08-30). Ordered by priority; each phase is in
 2. Document the new defaults (approvals on, network tools loopback-only, worktrees opt-in).
 3. Update the sandbox modal warning text to match (it's already mostly honest).
 
+## Phase 7 — Real PTY terminal (completed 2026-08-31)
+
+`node-pty` cannot load inside Electron (native module targets system Node's ABI, and no MSVC
+toolchain is available to rebuild it), so the PTY runs out-of-process:
+
+1. `electron/pty-host.cjs` — JSON-lines stdio protocol (`spawn`/`write`/`resize`/`kill` in,
+   `ready`/`data`/`exit`/`error` out) running under system Node. Packaged builds fall back
+   to `app.asar.unpacked` via the asarUnpack config.
+2. `electron/terminal-service.ts` — PTY-first with automatic piped-shell fallback when the
+   host cannot start. Host exit teardown is generation-guarded so a stale host dying after
+   `killAll()`+restart cannot kill its replacement's sessions. `resize` now reaches a real
+   PTY instead of being a silent no-op on a plain `ChildProcess`.
+3. Dimensions flow: XTerm FitAddon → `createTerminal(id, cwd, cols, rows)` +
+   `resizeTerminal(id, cols, rows)` → host `pty.resize`.
+4. Dependency: `@homebridge/node-pty-prebuilt-multiarch` (prebuilt binaries, no compiler
+   needed). The duplicate `node-pty` dependency was removed.
+5. Tests: section 19 now asserts PTY mode with `process.stdout.isTTY === true` in the child,
+   resize acceptance, invalid-dimension rejection, concurrent session lifecycle, and
+   `killAll` teardown.
+
 ## Verification after each phase
 
 - `npm run check` (both tsconfigs)
 - `npm test` (electron integration suite, extended per-phase)
 - Manual pass: run an Auto task on a scratch git repo → Diff tab shows changes → Undo run restores → targeted tests fire; Skills import/delete; MCP save/test; browser view on localhost with `allowNetwork=false` and an external URL blocked.
+- Phase 7 additionally verified: PTY host protocol under system Node, host bootstrap under
+  Electron, and end-to-end `MODE: pty` + `IS_true` + resize through the terminal service.

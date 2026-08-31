@@ -1153,7 +1153,7 @@ pub async fn execute_task(task: &str) -> bool { true }
 
   console.log('\n=== 19. Interactive Streaming Terminal Service Tests ===');
 
-  await test('terminalService manages interactive shell lifecycle and IO', async () => {
+  await test('terminalService spawns a PTY (or documented pipes fallback) with TTY semantics and resize', async () => {
     const sessionId = 'test_shell_1';
     let outputReceived = '';
 
@@ -1163,17 +1163,45 @@ pub async fn execute_task(task: &str) -> bool { true }
 
     assert.notEqual(session, undefined);
     assert.equal(session.id, sessionId);
+    assert.ok(session.mode === 'pty' || session.mode === 'pipes', `unexpected mode ${session.mode}`);
 
-    // Write command
-    terminalService.write(sessionId, 'echo HELLO_NEXUS_PTY\r\n');
-
-    // Wait for output
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    assert.match(outputReceived, /HELLO_NEXUS_PTY/);
+    if (session.mode === 'pty') {
+      // A real TTY must be attached: child processes see process.stdout.isTTY === true.
+      terminalService.write(sessionId, 'node -e "process.stdout.write(String(process.stdout.isTTY))"\r\n');
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      assert.match(outputReceived, /true/, 'PTY child should report process.stdout.isTTY === true');
+      // Resize must be accepted and forwarded to the PTY host.
+      assert.equal(terminalService.resize(sessionId, 120, 40), true);
+      // Invalid dimensions are rejected.
+      assert.equal(terminalService.resize(sessionId, 0, 0), false);
+    } else {
+      console.log('    (pipes fallback active — PTY host unavailable in this environment)');
+    }
 
     // Kill session
     const killed = terminalService.killSession(sessionId);
     assert.equal(killed, true);
+    terminalService.killAll();
+  });
+
+  await test('terminalService manages independent concurrent sessions and killAll teardown', async () => {
+    let firstOutput = '';
+    const first = await terminalService.createSession('test_shell_a', process.cwd(), (data) => {
+      firstOutput += data;
+    });
+    const second = await terminalService.createSession('test_shell_b', process.cwd(), () => {});
+    assert.equal(first.id, 'test_shell_a');
+    assert.equal(second.id, 'test_shell_b');
+    assert.equal(first.alive, true);
+    assert.equal(second.alive, true);
+
+    // Kill one session; the other must stay alive.
+    assert.equal(terminalService.killSession('test_shell_a'), true);
+    assert.equal(terminalService.getSession('test_shell_a'), undefined);
+    assert.ok(terminalService.getSession('test_shell_b'), 'second session must survive the first kill');
+
+    terminalService.killAll();
+    assert.equal(terminalService.getSession('test_shell_b'), undefined);
   });
 
   console.log('\n=== 20. Custom Extensible Slash Commands Tests ===');

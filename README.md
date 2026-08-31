@@ -114,7 +114,8 @@ Les variables d’environnement suivantes sont également supportées en fallbac
   - `sandbox-service.ts` : Politique de bac à sable local, exécution sécurisée et terminaison d'arbres de processus.
   - `subagent-service.ts` : Délégation hiérarchique de sous-agents et calcul des coûts par modèle.
   - `daemon-service.ts` : Gestionnaire de processus d'arrière-plan et détection de ports.
-  - `terminal-service.ts` : Shells interactifs en streaming et redimensionnement PTY.
+  - `terminal-service.ts` : Shells interactifs en streaming — vrai PTY via un processus hôte externe (`pty-host.cjs` + `node-pty`), repli automatique sur des pipes si l'hôte est indisponible.
+  - `pty-host.cjs` : Hôte PTY out-of-process (protocole JSON sur stdio) exécuté sous le Node système, car un module natif ne peut pas se charger dans le processus principal Electron.
   - `diff-service.ts` : Checkpoints, instantanés de workspace et calcul des diffs.
   - `worktree-service.ts` : Cycle de vie des worktrees Git isolés par session.
   - `providers.ts` : Adaptateurs multi-fournisseurs (OpenAI, Anthropic, Gemini, Azure, Ollama, etc.).

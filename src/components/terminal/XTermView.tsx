@@ -95,7 +95,7 @@ export const XTermView: React.FC<XTermViewProps> = ({ projectRoot }) => {
     const api = window.nexus || window.forgepilot;
     termRef.current?.clear();
     void api?.killTerminal?.("main");
-    void api?.createTerminal?.("main", projectRoot);
+    void api?.createTerminal?.("main", projectRoot, termRef.current?.cols, termRef.current?.rows);
   };
 
   const clearTerminal = () => {

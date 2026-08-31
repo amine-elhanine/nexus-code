@@ -7,8 +7,8 @@
   "type": "module",
   "scripts": {
     "dev": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron . --dev\"",
-    "build:electron": "tsc -p tsconfig.electron.json",
-    "build": "tsc -p tsconfig.json && vite build && tsc -p tsconfig.electron.json",
+    "build:electron": "tsc -p tsconfig.electron.json && node -e \"require('node:fs').copyFileSync('electron/pty-host.cjs','dist-electron/pty-host.cjs')\"",
+    "build": "tsc -p tsconfig.json && vite build && npm run build:electron",
     "start": "electron .",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
     "test": "npm run build:electron && electron test/sandbox-and-agent.test.mjs",
@@ -21,6 +21,9 @@
     "directories": {
       "output": "release"
     },
+    "asarUnpack": [
+      "node_modules/@homebridge/node-pty-prebuilt-multiarch/**"
+    ],
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
@@ -70,7 +73,6 @@
     "langchain": "1.5.10",
     "langchain-mcp-adapters": "^0.6.0",
     "lucide-react": "1.34.0",
-    "node-pty": "^1.1.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "zod": "4.4.3"
@@ -89,7 +91,6 @@
   },
   "allowScripts": {
     "@homebridge/node-pty-prebuilt-multiarch@0.14.1": true,
-    "electron-winstaller@5.4.0": true,
-    "node-pty@1.1.0": true
+    "electron-winstaller@5.4.0": true
   }
 }
