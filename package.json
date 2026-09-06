@@ -2,9 +2,10 @@
   "name": "nexus",
   "version": "0.1.0",
   "private": true,
-  "description": "Nexus — Autonomous AI Coding Agent for Electron",
+  "description": "Nexus — Autonomous AI Coding Agent.",
   "main": "dist-electron/main.js",
   "type": "module",
+  "author": "L7A9 <aminet312003@gmail.com>",
   "scripts": {
     "dev": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron . --dev\"",
     "build:electron": "tsc -p tsconfig.electron.json && node -e \"require('node:fs').copyFileSync('electron/pty-host.cjs','dist-electron/pty-host.cjs')\"",

@@ -7,3 +7,5 @@ release
 .deepagents
 .DS_Store
 *.log
+.zcode
+
