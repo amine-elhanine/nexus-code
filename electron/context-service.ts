@@ -9,31 +9,92 @@ export function estimateTokens(text: string | undefined): number {
   return Math.max(1, Math.round(text.length / 3.8));
 }
 
-export function extractStreamUsage(chunk: any): { inputTokens?: number; outputTokens?: number; totalTokens?: number } | null {
+export type StreamUsage = { inputTokens: number; outputTokens: number; totalTokens: number };
+
+function usageFromMeta(u: any): StreamUsage | null {
+  if (!u || typeof u !== "object") return null;
+  const usage = {
+    inputTokens: u.promptTokens || u.prompt_tokens || u.input_tokens || u.inputTokens || 0,
+    outputTokens: u.completionTokens || u.completion_tokens || u.output_tokens || u.outputTokens || 0,
+    totalTokens: u.totalTokens || u.total_tokens || u.totalTokens || 0,
+  };
+  // An all-zero payload carries no information (some providers emit empty
+  // usage objects mid-stream); treat it as absent so callers can fall through
+  // to the other metadata locations.
+  if (!usage.inputTokens && !usage.outputTokens && !usage.totalTokens) return null;
+  return usage;
+}
+
+export function extractStreamUsage(chunk: any): StreamUsage | null {
   if (!chunk) return null;
 
-  // LangChain standard usage_metadata
-  if (chunk.usage_metadata) {
-    const meta = chunk.usage_metadata;
-    return {
-      inputTokens: meta.input_tokens || meta.inputTokens || 0,
-      outputTokens: meta.output_tokens || meta.outputTokens || 0,
-      totalTokens: meta.total_tokens || meta.totalTokens || 0,
-    };
+  // LangChain standard usage_metadata wins when it carries real values; some
+  // providers emit an empty one alongside populated legacy metadata.
+  return (
+    usageFromMeta(chunk.usage_metadata) ??
+    // Provider-specific spots: OpenAI-style response_metadata, Mistral/Groq
+    // tokenUsage (which can live in additional_kwargs even when
+    // response_metadata is present, so both must be checked).
+    usageFromMeta(chunk.response_metadata?.tokenUsage) ??
+    usageFromMeta(chunk.response_metadata?.usage) ??
+    usageFromMeta(chunk.additional_kwargs?.tokenUsage) ??
+    usageFromMeta(chunk.additional_kwargs?.usage)
+  );
+}
+
+// Streaming usage accounting. A single model invocation surfaces its usage in
+// different shapes depending on the provider:
+//  - one trailing chunk with the invocation totals (OpenAI and friends),
+//  - repeated chunks carrying cumulative totals under the same message id
+//    (Groq's x_groq usage, Anthropic's native event stream),
+//  - complementary chunks: input on an id-bearing message_start chunk, output
+//    on an id-less message_delta chunk (Anthropic legacy),
+//  - per-chunk deltas on id-less chunks (Google Gemini).
+// Accordingly: repeated usage under the same message id is cumulative and
+// collapses to the max seen per field, usage on id-less chunks is incremental
+// and is summed as reported, and the grand total sums across invocations.
+export class StreamUsageTracker {
+  private perMessage = new Map<string, { inputTokens: number; outputTokens: number }>();
+  private incrementalInputTokens = 0;
+  private incrementalOutputTokens = 0;
+  sawExactInput = false;
+  sawExactOutput = false;
+
+  noteChunk(chunk: any): void {
+    const usage = extractStreamUsage(chunk);
+    if (!usage) return;
+    if (usage.inputTokens > 0) this.sawExactInput = true;
+    if (usage.outputTokens > 0) this.sawExactOutput = true;
+    const id = typeof chunk?.id === "string" && chunk.id ? chunk.id : null;
+    if (!id) {
+      this.incrementalInputTokens += usage.inputTokens || 0;
+      this.incrementalOutputTokens += usage.outputTokens || 0;
+      return;
+    }
+    const bucket = this.perMessage.get(id) ?? { inputTokens: 0, outputTokens: 0 };
+    bucket.inputTokens = Math.max(bucket.inputTokens, usage.inputTokens || 0);
+    bucket.outputTokens = Math.max(bucket.outputTokens, usage.outputTokens || 0);
+    this.perMessage.set(id, bucket);
   }
 
-  // Response metadata from various providers
-  const respMeta = chunk.response_metadata || chunk.additional_kwargs;
-  if (respMeta?.tokenUsage || respMeta?.usage) {
-    const u = respMeta.tokenUsage || respMeta.usage;
-    return {
-      inputTokens: u.promptTokens || u.prompt_tokens || u.input_tokens || 0,
-      outputTokens: u.completionTokens || u.completion_tokens || u.output_tokens || 0,
-      totalTokens: u.totalTokens || u.total_tokens || 0,
-    };
+  // Add already-aggregated invocation totals (e.g. a subagent's usage) on top
+  // of the tracked chunks.
+  addTotals(inputTokens: number, outputTokens: number): void {
+    this.incrementalInputTokens += inputTokens || 0;
+    this.incrementalOutputTokens += outputTokens || 0;
   }
 
-  return null;
+  get inputTokens(): number {
+    let total = this.incrementalInputTokens;
+    for (const bucket of this.perMessage.values()) total += bucket.inputTokens;
+    return total;
+  }
+
+  get outputTokens(): number {
+    let total = this.incrementalOutputTokens;
+    for (const bucket of this.perMessage.values()) total += bucket.outputTokens;
+    return total;
+  }
 }
 
 /**

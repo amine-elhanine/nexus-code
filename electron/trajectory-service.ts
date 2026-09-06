@@ -9,12 +9,15 @@ export type TrajectoryStep = {
   content: string;
   thinking?: string;
   tool_calls?: Array<{ name: string; args: any }>;
-  usage?: { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number };
+  usage?: { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
 };
 
 export class TrajectoryLogger {
   private logPath: string;
   private stepCount = 0;
+  // Ordered, non-blocking writes: chained so the hot tool-event loop never
+  // awaits disk I/O, while lines still land in step order.
+  private tail: Promise<void> = Promise.resolve();
 
   constructor(projectRoot: string, sessionId: string) {
     const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -26,19 +29,20 @@ export class TrajectoryLogger {
     await fs.mkdir(path.dirname(this.logPath), { recursive: true });
   }
 
-  async log(step: Omit<TrajectoryStep, "step_index" | "timestamp">): Promise<void> {
+  log(step: Omit<TrajectoryStep, "step_index" | "timestamp">): Promise<void> {
     this.stepCount++;
     const entry: TrajectoryStep = {
       step_index: this.stepCount,
       timestamp: new Date().toISOString(),
       ...step,
     };
-
-    try {
-      await fs.appendFile(this.logPath, JSON.stringify(entry) + "\n", "utf8");
-    } catch {
-      // Non-blocking log failure
-    }
+    const logPath = this.logPath;
+    this.tail = this.tail
+      .then(() => fs.appendFile(logPath, JSON.stringify(entry) + "\n", "utf8"))
+      .catch(() => {
+        // Non-blocking log failure
+      });
+    return this.tail;
   }
 }
 

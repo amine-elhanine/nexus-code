@@ -1,15 +1,14 @@
-import React from "react";
+import React, { useState } from "react";
 import {
-  Brain, Check, ChevronDown, ChevronRight, Code2, Coins, FileCode2,
-  FolderOpen, GitBranch, Globe, KeyRound, Loader2, Menu,
+  Brain, Check, ChevronDown, ChevronRight, Code2, Coins, Download, FileCode2, FileText,
+  FolderOpen, GitBranch, Globe, Home, KeyRound, Loader2, Menu,
   MessageSquare, PanelLeft, PanelRight, Plus, RefreshCw,
-  Server, Settings2, ShieldCheck, Sparkles, Terminal, Trash2, Square
+  Server, Settings2, Sparkles, Terminal, Trash2
 } from "lucide-react";
 import { NexusLogo } from "./components/common/NexusLogo.js";
 import { WindowControls } from "./components/common/WindowControls.js";
 import { ConfirmModal } from "./modals/ConfirmModal.js";
 import { ProviderModal } from "./modals/ProviderModal.js";
-import { SandboxModal } from "./modals/SandboxModal.js";
 import { McpModal } from "./modals/McpModal.js";
 import { SkillsModal } from "./modals/SkillsModal.js";
 import { ProjectPickerModal } from "./modals/ProjectPickerModal.js";
@@ -17,15 +16,18 @@ import { DaemonsModal } from "./components/daemons/DaemonsModal.js";
 import { MonacoDiffModal } from "./components/diff/MonacoDiffModal.js";
 import { ProjectRulesModal } from "./components/rules/ProjectRulesModal.js";
 import { ArtifactViewer } from "./components/artifacts/ArtifactViewer.js";
+import { FilePreviewModal } from "./components/home/FilePreviewModal.js";
 import { MonacoEditorView } from "./components/editor/MonacoEditorView.js";
 import { XTermView } from "./components/terminal/XTermView.js";
 import { IntegratedBrowserView } from "./components/browser/IntegratedBrowserView.js";
 import { AgentView } from "./views/AgentView.js";
+import { HomeView } from "./views/HomeView.js";
 import { DiffView } from "./views/DiffView.js";
 import { MemoryView, ContextRow, MemoryRow } from "./views/MemoryView.js";
 import { useAppController } from "./state/useAppController.js";
 import { getSessionUsage, fileIcon } from "./utils/format.js";
-import type { FileEntry } from "./types.js";
+import { timeLabel } from "./utils/format.js";
+import { formatCost, type FileEntry } from "./types.js";
 
 function FileRow({
   entry,
@@ -65,16 +67,6 @@ function App() {
     activeSession,
     providers,
     providerDefinitions,
-    sandboxConfig,
-    sandboxStatus,
-    sandboxRequireApproval,
-    setSandboxRequireApproval,
-    sandboxAllowNetwork,
-    setSandboxAllowNetwork,
-    sandboxTimeout,
-    setSandboxTimeout,
-    sandboxEnabled,
-    setSandboxEnabled,
     selectedProviderId,
     selectedModel,
     files,
@@ -103,14 +95,10 @@ function App() {
     setShowContext,
     showProviders,
     setShowProviders,
-    showSandbox,
-    setShowSandbox,
     showMcp,
     setShowMcp,
     showSkills,
     setShowSkills,
-    showComposerMenu,
-    setShowComposerMenu,
     showCreateProject,
     setShowCreateProject,
     newProjectName,
@@ -137,6 +125,15 @@ function App() {
     selectedProvider,
     currentMessages,
     visibleFiles,
+    area,
+    homeRoot,
+    homeFiles,
+    homeSessionFiles,
+    refreshHomeFiles,
+    refreshHomeSessionFiles,
+    enterHome,
+    enterCode,
+    createHomeSession,
     activateProject,
     deleteProjectById,
     openProjectFromDialog,
@@ -155,8 +152,6 @@ function App() {
     keepChanges,
     switchModel,
     handleProvidersChange,
-    saveSandbox,
-    stopSandbox,
     saveMemories,
     submit,
     stopAgent,
@@ -167,6 +162,13 @@ function App() {
   const api = window.nexus || window.forgepilot;
   const headerTitle = activeSession?.title || "No session selected";
   const currentSessionUsage = getSessionUsage(activeSession);
+  const [homePreviewPath, setHomePreviewPath] = useState<string | null>(null);
+
+  function formatHomeSize(bytes: number) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
 
   return (
     <div className="product-shell">
@@ -180,11 +182,22 @@ function App() {
             <span className="nexus-title">nexus<span className="nexus-cursor">_</span></span>
           </div>
           <div className="top-separator" />
-          <button className="project-menu" onClick={() => setShowSessions((v) => !v)}>
-            <FolderOpen size={13} />
-            <strong>{activeProject?.name || "Projects"}</strong>
-            <ChevronDown size={12} />
-          </button>
+          <div className="area-tabs">
+            <button className={area === "home" ? "active" : ""} onClick={() => void enterHome()} title="General assistant">
+              <Home size={13} /> Home
+            </button>
+            <button className={area === "code" ? "active" : ""} onClick={() => void enterCode()} title="Coding agent">
+              <Code2 size={13} /> Code
+            </button>
+          </div>
+          <div className="top-separator" />
+          {area === "code" && (
+            <button className="project-menu" onClick={() => setShowSessions((v) => !v)}>
+              <FolderOpen size={13} />
+              <strong>{activeProject?.name || "Projects"}</strong>
+              <ChevronDown size={12} />
+            </button>
+          )}
           <span className="branch">
             <GitBranch size={11} /> {gitBranch}
           </span>
@@ -196,9 +209,6 @@ function App() {
         </div>
 
         <div className="product-right">
-          <button className="top-link" onClick={() => setShowSandbox(true)}>
-            <ShieldCheck size={13} /> Sandbox
-          </button>
           <button className="top-link" onClick={() => setShowSkills(true)}>
             <Sparkles size={13} /> Skills
           </button>
@@ -221,7 +231,44 @@ function App() {
       </header>
 
       <div className="product-body">
-        {showSessions && (
+        {showSessions && area === "home" && (
+          <aside className="session-pane">
+            <div className="pane-top">
+              <span>HOME</span>
+              <button className="pane-action" onClick={() => void createHomeSession()}><Plus size={15} /></button>
+            </div>
+            <button className="new-session-btn" onClick={() => void createHomeSession()}>
+              <MessageSquare size={13} /> New chat
+            </button>
+            <div className="pane-top sessions-label">
+              <span>CHATS</span>
+            </div>
+            <div className="session-list">
+              {sessions.map((session) => (
+                <button
+                  key={session.id}
+                  className={`session-row ${session.id === activeSession?.id ? "active" : ""}`}
+                  onClick={() => void activateSession(session.id)}
+                >
+                  <MessageSquare size={13} />
+                  <span>{session.title}</span>
+                  <small>{session.messages.length}</small>
+                  <i
+                    className="row-delete"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void deleteActiveSession(session.id);
+                    }}
+                  >
+                    <Trash2 size={12} />
+                  </i>
+                </button>
+              ))}
+              {!sessions.length && <div className="empty-pane">Start a new chat to begin.</div>}
+            </div>
+          </aside>
+        )}
+        {showSessions && area === "code" && (
           <aside className="session-pane">
             <div className="pane-top">
               <span>PROJECTS</span>
@@ -231,7 +278,7 @@ function App() {
               <Plus size={14} /> New project
             </button>
             <div className="project-list">
-              {projects.map((project) => (
+              {projects.filter((project) => project.id !== "home").map((project) => (
                 <button
                   key={project.id}
                   className={`project-row ${project.id === activeProject?.id ? "active" : ""}`}
@@ -290,6 +337,7 @@ function App() {
         )}
 
         <main className="coding-workspace">
+          {area === "code" && (
           <div className="workspace-bar">
             <div className="workspace-breadcrumb">
               <button className="bar-toggle" onClick={() => setShowFiles((v) => !v)}>
@@ -338,8 +386,40 @@ function App() {
               </button>
             </div>
           </div>
+          )}
 
           <div className="workspace-content">
+            {area === "home" ? (
+              <section className="center-pane">
+              <HomeView
+                messages={currentMessages}
+                draft={draft}
+                setDraft={setDraft}
+                submit={(override) => void submit(override)}
+                running={running}
+                onStop={() => void stopAgent()}
+                streamingText={streamingText}
+                liveEvents={liveEvents}
+                selectedProviderId={selectedProviderId}
+                selectedModel={selectedModel}
+                providers={providers}
+                definitions={providerDefinitions}
+                switchModel={(providerId, model) => void switchModel(providerId, model)}
+                onOpenProviders={() => setShowProviders(true)}
+                sessionUsage={currentSessionUsage}
+                homeFiles={homeFiles}
+                homeRoot={homeRoot}
+                onRefreshFiles={() => void refreshHomeFiles()}
+                onDownloadFile={(relPath) => void api.downloadHomeFile(relPath)}
+                onOpenFolder={() => void api.openHomeFolder()}
+                onNewChat={() => void createHomeSession()}
+                attachedImages={attachedImages}
+                setAttachedImages={setAttachedImages}
+                hasProvider={providers.length > 0}
+              />
+              </section>
+            ) : (
+              <>
             {showFiles && (
               <aside className="file-pane">
                 <div className="file-pane-header">
@@ -401,14 +481,10 @@ function App() {
                   onOpenProviders={() => setShowProviders(true)}
                   onAttachFile={() => {
                     setDraft((curr) => `${curr}${curr ? "\n" : ""}@${activeFile || "current-file"}`);
-                    setShowComposerMenu(false);
                   }}
                   onAttachDiff={() => {
                     setDraft((curr) => `${curr}${curr ? "\n" : ""}Review the current Git diff`);
-                    setShowComposerMenu(false);
                   }}
-                  showComposerMenu={showComposerMenu}
-                  setShowComposerMenu={setShowComposerMenu}
                   sessionUsage={currentSessionUsage}
                   activeSessionId={activeSession?.id}
                   worktreeStatus={worktreeStatus}
@@ -462,10 +538,13 @@ function App() {
                 />
               )}
             </section>
+              </>
+            )}
           </div>
         </main>
 
         {showContext ? (
+          area === "code" ? (
           <aside className="context-pane">
             <div className="context-head">
               <div>
@@ -501,7 +580,7 @@ function App() {
                 </div>
                 <MemoryRow label="Total tokens" value={`${currentSessionUsage.totalTokens.toLocaleString()} tokens`} />
                 <MemoryRow label="In / Out" value={`${currentSessionUsage.inputTokens.toLocaleString()} in / ${currentSessionUsage.outputTokens.toLocaleString()} out`} />
-                <MemoryRow label="Est. cost" value={`~$${currentSessionUsage.estimatedCost.toFixed(4)}`} />
+                <MemoryRow label="Est. cost" value={formatCost(currentSessionUsage.estimatedCost)} />
               </div>
             )}
             {projectRules && projectRules.hasRules && (
@@ -521,38 +600,107 @@ function App() {
               <MemoryRow label="Project memory" value={activeProject?.memory ? "Updated" : "Empty"} />
               <MemoryRow label="Session memory" value={activeSession?.memory ? "Updated" : "Empty"} />
             </div>
-            <div className="context-section">
-              <div className="context-section-title">
-                <span>MODEL</span>
-                <button onClick={() => setShowProviders(true)}><Settings2 size={13} /></button>
+          </aside>
+          ) : (
+          <aside className="context-pane">
+            <div className="context-head">
+              <div>
+                <span className="context-kicker">CURRENT CHAT</span>
+                <strong>{headerTitle}</strong>
+                <small>Nexus Home</small>
               </div>
-              <div className="active-model" onClick={() => setShowProviders(true)} style={{ cursor: "pointer" }}>
-                <span className="model-orb"><Sparkles size={13} /></span>
-                <div>
-                  <strong>{selectedModel || "No model selected"}</strong>
-                  <small>{selectedProvider?.label || "Add a provider"}</small>
-                </div>
-                <ChevronDown size={13} />
-              </div>
-            </div>
-            <div className="context-bottom">
-              <ShieldCheck size={13} />
-              <span>
-                {sandboxStatus.status === "ready"
-                  ? "Sandbox ready · isolated execution"
-                  : sandboxStatus.configured
-                  ? `Sandbox · ${sandboxStatus.status}`
-                  : "Sandbox not configured"}
-              </span>
-              <button
-                className="sandbox-stop"
-                onClick={() => void stopSandbox()}
-                disabled={sandboxStatus.status !== "ready"}
-              >
-                <Square size={11} />
+              <button className="context-panel-icon" onClick={() => setShowContext(false)} title="Close context panel">
+                <PanelRight size={15} />
               </button>
             </div>
+            <div className="context-summary">
+              <span className="status-ring">{running ? <Loader2 size={13} className="spin" /> : <Check size={13} />}</span>
+              <div>
+                <strong>{running ? "Agent is working" : "Ready"}</strong>
+                <small>{running ? "Researching, writing files…" : "Ask, research, create documents"}</small>
+              </div>
+            </div>
+            <div className="context-section">
+              <div className="context-section-title">
+                <span>SESSION FILES</span>
+                <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <small>{homeSessionFiles.length} FILE{homeSessionFiles.length === 1 ? "" : "S"}</small>
+                  <button
+                    className="pane-action"
+                    onClick={() => {
+                      void refreshHomeFiles();
+                      if (activeSession?.id) void refreshHomeSessionFiles(activeSession.id);
+                    }}
+                    title="Refresh session files"
+                  >
+                    <RefreshCw size={12} />
+                  </button>
+                </span>
+              </div>
+              {activeSession ? (
+                homeSessionFiles.length ? (
+                  <div className="home-files-list" style={{ maxHeight: 320, overflowY: "auto" }}>
+                    {homeSessionFiles.map((file) => (
+                      <div
+                        className="home-file-row clickable"
+                        key={file.path}
+                        title={`${file.path} — click to preview`}
+                        onClick={() => setHomePreviewPath(file.path)}
+                      >
+                        <FileText size={13} />
+                        <div className="home-file-info">
+                          <span className="home-file-name">{file.name}</span>
+                          <small>
+                            {formatHomeSize(file.size)} · {timeLabel(file.modified)}
+                          </small>
+                        </div>
+                        <button
+                          className="pane-action"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void api.downloadHomeFile(file.path);
+                          }}
+                          title={`Download ${file.name}`}
+                        >
+                          <Download size={13} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty-pane">No files yet in this chat. Ask for a document and it will appear here.</div>
+                )
+              ) : (
+                <div className="empty-pane">Start a chat to generate files.</div>
+              )}
+            </div>
+            {currentSessionUsage && currentSessionUsage.totalTokens > 0 && (
+              <div className="context-section">
+                <div className="context-section-title">
+                  <span>SESSION TOTAL TOKENS</span>
+                  <small>CUMULATIVE</small>
+                </div>
+                <MemoryRow label="Total tokens" value={`${currentSessionUsage.totalTokens.toLocaleString()} tokens`} />
+                <MemoryRow label="In / Out" value={`${currentSessionUsage.inputTokens.toLocaleString()} in / ${currentSessionUsage.outputTokens.toLocaleString()} out`} />
+                <MemoryRow label="Est. cost" value={formatCost(currentSessionUsage.estimatedCost)} />
+              </div>
+            )}
+            <div className="context-section">
+              <div className="context-section-title">
+                <span>MEMORY</span>
+              </div>
+              <MemoryRow label="Project memory" value={activeProject?.memory ? "Updated" : "Empty"} />
+              <MemoryRow label="Session memory" value={activeSession?.memory ? "Updated" : "Empty"} />
+            </div>
+            <div className="context-section">
+              <div className="context-section-title">
+                <span>NEXUS FOLDER</span>
+                <small>{homeFiles.length} TOTAL</small>
+              </div>
+              <MemoryRow label="Location" value={homeRoot ? homeRoot.split(/[\\/]/).pop() || "Nexus" : "Nexus"} />
+            </div>
           </aside>
+          )
         ) : (
           <button className="context-restore" onClick={() => setShowContext(true)} title="Open context panel">
             <PanelRight size={15} />
@@ -577,22 +725,6 @@ function App() {
           definitions={providerDefinitions}
           onProvidersChange={handleProvidersChange}
           onClose={() => setShowProviders(false)}
-        />
-      )}
-      {showSandbox && (
-        <SandboxModal
-          config={sandboxConfig}
-          requireApproval={sandboxRequireApproval}
-          setRequireApproval={setSandboxRequireApproval}
-          allowNetwork={sandboxAllowNetwork}
-          setAllowNetwork={setSandboxAllowNetwork}
-          timeout={sandboxTimeout}
-          setTimeout={setSandboxTimeout}
-          enabled={sandboxEnabled}
-          setEnabled={setSandboxEnabled}
-          status={sandboxStatus}
-          onSave={() => void saveSandbox()}
-          onClose={() => setShowSandbox(false)}
         />
       )}
       {showMcp && <McpModal onClose={() => setShowMcp(false)} />}
@@ -657,6 +789,13 @@ function App() {
           danger={confirmDialog.danger}
           onConfirm={confirmDialog.onConfirm}
           onCancel={() => setConfirmDialog(null)}
+        />
+      )}
+      {homePreviewPath && (
+        <FilePreviewModal
+          filePath={homePreviewPath}
+          onClose={() => setHomePreviewPath(null)}
+          onDownload={(p) => void api.downloadHomeFile(p)}
         />
       )}
     </div>

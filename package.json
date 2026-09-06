@@ -12,12 +12,16 @@
     "start": "electron .",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
     "test": "npm run build:electron && electron test/sandbox-and-agent.test.mjs",
+    "test:unit": "npm run build:electron && node test/rate-limit.test.mjs && node test/checkpoint-resume.test.mjs",
     "dist": "npm run build && electron-builder",
     "dist:dir": "npm run build && electron-builder --dir"
   },
   "build": {
     "appId": "com.nexus.app",
     "productName": "Nexus",
+    "npmRebuild": false,
+    "nodeGypRebuild": false,
+    "afterPack": "./electron/after-pack.cjs",
     "directories": {
       "output": "release"
     },
@@ -37,6 +41,18 @@
         "portable"
       ]
     },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Nexus",
+      "artifactName": "${productName} Setup ${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName} ${version} Portable.${ext}"
+    },
     "mac": {
       "icon": "build/icon.png",
       "target": [
@@ -53,6 +69,7 @@
     }
   },
   "dependencies": {
+    "@aiden0z/pptx-renderer": "^1.2.4",
     "@homebridge/node-pty-prebuilt-multiarch": "^0.14.1",
     "@langchain/anthropic": "1.5.8",
     "@langchain/aws": "1.4.4",
@@ -70,11 +87,13 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "deepagents": "1.13.2",
+    "docx-preview": "^0.4.0",
     "langchain": "1.5.10",
     "langchain-mcp-adapters": "^0.6.0",
     "lucide-react": "1.34.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "xlsx": "^0.18.5",
     "zod": "4.4.3"
   },
   "devDependencies": {

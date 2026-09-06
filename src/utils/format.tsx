@@ -20,8 +20,8 @@ export function fileIcon(file: string) {
   );
 }
 
-export function pushLiveEvent(events: ChatItem[], item: ChatItem): ChatItem[] {
-  return [...events, item];
+export function pushLiveEvent(buckets: Record<string, ChatItem[]>, sessionId: string, item: ChatItem): Record<string, ChatItem[]> {
+  return { ...buckets, [sessionId]: [...(buckets[sessionId] || []), item] };
 }
 
 export function getSessionUsage(session?: SessionRecord | null): AgentUsage | undefined {
@@ -29,19 +29,21 @@ export function getSessionUsage(session?: SessionRecord | null): AgentUsage | un
   let inputTokens = session.usage?.inputTokens || 0;
   let outputTokens = session.usage?.outputTokens || 0;
   let totalTokens = session.usage?.totalTokens || 0;
-  let estimatedCost = session.usage?.estimatedCost || 0;
+  let costKnown = session.usage?.estimatedCost != null;
 
   // Aggregate all messages that contain usage info
   let msgInput = 0;
   let msgOutput = 0;
   let msgTotal = 0;
   let msgCost = 0;
+  let msgCostKnown = true;
   for (const message of session.messages || []) {
-    if (message.usage) {
+    if (message.usage && message.role === "assistant") {
       msgInput += message.usage.inputTokens || 0;
       msgOutput += message.usage.outputTokens || 0;
       msgTotal += message.usage.totalTokens || 0;
-      msgCost += message.usage.estimatedCost || 0;
+      if (message.usage.estimatedCost == null) msgCostKnown = false;
+      else msgCost += message.usage.estimatedCost;
     }
   }
 
@@ -50,7 +52,13 @@ export function getSessionUsage(session?: SessionRecord | null): AgentUsage | un
     inputTokens = msgInput;
     outputTokens = msgOutput;
     totalTokens = msgTotal;
-    estimatedCost = Number(msgCost.toFixed(4));
+    costKnown = msgCostKnown;
+    return {
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      estimatedCost: costKnown ? Number(msgCost.toFixed(4)) : null,
+    };
   }
 
   if (totalTokens > 0) {
@@ -58,7 +66,7 @@ export function getSessionUsage(session?: SessionRecord | null): AgentUsage | un
       inputTokens,
       outputTokens,
       totalTokens,
-      estimatedCost: Number(estimatedCost.toFixed(4)),
+      estimatedCost: costKnown ? Number((session.usage?.estimatedCost || 0).toFixed(4)) : null,
     };
   }
   return session.usage;

@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -20,13 +20,54 @@ function isIgnoredPath(p: string): boolean {
   return IGNORED_PREFIXES.some((prefix) => normalized === prefix.slice(0, -1) || normalized.startsWith(prefix) || normalized.includes(`/${prefix}`));
 }
 
+// Split a unified diff into one patch block per file, keyed by the path on the
+// `+++ b/<path>` line. --no-renames is always passed, so a/b paths match.
+function splitUnifiedDiff(output: string): Map<string, string> {
+  const patches = new Map<string, string>();
+  const blocks = output.split(/(?=^diff --git )/m);
+  for (const block of blocks) {
+    if (!block.startsWith("diff --git")) continue;
+    const fileMatch = block.match(/^diff --git a\/(.+?) b\/(.+)$/m);
+    if (!fileMatch) continue;
+    const filePath = fileMatch[2].replace(/\r$/, "");
+    const decoded = filePath.startsWith('"') && filePath.endsWith('"')
+      ? JSON.parse(filePath)
+      : filePath;
+    patches.set(decoded, block);
+  }
+  return patches;
+}
+
 export async function getWorkspaceDiffFiles(projectRoot: string): Promise<WorkspaceDiffFile[]> {
   try {
     let numstat = "";
-    try { numstat = (await execFileAsync("git", ["diff", "HEAD", "--no-ext-diff", "--no-renames", "--numstat", "--", "."], { cwd: projectRoot, maxBuffer: 4_000_000 })).stdout; }
-    catch { numstat = (await execFileAsync("git", ["diff", "--no-ext-diff", "--no-renames", "--numstat", "--", "."], { cwd: projectRoot, maxBuffer: 4_000_000 })).stdout; }
+    let unified = "";
+    try {
+      [numstat, unified] = await Promise.all([
+        execFileAsync("git", ["diff", "HEAD", "--no-ext-diff", "--no-renames", "--numstat", "--", "."], { cwd: projectRoot, maxBuffer: 8_000_000 }).then((r) => r.stdout),
+        execFileAsync("git", ["diff", "HEAD", "--no-ext-diff", "--no-renames", "--unified=3", "--", "."], { cwd: projectRoot, maxBuffer: 16_000_000 }).then((r) => r.stdout),
+      ]);
+    } catch {
+      // No HEAD yet (repo without commits) — fall back to the index-less diff.
+      try {
+        [numstat, unified] = await Promise.all([
+          execFileAsync("git", ["diff", "--no-ext-diff", "--no-renames", "--numstat", "--", "."], { cwd: projectRoot, maxBuffer: 8_000_000 }).then((r) => r.stdout),
+          execFileAsync("git", ["diff", "--no-ext-diff", "--no-renames", "--unified=3", "--", "."], { cwd: projectRoot, maxBuffer: 16_000_000 }).then((r) => r.stdout),
+        ]);
+      } catch {
+        numstat = "";
+        unified = "";
+      }
+    }
+    const patchesByPath = splitUnifiedDiff(unified);
     const tracked = parseNumstat(numstat).filter((item) => !isIgnoredPath(item.path));
-    const statusOutput = (await execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: projectRoot, maxBuffer: 4_000_000 })).stdout;
+    // Independent try: on non-git folders (e.g. Home) the diffs above
+    // already failed — a status throw here must degrade to "no changes",
+    // not propagate.
+    let statusOutput = "";
+    try {
+      statusOutput = (await execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: projectRoot, maxBuffer: 8_000_000 })).stdout;
+    } catch { /* non-git folder or git failure: no status info */ }
     const statusByPath = new Map<string, string>();
     for (const line of statusOutput.split(/\r?\n/).filter(Boolean)) {
       const code = line.slice(0, 2).trim() || "M";
@@ -56,12 +97,7 @@ export async function getWorkspaceDiffFiles(projectRoot: string): Promise<Worksp
       entries.set(filePath, { path: filePath, name, directory, additions, deletions: 0, status, patch });
     }
     for (const file of entries.values()) {
-      try {
-        const result = await execFileAsync("git", ["diff", "HEAD", "--no-ext-diff", "--unified=3", "--", file.path], { cwd: projectRoot, maxBuffer: 2_000_000 });
-        file.patch = result.stdout || file.patch;
-      } catch {
-        try { file.patch = (await execFileAsync("git", ["diff", "--no-ext-diff", "--unified=3", "--", file.path], { cwd: projectRoot, maxBuffer: 2_000_000 })).stdout || file.patch; } catch { /* Keep generated untracked patch. */ }
-      }
+      file.patch = patchesByPath.get(file.path) || file.patch;
     }
     return [...entries.values()].sort((a, b) => a.path.localeCompare(b.path));
   } catch {
@@ -111,37 +147,101 @@ export async function revertAllWorkspaceChanges(projectRoot: string): Promise<bo
   }
 }
 
-type CheckpointSnapshot = { id: string; projectRoot: string; timestamp: string; files: Map<string, string | null> };
-const checkpoints = new Map<string, CheckpointSnapshot>();
+// Checkpoints persist to disk (.nexus/checkpoints/<id>/manifest.json) so an
+// "Undo run" survives app restarts. Content is stored as utf8 text — the same
+// fidelity the in-memory snapshot had; binary files are not checkpointed.
+const MAX_CHECKPOINT_FILES = 2000;
+
+type CheckpointFileEntry = { path: string; content: string | null };
+type CheckpointManifest = { id: string; projectRoot: string; timestamp: string; truncated: boolean; files: CheckpointFileEntry[] };
+
+function checkpointsDir(projectRoot: string) {
+  return path.join(projectRoot, ".nexus", "checkpoints");
+}
+
+function checkpointPath(projectRoot: string, checkpointId: string) {
+  const safeId = checkpointId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return path.join(checkpointsDir(projectRoot), `${safeId}.json`);
+}
+
+// Same-process index: checkpoint id -> root it was created in. The manifest
+// on disk is the source of truth across restarts (looked up under the caller's
+// root, which post-restart is the project root), but within a live process a
+// caller may pass a different root (e.g. a worktree path, or a stale caller)
+// — the index resolves those without guessing.
+const checkpointRootIndex = new Map<string, string>();
 
 export async function createWorkspaceCheckpoint(projectRoot: string, checkpointId: string): Promise<string> {
   const root = path.resolve(projectRoot);
   const diffs = await getWorkspaceDiffFiles(root);
-  const snapshot = new Map<string, string | null>();
+  const files: CheckpointFileEntry[] = [];
+  let truncated = false;
   for (const file of diffs) {
+    if (files.length >= MAX_CHECKPOINT_FILES) { truncated = true; break; }
     try {
       const content = await fs.readFile(path.resolve(root, file.path), "utf8");
-      snapshot.set(file.path, content);
+      files.push({ path: file.path, content });
     } catch {
-      snapshot.set(file.path, null);
+      files.push({ path: file.path, content: null });
     }
   }
-  checkpoints.set(checkpointId, { id: checkpointId, projectRoot: root, timestamp: new Date().toISOString(), files: snapshot });
+  const manifest: CheckpointManifest = { id: checkpointId, projectRoot: root, timestamp: new Date().toISOString(), truncated, files };
+  await fs.mkdir(checkpointsDir(root), { recursive: true });
+  await fs.writeFile(checkpointPath(root, checkpointId), JSON.stringify(manifest), "utf8");
+  checkpointRootIndex.set(checkpointId, root);
   return checkpointId;
 }
 
-export async function restoreWorkspaceCheckpoint(projectRoot: string, checkpointId: string): Promise<boolean> {
-  const checkpoint = checkpoints.get(checkpointId);
-  if (!checkpoint) {
-    return false;
+// Finding the manifest file needs a root to look in. Check the in-process
+// index first (covers caller paths that differ from the checkpoint's root),
+// then search the caller's root and its worktree siblings (covers restarts).
+async function loadCheckpoint(projectRoot: string, checkpointId: string): Promise<CheckpointManifest | null> {
+  const roots = new Set<string>();
+  const indexed = checkpointRootIndex.get(checkpointId);
+  if (indexed) roots.add(indexed);
+  const callerRoot = path.resolve(projectRoot);
+  roots.add(callerRoot);
+  try {
+    // A worktree execution root: the checkpoint may live in the main root.
+    const mainRootGuess = path.dirname(path.dirname(callerRoot));
+    if (existsSync(path.join(mainRootGuess, ".forgepilot", "worktrees"))) roots.add(mainRootGuess);
+    // A main root: checkpoints may have been taken inside one of its worktrees.
+    const worktreesDir = path.join(callerRoot, ".forgepilot", "worktrees");
+    if (existsSync(worktreesDir)) {
+      for (const entry of await fs.readdir(worktreesDir)) {
+        roots.add(path.join(worktreesDir, entry));
+      }
+    }
+  } catch { /* best effort — keep the roots collected so far */ }
+  for (const root of roots) {
+    try {
+      const manifest: CheckpointManifest = JSON.parse(await fs.readFile(checkpointPath(root, checkpointId), "utf8"));
+      if (manifest && manifest.id === checkpointId) return manifest;
+    } catch { /* try next root */ }
   }
+  return null;
+}
+
+export async function restoreWorkspaceCheckpoint(projectRoot: string, checkpointId: string): Promise<boolean> {
+  const checkpoint = await loadCheckpoint(projectRoot, checkpointId);
+  if (!checkpoint) {
+    throw new Error(`Unknown checkpoint "${checkpointId}". It may predate checkpoint persistence or belong to another project, so the workspace cannot be safely rolled back.`);
+  }
+  // The manifest's recorded root is the restore target: the snapshot was
+  // taken there, so its relative paths only make sense against it.
   const root = checkpoint.projectRoot;
+  const snapshot = new Map(checkpoint.files.map((entry) => [entry.path, entry.content] as const));
   const currentDiffs = await getWorkspaceDiffFiles(root);
-  for (const file of currentDiffs) {
-    const priorContent = checkpoint.files.get(file.path);
-    const abs = path.resolve(root, file.path);
-    if (priorContent === undefined || priorContent === null) {
-      await revertWorkspaceFile(root, file.path);
+  const unionPaths = new Set([...snapshot.keys(), ...currentDiffs.map((d) => d.path)]);
+  for (const filePath of unionPaths) {
+    const priorContent = snapshot.get(filePath);
+    const abs = path.resolve(root, filePath);
+    if (priorContent === undefined) {
+      // Clean before the run, changed since — back to HEAD.
+      await revertWorkspaceFile(root, filePath);
+    } else if (priorContent === null) {
+      // Did not exist before the run — remove it (also no-op if already gone).
+      await fs.rm(abs, { force: true, recursive: true });
     } else {
       await fs.writeFile(abs, priorContent, "utf8");
     }
@@ -149,3 +249,9 @@ export async function restoreWorkspaceCheckpoint(projectRoot: string, checkpoint
   return true;
 }
 
+export async function deleteWorkspaceCheckpoint(projectRoot: string, checkpointId: string): Promise<void> {
+  checkpointRootIndex.delete(checkpointId);
+  try {
+    await fs.rm(checkpointPath(path.resolve(projectRoot), checkpointId), { force: true });
+  } catch { /* best effort */ }
+}

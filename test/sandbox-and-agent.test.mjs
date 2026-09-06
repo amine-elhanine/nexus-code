@@ -4,16 +4,14 @@ import path from 'node:path';
 import os from 'node:os';
 import { app } from 'electron';
 import {
-  commandPolicy,
-  isCommandAllowed,
-  beginSandboxRun,
-  cancelSandboxRun,
-  isSandboxRunCancelled,
-  runSandboxCommand,
-  getSandboxAgentBackend,
-  APPROVAL_REQUIRED,
-} from '../dist-electron/sandbox-service.js';
-import { upsertProject, upsertProvider, removeProvider, listProviders, createSession, updateSession, getSession, appendSessionMessage, calculateSessionUsage } from '../dist-electron/store.js';
+  beginCommandRun,
+  cancelCommandRun,
+  isCommandRunCancelled,
+  runProjectCommand,
+  executeCommand,
+  getAgentBackend,
+} from '../dist-electron/command-service.js';
+import { upsertProject, upsertProvider, removeProvider, listProviders, createSession, updateSession, getSession, appendSessionMessage, appendSessionMessages, calculateSessionUsage } from '../dist-electron/store.js';
 import { pickVerificationCommand, findTargetedTests } from '../dist-electron/agent-service.js';
 import {
   revertWorkspaceFile,
@@ -21,9 +19,10 @@ import {
   createWorkspaceCheckpoint,
   restoreWorkspaceCheckpoint,
   getWorkspaceDiffFiles,
+  deleteWorkspaceCheckpoint,
 } from '../dist-electron/diff-service.js';
 import { parseSymbolsFromCode, formatOutline, createCodeIntelligenceTools } from '../dist-electron/code-tools.js';
-import { SUBAGENT_CONFIGS, createSubagentDelegationTool, calculateAgentUsage } from '../dist-electron/subagent-service.js';
+import { SUBAGENT_CONFIGS, createSubagentDelegationTool, calculateAgentUsage, getModelPricing } from '../dist-electron/subagent-service.js';
 import { createSkill, importSkill, listSkills, deleteSkill, readSkillContent } from '../dist-electron/skills-service.js';
 import { isGitRepo, createSessionWorktree, getSessionWorktree, mergeWorktreeToMain, discardSessionWorktree } from '../dist-electron/worktree-service.js';
 import { compactHistory, estimateTokens } from '../dist-electron/context-service.js';
@@ -38,14 +37,6 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
-
-const defaultConfig = {
-  provider: 'local',
-  enabled: true,
-  requireApproval: false,
-  allowNetwork: false,
-  commandTimeoutSeconds: 120,
-};
 
 let passed = 0;
 let failed = 0;
@@ -65,176 +56,59 @@ function test(name, fn) {
 }
 
 app.whenReady().then(async () => {
-  console.log('\n=== 1. Sandbox Policy Tests (21 rules + network) ===');
+  console.log('\n=== 1. Command Execution Tests (direct execution, sandbox removed) ===');
 
-  await test('Policy 1: Empty command is rejected', () => {
-    assert.match(commandPolicy('', defaultConfig), /empty/i);
-    assert.match(commandPolicy('   ', defaultConfig), /empty/i);
-    assert.equal(isCommandAllowed('', defaultConfig), false);
+  await test('executeCommand runs arbitrary commands directly and returns their output and exit code', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-cmd-'));
+    const project = await upsertProject({ id: 'test-cmd', name: 'cmd-test', root: tempDir });
+    beginCommandRun();
+
+    // Arbitrary tools run — that is the point of removing the sandbox.
+    const echoResult = await runProjectCommand(project, 'node -e "console.log(42)"');
+    assert.equal(echoResult.exitCode, 0);
+    assert.match(String(echoResult.output), /42/);
+
+    // Shell features work too — the old policy used to block them.
+    const piped = await runProjectCommand(project, 'node -e "console.log(1;)" 2>&1 || echo failed');
+    assert.equal(piped.exitCode, 0);
+
+    // Failing commands report a non-zero exit code without throwing.
+    const failing = await executeCommand(tempDir, 'node -e "process.exit(3)"');
+    assert.equal(failing.exitCode, 3);
+
+    await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  await test('Policy 2: Semicolon chaining is rejected', () => {
-    assert.match(commandPolicy('npm test ; ls', defaultConfig), /shell chaining/i);
-    assert.equal(isCommandAllowed('npm test ; ls', defaultConfig), false);
-  });
-
-  await test('Policy 3: Ampersand chaining (&, &&) is rejected', () => {
-    assert.match(commandPolicy('npm test && npm run build', defaultConfig), /shell chaining/i);
-    assert.match(commandPolicy('npm test &', defaultConfig), /shell chaining/i);
-  });
-
-  await test('Policy 4: Pipe (|) is rejected', () => {
-    assert.match(commandPolicy('npm test | grep ok', defaultConfig), /shell chaining/i);
-  });
-
-  await test('Policy 5: Redirection (<, >) is rejected', () => {
-    assert.match(commandPolicy('npm test > out.txt', defaultConfig), /shell chaining/i);
-    assert.match(commandPolicy('npm test < in.txt', defaultConfig), /shell chaining/i);
-  });
-
-  await test('Policy 6: Shell variable/substitution characters (^, %, !, `, $) are rejected', () => {
-    assert.match(commandPolicy('npm test $VAR', defaultConfig), /shell chaining/i);
-    assert.match(commandPolicy('npm test %VAR%', defaultConfig), /shell chaining/i);
-    assert.match(commandPolicy('npm test !VAR!', defaultConfig), /shell chaining/i);
-    assert.match(commandPolicy('npm test `whoami`', defaultConfig), /shell chaining/i);
-    assert.match(commandPolicy('npm test ^', defaultConfig), /shell chaining/i);
-  });
-
-  await test('Policy 7: Newline characters are rejected', () => {
-    assert.match(commandPolicy('npm test\nls', defaultConfig), /shell chaining/i);
-    assert.match(commandPolicy('npm test\r\nls', defaultConfig), /shell chaining/i);
-  });
-
-  await test('Policy 8: Unmatched quotes are rejected', () => {
-    assert.match(commandPolicy('node "unterminated', defaultConfig), /unmatched quotes/i);
-    assert.match(commandPolicy("node 'unterminated", defaultConfig), /unmatched quotes/i);
-  });
-
-  await test('Policy 9: Unapproved shell interpreters (bash, sh, cmd, powershell) are rejected', () => {
-    assert.match(commandPolicy('bash script.sh', defaultConfig), /not an approved/i);
-    assert.match(commandPolicy('sh script.sh', defaultConfig), /not an approved/i);
-    assert.match(commandPolicy('powershell -Command Get-Process', defaultConfig), /not an approved/i);
-    assert.match(commandPolicy('cmd.exe /c dir', defaultConfig), /not an approved/i);
-  });
-
-  await test('Policy 10: Unapproved tools (curl, wget) are rejected', () => {
-    assert.match(commandPolicy('curl https://example.com', defaultConfig), /not an approved/i);
-    assert.match(commandPolicy('wget https://example.com', defaultConfig), /not an approved/i);
-  });
-
-  await test('Policy 11: Approved dev tools (npm, git, tsc, vite, eslint, bun, deno, cargo, go, ruff, mypy, uv, poetry, biome) are allowed', () => {
-    assert.equal(commandPolicy('npm run check', defaultConfig), null);
-    assert.equal(commandPolicy('git status', defaultConfig), null);
-    assert.equal(commandPolicy('tsc --noEmit', defaultConfig), null);
-    assert.equal(commandPolicy('vite build', defaultConfig), null);
-    assert.equal(commandPolicy('eslint src/', defaultConfig), null);
-    assert.equal(commandPolicy('cargo check', defaultConfig), null);
-    assert.equal(commandPolicy('go vet ./...', defaultConfig), null);
-    assert.equal(commandPolicy('bun test', defaultConfig), null);
-    assert.equal(commandPolicy('deno test', defaultConfig), null);
-    assert.equal(commandPolicy('ruff check', defaultConfig), null);
-    assert.equal(commandPolicy('mypy src', defaultConfig), null);
-    assert.equal(commandPolicy('biome check', defaultConfig), null);
-  });
-
-  await test('Policy 12: Node with valid script file is allowed', () => {
-    assert.equal(commandPolicy('node dist/index.js', defaultConfig), null);
-    assert.equal(commandPolicy('node script.mjs arg1 arg2', defaultConfig), null);
-  });
-
-  await test('Policy 13: Node -e / --eval is rejected', () => {
-    assert.match(commandPolicy('node -e "console.log(1)"', defaultConfig), /outside the sandbox policy/i);
-    assert.match(commandPolicy('node --eval "console.log(1)"', defaultConfig), /outside the sandbox policy/i);
-  });
-
-  await test('Policy 14: Node -p / --print is rejected', () => {
-    assert.match(commandPolicy('node -p "process.env"', defaultConfig), /outside the sandbox policy/i);
-    assert.match(commandPolicy('node --print "process.env"', defaultConfig), /outside the sandbox policy/i);
-  });
-
-  await test('Policy 15: Node -r / --require is rejected', () => {
-    assert.match(commandPolicy('node -r hook.js script.js', defaultConfig), /outside the sandbox policy/i);
-    assert.match(commandPolicy('node --require hook.js script.js', defaultConfig), /outside the sandbox policy/i);
-  });
-
-  await test('Policy 16: Node --import is rejected', () => {
-    assert.match(commandPolicy('node --import hook.js script.js', defaultConfig), /outside the sandbox policy/i);
-  });
-
-  await test('Policy 17: Node --experimental-loader is rejected', () => {
-    assert.match(commandPolicy('node --experimental-loader loader.js script.js', defaultConfig), /outside the sandbox policy/i);
-  });
-
-  await test('Policy 18: Manual node --permission flag is rejected (sandbox applies it)', () => {
-    assert.match(commandPolicy('node --permission script.js', defaultConfig), /applies node --permission automatically/i);
-  });
-
-  await test('Policy 19: Python pytest is allowed', () => {
-    assert.equal(commandPolicy('python -m pytest', defaultConfig), null);
-    assert.equal(commandPolicy('python -m pytest tests/test_foo.py', defaultConfig), null);
-  });
-
-  await test('Policy 20: Python version flags are allowed', () => {
-    assert.equal(commandPolicy('python --version', defaultConfig), null);
-    assert.equal(commandPolicy('python -v', defaultConfig), null);
-  });
-
-  await test('Policy 21: Python arbitrary script execution is rejected', () => {
-    assert.match(commandPolicy('python script.py', defaultConfig), /only available for pytest/i);
-    assert.match(commandPolicy('python -c "import os"', defaultConfig), /only available for pytest/i);
-  });
-
-  await test('Policy 22: Network restriction blocks package install/add/update commands when allowNetwork=false', () => {
-    assert.match(commandPolicy('npm install', { ...defaultConfig, allowNetwork: false }), /Network-dependent package operations/i);
-    assert.match(commandPolicy('yarn add lodash', { ...defaultConfig, allowNetwork: false }), /Network-dependent package operations/i);
-    assert.match(commandPolicy('pnpm update', { ...defaultConfig, allowNetwork: false }), /Network-dependent package operations/i);
-    assert.equal(commandPolicy('npm install', { ...defaultConfig, allowNetwork: true }), null);
-  });
-
-  await test('Policy 23: Tokens with embedded quotes are rejected', () => {
-    assert.match(commandPolicy('node script.js \'hello "world" test\'', defaultConfig), /embedded quotes/i);
-    assert.match(commandPolicy('git commit -m \'feat: "new" feature\'', defaultConfig), /embedded quotes/i);
-  });
-
-  await test('Policy 24: APPROVAL_REQUIRED gate triggers for git clean, npx, branch -D, stash drop, remote, config', () => {
-    assert.match('npx prisma migrate', APPROVAL_REQUIRED);
-    assert.match('npx', APPROVAL_REQUIRED);
-    assert.match('git clean -fd', APPROVAL_REQUIRED);
-    assert.match('git branch -D feat', APPROVAL_REQUIRED);
-    assert.match('git stash drop', APPROVAL_REQUIRED);
-    assert.match('git stash clear', APPROVAL_REQUIRED);
-    assert.match('git worktree remove temp', APPROVAL_REQUIRED);
-    assert.match('git remote add origin https://example.com', APPROVAL_REQUIRED);
-    assert.match('git config user.name "Nexus"', APPROVAL_REQUIRED);
-    assert.doesNotMatch('git status', APPROVAL_REQUIRED);
-    assert.doesNotMatch('npm test', APPROVAL_REQUIRED);
+  await test('empty command is rejected without spawning a shell', async () => {
+    const result = await executeCommand(os.tmpdir(), '   ');
+    assert.equal(result.exitCode, 1);
+    assert.match(result.output, /empty/i);
   });
 
   console.log('\n=== 2. Cancellation & Process Tree Termination Tests ===');
 
-  await test('Cancellation flags: beginSandboxRun resets, cancelSandboxRun sets cancelled flag', () => {
-    beginSandboxRun();
-    assert.equal(isSandboxRunCancelled(), false);
-    cancelSandboxRun();
-    assert.equal(isSandboxRunCancelled(), true);
-    beginSandboxRun();
-    assert.equal(isSandboxRunCancelled(), false);
+  await test('Cancellation flags: beginCommandRun resets, cancelCommandRun sets cancelled flag', () => {
+    beginCommandRun();
+    assert.equal(isCommandRunCancelled(), false);
+    cancelCommandRun();
+    assert.equal(isCommandRunCancelled(), true);
+    beginCommandRun();
+    assert.equal(isCommandRunCancelled(), false);
   });
 
-  await test('Process Tree Termination: Long running command is killed via cancelSandboxRun()', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'forgepilot-cancel-'));
+  await test('Process Tree Termination: Long running command is killed via cancelCommandRun()', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-cancel-'));
     const scriptPath = path.join(tempDir, 'loop.js');
     await fs.writeFile(scriptPath, 'const t = Date.now(); while(Date.now() - t < 30000) {}', 'utf8');
 
     const project = await upsertProject({ id: 'test-cancel', name: 'cancel-test', root: tempDir });
-    const config = { ...defaultConfig, commandTimeoutSeconds: 60 };
 
-    beginSandboxRun();
-    const runPromise = runSandboxCommand(project, config, `node ${scriptPath}`);
+    beginCommandRun();
+    const runPromise = runProjectCommand(project, `node ${scriptPath}`);
 
     await new Promise((r) => setTimeout(r, 250));
     const startTime = Date.now();
-    cancelSandboxRun();
+    cancelCommandRun();
 
     const result = await runPromise;
     const elapsed = Date.now() - startTime;
@@ -249,11 +123,10 @@ app.whenReady().then(async () => {
   console.log('\n=== 3. Read-Only Backend Tests (Plan Mode) ===');
 
   await test('Read-only backend blocks write, edit, delete, and execute with descriptive message', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'forgepilot-readonly-'));
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-readonly-'));
     const project = await upsertProject({ id: 'test-readonly', name: 'readonly-test', root: tempDir });
-    const config = { ...defaultConfig };
 
-    const { backend } = await getSandboxAgentBackend(project, config, { readOnly: true });
+    const { backend } = await getAgentBackend(project, { readOnly: true });
 
     await assert.rejects(
       async () => backend.write('file.txt', 'test'),
@@ -290,22 +163,25 @@ app.whenReady().then(async () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  await test('Verification command picks tsc --noEmit when tsconfig.json exists without typecheck script', async () => {
+  await test('Verification command picks npm run check over bare tsc when a check script exists', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'forgepilot-verify-'));
-    await fs.writeFile(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { check: 'npm run test', lint: 'eslint .' } }), 'utf8');
+    await fs.writeFile(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { check: 'tsc -p a && tsc -p b' } }), 'utf8');
+    await fs.writeFile(path.join(tempDir, 'tsconfig.json'), '{}', 'utf8');
+
+    // A `check` script often covers more tsconfigs than bare tsc --noEmit
+    // (which would silently check only the default project), so it wins.
+    const cmd = pickVerificationCommand(tempDir);
+    assert.equal(cmd, 'npm run check');
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  await test('Verification command picks tsc --noEmit when tsconfig.json exists without scripts', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'forgepilot-verify-'));
+    await fs.writeFile(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { start: 'node app.js' } }), 'utf8');
     await fs.writeFile(path.join(tempDir, 'tsconfig.json'), '{}', 'utf8');
 
     const cmd = pickVerificationCommand(tempDir);
     assert.equal(cmd, 'tsc --noEmit');
-    await fs.rm(tempDir, { recursive: true, force: true });
-  });
-
-  await test('Verification command picks npm run check when check script exists without tsconfig or typecheck', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'forgepilot-verify-'));
-    await fs.writeFile(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { check: 'node check.js', lint: 'eslint .' } }), 'utf8');
-
-    const cmd = pickVerificationCommand(tempDir);
-    assert.equal(cmd, 'npm run check');
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
@@ -382,22 +258,24 @@ app.whenReady().then(async () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  await test('createWorkspaceCheckpoint and restoreWorkspaceCheckpoint roll back entire workspace state', async () => {
+  await test('createWorkspaceCheckpoint and restoreWorkspaceCheckpoint roll back entire workspace state, and survive an app restart', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'forgepilot-checkpoint-'));
     const { execSync } = await import('node:child_process');
     execSync('git init && git config user.name "Test" && git config user.email "test@test.com"', { cwd: tempDir, stdio: 'ignore' });
     await fs.writeFile(path.join(tempDir, 'app.ts'), 'export const a = 1;\n', 'utf8');
     execSync('git add . && git commit -m "init"', { cwd: tempDir, stdio: 'ignore' });
 
-    // Create pre-run checkpoint
+    // Create pre-run checkpoint — it must be written to disk under .nexus/.
     const checkpointId = await createWorkspaceCheckpoint(tempDir, 'chk-1');
     assert.equal(checkpointId, 'chk-1');
+    const checkpointFile = path.join(tempDir, '.nexus', 'checkpoints', 'chk-1.json');
+    let manifestExists = true;
+    try { await fs.access(checkpointFile); } catch { manifestExists = false; }
+    assert.equal(manifestExists, true, 'checkpoint manifest must persist to disk');
 
     // Agent makes changes: edits app.ts and adds new-feature.ts
     await fs.writeFile(path.join(tempDir, 'app.ts'), 'export const a = 999;\n', 'utf8');
     await fs.writeFile(path.join(tempDir, 'new-feature.ts'), 'export const feat = true;\n', 'utf8');
-
-    assert.equal((await fs.readFile(path.join(tempDir, 'app.ts'), 'utf8')).replace(/\r\n/g, '\n'), 'export const a = 999;\n');
 
     // Restore checkpoint
     await restoreWorkspaceCheckpoint(tempDir, checkpointId);
@@ -407,6 +285,35 @@ app.whenReady().then(async () => {
     let newFeatExists = true;
     try { await fs.access(path.join(tempDir, 'new-feature.ts')); } catch { newFeatExists = false; }
     assert.equal(newFeatExists, false);
+
+    // "Restart" simulation: the module-level state is gone, but the
+    // disk-persisted checkpoint still restores (file unchanged, so restore
+    // simply rewrites the same content — the point is it does not throw
+    // "unknown checkpoint").
+    const restoredAgain = await restoreWorkspaceCheckpoint(tempDir, checkpointId);
+    assert.equal(restoredAgain, true, 'disk-persisted checkpoint survives restart');
+    assert.equal((await fs.readFile(path.join(tempDir, 'app.ts'), 'utf8')).replace(/\r\n/g, '\n'), 'export const a = 1;\n');
+
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  await test('checkpoint restore also reverts files the checkpoint recorded as clean but which no longer differ from HEAD', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-cp-union-'));
+    const { execSync } = await import('node:child_process');
+    execSync('git init && git config user.name "Test" && git config user.email "test@test.com"', { cwd: tempDir, stdio: 'ignore' });
+    await fs.writeFile(path.join(tempDir, 'a.txt'), 'clean a\n', 'utf8');
+    execSync('git add . && git commit -m "init"', { cwd: tempDir, stdio: 'ignore' });
+
+    // Dirty state at checkpoint time includes a.txt (modified vs HEAD).
+    await fs.writeFile(path.join(tempDir, 'a.txt'), 'dirty a\n', 'utf8');
+    const cpId = await createWorkspaceCheckpoint(tempDir, 'cp-union');
+
+    // The agent reverts a.txt itself (back to clean) but edits a second file
+    // that was clean at snapshot time... and then also resets that second file
+    // by hand. Only a union restore guarantees the workspace returns exactly.
+    await fs.writeFile(path.join(tempDir, 'a.txt'), 'changed again\n', 'utf8');
+    await restoreWorkspaceCheckpoint(tempDir, cpId);
+    assert.equal((await fs.readFile(path.join(tempDir, 'a.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'dirty a\n');
 
     await fs.rm(tempDir, { recursive: true, force: true });
   });
@@ -449,20 +356,27 @@ app.whenReady().then(async () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  await test('restoreWorkspaceCheckpoint returns false and does not wipe uncommitted changes when checkpoint is unknown', async () => {
+  await test('restoreWorkspaceCheckpoint throws (does not silently return false) when checkpoint is unknown', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-cp-unknown-'));
     const { execSync } = await import('node:child_process');
     execSync('git init && git config user.name "Test" && git config user.email "test@test.com"', { cwd: tempDir, stdio: 'ignore' });
     await fs.writeFile(path.join(tempDir, 'keep.txt'), 'uncommitted keep\n', 'utf8');
 
-    const restored = await restoreWorkspaceCheckpoint(tempDir, 'non-existent-checkpoint');
-    assert.equal(restored, false);
+    // An unknown checkpoint must be a loud error the UI can surface, never a
+    // silent no-op that leaves the Undo card offering a dead action.
+    await assert.rejects(
+      async () => restoreWorkspaceCheckpoint(tempDir, 'non-existent-checkpoint'),
+      /Unknown checkpoint/i
+    );
 
     // Verify uncommitted file was NOT wiped
     let exists = true;
     try { await fs.access(path.join(tempDir, 'keep.txt')); } catch { exists = false; }
     assert.equal(exists, true);
     assert.equal((await fs.readFile(path.join(tempDir, 'keep.txt'), 'utf8')).replace(/\r\n/g, '\n'), 'uncommitted keep\n');
+
+    // deleteWorkspaceCheckpoint is a no-op-safe cleanup for missing ids.
+    await deleteWorkspaceCheckpoint(tempDir, 'never-existed');
 
     await fs.rm(tempDir, { recursive: true, force: true });
   });
@@ -671,18 +585,23 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.match(SUBAGENT_CONFIGS.coder.systemPrompt('/app'), /Coder Subagent/);
   });
 
-  await test('calculateAgentUsage computes accurate token pricing ($0.15/1M input, $0.60/1M output and model-aware)', () => {
-    const defaultUsage = calculateAgentUsage(10000, 5000);
-    assert.equal(defaultUsage.inputTokens, 10000);
-    assert.equal(defaultUsage.outputTokens, 5000);
-    assert.equal(defaultUsage.totalTokens, 15000);
-    assert.equal(defaultUsage.estimatedCost, 0.0045);
-
-    // Test model-aware pricing (e.g. claude-3-5-sonnet: $3.00/1M in, $15.00/1M out)
+  await test('calculateAgentUsage computes exact costs for known models and null for unknown ones', () => {
     const claudeUsage = calculateAgentUsage(100000, 20000, 'claude-3-5-sonnet');
     assert.equal(claudeUsage.totalTokens, 120000);
     // (100000 / 1000000) * 3.00 + (20000 / 1000000) * 15.00 = 0.30 + 0.30 = 0.60
     assert.equal(claudeUsage.estimatedCost, 0.6);
+
+    // Known model, no fabricated fallback either way.
+    assert.equal(getModelPricing('gpt-4.1-mini').inputPerMillion, 0.15);
+
+    // Unknown model (local Ollama model, free tier, aggregator catalogue):
+    // no invented dollar figure — the UI renders "—".
+    assert.equal(getModelPricing('qwen3-coder'), null);
+    assert.equal(getModelPricing(undefined), null);
+    assert.equal(getModelPricing('z-ai/glm-5.3-free'), null);
+    const unknownUsage = calculateAgentUsage(10000, 5000, 'qwen3-coder');
+    assert.equal(unknownUsage.estimatedCost, null);
+    assert.equal(unknownUsage.totalTokens, 15000);
   });
 
   await test('createSubagentDelegationTool exports delegate_task with schema validation', () => {
@@ -690,7 +609,6 @@ pub async fn execute_task(task: &str) -> bool { true }
       projectRoot: '/test',
       provider: { id: 'test', label: 'Test', provider: 'openai', apiKey: 'key', models: ['gpt-4'] },
       modelName: 'gpt-4',
-      sandboxConfig: defaultConfig,
       projectRecord: { id: 'test', name: 'test', root: '/test' },
     });
 
@@ -698,11 +616,11 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.ok(delegationTool.description.includes('subagent'));
   });
 
-  await test('Researcher subagent backend blocks write operations in isolated sandbox', async () => {
+  await test('Researcher subagent backend blocks write operations in read-only mode', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'forgepilot-subagent-'));
     const project = await upsertProject({ id: 'test-subagent-proj', name: 'subagent-test', root: tempDir });
 
-    const { backend } = await getSandboxAgentBackend(project, defaultConfig, { readOnly: true });
+    const { backend } = await getAgentBackend(project, { readOnly: true });
 
     await assert.rejects(
       async () => backend.write('mutation.txt', 'forbidden'),
@@ -884,8 +802,8 @@ pub async fn execute_task(task: &str) -> bool { true }
     const project = await upsertProject({ name: 'Token Tracking Project', root: tempDir });
     const session = await createSession(project.id, 'Token Session');
 
-    // Turn 1
-    const turn1Usage = calculateAgentUsage(1000, 250);
+    // Turn 1 (known model pricing)
+    const turn1Usage = calculateAgentUsage(1000, 250, 'gpt-4.1-mini');
     assert.equal(turn1Usage.inputTokens, 1000);
     assert.equal(turn1Usage.outputTokens, 250);
     assert.equal(turn1Usage.totalTokens, 1250);
@@ -902,8 +820,9 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.deepEqual(sessionAfterTurn1?.usage, turn1Usage);
     assert.deepEqual(sessionAfterTurn1?.messages[0]?.usage, turn1Usage);
 
-    // Turn 2
-    const turn2Usage = calculateAgentUsage(2000, 500);
+    // Turn 2 (unknown model -> null cost; session cost stays known while all
+    // turns have known pricing)
+    const turn2Usage = calculateAgentUsage(2000, 500, 'gpt-4.1-mini');
     await appendSessionMessage(project.id, session.id, {
       role: 'assistant',
       text: 'Response 2',
@@ -918,9 +837,41 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.equal(sessionAfterTurn2?.usage?.totalTokens, 3750);
     assert.equal(sessionAfterTurn2?.usage?.estimatedCost, 0.0009);
 
+    // A null-cost turn (unknown model) makes the session cost null, not zero.
+    const turn3Usage = calculateAgentUsage(500, 100, 'local-model');
+    assert.equal(turn3Usage.estimatedCost, null);
+    await appendSessionMessage(project.id, session.id, {
+      role: 'assistant',
+      text: 'Response 3 (local model)',
+      createdAt: new Date().toISOString(),
+      usage: turn3Usage,
+    });
+    const sessionAfterTurn3 = await getSession(project.id, session.id);
+    // 1250 (t1) + 2500 (t2) + 600 (t3)
+    assert.equal(sessionAfterTurn3?.usage?.totalTokens, 4350);
+    assert.equal(sessionAfterTurn3?.usage?.estimatedCost, null, 'mixed known/unknown pricing must surface as null, not a fabricated sum');
+
     // Verify per-message usage on each individual request
     assert.deepEqual(sessionAfterTurn2?.messages[0]?.usage, turn1Usage);
     assert.deepEqual(sessionAfterTurn2?.messages[1]?.usage, turn2Usage);
+
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  await test('appendSessionMessages persists several messages in one write (batch transcript)', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-batch-'));
+    const project = await upsertProject({ name: 'Batch Project', root: tempDir });
+    const session = await createSession(project.id, 'Batch Session');
+
+    const batch = [
+      { role: 'event', kind: 'tool', text: 'grep_search(query=x)', createdAt: new Date().toISOString() },
+      { role: 'event', kind: 'status', text: 'Agent is working', createdAt: new Date().toISOString() },
+      { role: 'assistant', text: 'Done', createdAt: new Date().toISOString(), usage: calculateAgentUsage(100, 20, 'gpt-4.1-mini') },
+    ];
+    const updated = await appendSessionMessages(project.id, session.id, batch);
+    assert.equal(updated.messages.length, 3);
+    assert.equal(updated.messages[0].text, 'grep_search(query=x)');
+    assert.equal(updated.usage?.totalTokens, 120);
 
     await fs.rm(tempDir, { recursive: true, force: true });
   });
@@ -951,6 +902,20 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.equal(retrieved?.usage?.outputTokens, 500);
 
     await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  await test('calculateSessionUsage ignores usage event messages to prevent double counting', () => {
+    const runUsage = { inputTokens: 500, outputTokens: 100, totalTokens: 600, estimatedCost: 0.0001 };
+    const messagesWithEventAndAssistant = [
+      { role: 'user', text: 'Hello' },
+      { role: 'event', kind: 'usage', text: 'Token usage · 600 tokens', usage: runUsage },
+      { role: 'assistant', text: 'Hi there', usage: runUsage },
+    ];
+    const computed = calculateSessionUsage(messagesWithEventAndAssistant);
+    assert.equal(computed.totalTokens, 600, 'must not count 1200 tokens (double counted)');
+    assert.equal(computed.inputTokens, 500);
+    assert.equal(computed.outputTokens, 100);
+    assert.equal(computed.estimatedCost, 0.0001);
   });
 
   console.log('\n=== 12. Git Worktree Isolation & Lifecycle Tests ===');
@@ -1135,20 +1100,28 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.match(apiRes, /API Request.*failed/i);
   });
 
-  await test('browser tools restrict network access when allowNetwork is false', async () => {
-    const restrictedTools = createBrowserTools('/test', { allowNetwork: false });
-    const inspectTool = restrictedTools.find((t) => t.name === 'browser_inspect');
-    const apiTool = restrictedTools.find((t) => t.name === 'browser_fetch_api');
+  await test('browser tools fetch external URLs directly (network gate removed with the sandbox)', async () => {
+    const tools = createBrowserTools('/test');
+    const inspectTool = tools.find((t) => t.name === 'browser_inspect');
+    const apiTool = tools.find((t) => t.name === 'browser_fetch_api');
+    assert.notEqual(inspectTool, undefined);
+    assert.notEqual(apiTool, undefined);
 
-    const blockedInspect = await inspectTool.invoke({ url: 'https://example.com/page' });
-    assert.match(blockedInspect, /Network access blocked by sandbox policy/i);
+    // External URLs are no longer policy-blocked; the only failure mode is the
+    // (offline-safe) connection error itself.
+    const blockedInspect = await inspectTool.invoke({ url: 'https://example.invalid-qt/page' });
+    assert.doesNotMatch(blockedInspect, /Network access blocked/i);
+    assert.match(blockedInspect, /Failed to inspect/i);
 
-    const blockedApi = await apiTool.invoke({ url: 'https://api.external.com/v1/health' });
-    assert.match(blockedApi, /Network access blocked by sandbox policy/i);
+    const blockedApi = await apiTool.invoke({ url: 'https://api.invalid-qt/v1/health' });
+    assert.doesNotMatch(blockedApi, /Network access blocked/i);
 
-    // Loopback should NOT be blocked by policy check (even though offline port fails connection)
-    const loopbackInspect = await inspectTool.invoke({ url: 'http://127.0.0.1:59999/status' });
-    assert.doesNotMatch(loopbackInspect, /Network access blocked by sandbox policy/i);
+    // Verify invalid url error handling still works
+    const inspectRes = await inspectTool.invoke({ url: 'http://127.0.0.1:59999/non-existent' });
+    assert.match(inspectRes, /Failed to inspect/i);
+
+    const apiRes = await apiTool.invoke({ url: 'http://127.0.0.1:59999/api/health' });
+    assert.match(apiRes, /API Request.*failed/i);
   });
 
   console.log('\n=== 19. Interactive Streaming Terminal Service Tests ===');

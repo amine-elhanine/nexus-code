@@ -7,29 +7,30 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-import { runProjectAgent, RunCancelledError, type AgentMode, type AgentSettings, type AgentTurn } from "./agent-service.js";
+import { runProjectAgent, RunCancelledError, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint, summarizeCompletedSteps, type AgentMode, type AgentSettings, type AgentTurn, type AgentEvent } from "./agent-service.js";
 import { PROVIDERS, fetchRemoteModels } from "./providers.js";
 import {
-  appendSessionMessage, createSession, deleteProject, deleteSession, getProject, getSandboxConfig,
-  getSkillsConfig, getSession, listMcpServers, listProjects, listProviders, listSessions,
-  removeMcpServer, removeProvider, saveSandboxConfig, saveSkillsConfig, updateProjectMemory,
-  updateSession, upsertMcpServer, upsertProject, upsertProvider, type AgentUsage, type McpServerConfig,
-  type ProviderConfig, type SandboxConfig
+  appendSessionMessages, createSession, deleteProject, deleteSession, ensureHomeProject, getProject, getSession,
+  getSkillsConfig, listMcpServers, listProjects, listProviders, listSessions,
+  removeMcpServer, removeProvider, saveSkillsConfig, updateProjectMemory,
+  updateSession, upsertMcpServer, upsertProject, upsertProvider, type McpServerConfig,
+  type ProviderConfig
 } from "./store.js";
+import { HOME_PROJECT_ID, cleanupHomeGeneratorScripts, downloadHomeFile, ensureHomeDir, listHomeFiles, listHomeSessionFiles, openHomeFolder, readHomeFile } from "./home-service.js";
 import { testMcpServer } from "./mcp-service.js";
 import { createSkill, deleteSkill, ensureSkillSourceDirs, importSkill, listSkills, openSkillsFolder, readSkillContent } from "./skills-service.js";
-import { beginSandboxRun, cancelSandboxRun, deleteProjectSandbox, getSandboxAgentBackend, getSandboxStatus, isSandboxRunCancelled, runSandboxCommand, stopProjectSandbox, syncSandboxToProject } from "./sandbox-service.js";
-import { createWorkspaceCheckpoint, getWorkspaceDiffFiles, restoreWorkspaceCheckpoint, revertAllWorkspaceChanges, revertWorkspaceFile } from "./diff-service.js";
+import { beginCommandRun, cancelCommandRun, isCommandRunCancelled, runProjectCommand, getAgentBackend } from "./command-service.js";
+import { createWorkspaceCheckpoint, deleteWorkspaceCheckpoint, getWorkspaceDiffFiles, restoreWorkspaceCheckpoint, revertAllWorkspaceChanges, revertWorkspaceFile } from "./diff-service.js";
 import { getWorkspaceGit, listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./project-tools.js";
 import {
   createSessionWorktree, getSessionWorktree, mergeWorktreeToMain, discardSessionWorktree,
-  getSessionWorktreeDiff, listSessionWorktrees, isGitRepo
+  getSessionWorktreeDiff, isGitRepo
 } from "./worktree-service.js";
 import { listArtifacts, getArtifact, updateArtifactStatus, type ArtifactStatus } from "./artifacts-service.js";
 import { readSessionTrajectory } from "./trajectory-service.js";
 import { discoverProjectRules } from "./rules-service.js";
 import { terminalService } from "./terminal-service.js";
-import { discoverCustomCommands, substituteCommandPlaceholders } from "./custom-commands-service.js";
+import { discoverCustomCommands } from "./custom-commands-service.js";
 import { daemonService } from "./daemon-service.js";
 
 protocol.registerSchemesAsPrivileged([
@@ -86,10 +87,38 @@ function createWindow() {
   });
 }
 
-function emit(event: unknown) { mainWindow?.webContents.send("agent:event", event); }
+// Agent events are tagged with the session they belong to, so the renderer can
+// route them to the right transcript even while several runs are live.
+function emit(event: AgentEvent) {
+  mainWindow?.webContents.send("agent:event", event);
+}
+function emitFor(sessionId: string, event: Omit<AgentEvent, "sessionId" | "timestamp">) {
+  emit({ ...event, sessionId, timestamp: new Date().toISOString() });
+}
 function requireRoot() { if (!activeProjectRoot) throw new Error("Select or create a project first."); return activeProjectRoot; }
 
-app.whenReady().then(() => {
+// Checkpoints left over from deleted/kept runs would keep the Undo card
+// clickable forever; this clears one when a run's changes are accepted.
+async function clearCheckpoint(projectId: string, sessionId: string, root: string, checkpointId?: string) {
+  if (!checkpointId) return;
+  try { await deleteWorkspaceCheckpoint(root, checkpointId); } catch { /* best effort */ }
+  await updateSession(projectId, sessionId, { checkpointId: undefined });
+}
+
+// The model APIs need a fetchable URL for images: nexus-attachment:// is a
+// renderer-only scheme. Convert saved attachments back to inline base64
+// data URLs before they go anywhere near a provider.
+async function resolveImageForModel(imageUrl: string): Promise<string> {
+  if (!imageUrl.startsWith("nexus-attachment://")) return imageUrl;
+  const fileName = path.basename(new URL(imageUrl).pathname);
+  const filePath = path.join(app.getPath("userData"), "attachments", fileName);
+  const buffer = await fs.readFile(filePath);
+  const ext = path.extname(fileName).slice(1).toLowerCase();
+  const mime = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+  return `data:${mime};base64,${buffer.toString("base64")}`;
+}
+
+app.whenReady().then(async () => {
   // Set standard Chrome desktop User-Agent to avoid webview blocks
   session.defaultSession.setUserAgent(CHROME_UA);
 
@@ -133,6 +162,28 @@ app.whenReady().then(() => {
     return net.fetch(`file://${filePath}`);
   });
 
+  // Home area bootstrap: fixed folder + built-in project (id "home") so
+  // general-assistant sessions persist like coding sessions. Best-effort —
+  // Home is created lazily by its IPC handlers if this fails.
+  try {
+    const homeRoot = await ensureHomeDir();
+    await ensureHomeProject(HOME_PROJECT_ID, "Home", homeRoot);
+  } catch { /* lazy fallback in home:get */ }
+
+  ipcMain.handle("home:get", async () => {
+    const homeRoot = await ensureHomeDir();
+    const project = await ensureHomeProject(HOME_PROJECT_ID, "Home", homeRoot);
+    return { project, root: homeRoot };
+  });
+  ipcMain.handle("home:files", () => listHomeFiles());
+  ipcMain.handle("home:sessionFiles", async (_event, sessionId: string) => {
+    const sessions = await listSessions(HOME_PROJECT_ID);
+    return listHomeSessionFiles(sessionId, sessions.map((s) => ({ id: s.id, createdAt: s.createdAt })));
+  });
+  ipcMain.handle("home:readFile", (_event, relativePath: string) => readHomeFile(relativePath));
+  ipcMain.handle("home:download", (_event, relativePath: string) => downloadHomeFile(relativePath));
+  ipcMain.handle("home:openFolder", () => openHomeFolder());
+
   ipcMain.handle("projects:list", () => listProjects());
   ipcMain.handle("project:select", async () => {
     const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
@@ -156,12 +207,9 @@ app.whenReady().then(() => {
   });
   ipcMain.handle("project:get-active", async () => activeProjectId ? { project: await getProject(activeProjectId), session: activeSessionId ? await getSession(activeProjectId, activeSessionId) : null } : null);
   ipcMain.handle("project:delete", async (_event, projectId: string) => {
-    const project = await getProject(projectId);
-    const sandboxConfig = await getSandboxConfig();
-    if (project) await deleteProjectSandbox(project, sandboxConfig);
-    const projects = await deleteProject(projectId);
+    await deleteProject(projectId);
     if (projectId === activeProjectId) { activeProjectId = null; activeSessionId = null; activeProjectRoot = null; }
-    return projects;
+    return listProjects();
   });
 
   ipcMain.handle("sessions:list", (_event, projectId: string) => listSessions(projectId));
@@ -192,19 +240,6 @@ app.whenReady().then(() => {
 
   ipcMain.handle("memory:project:update", (_event, projectId: string, memory: string) => updateProjectMemory(projectId, memory));
   ipcMain.handle("memory:session:update", (_event, projectId: string, sessionId: string, memory: string) => updateSession(projectId, sessionId, { memory }));
-  ipcMain.handle("sandbox:config:get", () => getSandboxConfig());
-  ipcMain.handle("sandbox:config:save", (_event, config: SandboxConfig) => saveSandboxConfig(config));
-  ipcMain.handle("sandbox:status", async () => {
-    const project = activeProjectId ? await getProject(activeProjectId) : null;
-    return project ? getSandboxStatus(project, await getSandboxConfig()) : { configured: Boolean(await getSandboxConfig()), status: "no_project", sandbox: null };
-  });
-  ipcMain.handle("sandbox:stop", async () => {
-    if (activeProjectId) {
-      const project = await getProject(activeProjectId);
-      if (project) await stopProjectSandbox(project, await getSandboxConfig());
-    }
-    return true;
-  });
 
   ipcMain.handle("providers:definitions", () => PROVIDERS);
   ipcMain.handle("providers:list", async () => (await listProviders()).map((provider) => ({ ...provider, apiKey: provider.apiKey ? "********" : "" })));
@@ -297,12 +332,8 @@ app.whenReady().then(() => {
   ipcMain.handle("workspace:git", () => getWorkspaceGit(requireRoot()));
   ipcMain.handle("workspace:command", async (_event, command: string) => {
     const project = activeProjectId ? await getProject(activeProjectId) : null;
-    let config = await getSandboxConfig();
-    if (!config?.enabled || config.provider !== "local") {
-      config = await saveSandboxConfig({ enabled: true, provider: "local", requireApproval: true, allowNetwork: false, commandTimeoutSeconds: 120 });
-    }
     if (!project) throw new Error("Active project not found.");
-    const result = await runSandboxCommand(project, config, command);
+    const result = await runProjectCommand(project, command);
     return result.output || "Command completed successfully.";
   });
 
@@ -372,11 +403,14 @@ app.whenReady().then(() => {
     return await discoverProjectRules(project.root);
   });
 
-  ipcMain.handle("terminal:create", (_event, { id, cwd, cols, rows }: { id: string; cwd?: string; cols?: number; rows?: number }) => {
+  ipcMain.handle("terminal:create", async (_event, { id, cwd, cols, rows }: { id: string; cwd?: string; cols?: number; rows?: number }) => {
     const root = cwd || activeProjectRoot || process.cwd();
-    return terminalService.createSession(id, root, (data) => {
+    const session = await terminalService.createSession(id, root, (data) => {
       mainWindow?.webContents.send("terminal:data", { id, data });
     }, { cols, rows });
+    // The live session holds an onData callback and a ChildProcess handle; both
+    // are uncloneable over IPC, so only plain serializable fields cross back.
+    return { id: session.id, mode: session.mode, cols: session.cols, rows: session.rows, alive: session.alive };
   });
 
   ipcMain.handle("terminal:write", (_event, { id, data }: { id: string; data: string }) => {
@@ -387,8 +421,8 @@ app.whenReady().then(() => {
     return terminalService.killSession(id);
   });
 
-  ipcMain.handle("terminal:resize", (_event, { id, cols, rows }: { id: string; cols: number; rows: number }) => {
-    return terminalService.resize(id, cols, rows);
+  ipcMain.handle("terminal:resize", (_event, { id, cols, rows }: { id: string; cols?: number; rows?: number }) => {
+    return terminalService.resize(id, cols || 80, rows || 24);
   });
 
   // Custom Slash Commands
@@ -429,36 +463,42 @@ app.whenReady().then(() => {
     return false;
   });
 
+  // Each run collects its own transcript events so they can be persisted to the
+  // session in one batch — tool traces and plans survive an app restart now.
+  type RunTranscript = { items: Array<{ role: "event"; text: string; kind: AgentEvent["type"]; createdAt: string; plan?: AgentEvent["items"]; subagent?: AgentEvent["subagent"]; artifact?: AgentEvent["artifact"]; usage?: AgentEvent["usage"] }> };
+
   ipcMain.handle("agent:run", async (_event, payload: { request: string; images?: string[]; providerId?: string; model?: string; mode?: string }) => {
     const root = requireRoot();
     if (!activeProjectId || !activeSessionId) throw new Error("Create a session first.");
     if (activeRunSessions.has(activeSessionId)) throw new Error("An agent run is already in progress in this session.");
 
-    activeRunSessions.add(activeSessionId);
-    beginSandboxRun();
+    const sessionId = activeSessionId;
+    const projectId = activeProjectId;
+    activeRunSessions.add(sessionId);
+    beginCommandRun();
+    const transcript: RunTranscript = { items: [] };
+    // Prelude heartbeat: if the run ever wedges before the agent emits,
+    // the UI shows the last reached stage instead of a mystery spinner.
+    emitFor(sessionId, { type: "status", text: "Opening session…" });
     try {
-      const project = await getProject(activeProjectId);
-      const session = await getSession(activeProjectId, activeSessionId);
+      const project = await getProject(projectId);
+      const session = await getSession(projectId, sessionId);
       if (!project || !session) throw new Error("Active project/session not found.");
 
       const mode: AgentMode = payload.mode === "plan" || payload.mode === "auto" ? payload.mode : "ask";
       const configured = payload.providerId ? (await listProviders()).find((provider) => provider.id === payload.providerId) : undefined;
       const provider = configured || (await listProviders())[0];
-      const runSettings: AgentSettings = provider ? { provider, model: payload.model || session.model?.model } : settings;
-      let sandboxConfig = await getSandboxConfig();
-      if (!sandboxConfig || !sandboxConfig.enabled || sandboxConfig.provider !== "local") {
-        sandboxConfig = await saveSandboxConfig({ enabled: true, provider: "local", requireApproval: true, allowNetwork: false, commandTimeoutSeconds: 120 });
-      }
+      const runSettings: AgentSettings = provider ? { provider, model: payload.model || session.model?.model } : { ...settings };
 
       if (session.title === "New coding task" && payload.request) {
-        await updateSession(activeProjectId, activeSessionId, { title: payload.request.slice(0, 60) });
+        await updateSession(projectId, sessionId, { title: payload.request.slice(0, 60) });
       }
 
       // Check if session has an explicit active worktree
       let executionRoot = root;
       if (await isGitRepo(root)) {
         try {
-          const wt = await getSessionWorktree(root, activeSessionId);
+          const wt = await getSessionWorktree(root, sessionId);
           if (wt) executionRoot = wt.worktreePath;
         } catch {
           executionRoot = root;
@@ -470,60 +510,140 @@ app.whenReady().then(() => {
         .slice(-16)
         .map((message) => ({ role: message.role as AgentTurn["role"], text: message.text }));
 
-      const sandboxProject = { ...project, root: executionRoot };
-      const sandboxSession = await getSandboxAgentBackend(sandboxProject, sandboxConfig, { readOnly: mode === "plan" });
+      // Continue-resume: a bare "continue" after an interrupt/stop must pick
+      // up the prior run's tool checkpoint, plan and diff — otherwise the
+      // model restarts from scratch. The checkpoint cache covers same-process
+      // resume; the transcript-derived note covers app restarts.
+      const wantResume = isContinueRequest(payload.request || "");
+      // Memory first, disk second: checkpoints are mirrored to
+      // .nexus/run-checkpoints/ so "continue" survives an app restart.
+      const stored = wantResume ? getLastRunCheckpoint(sessionId) ?? await loadLastRunCheckpoint(root, sessionId) : null;
+      let resumeNote: string | null = null;
+      if (wantResume) {
+        const planEvents = session.messages.filter((m) => m.role === "event" && m.kind === "plan" && m.plan?.length);
+        const lastPlan = planEvents.length ? planEvents[planEvents.length - 1].plan! : null;
+        const errorEvents = session.messages.filter((m) => m.role === "event" && m.kind === "error");
+        const lastError = errorEvents.length ? errorEvents[errorEvents.length - 1].text : null;
+        const assistants = session.messages.filter((m) => m.role === "assistant");
+        const lastAssistant = assistants.length ? assistants[assistants.length - 1].text.slice(-1500) : null;
+        let diffSummary = "";
+        try {
+          const diffs = await getWorkspaceDiffFiles(executionRoot);
+          if (diffs.length) diffSummary = `\nFiles already changed:\n${diffs.slice(0, 20).map((d) => `- ${d.path} (+${d.additions}/-${d.deletions})`).join("\n")}`;
+        } catch { /* diff is best-effort */ }
+        const planSummary = (stored?.planItems ?? lastPlan)?.length
+          ? `\nWorking plan status:\n${(stored?.planItems ?? lastPlan)!.map((p) => `- [${p.status === "completed" ? "x" : " "}] ${p.content} (${p.status})`).join("\n")}`
+          : "";
+        // Explicit done-list: weak models re-do finished steps from prose
+        // instructions alone; a concrete ledger survives where they don't.
+        const ledger = stored?.messages?.length ? summarizeCompletedSteps(stored.messages) : [];
+        const ledgerSummary = ledger.length
+          ? `\nSteps already DONE (never repeat — results are in history):\n${ledger.map((s) => `- ${s}`).join("\n")}`
+          : "";
+        resumeNote = `[System Note: The user asked to continue the previous interrupted run. All preceding tool executions and results ${stored ? `(${stored.messages.length} checkpointed messages) ` : ""}are already complete.${planSummary}${ledgerSummary}${lastError ? `\nLast stop reason: ${lastError.slice(0, 500)}` : ""}${lastAssistant ? `\nLast assistant summary: ${lastAssistant}` : ""}${diffSummary}\n\nIMPORTANT: Do NOT restart from the beginning, do NOT re-create the todo list from scratch, and do NOT repeat completed tool actions or file reads. Proceed directly with the next unfinished step.]`;
+      }
+
+      const backendRecord = { ...project, root: executionRoot };
+      emitFor(sessionId, { type: "status", text: "Preparing workspace…" });
+      const { backend } = await getAgentBackend(backendRecord, { readOnly: mode === "plan" });
       const checkpointId = `cp_${Date.now().toString(36)}`;
       await createWorkspaceCheckpoint(executionRoot, checkpointId);
-      await appendSessionMessage(activeProjectId, activeSessionId, { role: "user", text: payload.request, createdAt: new Date().toISOString() });
+      await appendSessionMessages(projectId, sessionId, [{ role: "user", text: payload.request, images: payload.images, createdAt: new Date().toISOString() }]);
 
+      // Renderer-only attachment URLs become inline data URLs for the model.
+      const modelImages = payload.images?.length
+        ? await Promise.all(payload.images.map((img) => resolveImageForModel(img).catch(() => img)))
+        : undefined;
+
+      // Home sessions run the general assistant: same tool loop, but no
+      // code-project verification and a Home-oriented system prompt.
+      const isHomeRun = project.id === HOME_PROJECT_ID;
+      const runStartMs = Date.now();
       let result: Awaited<ReturnType<typeof runProjectAgent>>;
       try {
         result = await runProjectAgent({
           projectRoot: executionRoot,
           telemetryRoot: root,
-          sessionId: activeSessionId,
+          taskKind: isHomeRun ? "general" : "code",
+          sessionId,
           request: payload.request,
-          images: payload.images,
+          images: modelImages,
           settings: runSettings,
           memory: { projectMemory: project.memory, sessionMemory: session.memory },
           history,
           mode,
-          sandboxBackend: sandboxSession.backend,
-          onEvent: emit,
-          isCancelled: isSandboxRunCancelled,
+          agentBackend: backend,
+          resumeMessages: stored?.messages ?? null,
+          resumePlanItems: stored?.planItems ?? null,
+          resumeNote,
+          onEvent: (event) => {
+            // Token chunks stay ephemeral (streaming display only); everything
+            // else is captured for the persisted transcript.
+            if (event.type !== "token") {
+              transcript.items.push({
+                role: "event",
+                text: event.text,
+                kind: event.type,
+                createdAt: event.timestamp,
+                plan: event.items,
+                subagent: event.subagent,
+                artifact: event.artifact,
+                usage: event.type === "usage" ? undefined : event.usage,
+              });
+            }
+            emit(event);
+          },
+          isCancelled: isCommandRunCancelled,
         });
       } catch (error) {
-        if (error instanceof RunCancelledError) {
-          emit({ type: "error", text: "Run cancelled by user.", timestamp: new Date().toISOString() });
-          await appendSessionMessage(activeProjectId, activeSessionId, { role: "event", text: "Run cancelled by user.", createdAt: new Date().toISOString() });
-          return "Run cancelled by user.";
-        }
+        const errorText = error instanceof Error ? error.message : String(error);
+        // Failed runs leave a persistent error entry so the transcript tells
+        // the truth after a reload, not just in the live view.
+        await appendSessionMessages(projectId, sessionId, [
+          ...transcript.items,
+          { role: "event", kind: "error", text: `Agent run failed: ${errorText}`, createdAt: new Date().toISOString() },
+        ]);
+        emitFor(sessionId, { type: "error", text: `Agent run failed: ${errorText}` });
+        if (error instanceof RunCancelledError) return "Run cancelled by user.";
         throw error;
       }
 
-      await syncSandboxToProject(sandboxSession.workspace, executionRoot);
-      await appendSessionMessage(activeProjectId, activeSessionId, { role: "assistant", text: result.response, createdAt: new Date().toISOString(), usage: result.usage });
-
-      const prevUsage = session.usage || { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimatedCost: 0 };
-      const cumulativeUsage: AgentUsage = {
-        inputTokens: (prevUsage.inputTokens || 0) + (result.usage?.inputTokens || 0),
-        outputTokens: (prevUsage.outputTokens || 0) + (result.usage?.outputTokens || 0),
-        totalTokens: (prevUsage.totalTokens || 0) + (result.usage?.totalTokens || 0),
-        estimatedCost: Number(((prevUsage.estimatedCost || 0) + (result.usage?.estimatedCost || 0)).toFixed(4)),
-      };
-      await updateSession(activeProjectId, activeSessionId, {
+      await appendSessionMessages(projectId, sessionId, [
+        ...transcript.items,
+        { role: "assistant", text: result.response, createdAt: new Date().toISOString(), usage: result.usage },
+      ]);
+      // Home safety net: if the agent left its throwaway generator script
+      // behind (e.g. generate_report.py next to report.docx), remove it so
+      // only the requested deliverable(s) remain. Recorded in-transcript.
+      if (isHomeRun) {
+        try {
+          const deleted = await cleanupHomeGeneratorScripts(runStartMs, payload.request || "");
+          if (deleted.length) {
+            await appendSessionMessages(projectId, sessionId, [
+              { role: "event", kind: "tool", text: `Cleaned up generator script${deleted.length === 1 ? "" : "s"}: ${deleted.join(", ")}`, createdAt: new Date().toISOString() },
+            ]);
+          }
+        } catch { /* best effort — deliverable already exists */ }
+      }
+      await clearCheckpoint(projectId, sessionId, root, session.checkpointId);
+      // Memories are rolling windows, not append-only logs: entries are
+      // individually capped upstream, and the totals are capped here so
+      // hundreds of runs cannot bloat every future prompt.
+      const nextSessionMemory = [session.memory, result.memoryEntry].filter(Boolean).join("\n\n");
+      const nextProjectMemory = [project.memory, result.projectMemoryLogEntry].filter(Boolean).join("\n");
+      await updateSession(projectId, sessionId, {
         checkpointId,
-        usage: cumulativeUsage,
-        memory: [session.memory, result.memoryEntry].filter(Boolean).join("\n\n"),
+        memory: nextSessionMemory.slice(-4000),
       });
-      await updateProjectMemory(activeProjectId, [project.memory, `Recent work in ${session.title}: ${payload.request}`].filter(Boolean).join("\n"));
+      // Keep the memory log bounded; agent-service returns a capped entry.
+      await updateProjectMemory(projectId, nextProjectMemory.slice(-2000));
       return result.response;
     } finally {
-      if (activeSessionId) activeRunSessions.delete(activeSessionId);
+      activeRunSessions.delete(sessionId);
     }
   });
 
-  ipcMain.handle("agent:cancel", () => { cancelSandboxRun(); return true; });
+  ipcMain.handle("agent:cancel", () => { cancelCommandRun(); return true; });
 
   createWindow();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

@@ -19,6 +19,24 @@ interface ActiveDaemon {
   listeners: Set<(data: string) => void>;
 }
 
+// Only structural environment variables reach a spawned dev server; secrets
+// and API keys from the host environment stay behind.
+const DAEMON_ENV_PASSTHROUGH = [
+  "PATH", "PATHEXT", "SystemRoot", "SystemDrive", "ComSpec", "windir",
+  "TEMP", "TMP", "APPDATA", "LOCALAPPDATA", "ProgramData", "PROGRAMFILES",
+  "ProgramFiles(x86)", "HOMEDRIVE", "HOMEPATH", "USERPROFILE", "OS", "LANG",
+  "LC_ALL", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "ALLUSERSPROFILE",
+];
+
+function daemonEnvironment(): NodeJS.ProcessEnv {
+  const env: Record<string, string> = { FORCE_COLOR: "1" };
+  for (const key of DAEMON_ENV_PASSTHROUGH) {
+    const value = process.env[key];
+    if (value) env[key] = value;
+  }
+  return env;
+}
+
 export class DaemonService {
   private daemons = new Map<string, ActiveDaemon>();
 
@@ -62,7 +80,9 @@ export class DaemonService {
       const child = spawn(info.command, {
         shell: true,
         cwd: info.cwd,
-        env: { ...process.env, FORCE_COLOR: "1" },
+        // Dev servers don't need host secrets; passing the full parent
+        // environment would hand them every API key in it.
+        env: daemonEnvironment(),
         windowsHide: true,
         detached: !isWin,
       });

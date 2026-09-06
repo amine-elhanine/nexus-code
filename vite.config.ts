@@ -15,6 +15,18 @@ export default defineConfig({
       output: {
         manualChunks(id: string) {
           if (id.includes("node_modules")) {
+            // Preview libs stay in their own lazy chunks (loaded only when
+            // previewing that file type) instead of bloating the vendor
+            // bundle pulled on every launch.
+            if (
+              id.includes("@aiden0z") ||
+              id.includes("docx-preview") ||
+              id.includes("/xlsx/") ||
+              id.includes("echarts") ||
+              id.includes("jszip")
+            ) {
+              return undefined;
+            }
             if (id.includes("react") || id.includes("react-dom")) return "react";
             if (id.includes("@monaco-editor")) return "monaco";
             if (id.includes("@xterm")) return "xterm";

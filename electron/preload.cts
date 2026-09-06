@@ -40,10 +40,6 @@ const nexusApi = {
   openSkillsFolder: (scope: "global" | "project") => invoke("skills:open-folder", scope),
   getSettings: () => invoke("settings:get"),
   saveSettings: (settings: unknown) => invoke("settings:save", settings),
-  getSandboxConfig: () => invoke("sandbox:config:get"),
-  saveSandboxConfig: (config: unknown) => invoke("sandbox:config:save", config),
-  getSandboxStatus: () => invoke("sandbox:status"),
-  stopSandbox: () => invoke("sandbox:stop"),
   listWorkspace: () => invoke("workspace:list"),
   readFile: (file: string) => invoke("workspace:read", file),
   readHead: (file: string) => invoke("workspace:readHead", file),
@@ -108,6 +104,14 @@ const nexusApi = {
   maximizeWindow: () => invoke("window:maximize"),
   closeWindow: () => invoke("window:close"),
   isWindowMaximized: () => invoke("window:isMaximized"),
+
+  // Home (general assistant)
+  getHome: () => invoke("home:get"),
+  listHomeFiles: () => invoke("home:files"),
+  listHomeSessionFiles: (sessionId: string) => invoke("home:sessionFiles", sessionId),
+  readHomeFile: (relativePath: string) => invoke("home:readFile", relativePath),
+  downloadHomeFile: (relativePath: string) => invoke("home:download", relativePath),
+  openHomeFolder: () => invoke("home:openFolder"),
 
   runAgent: (payload: { request: string; images?: string[]; providerId?: string; model?: string; mode?: string }) => invoke("agent:run", payload),
   cancelAgent: () => invoke("agent:cancel"),

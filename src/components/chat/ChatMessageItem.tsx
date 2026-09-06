@@ -6,7 +6,6 @@ import { PlanCard } from "./PlanCard.js";
 import { SubagentCardView } from "./SubagentCard.js";
 import { ArtifactCard } from "./ArtifactCard.js";
 import type { ChatItem, ArtifactItem } from "../../types.js";
-
 export function ChatItemView({
   message,
   onOpenArtifact,
@@ -83,7 +82,7 @@ export function ChatItemView({
             <b>{message.usage.totalTokens.toLocaleString()}</b> tokens (
             {message.usage.inputTokens.toLocaleString()} in / {message.usage.outputTokens.toLocaleString()} out)
           </span>
-          <span className="message-usage-cost">~${message.usage.estimatedCost.toFixed(4)}</span>
+          <span className="message-usage-cost">{message.usage.estimatedCost == null ? "—" : `~$${message.usage.estimatedCost.toFixed(4)}`}</span>
         </div>
       )}
     </div>
@@ -138,7 +137,7 @@ export function ActivityGroupView({
                     <Activity size={11} />
                   )}
                 </span>
-                <span>{event.text || event.kind || "Agent action"}</span>
+                <span title={event.text || event.kind || "Agent action"}>{event.text || event.kind || "Agent action"}</span>
                 <time>{timeLabel(event.createdAt)}</time>
                 <ChevronRight size={12} />
               </summary>

@@ -8,10 +8,8 @@ import { SlashCommandPopup, type SlashCommand } from "../components/chat/SlashCo
 import { VoiceDictationButton } from "../components/chat/VoiceDictationButton.js";
 import { ChatItemView, ActivityGroupView } from "../components/chat/ChatMessageItem.js";
 import { fileIcon } from "../utils/format.js";
-import type {
-  ChatItem, FileEntry, ProviderConfig, ProviderDefinition,
-  AgentUsage, ArtifactItem
-} from "../types.js";
+import { formatCost } from "../types.js";
+import type { ChatItem, FileEntry, ProviderConfig, ProviderDefinition, AgentUsage, ArtifactItem } from "../types.js";
 
 export function ModelSelect({
   selectedProviderId,
@@ -93,8 +91,6 @@ export function AgentView({
   onOpenProviders,
   onAttachFile,
   onAttachDiff,
-  showComposerMenu,
-  setShowComposerMenu,
   sessionUsage,
   activeSessionId,
   worktreeStatus,
@@ -131,8 +127,6 @@ export function AgentView({
   onOpenProviders: () => void;
   onAttachFile: () => void;
   onAttachDiff: () => void;
-  showComposerMenu: boolean;
-  setShowComposerMenu: (value: boolean) => void;
   sessionUsage?: AgentUsage;
   activeSessionId?: string;
   worktreeStatus?: { isGit: boolean; worktree: { worktreePath: string; branch: string } | null } | null;
@@ -147,12 +141,17 @@ export function AgentView({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  // Stick to the bottom only while the user is already there; reading history
+  // mid-run must not be yanked around by every streamed token.
+  const stickToBottomRef = useRef(true);
 
   const api = window.nexus || window.forgepilot;
+  const [showComposerMenu, setShowComposerMenu] = useState(false);
 
   useEffect(() => {
-    if (transcriptRef.current) {
-      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+    const el = transcriptRef.current;
+    if (el && stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
     }
   }, [messages, liveEvents, streamingText]);
 
@@ -409,7 +408,7 @@ export function AgentView({
                 </b>{" "}
                 tokens
               </span>
-              <span className="cost">~${sessionUsage.estimatedCost.toFixed(4)}</span>
+              <span className="cost">{formatCost(sessionUsage.estimatedCost)}</span>
             </span>
           )}
           <span className="local-badge">
@@ -418,7 +417,15 @@ export function AgentView({
           <span className="mode-badge">{mode} mode</span>
         </div>
       </div>
-      <div className="agent-transcript" ref={transcriptRef}>
+      <div
+        className="agent-transcript"
+        ref={transcriptRef}
+        onScroll={() => {
+          const el = transcriptRef.current;
+          if (!el) return;
+          stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+        }}
+      >
         {!messages.length && (
           <div className="empty-agent">
             <div className="empty-agent-icon">
@@ -458,7 +465,7 @@ export function AgentView({
           <ActivityGroupView
             events={liveEvents}
             running
-            currentText={streamingText}
+            currentText={streamingText || (liveEvents.length ? undefined : "Starting the agent… the first step can take a while.")}
             onOpenArtifact={onOpenArtifact}
           />
         )}
@@ -591,7 +598,7 @@ export function AgentView({
           </div>
         </div>
         <div className="input-note">
-          <ShieldCheck size={12} /> Nexus can edit files, inspect websites, and run safe commands inside this workspace
+          <ShieldCheck size={12} /> Nexus runs real commands and edits files in this workspace — review the Diff tab before keeping changes
         </div>
       </div>
     </div>

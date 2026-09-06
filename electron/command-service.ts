@@ -1,0 +1,131 @@
+import { execFile, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+import path from "node:path";
+import { FilesystemBackend } from "deepagents";
+import { isDeniedCommand } from "./permissions.js";
+import type { ProjectRecord } from "./store.js";
+
+const DEFAULT_COMMAND_TIMEOUT_SECONDS = 180;
+
+// One agent run is active at a time (main.ts holds the lock). Cancelling a run
+// rejects new commands, kills every tracked child process tree (taskkill /T on
+// Windows, a built-in), and the agent loop unwinds at the next chunk or command.
+const activeChildren = new Set<ChildProcess>();
+let runCancelled = false;
+
+export function beginCommandRun() { runCancelled = false; }
+export function isCommandRunCancelled() { return runCancelled; }
+export function cancelCommandRun() {
+  runCancelled = true;
+  for (const child of activeChildren) {
+    try {
+      if (process.platform === "win32" && child.pid) spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+      else child.kill();
+    } catch { /* child already exited */ }
+  }
+  activeChildren.clear();
+}
+
+function runProcess(shell: string, args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv; timeout?: number; maxBuffer?: number }) {
+  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    // windowsVerbatimArguments is required on Windows: Node would otherwise
+    // backslash-escape the quotes inside the command string, and cmd.exe
+    // (invoked verbatim below as /d /s /c "<command>") misparses the result —
+    // `node -e "console.log(1)"` silently produces no output.
+    const child = execFile(shell, args, {
+      cwd: options.cwd,
+      env: options.env,
+      timeout: options.timeout,
+      maxBuffer: options.maxBuffer,
+      windowsHide: true,
+      windowsVerbatimArguments: process.platform === "win32",
+    }, (error, stdout, stderr) => {
+      activeChildren.delete(child);
+      if (error) { (error as any).stdout = stdout; (error as any).stderr = stderr; reject(error); }
+      else resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
+    });
+    if (child.pid) activeChildren.add(child);
+  });
+}
+
+export type CommandResult = { output: string; exitCode: number; truncated: boolean };
+
+// Opencode parity: agent tool outputs must never flood context. A bare
+// `npm run check` or recursive listing can be megabytes — cap what returns
+// to the model (head + tail) so one command cannot blow up the run.
+export const MODEL_OUTPUT_CAP = 8000;
+
+export function capModelOutput(output: string): { output: string; truncated: boolean } {
+  if (!output || output.length <= MODEL_OUTPUT_CAP) return { output, truncated: false };
+  const head = output.slice(0, 6000);
+  const tail = output.slice(-2000);
+  return {
+    output: `${head}\n\n…[output truncated: ${output.length} chars total, showing first 6000 + last 2000]…\n\n${tail}`,
+    truncated: true,
+  };
+}
+
+export async function executeCommand(projectRoot: string, command: string, options: { timeoutSeconds?: number } = {}): Promise<CommandResult> {
+  if (runCancelled) return { output: "Run cancelled by user.", exitCode: 130, truncated: false };
+  const trimmed = command.trim();
+  if (!trimmed) return { output: "Command is empty.", exitCode: 1, truncated: false };
+  if (isDeniedCommand(trimmed)) return { output: "Command blocked by permission policy (destructive pattern).", exitCode: 1, truncated: false };
+
+  const shell = process.platform === "win32" ? (process.env.ComSpec || "cmd.exe") : "/bin/sh";
+  const args = process.platform === "win32" ? ["/d", "/s", "/c", trimmed] : ["-c", trimmed];
+  const env = { ...process.env, CI: "true" };
+
+  try {
+    const result = await runProcess(shell, args, {
+      cwd: path.resolve(projectRoot),
+      env,
+      timeout: Math.max(10, options.timeoutSeconds || DEFAULT_COMMAND_TIMEOUT_SECONDS) * 1000,
+      maxBuffer: 8_000_000,
+    });
+    const capped = capModelOutput([result.stdout, result.stderr].filter(Boolean).join("\n"));
+    return { output: capped.output, exitCode: 0, truncated: capped.truncated };
+  } catch (error: any) {
+    if (runCancelled) return { output: "Run cancelled by user.", exitCode: 130, truncated: false };
+    const output = [error?.stdout, error?.stderr, error?.message].filter(Boolean).join("\n");
+    const capped = capModelOutput(output);
+    return { output: capped.output, exitCode: typeof error?.code === "number" ? error.code : 1, truncated: capped.truncated };
+  }
+}
+
+function backendId(project: ProjectRecord) { return `workspace-${project.id}`; }
+
+export async function getAgentBackend(project: ProjectRecord, options: { readOnly?: boolean } = {}) {
+  const backend: any = new FilesystemBackend({ rootDir: path.resolve(project.root), virtualMode: true });
+  backend.id = backendId(project);
+  // Cap listing/search fan-out: an uncapped `ls /` or `glob **/*` on a repo
+  // with node_modules/dist returns thousands of entries into context and the
+  // run looks busy while achieving nothing. Truncate with a hint instead.
+  const capEntries = (result: any, kind: "files" | "matches", max: number, hint: string) => {
+    const list = result?.[kind];
+    if (!Array.isArray(list) || list.length <= max) return result;
+    return { ...result, [kind]: [...list.slice(0, max)], truncated: true, notice: `${hint} (${list.length} total, showing first ${max})` };
+  };
+  for (const [method, kind, max, hint] of [
+    ["ls", "files", 200, "Directory listing truncated — list a subdirectory or use glob/grep"],
+    ["glob", "files", 200, "Glob matched too many files — narrow the pattern"],
+    ["grep", "matches", 100, "Too many matches — narrow the pattern or scope to a subdirectory"],
+  ] as const) {
+    const original = backend[method]?.bind(backend);
+    if (!original) continue;
+    backend[method] = async (...args: any[]) => capEntries(await original(...args), kind, max, hint);
+  }
+  if (options.readOnly) {
+    const refuse = (action: string) => async () => { throw new Error(`Plan mode is read-only: ${action} is disabled. Explore the repository and produce an implementation plan instead of changing files.`); };
+    backend.write = refuse("write_file");
+    backend.edit = refuse("edit_file");
+    backend.delete = refuse("delete");
+    backend.execute = refuse("execute");
+  } else {
+    backend.execute = (command: string) => executeCommand(project.root, command);
+  }
+  return { backend, workspace: project.root };
+}
+
+export async function runProjectCommand(project: ProjectRecord, command: string) {
+  return executeCommand(project.root, command);
+}

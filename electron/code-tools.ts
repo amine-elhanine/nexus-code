@@ -1,7 +1,11 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+
+const execFileAsync = promisify(execFile);
 
 export type SymbolEntry = {
   kind: "function" | "class" | "interface" | "type" | "variable" | "export" | "import" | "struct" | "enum" | "trait";
@@ -42,6 +46,10 @@ function safePath(projectRoot: string, requested: string) {
     throw new Error("Path escapes the selected project root.");
   }
   return candidate;
+}
+
+function isCodeFile(name: string) {
+  return CODE_EXTENSIONS.has(path.extname(name).toLowerCase());
 }
 
 export function parseSymbolsFromCode(arg1: string, arg2: string): SymbolEntry[] {
@@ -176,6 +184,73 @@ export function formatOutline(arg1: any, arg2: any, arg3?: number): string {
   return `File: ${fileName} (${totalLines} lines, ${symbols.length} symbols):\n${formatted}`;
 }
 
+// git grep is the fast path for workspace search: it respects .gitignore, runs
+// in-process in the git binary and skips binary files automatically. The
+// filesystem walk remains as the fallback for non-git projects.
+export type GrepHit = { path: string; line: number; text: string };
+
+async function gitGrep(projectRoot: string, pattern: string, extraArgs: string[] = []): Promise<GrepHit[] | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["grep", "-n", "-I", "--no-color", "-E", "-e", pattern, ...extraArgs],
+      { cwd: path.resolve(projectRoot), maxBuffer: 4_000_000 }
+    );
+    const hits: GrepHit[] = [];
+    for (const line of stdout.split(/\r?\n/)) {
+      if (!line) continue;
+      const sep = line.indexOf(":");
+      const lineSep = line.indexOf(":", sep + 1);
+      if (sep === -1 || lineSep === -1) continue;
+      const file = line.slice(0, sep);
+      const lineNo = Number(line.slice(sep + 1, lineSep));
+      if (!Number.isFinite(lineNo)) continue;
+      hits.push({ path: file, line: lineNo, text: line.slice(lineSep + 1) });
+    }
+    return hits;
+  } catch (error: any) {
+    // git grep exits 1 on "no matches" — that is a valid empty result.
+    if (error?.code === 1 && typeof error?.stdout === "string") return [];
+    return null; // not a git repo, or git missing — fall back to the walk
+  }
+}
+
+async function walkSearch(
+  projectRoot: string,
+  matchesFile: (name: string) => boolean,
+  scanContent: (full: string, rel: string, stat: { size: number }) => Promise<GrepHit[]>
+): Promise<GrepHit[]> {
+  const hits: GrepHit[] = [];
+  async function walk(dir: string, depth = 0) {
+    if (depth > 8 || hits.length >= 200) return;
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (IGNORED_DIRS.has(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full, depth + 1);
+      } else if (matchesFile(entry.name)) {
+        try {
+          const stat = await fs.stat(full);
+          if (stat.size > 2_000_000) continue;
+          const found = await scanContent(full, path.relative(projectRoot, full).replace(/\\/g, "/"), stat);
+          for (const hit of found) {
+            if (hits.length >= 200) return;
+            hits.push(hit);
+          }
+        } catch { /* ignore read errors */ }
+      }
+    }
+  }
+  await walk(path.resolve(projectRoot));
+  return hits;
+}
+
 export function createCodeIntelligenceTools(projectRoot: string) {
   const getSymbolOutlineTool = tool(
     async ({ filePath }: { filePath: string }) => {
@@ -203,37 +278,31 @@ export function createCodeIntelligenceTools(projectRoot: string) {
       const cleanSymbol = symbol.trim();
       if (!cleanSymbol) return "Symbol name is required.";
 
-      const matches: string[] = [];
-      async function searchDir(dir: string, depth = 0) {
-        if (depth > 8 || matches.length >= 25) return;
-        let entries;
-        try {
-          entries = await fs.readdir(dir, { withFileTypes: true });
-        } catch {
-          return;
-        }
-        for (const entry of entries) {
-          if (IGNORED_DIRS.has(entry.name)) continue;
-          const full = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            await searchDir(full, depth + 1);
-          } else if (CODE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
-            try {
-              const content = await fs.readFile(full, "utf8");
-              const symbols = parseSymbolsFromCode(content, entry.name);
-              const found = symbols.filter((s) => s.name.toLowerCase() === cleanSymbol.toLowerCase());
-              for (const item of found) {
-                const rel = path.relative(projectRoot, full).replace(/\\/g, "/");
-                matches.push(`${rel}:L${item.line} -> ${item.signature}`);
-              }
-            } catch { /* ignore */ }
-          }
-        }
+      const escaped = cleanSymbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      let hits = await gitGrep(projectRoot, `\\b${escaped}\\b`);
+      if (hits === null) {
+        hits = await walkSearch(projectRoot, isCodeFile, async (full, rel) => {
+          const content = await fs.readFile(full, "utf8");
+          const symbols = parseSymbolsFromCode(content, path.basename(full));
+          return symbols
+            .filter((s) => s.name.toLowerCase() === cleanSymbol.toLowerCase())
+            .map((s) => ({ path: rel, line: s.line, text: s.signature }));
+        });
       }
 
-      await searchDir(path.resolve(projectRoot));
-      if (!matches.length) return `No declaration found for symbol "${cleanSymbol}" in workspace.`;
-      return `Found ${matches.length} declaration(s) for "${cleanSymbol}":\n${matches.join("\n")}`;
+      // A definition line declares the symbol (declaration regex match), not
+      // just mentions it; rank those first and cap the output.
+      const scored = hits
+        .map((hit) => {
+          const declMatch = hit.text.match(/(function|fn|def|class|interface|type|struct|enum|trait|const|let|var)\s+([A-Za-z0-9_]+)/);
+          const isDeclaration = Boolean(declMatch && declMatch[2].toLowerCase() === cleanSymbol.toLowerCase());
+          return { hit, isDeclaration };
+        })
+        .sort((a, b) => Number(b.isDeclaration) - Number(a.isDeclaration))
+        .slice(0, 25);
+      if (!scored.length) return `No declaration found for symbol "${cleanSymbol}" in workspace.`;
+      const lines = scored.map(({ hit, isDeclaration }) => `${hit.path}:L${hit.line}${isDeclaration ? "" : " (reference)"} -> ${hit.text.trim().slice(0, 100)}`);
+      return `Found ${scored.length} declaration candidate(s) for "${cleanSymbol}":\n${lines.join("\n")}`;
     },
     {
       name: "find_symbol_definition",
@@ -250,42 +319,24 @@ export function createCodeIntelligenceTools(projectRoot: string) {
       if (!cleanSymbol) return "Symbol name is required.";
 
       const escaped = cleanSymbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const refRegex = new RegExp(`\\b${escaped}\\b`, "g");
-      const references: string[] = [];
-
-      async function searchRefs(dir: string, depth = 0) {
-        if (depth > 8 || references.length >= 40) return;
-        let entries;
-        try {
-          entries = await fs.readdir(dir, { withFileTypes: true });
-        } catch {
-          return;
-        }
-        for (const entry of entries) {
-          if (IGNORED_DIRS.has(entry.name)) continue;
-          const full = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            await searchRefs(full, depth + 1);
-          } else if (CODE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
-            try {
-              const content = await fs.readFile(full, "utf8");
-              const lines = content.split(/\r?\n/);
-              for (let i = 0; i < lines.length; i++) {
-                if (references.length >= 40) break;
-                refRegex.lastIndex = 0;
-                if (refRegex.test(lines[i])) {
-                  const rel = path.relative(projectRoot, full).replace(/\\/g, "/");
-                  references.push(`${rel}:L${i + 1}: ${lines[i].trim().slice(0, 100)}`);
-                }
-              }
-            } catch { /* ignore */ }
+      const pattern = `\\b${escaped}\\b`;
+      let hits: GrepHit[] | null = await gitGrep(projectRoot, pattern);
+      if (hits === null) {
+        const refRegex = new RegExp(pattern, "g");
+        hits = await walkSearch(projectRoot, isCodeFile, async (full, rel) => {
+          const content = await fs.readFile(full, "utf8");
+          const lines = content.split(/\r?\n/);
+          const found: GrepHit[] = [];
+          for (let i = 0; i < lines.length; i++) {
+            refRegex.lastIndex = 0;
+            if (refRegex.test(lines[i])) found.push({ path: rel, line: i + 1, text: lines[i] });
           }
-        }
+          return found;
+        });
       }
-
-      await searchRefs(path.resolve(projectRoot));
-      if (!references.length) return `No references found for symbol "${cleanSymbol}" in workspace.`;
-      return `Found ${references.length} reference(s) to "${cleanSymbol}":\n${references.join("\n")}`;
+      hits = hits.slice(0, 40);
+      if (!hits.length) return `No references found for symbol "${cleanSymbol}" in workspace.`;
+      return `Found ${hits.length} reference(s) to "${cleanSymbol}":\n${hits.map((hit) => `${hit.path}:L${hit.line}: ${hit.text.trim().slice(0, 100)}`).join("\n")}`;
     },
     {
       name: "find_symbol_references",
@@ -336,47 +387,31 @@ export function createCodeIntelligenceTools(projectRoot: string) {
         return `Invalid regex pattern: ${err instanceof Error ? err.message : String(err)}`;
       }
 
-      const results: string[] = [];
       const searchRoot = pathPrefix ? safePath(projectRoot, pathPrefix) : path.resolve(projectRoot);
+      const fixedString = isRegex ? cleanQuery : cleanQuery.replace(/[.*+?^$+( )|[\]\\]/g, (c) => (c === "\n" ? "\\n" : `\\${c}`));
+      let hits: GrepHit[] | null = pathPrefix
+        ? null // git grep is root-wide; a scoped prefix goes straight to the walk
+        : await gitGrep(projectRoot, fixedString, caseSensitive ? [] : ["-i"]);
 
-      async function walkGrep(dir: string, depth = 0) {
-        if (depth > 10 || results.length >= 50) return;
-        let entries;
-        try {
-          entries = await fs.readdir(dir, { withFileTypes: true });
-        } catch {
-          return;
-        }
-        for (const entry of entries) {
-          if (IGNORED_DIRS.has(entry.name)) continue;
-          const full = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            await walkGrep(full, depth + 1);
-          } else {
-            const ext = path.extname(entry.name).toLowerCase();
-            if (CODE_EXTENSIONS.has(ext) || !ext) {
-              try {
-                const stat = await fs.stat(full);
-                if (stat.size > 2_000_000) continue; // Skip files > 2MB
-                const content = await fs.readFile(full, "utf8");
-                const lines = content.split(/\r?\n/);
-                for (let i = 0; i < lines.length; i++) {
-                  if (results.length >= 50) break;
-                  regex.lastIndex = 0;
-                  if (regex.test(lines[i])) {
-                    const rel = path.relative(projectRoot, full).replace(/\\/g, "/");
-                    results.push(`${rel}:${i + 1}: ${lines[i].trim()}`);
-                  }
-                }
-              } catch { /* ignore read errors */ }
-            }
+      if (hits === null) {
+        hits = await walkSearch(searchRoot, (name) => {
+          const ext = path.extname(name).toLowerCase();
+          return CODE_EXTENSIONS.has(ext) || !ext;
+        }, async (full, rel) => {
+          const content = await fs.readFile(full, "utf8");
+          const lines = content.split(/\r?\n/);
+          const found: GrepHit[] = [];
+          for (let i = 0; i < lines.length; i++) {
+            regex.lastIndex = 0;
+            if (regex.test(lines[i])) found.push({ path: rel, line: i + 1, text: lines[i] });
           }
-        }
+          return found;
+        });
       }
 
-      await walkGrep(searchRoot);
-      if (!results.length) return `No matches found for query "${cleanQuery}".`;
-      return `Found ${results.length} match(es) for "${cleanQuery}":\n${results.join("\n")}`;
+      hits = hits.slice(0, 50);
+      if (!hits.length) return `No matches found for query "${cleanQuery}".`;
+      return `Found ${hits.length} match(es) for "${cleanQuery}":\n${hits.map((hit) => `${hit.path}:${hit.line}: ${hit.text.trim()}`).join("\n")}`;
     },
     {
       name: "grep_search",
@@ -390,5 +425,22 @@ export function createCodeIntelligenceTools(projectRoot: string) {
     }
   );
 
-  return [getSymbolOutlineTool, findSymbolDefinitionTool, findSymbolReferencesTool, readFileRangeTool, grepSearchTool];
+  // Small surface on purpose (opencode-style): ripgrep search, range reads and
+  // one symbol-reference escape hatch. The backend already exposes read/grep/
+  // glob, so outline/definition tools were pure choice-overload — their pure
+  // parsers (parseSymbolsFromCode/formatOutline) stay exported for tests.
+  return [findSymbolReferencesTool, readFileRangeTool, grepSearchTool];
+}
+
+// Opencode parity: the backend already exposes read/grep/glob, so the LLM
+// only needs a small core.
+export const CORE_CODE_TOOL_NAMES = ["read_file_range", "grep_search"];
+
+export function pickRuntimeCodeTools(allTools: any[], complexity: "simple" | "complex"): any[] {
+  if (complexity === "simple") {
+    return allTools.filter((t) => CORE_CODE_TOOL_NAMES.includes(t.name));
+  }
+  // Complex tasks keep the reference lookup alongside the core; definition
+  // queries go through grep_search instead of a dedicated tool.
+  return allTools.filter((t) => [...CORE_CODE_TOOL_NAMES, "find_symbol_references"].includes(t.name));
 }

@@ -248,3 +248,96 @@ export async function readSkillContent(skillPath: string, projectRoot?: string |
   return fs.readFile(validated, "utf8");
 }
 
+const SKILL_STOPWORDS = new Set(
+  "a,an,the,and,or,for,with,that,this,from,into,using,use,used,will,can,should,have,has,are,was,were,will,what,when,where,which,who,whom,how,does,doing,done,about,also,just,like,than,then,there,their,them,they,your,you,our,out,over,under,more,most,some,such,only,very,own,same,between,through,during,before,after,above,below,off,page".split(","),
+);
+
+/** Virtual path the agent uses to read a skill through its backend. */
+export function skillVirtualPath(skill: SkillInfo): string {
+  const folder = path.basename(path.dirname(skill.path));
+  return skill.source === "global"
+    ? `${GLOBAL_SKILLS_ROUTE}/${folder}/SKILL.md`
+    : `${PROJECT_SKILLS_DIR}/${folder}/SKILL.md`;
+}
+
+/**
+ * Dev-vocabulary synonyms: requests say "app" where skills say "frontend",
+ * users typo ("chating") where skills say "chatting". Each group expands a
+ * request word to the terms skills actually use.
+ */
+const SKILL_SYNONYMS: Record<string, string[]> = {
+  app: ["application", "frontend", "website", "web", "site", "ui", "client"],
+  frontend: ["client", "ui", "react", "web", "nextjs"],
+  backend: ["server", "api", "database", "endpoint", "nestjs"],
+  chat: ["chatting", "conversation", "message", "messaging"],
+  llm: ["ai", "model", "openai", "gpt", "anthropic", "Muse", "gemini"],
+  settings: ["setting", "config", "configuration", "preferences", "options"],
+  build: ["scaffold", "create", "generate", "bootstrap"],
+  design: ["styling", "css", "ux", "accessibility", "a11y"],
+  test: ["testing", "tests", "spec", "coverage"],
+  auth: ["authentication", "login", "security"],
+  deploy: ["deployment", "ci", "cd", "pipeline", "docker", "devops"],
+  docs: ["documentation", "readme", "guide"],
+};
+
+const SKILL_SYNONYM_LOOKUP = new Map<string, string[]>();
+for (const [key, variants] of Object.entries(SKILL_SYNONYMS)) {
+  const group = [key, ...variants];
+  for (const word of group) {
+    if (!SKILL_SYNONYM_LOOKUP.has(word)) SKILL_SYNONYM_LOOKUP.set(word, group);
+  }
+}
+
+function skillTokens(text: string): string[] {
+  return (text || "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= 3);
+}
+
+/**
+ * Deterministic skill recommender: keyword overlap between the request and
+ * each skill's name + description, with synonym expansion and substring
+ * tolerance (typos, chat/chatting). Name hits weigh 3x. Never returns more
+ * than maxN, never returns zero-score skills. Pure function of its inputs so
+ * the agent gets a short, relevant shortlist instead of a 17-item catalog it
+ * will ignore — and it works on weak models that skip catalogs entirely.
+ */
+export function recommendSkills(skills: SkillInfo[], request: string, maxN = 3): SkillInfo[] {
+  const words = skillTokens(request).filter((w) => !SKILL_STOPWORDS.has(w));
+  if (!words.length || !skills.length) return [];
+  const expanded = new Set<string>();
+  for (const w of words) {
+    expanded.add(w);
+    for (const v of SKILL_SYNONYM_LOOKUP.get(w) ?? []) expanded.add(v);
+  }
+  const scored = skills
+    .map((skill) => {
+      const nameTokens = skillTokens(skill.name);
+      const descTokens = skillTokens(skill.description || "");
+      let score = 0;
+      for (const w of expanded) {
+        if (nameTokens.includes(w)) score += 3;
+        else if (nameTokens.some((t) => partialHit(t, w))) score += 2;
+        else if (descTokens.includes(w)) score += 2;
+        // No partial matching on descriptions: it fires on accidents like
+        // "guide" in "guidelines" or "charting" near a "chating" typo.
+      }
+      return { skill, score };
+    })
+    // Minimum score 3 = at least one strong signal (a name hit) or two
+    // weak ones. Single description-word hits (e.g. "fix" matching a skill
+    // that merely mentions fixing) are noise that teaches the model to
+    // ignore the recommender.
+    .filter((s) => s.score >= 3)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(1, maxN));
+  return scored.map((s) => s.skill);
+}
+
+/** Substring match gated on length so 3-letter tokens (api, ui, llm) only match exactly. */
+function partialHit(a: string, b: string): boolean {
+  if (Math.min(a.length, b.length) < 4) return false;
+  return a.includes(b) || b.includes(a);
+}
+

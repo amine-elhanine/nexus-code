@@ -86,6 +86,22 @@ function getTitleFromUrl(url: string): string {
 export const CHROME_DESKTOP_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
+// The minimal <webview> API surface used below; Electron injects the full
+// element with these imperative methods. It is NOT a plain HTMLElement
+// subtype — its event listener signatures differ — so only the members the
+// component actually calls are declared here.
+type ElectronWebview = {
+  goBack: () => void;
+  goForward: () => void;
+  reload: () => void;
+  stop: () => void;
+  getURL: () => string;
+  canGoBack: () => boolean;
+  canGoForward: () => boolean;
+  addEventListener: (type: string, listener: (event: { url?: string; title?: string; isTopLevel?: boolean }) => void) => void;
+  removeEventListener: (type: string, listener: (event: never) => void) => void;
+};
+
 export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
   projectRoot,
   onSendToAgent,
@@ -108,6 +124,7 @@ export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
   const [isStartingServer, setIsStartingServer] = useState(false);
   const [copiedNote, setCopiedNote] = useState(false);
   const [reloadKey, setReloadKey] = useState(1);
+  const webviewRefs = useRef<Record<string, ElectronWebview | null>>({});
 
   const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
 
@@ -160,21 +177,21 @@ export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
     setReloadKey((k) => k + 1);
   };
 
+  const activeWebview = () => webviewRefs.current[activeTabId] || null;
+
+  // Back/forward/reload drive the live webview so page state (scroll, forms,
+  // JS) survives navigation instead of remounting it from scratch.
   const handleBack = () => {
-    if (activeTab.historyIndex > 0) {
+    const webview = activeWebview();
+    if (webview?.canGoBack?.()) {
+      webview.goBack();
+    } else if (activeTab.historyIndex > 0) {
       const newIndex = activeTab.historyIndex - 1;
       const prevUrl = activeTab.history[newIndex];
       setTabs((prev) =>
         prev.map((t) =>
           t.id === activeTab.id
-            ? {
-                ...t,
-                url: prevUrl,
-                inputUrl: prevUrl,
-                title: getTitleFromUrl(prevUrl),
-                historyIndex: newIndex,
-                isLoading: true,
-              }
+            ? { ...t, url: prevUrl, inputUrl: prevUrl, title: getTitleFromUrl(prevUrl), historyIndex: newIndex, isLoading: true }
             : t
         )
       );
@@ -183,20 +200,16 @@ export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
   };
 
   const handleForward = () => {
-    if (activeTab.historyIndex < activeTab.history.length - 1) {
+    const webview = activeWebview();
+    if (webview?.canGoForward?.()) {
+      webview.goForward();
+    } else if (activeTab.historyIndex < activeTab.history.length - 1) {
       const newIndex = activeTab.historyIndex + 1;
       const nextUrl = activeTab.history[newIndex];
       setTabs((prev) =>
         prev.map((t) =>
           t.id === activeTab.id
-            ? {
-                ...t,
-                url: nextUrl,
-                inputUrl: nextUrl,
-                title: getTitleFromUrl(nextUrl),
-                historyIndex: newIndex,
-                isLoading: true,
-              }
+            ? { ...t, url: nextUrl, inputUrl: nextUrl, title: getTitleFromUrl(nextUrl), historyIndex: newIndex, isLoading: true }
             : t
         )
       );
@@ -205,6 +218,11 @@ export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
   };
 
   const handleReload = () => {
+    const webview = activeWebview();
+    if (webview?.reload) {
+      webview.reload();
+      return;
+    }
     setTabs((prev) =>
       prev.map((t) => (t.id === activeTab.id ? { ...t, isLoading: true } : t))
     );
@@ -536,14 +554,22 @@ export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
           )}
 
           {typeof window !== "undefined" && (window.nexus || window.forgepilot) ? (
-            <webview
-              key={`${activeTab.id}-${reloadKey}`}
-              src={activeTab.url}
-              useragent={CHROME_DESKTOP_UA}
-              className="browser-iframe"
-              allowpopups={true}
-              partition="persist:browser"
-              webpreferences="contextIsolation=yes"
+            <BrowserWebview
+              tab={activeTab}
+              reloadKey={reloadKey}
+              onLoadingChange={(loading) =>
+                setTabs((prev) => prev.map((t) => (t.id === activeTab.id ? { ...t, isLoading: loading } : t)))
+              }
+              onNavigated={(url, title) =>
+                setTabs((prev) =>
+                  prev.map((t) =>
+                    t.id === activeTab.id
+                      ? { ...t, url, inputUrl: url, title: title || getTitleFromUrl(url), isLoading: false }
+                      : t
+                  )
+                )
+              }
+              registerRef={(el) => { webviewRefs.current[activeTab.id] = el; }}
             />
           ) : (
             <iframe
@@ -584,3 +610,68 @@ export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
     </div>
   );
 };
+
+// The webview keeps its own load state via DOM events: did-start-loading /
+// did-stop-loading clear the spinner, did-navigate-in-page and
+// did-navigate update URL/title without remounting (no key= on the element —
+// the reload key only forces a fresh src when the user hits Reload).
+function BrowserWebview({
+  tab,
+  reloadKey,
+  onLoadingChange,
+  onNavigated,
+  registerRef,
+}: {
+  tab: BrowserTab;
+  reloadKey: number;
+  onLoadingChange: (loading: boolean) => void;
+  onNavigated: (url: string, title?: string) => void;
+  registerRef: (el: ElectronWebview | null) => void;
+}) {
+  const ref = useRef<ElectronWebview | null>(null);
+  const srcRef = useRef("");
+
+  // Remount only when the *source URL* changes, not on every reloadKey bump;
+  // reload() re-navigates in place and keeps page state.
+  if (srcRef.current !== tab.url) {
+    srcRef.current = tab.url;
+  }
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const handleLoadStart = () => onLoadingChange(true);
+    const handleLoadStop = () => onLoadingChange(false);
+    const handleNavigate = (event: { url?: string }) => {
+      if (event.url) onNavigated(event.url);
+    };
+    const handleTitle = (event: { title?: string }) => {
+      if (event.title) onNavigated(el.getURL?.() || tab.url, event.title);
+    };
+    el.addEventListener("did-start-loading", handleLoadStart);
+    el.addEventListener("did-stop-loading", handleLoadStop);
+    el.addEventListener("did-navigate", handleNavigate);
+    el.addEventListener("did-navigate-in-page", handleNavigate);
+    el.addEventListener("page-title-set", handleTitle as never);
+    return () => {
+      el.removeEventListener("did-start-loading", handleLoadStart as never);
+      el.removeEventListener("did-stop-loading", handleLoadStop as never);
+      el.removeEventListener("did-navigate", handleNavigate as never);
+      el.removeEventListener("did-navigate-in-page", handleNavigate as never);
+      el.removeEventListener("page-title-set", handleTitle as never);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab.url]);
+
+  return (
+    <webview
+      key={`wv-${srcRef.current}`}
+      ref={ref as never}
+      src={srcRef.current}
+      useragent={CHROME_DESKTOP_UA}
+      className="browser-iframe"
+      partition="persist:browser"
+      webpreferences="contextIsolation=yes"
+    />
+  );
+}

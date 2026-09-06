@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,33 @@ export interface TerminalSession {
 type SessionEntry = TerminalSession & { onData: (data: string) => void; proc?: ChildProcess };
 type PtyHost = { child: ChildProcess; ready: boolean; generation: number };
 
+// The PTY host must run outside the Electron main process — native node-pty
+// bindings target the Node ABI, not Electron's. Preferred runtime is the
+// `node` on PATH (dev machines, and any user who has Node installed); when
+// that is absent, the bundled Electron binary itself serves as a plain Node
+// runtime via ELECTRON_RUN_AS_NODE, keeping a packaged install self-contained.
+function hostRuntimes(): { command: string; env: NodeJS.ProcessEnv }[] {
+  const runtimes: { command: string; env: NodeJS.ProcessEnv }[] = [];
+  if (process.platform !== "win32" || commandExists("node")) {
+    runtimes.push({ command: "node", env: {} });
+  }
+  runtimes.push({ command: process.execPath, env: { ELECTRON_RUN_AS_NODE: "1" } });
+  return runtimes;
+}
+
+function commandExists(command: string): boolean {
+  try {
+    execFileSync(command, ["--version"], { stdio: "ignore", shell: process.platform === "win32" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hostScriptPath() {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), "pty-host.cjs");
+}
+
 // Terminals run through an out-of-process PTY host (electron/pty-host.cjs)
 // because native PTY bindings target system Node's ABI and cannot load inside
 // Electron. When the host is unavailable — no system Node on PATH, or a
@@ -27,31 +54,29 @@ class TerminalService {
   private hostGeneration = 0;
 
   private hostPath() {
-    return path.join(path.dirname(fileURLToPath(import.meta.url)), "pty-host.cjs");
+    return hostScriptPath();
   }
 
-  private startHost(): Promise<PtyHost | null> {
-    if (this.host?.ready) return Promise.resolve(this.host);
-    if (this.hostStarting) return this.hostStarting;
-    const generation = ++this.hostGeneration;
-    this.hostStarting = new Promise((resolve) => {
+  private trySpawnHost(runtime: { command: string; env: NodeJS.ProcessEnv }): Promise<PtyHost | null> {
+    return new Promise((resolve) => {
       let child: ChildProcess;
       try {
-        child = spawn("node", [this.hostPath()], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+        child = spawn(runtime.command, [hostScriptPath()], {
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+          env: { ...process.env, ...runtime.env },
+        });
       } catch {
-        this.hostStarting = null;
         resolve(null);
         return;
       }
-      const state: PtyHost = { child, ready: false, generation };
+      const state: PtyHost = { child, ready: false, generation: 0 };
       let buffer = "";
       let settled = false;
       const finish = (result: PtyHost | null) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        this.hostStarting = null;
-        this.host = result;
         resolve(result);
       };
       const onStdout = (chunk: Buffer) => {
@@ -71,26 +96,45 @@ class TerminalService {
         }
       };
       const timer = setTimeout(() => { if (!state.ready) { child.kill(); finish(null); } }, 5000);
-      // Stays attached for the host's lifetime: after `ready` the same
-      // listener carries all terminal data and exit events.
       child.stdout?.on("data", onStdout);
       child.on("error", () => finish(null));
-      child.on("exit", () => {
-        // Only the current host's exit may clear state; a stale host dying
-        // after killAll()+restart must not tear down its replacement.
-        if (this.host?.generation !== generation) { finish(null); return; }
-        this.host = null;
-        for (const [id, session] of this.sessions) {
-          if (session.mode === "pty" && session.alive) {
-            session.alive = false;
-            session.onData("\r\n[PTY host terminated]\r\n");
-            this.sessions.delete(id);
-          }
-        }
-        finish(null);
-      });
+      // A runtime that exits before `ready` (missing binary, ABI mismatch) is
+      // just another unavailable runtime — the caller moves to the next one.
+      child.on("exit", () => { if (!state.ready) finish(null); });
     });
-    return this.hostStarting;
+  }
+
+  private async startHost(): Promise<PtyHost | null> {
+    if (this.host?.ready) return this.host;
+    if (this.hostStarting) return this.hostStarting;
+    const generation = ++this.hostGeneration;
+    this.hostStarting = (async () => {
+      for (const runtime of hostRuntimes()) {
+        const state = await this.trySpawnHost(runtime);
+        if (state) {
+          state.generation = generation;
+          this.host = state;
+          // Only the current host's exit may clear state; a stale host dying
+          // after killAll()+restart must not tear down its replacement.
+          state.child.on("exit", () => {
+            if (this.host?.generation !== generation) return;
+            this.host = null;
+            for (const [id, session] of this.sessions) {
+              if (session.mode === "pty" && session.alive) {
+                session.alive = false;
+                session.onData("\r\n[PTY host terminated]\r\n");
+                this.sessions.delete(id);
+              }
+            }
+          });
+          return state;
+        }
+      }
+      return null;
+    })();
+    const result = await this.hostStarting;
+    this.hostStarting = null;
+    return result;
   }
 
   private send(op: object): boolean {

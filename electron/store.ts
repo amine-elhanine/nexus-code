@@ -5,23 +5,13 @@ import { app, safeStorage } from "electron";
 import type { SubagentItem } from "./subagent-service.js";
 
 export type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[] };
-export type SandboxConfig = { provider: "local"; enabled: boolean; requireApproval: boolean; allowNetwork: boolean; commandTimeoutSeconds: number };
 export type McpTransport = "stdio" | "http" | "sse";
 export type McpServerConfig = { id: string; name: string; enabled: boolean; transport: McpTransport; command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string> };
 export type SkillsConfig = { enabled: boolean };
-export type ProjectSandboxState = { provider: "local"; mode: "workspace-permissions"; status: "ready" | "stopped" | "blocked"; path: string; lastSyncAt?: string };
-export type ProjectRecord = { id: string; name: string; root: string; createdAt: string; updatedAt: string; memory: string; sessions: SessionRecord[]; sandbox?: ProjectSandboxState };
-export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number };
-export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; subagent?: SubagentItem }>; model?: { providerId: string; model: string } };
-type PersistedState = { projects: ProjectRecord[]; providers: ProviderConfig[]; sandbox?: SandboxConfig; mcpServers?: McpServerConfig[]; skills?: SkillsConfig };
-
-export const DEFAULT_SANDBOX_CONFIG: SandboxConfig = {
-  provider: "local",
-  enabled: true,
-  requireApproval: true,
-  allowNetwork: false,
-  commandTimeoutSeconds: 120,
-};
+export type ProjectRecord = { id: string; name: string; root: string; createdAt: string; updatedAt: string; memory: string; sessions: SessionRecord[] };
+export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
+export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; subagent?: SubagentItem }>; model?: { providerId: string; model: string } };
+type PersistedState = { projects: ProjectRecord[]; providers: ProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig };
 
 let cache: PersistedState | null = null;
 
@@ -62,7 +52,10 @@ function decryptSecret(value: string) {
       return safeStorage.decryptString(Buffer.from(value.slice(ENCRYPTED_PREFIX.length), "base64"));
     }
   } catch {
-    // If decryption fails across different machine/domain contexts, return empty or raw
+    // Encrypted on a different machine/domain/user profile — the key is
+    // unrecoverable here. Log loudly instead of failing silently so the user
+    // knows to re-enter the key in Providers.
+    console.warn("[nexus] An API key could not be decrypted on this machine (it was encrypted elsewhere). Re-enter it in Providers.");
   }
   return "";
 }
@@ -71,20 +64,22 @@ export function calculateSessionUsage(messages: SessionRecord["messages"]): Agen
   let inputTokens = 0;
   let outputTokens = 0;
   let totalTokens = 0;
+  let costKnown = true;
   let estimatedCost = 0;
   for (const message of messages || []) {
-    if (message.usage) {
+    if (message.usage && message.role === "assistant") {
       inputTokens += message.usage.inputTokens || 0;
       outputTokens += message.usage.outputTokens || 0;
       totalTokens += message.usage.totalTokens || 0;
-      estimatedCost += message.usage.estimatedCost || 0;
+      if (message.usage.estimatedCost == null) costKnown = false;
+      else estimatedCost += message.usage.estimatedCost;
     }
   }
   return {
     inputTokens,
     outputTokens,
     totalTokens,
-    estimatedCost: Number(estimatedCost.toFixed(4)),
+    estimatedCost: costKnown ? Number(estimatedCost.toFixed(4)) : null,
   };
 }
 
@@ -127,11 +122,6 @@ async function ensureLoaded(): Promise<PersistedState> {
     };
   }
 
-  // Always ensure sandbox is initialized and enabled by default
-  if (!cache.sandbox || cache.sandbox.provider !== "local") {
-    cache.sandbox = { ...DEFAULT_SANDBOX_CONFIG };
-  }
-
   return cache;
 }
 
@@ -141,7 +131,6 @@ async function persist() {
   await fs.mkdir(path.dirname(target), { recursive: true });
   const snapshot: PersistedState = {
     ...cache,
-    sandbox: cache.sandbox && cache.sandbox.provider === "local" ? cache.sandbox : { ...DEFAULT_SANDBOX_CONFIG },
     providers: (cache.providers || []).map((provider) => ({ ...provider, apiKey: encryptSecret(provider.apiKey) })),
   };
   await fs.writeFile(target, JSON.stringify(snapshot, null, 2), "utf8");
@@ -165,6 +154,24 @@ export async function upsertProject(input: { id?: string; name: string; root: st
   return project;
 }
 export async function updateProjectMemory(projectId: string, memory: string) { const project = await getProject(projectId); if (!project) throw new Error("Project not found"); project.memory = memory; project.updatedAt = new Date().toISOString(); await persist(); return project; }
+
+// The Home area is a built-in project with a FIXED id so the renderer can
+// tell home sessions apart from coding sessions. Created on demand pointing
+// at the Home folder; never duplicated.
+export async function ensureHomeProject(homeId: string, name: string, root: string) {
+  const state = await ensureLoaded();
+  const existing = state.projects.find((project) => project.id === homeId);
+  if (existing) {
+    existing.root = root;
+    existing.updatedAt = new Date().toISOString();
+    await persist();
+    return existing;
+  }
+  const project: ProjectRecord = { id: homeId, name, root, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), memory: "", sessions: [] };
+  state.projects.unshift(project);
+  await persist();
+  return project;
+}
 export async function listSessions(projectId: string) {
   const project = await getProject(projectId);
   if (!project) return [];
@@ -200,9 +207,12 @@ export async function updateSession(projectId: string, sessionId: string, patch:
   return session;
 }
 export async function appendSessionMessage(projectId: string, sessionId: string, message: SessionRecord["messages"][number]) {
+  return appendSessionMessages(projectId, sessionId, [message]);
+}
+export async function appendSessionMessages(projectId: string, sessionId: string, messages: SessionRecord["messages"]): Promise<SessionRecord> {
   const session = await getSession(projectId, sessionId);
   if (!session) throw new Error("Session not found");
-  session.messages.push(message);
+  session.messages.push(...messages);
   session.usage = calculateSessionUsage(session.messages);
   session.updatedAt = new Date().toISOString();
   await persist();
@@ -241,37 +251,6 @@ export async function deleteProject(projectId: string) {
   state.projects = state.projects.filter((project) => project.id !== projectId);
   await persist();
   return state.projects;
-}
-
-export async function getSandboxConfig(): Promise<SandboxConfig> {
-  const state = await ensureLoaded();
-  if (!state.sandbox || state.sandbox.provider !== "local") {
-    state.sandbox = { ...DEFAULT_SANDBOX_CONFIG };
-    await persist();
-  }
-  return state.sandbox;
-}
-
-export async function saveSandboxConfig(input: Partial<SandboxConfig>): Promise<SandboxConfig> {
-  const state = await ensureLoaded();
-  state.sandbox = {
-    provider: "local",
-    enabled: input.enabled !== false,
-    requireApproval: Boolean(input.requireApproval),
-    allowNetwork: Boolean(input.allowNetwork),
-    commandTimeoutSeconds: Math.max(10, input.commandTimeoutSeconds || 120),
-  };
-  await persist();
-  return state.sandbox;
-}
-
-export async function updateProjectSandbox(projectId: string, sandbox: ProjectSandboxState | undefined) {
-  const project = await getProject(projectId);
-  if (!project) throw new Error("Project not found");
-  project.sandbox = sandbox;
-  project.updatedAt = new Date().toISOString();
-  await persist();
-  return project;
 }
 
 export async function listMcpServers() { return (await ensureLoaded()).mcpServers ?? []; }

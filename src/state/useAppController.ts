@@ -10,8 +10,6 @@ import type {
   ProjectRecord,
   ProviderConfig,
   ProviderDefinition,
-  SandboxConfig,
-  SandboxStatus,
   SessionRecord,
   WorkspaceDiffFile,
 } from "../types.js";
@@ -26,7 +24,7 @@ export const FALLBACK_PROVIDERS: ProviderDefinition[] = [
   { id: "openrouter", label: "OpenRouter", packageName: "@langchain/openrouter", envKey: "OPENROUTER_API_KEY", models: ["anthropic/claude-sonnet-4.6", "openai/gpt-5.5", "google/gemini-3.7-pro"] },
   { id: "ollama", label: "Ollama", packageName: "@langchain/ollama", envKey: "OLLAMA_BASE_URL", defaultBaseUrl: "http://127.0.0.1:11434", models: ["qwen3-coder", "devstral", "llama3.3"] },
   { id: "deepseek", label: "DeepSeek", packageName: "@langchain/deepseek", envKey: "DEEPSEEK_API_KEY", models: ["deepseek-chat", "deepseek-reasoner"] },
-  { id: "together", label: "Together AI", packageName: "@langchain/community", envKey: "TOGETHER_AI_API_KEY", models: ["Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"] },
+  { id: "together", label: "Together AI", packageName: "@langchain/community", envKey: "TOGETHER_AI_KEY", models: ["Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"] },
   { id: "fireworks", label: "Fireworks", packageName: "@langchain/community", envKey: "FIREWORKS_API_KEY", models: ["accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/qwen3-coder"] },
   { id: "azure", label: "Azure OpenAI", packageName: "@langchain/openai", envKey: "AZURE_OPENAI_API_KEY", models: ["gpt-5.5", "gpt-4.1", "o3"] },
   { id: "bedrock", label: "AWS Bedrock", packageName: "@langchain/aws", envKey: "AWS_ACCESS_KEY_ID", models: ["anthropic.claude-sonnet-4-6", "amazon.nova-pro-v1:0"] },
@@ -40,12 +38,6 @@ export function useAppController() {
   const [activeSession, setActiveSession] = useState<SessionRecord | null>(null);
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [providerDefinitions, setProviderDefinitions] = useState<ProviderDefinition[]>(FALLBACK_PROVIDERS);
-  const [sandboxConfig, setSandboxConfig] = useState<SandboxConfig | null>(null);
-  const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus>({ configured: false, status: "not_configured", sandbox: null });
-  const [sandboxRequireApproval, setSandboxRequireApproval] = useState(true);
-  const [sandboxAllowNetwork, setSandboxAllowNetwork] = useState(false);
-  const [sandboxTimeout, setSandboxTimeout] = useState("120");
-  const [sandboxEnabled, setSandboxEnabled] = useState(true);
   const [selectedProviderId, setSelectedProviderId] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
   const [files, setFiles] = useState<FileEntry[]>([]);
@@ -58,19 +50,19 @@ export function useAppController() {
   const [diff, setDiff] = useState<WorkspaceDiffFile[]>([]);
   const [draft, setDraft] = useState("");
   const [streamingText, setStreamingText] = useState("");
-  const [liveEvents, setLiveEvents] = useState<ChatItem[]>([]);
-  const liveEventsRef = useRef<ChatItem[]>([]);
+  // Live events are bucketed per session so concurrent runs in different
+  // sessions each render their own activity, never each other's.
+  const [liveEvents, setLiveEvents] = useState<Record<string, ChatItem[]>>({});
+  const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(new Set());
+  const liveEventsRef = useRef<Record<string, ChatItem[]>>({});
+  const activeSessionRef = useRef<SessionRecord | null>(null);
+  activeSessionRef.current = activeSession ?? null;
   const [view, setView] = useState<AppView>("chat");
   const [mode, setMode] = useState("Ask");
-  const [running, setRunning] = useState(false);
   const [showSessions, setShowSessions] = useState(true);
   const [showFiles, setShowFiles] = useState(true);
   const [showContext, setShowContext] = useState(true);
   const [showProviders, setShowProviders] = useState(false);
-  const [showSandbox, setShowSandbox] = useState(false);
-  const [showMcp, setShowMcp] = useState(false);
-  const [showSkills, setShowSkills] = useState(false);
-  const [showComposerMenu, setShowComposerMenu] = useState(false);
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectRoot, setNewProjectRoot] = useState("");
@@ -82,13 +74,23 @@ export function useAppController() {
   const [projectRules, setProjectRules] = useState<{ hasRules: boolean; ruleFiles: any[]; combinedPromptSection: string } | null>(null);
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [customCommands, setCustomCommands] = useState<SlashCommand[]>([]);
+  // Area: "home" = general assistant (built-in Home project), "code" = repo coding agent.
+  const [area, setArea] = useState<"home" | "code">("home");
+  const [homeProject, setHomeProject] = useState<ProjectRecord | null>(null);
+  const [homeRoot, setHomeRoot] = useState("");
+  const [homeFiles, setHomeFiles] = useState<Array<{ path: string; name: string; size: number; modified: string }>>([]);
+  const [homeSessionFiles, setHomeSessionFiles] = useState<Array<{ path: string; name: string; size: number; modified: string }>>([]);
   const [showDaemonsModal, setShowDaemonsModal] = useState(false);
+  const [showMcp, setShowMcp] = useState(false);
+  const [showSkills, setShowSkills] = useState(false);
   const [inspectDiffFile, setInspectDiffFile] = useState<WorkspaceDiffFile | null>(null);
 
   const dirty = fileContent !== savedContent;
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId);
   const definition = providerDefinitions.find((provider) => provider.id === selectedProvider?.provider) || providerDefinitions[0];
   const currentMessages = (activeSession?.messages || []) as ChatItem[];
+  const running = Boolean(activeSession && runningSessionIds.has(activeSession.id));
+  const liveEventsForSession = activeSession ? liveEvents[activeSession.id] || [] : [];
   const visibleFiles = files.filter((entry) => {
     const parts = entry.path.split("/");
     return parts.length === 1 || parts.slice(0, -1).every((_, index) => expandedFolders.has(parts.slice(0, index + 1).join("/")));
@@ -101,33 +103,49 @@ export function useAppController() {
       api.listProjects(),
       api.listProviders(),
       api.listProviderDefinitions(),
-      api.getSandboxConfig(),
-      api.getSandboxStatus(),
       api.getSkillsConfig(),
       api.listCustomCommands(),
-    ]).then(async ([projectList, providerList, definitions, config, status, skillsConfig, cmds]) => {
+    ]).then(async ([projectList, providerList, definitions, skillsConfig, cmds]) => {
       setProjects(projectList);
       setProviders(providerList);
       if (definitions?.length) setProviderDefinitions(definitions);
-      setSandboxConfig(config);
-      setSandboxStatus(status);
       setSkillsEnabled(skillsConfig?.enabled !== false);
       if (cmds?.length) setCustomCommands(cmds as SlashCommand[]);
-      if (config) {
-        setSandboxRequireApproval(config.requireApproval !== false);
-        setSandboxAllowNetwork(config.allowNetwork);
-        setSandboxTimeout(String(config.commandTimeoutSeconds || 120));
-        setSandboxEnabled(config.enabled);
+      // Land on Home by default; coding projects stay one click away.
+      try {
+        const home = await api.getHome();
+        setHomeProject(home.project);
+        setHomeRoot(home.root);
+        setActiveProject(home.project);
+        const homeSessions = await api.listSessions(home.project.id);
+        setSessions(homeSessions);
+        // Activate, don't just display: the main process tracks the active
+        // project/session in globals, and agent:run refuses ("Select or
+        // create a project first") until something is activated.
+        if (homeSessions[0]) {
+          const sess = await api.activateSession(home.project.id, homeSessions[0].id);
+          setActiveSession(sess);
+          setSelectedProviderId(sess.model?.providerId || "");
+          setSelectedModel(sess.model?.model || "");
+        } else {
+          setActiveSession(null);
+        }
+        void refreshHomeFiles();
+      } catch {
+        if (projectList[0]) await activateProject(projectList[0].id);
       }
-      if (projectList[0]) await activateProject(projectList[0].id);
     });
 
     return api.onAgentEvent((event) => {
+      const bucket = event.sessionId || "unknown";
+      // Events from a session other than the currently viewed one still
+      // accumulate (so switching later shows them) but don't stream into view.
       if (event.type === "token") {
-        setStreamingText((current) => current + event.text);
+        if (activeSession?.id && event.sessionId === activeSession.id) {
+          setStreamingText((current) => current + event.text);
+        }
         return;
       }
-      if (event.type === "assistant" || event.type === "error") setStreamingText("");
       const item: ChatItem = {
         role: event.type === "assistant" ? "assistant" : "event",
         text: event.text,
@@ -144,30 +162,56 @@ export function useAppController() {
         }
       }
       if (event.type === "assistant" || event.type === "error") {
-        const log = liveEventsRef.current;
-        liveEventsRef.current = [];
-        setLiveEvents([]);
-        setActiveSession((current) => {
-          if (!current) return current;
-          const base = log.length ? [...current.messages, ...log] : current.messages;
-          const currentUsage = current.usage || { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimatedCost: 0 };
-          const newUsage = event.usage
-            ? {
-                inputTokens: currentUsage.inputTokens + event.usage.inputTokens,
-                outputTokens: currentUsage.outputTokens + event.usage.outputTokens,
-                totalTokens: currentUsage.totalTokens + event.usage.totalTokens,
-                estimatedCost: Number((currentUsage.estimatedCost + event.usage.estimatedCost).toFixed(4)),
-              }
-            : currentUsage;
-          return { ...current, usage: newUsage, messages: [...base, item] };
+        const log = liveEventsRef.current[bucket] || [];
+        const { [bucket]: _dropped, ...rest } = liveEventsRef.current;
+        liveEventsRef.current = rest;
+        setLiveEvents(rest);
+        if (event.type === "assistant" && event.usage) {
+          setStreamingText("");
+        } else {
+          setStreamingText("");
+        }
+        setRunningSessionIds((current) => {
+          const next = new Set(current);
+          next.delete(bucket);
+          return next;
         });
-        setRunning(false);
+        // Reflect the completed response and folded activity log into the active session immediately.
+        const targetSessionId = bucket;
+        setActiveSession((current) => {
+          if (!current || current.id !== targetSessionId) return current;
+          const base = current.messages;
+          const logItems = log.filter((entry) => !(entry.kind === "usage"));
+          const finalItem: ChatItem = event.type === "assistant"
+            ? { role: "assistant", text: event.text, createdAt: event.timestamp || nowIso(), usage: event.usage }
+            : { role: "event", kind: "error", text: event.text, createdAt: event.timestamp || nowIso() };
+          return { ...current, messages: [...base, ...logItems, finalItem] };
+        });
+        void api.listSessions(activeProject?.id || "").then((fresh) => {
+          if (!fresh) return;
+          setSessions(fresh);
+          const freshCurrent = fresh.find((s) => s.id === targetSessionId);
+          if (freshCurrent) {
+            setActiveSession((prev) => (prev && prev.id === targetSessionId ? { ...prev, messages: freshCurrent.messages, usage: freshCurrent.usage, checkpointId: freshCurrent.checkpointId } : prev));
+          }
+        }).catch(() => { /* sidebar keeps its current list */ });
         return;
       }
-      liveEventsRef.current = pushLiveEvent(liveEventsRef.current, item);
+      liveEventsRef.current = pushLiveEvent(liveEventsRef.current, bucket, item);
       setLiveEvents(liveEventsRef.current);
     });
   }, []);
+
+  // Keep the Home right sidebar in sync: per-session files follow the active
+  // home chat and refresh whenever the global file list changes (new docs).
+  useEffect(() => {
+    if (area !== "home" || !activeSession?.id) {
+      if (area !== "home") setHomeSessionFiles([]);
+      return;
+    }
+    void refreshHomeSessionFiles(activeSession.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [area, activeSession?.id, homeFiles.length]);
 
   function resetWorkspace() {
     setFiles([]);
@@ -186,14 +230,6 @@ export function useAppController() {
       setGitBranch(info.branch);
     } catch {
       setGitBranch("No Git repository");
-    }
-  }
-
-  async function loadSandboxStatus() {
-    try {
-      setSandboxStatus(await api.getSandboxStatus());
-    } catch {
-      setSandboxStatus({ configured: false, status: "unknown", sandbox: null });
     }
   }
 
@@ -235,11 +271,9 @@ export function useAppController() {
       const first = mapped.find((item) => item.kind === "file");
       if (first) await openFile(first.path);
       await loadGit();
-      await loadSandboxStatus();
     } catch {
       setFiles([]);
       setGitBranch("No Git repository");
-      await loadSandboxStatus();
     }
   }
 
@@ -356,15 +390,104 @@ export function useAppController() {
     setView("chat");
   }
 
+  async function refreshHomeFiles() {
+    try {
+      setHomeFiles(await api.listHomeFiles());
+    } catch {
+      setHomeFiles([]);
+    }
+    // Per-session files depend on the global list; refresh them too so the
+    // Home right sidebar never goes stale after a download/refresh.
+    void refreshHomeSessionFiles();
+  }
+
+  async function refreshHomeSessionFiles(sessionId?: string) {
+    const targetId = sessionId ?? activeSessionRef.current?.id;
+    if (!targetId) {
+      setHomeSessionFiles([]);
+      return;
+    }
+    try {
+      const fn = (api as unknown as { listHomeSessionFiles?: (id: string) => Promise<Array<{ path: string; name: string; size: number; modified: string }>> }).listHomeSessionFiles;
+      if (typeof fn === "function") {
+        setHomeSessionFiles(await fn.call(api, targetId));
+      } else {
+        // Older preload without the new channel: fall back to global list.
+        setHomeSessionFiles([]);
+      }
+    } catch {
+      setHomeSessionFiles([]);
+    }
+  }
+
+  async function createHomeSession() {
+    const home = homeProject || (await api.getHome()).project;
+    if (!homeProject) {
+      const info = await api.getHome();
+      setHomeProject(info.project);
+      setHomeRoot(info.root);
+    }
+    const sess = await api.createSession(home.id, "New chat");
+    setSessions((current) => [sess, ...current]);
+    setActiveSession(sess);
+    setHomeSessionFiles([]);
+    return sess;
+  }
+
+  async function enterHome() {
+    setArea("home");
+    setDraft("");
+    setStreamingText("");
+    try {
+      const info = await api.getHome();
+      setHomeProject(info.project);
+      setHomeRoot(info.root);
+      setActiveProject(info.project);
+      const homeSessions = await api.listSessions(info.project.id);
+      setSessions(homeSessions);
+      // Same as on launch: activate so the main process globals (used by
+      // agent:run) point at this session immediately.
+      if (homeSessions[0]) {
+        const sess = await api.activateSession(info.project.id, homeSessions[0].id);
+        setActiveSession(sess);
+        setSelectedProviderId(sess.model?.providerId || selectedProviderId);
+        setSelectedModel(sess.model?.model || selectedModel);
+        void refreshHomeSessionFiles(sess.id);
+      } else {
+        setActiveSession(null);
+        setHomeSessionFiles([]);
+      }
+      setWorktreeStatus(null);
+      void refreshHomeFiles();
+    } catch {
+      /* home stays empty until backend recovers */
+    }
+  }
+
+  async function enterCode() {
+    setArea("code");
+    setDraft("");
+    setStreamingText("");
+    const codeProjects = projects.filter((p) => p.id !== "home");
+    const target = codeProjects.find((p) => p.id === activeProject?.id && p.id !== "home") || codeProjects[0];
+    if (target) await activateProject(target.id);
+  }
+
   async function activateSession(sessionId: string) {
     if (!activeProject) return;
     const sess = await api.activateSession(activeProject.id, sessionId);
     setActiveSession(sess);
-    try {
-      const wt = await api.getWorktreeStatus(sessionId);
-      setWorktreeStatus(wt);
-    } catch {
+    setStreamingText("");
+    if (activeProject.id === "home") {
       setWorktreeStatus(null);
+      void refreshHomeSessionFiles(sess.id);
+    } else {
+      try {
+        const wt = await api.getWorktreeStatus(sessionId);
+        setWorktreeStatus(wt);
+      } catch {
+        setWorktreeStatus(null);
+      }
     }
     const targetProvider = sess.model ? providers.find((p) => p.id === sess.model?.providerId) : undefined;
     const isValid = targetProvider && sess.model ? targetProvider.models.includes(sess.model.model) : false;
@@ -413,7 +536,13 @@ export function useAppController() {
   async function submit(overrideRequest?: string) {
     const request = (overrideRequest || draft).trim();
     if (!request || running) return;
-    if (!activeProject || !activeSession) {
+    // Home creates its chat lazily on first send so landing on Home never
+    // litters the sidebar with empty sessions.
+    let session = activeSession;
+    if (area === "home" && homeProject && !session) {
+      session = await createHomeSession();
+    }
+    if (!activeProject || !session) {
       setView("files");
       return;
     }
@@ -423,11 +552,12 @@ export function useAppController() {
     }
     const imagesToSend = attachedImages.length ? [...attachedImages] : undefined;
     setAttachedImages([]);
-    setRunning(true);
+    setRunningSessionIds((current) => new Set(current).add(session.id));
     setDraft("");
     setStreamingText("");
-    liveEventsRef.current = [];
-    setLiveEvents([]);
+    const { [session.id]: _dropped, ...rest } = liveEventsRef.current;
+    liveEventsRef.current = rest;
+    setLiveEvents(rest);
     setActiveSession((current) =>
       current
         ? {
@@ -442,37 +572,51 @@ export function useAppController() {
         images: imagesToSend,
         providerId: selectedProviderId || undefined,
         model: selectedModel || undefined,
-        mode: mode.toLowerCase(),
+        // Home always runs fully autonomously; the coding area keeps its
+        // Plan / Ask / Auto selector.
+        mode: area === "home" ? "auto" : mode.toLowerCase(),
       });
+      // The final assistant message and transcript are persisted by the main
+      // process; refresh from the store so usage/checkpoint state is exact.
       try {
         if (activeProject) {
           const freshSessions = await api.listSessions(activeProject.id);
           setSessions(freshSessions);
-          const freshCurrent = freshSessions.find((s) => s.id === activeSession?.id);
+          const freshCurrent = freshSessions.find((s) => s.id === session.id);
           if (freshCurrent) {
-            setActiveSession((prev) => (prev ? { ...prev, usage: freshCurrent.usage } : freshCurrent));
+            setActiveSession((prev) => (prev && prev.id === session.id ? { ...prev, messages: freshCurrent.messages, usage: freshCurrent.usage, checkpointId: freshCurrent.checkpointId } : prev));
           }
-          if (activeSession) {
-            const wt = await api.getWorktreeStatus(activeSession.id);
-            setWorktreeStatus(wt);
-          }
+          const wt = await api.getWorktreeStatus(session.id);
+          setWorktreeStatus(wt);
+        }
+        // Home deliverables land in the Nexus folder — refresh the files
+        // panel so new documents appear with their download buttons.
+        // refreshHomeFiles also refreshes per-session files via the watcher,
+        // but force it here with the explicit id (ref may lag mid-run).
+        if (area === "home") {
+          await refreshHomeFiles();
+          await refreshHomeSessionFiles(session.id);
         }
       } catch {
         /* sidebar keeps its current list */
       }
     } catch (error) {
-      setRunning(false);
+      setRunningSessionIds((current) => {
+        const next = new Set(current);
+        next.delete(session.id);
+        return next;
+      });
       setStreamingText("");
-      const log = liveEventsRef.current;
-      liveEventsRef.current = [];
-      setLiveEvents([]);
+      const log = liveEventsRef.current[session.id] || [];
+      delete liveEventsRef.current[session.id];
+      setLiveEvents(liveEventsRef.current);
       setActiveSession((current) =>
-        current
+        current && current.id === session.id
           ? {
               ...current,
               messages: [
                 ...current.messages,
-                ...(log.length ? log : []),
+                ...log,
                 { role: "event", kind: "error", text: error instanceof Error ? error.message : "Agent failed", createdAt: nowIso() },
               ],
             }
@@ -490,17 +634,26 @@ export function useAppController() {
   }
 
   async function undoRun(checkpointId: string) {
-    if (!checkpointId) return;
+    if (!checkpointId || !activeSession || !activeProject) return;
     try {
       await api.restoreCheckpoint(checkpointId);
-      if (activeProject && activeSession) {
-        const updated = await api.updateSession(activeProject.id, activeSession.id, { checkpointId: undefined });
-        setActiveSession(updated);
-      }
+      const updated = await api.updateSession(activeProject.id, activeSession.id, { checkpointId: undefined });
+      setActiveSession(updated);
       await refreshDiff();
       await loadWorkspace();
     } catch (error) {
-      console.error(error);
+      // Unknown/expired checkpoints surface to the user instead of vanishing.
+      const message = error instanceof Error ? error.message : "Undo failed.";
+      setConfirmDialog({
+        title: "Could not undo run",
+        message,
+        confirmLabel: "Dismiss",
+        danger: false,
+        onConfirm: () => setConfirmDialog(null),
+      });
+      // Clear the stale checkpoint so the card doesn't keep offering a dead action.
+      const updated = await api.updateSession(activeProject.id, activeSession.id, { checkpointId: undefined }).catch(() => null);
+      if (updated) setActiveSession(updated);
     }
   }
 
@@ -580,24 +733,6 @@ export function useAppController() {
     }
   }
 
-  async function saveSandbox() {
-    const saved = await api.saveSandboxConfig({
-      provider: "local",
-      enabled: sandboxEnabled,
-      requireApproval: sandboxRequireApproval,
-      allowNetwork: sandboxAllowNetwork,
-      commandTimeoutSeconds: Number(sandboxTimeout) || 120,
-    });
-    setSandboxConfig(saved);
-    setShowSandbox(false);
-    await loadSandboxStatus();
-  }
-
-  async function stopSandbox() {
-    await api.stopSandbox();
-    await loadSandboxStatus();
-  }
-
   async function saveMemories(projectMemory: string, sessionMemory: string) {
     if (!activeProject || !activeSession) return;
     const project = await api.updateProjectMemory(activeProject.id, projectMemory);
@@ -613,16 +748,6 @@ export function useAppController() {
     activeSession,
     providers,
     providerDefinitions,
-    sandboxConfig,
-    sandboxStatus,
-    sandboxRequireApproval,
-    setSandboxRequireApproval,
-    sandboxAllowNetwork,
-    setSandboxAllowNetwork,
-    sandboxTimeout,
-    setSandboxTimeout,
-    sandboxEnabled,
-    setSandboxEnabled,
     selectedProviderId,
     selectedModel,
     files,
@@ -637,7 +762,7 @@ export function useAppController() {
     draft,
     setDraft,
     streamingText,
-    liveEvents,
+    liveEvents: liveEventsForSession,
     view,
     setView,
     mode,
@@ -651,14 +776,10 @@ export function useAppController() {
     setShowContext,
     showProviders,
     setShowProviders,
-    showSandbox,
-    setShowSandbox,
     showMcp,
     setShowMcp,
     showSkills,
     setShowSkills,
-    showComposerMenu,
-    setShowComposerMenu,
     showCreateProject,
     setShowCreateProject,
     newProjectName,
@@ -686,6 +807,16 @@ export function useAppController() {
     definition,
     currentMessages,
     visibleFiles,
+    area,
+    homeProject,
+    homeRoot,
+    homeFiles,
+    homeSessionFiles,
+    refreshHomeFiles,
+    refreshHomeSessionFiles,
+    enterHome,
+    enterCode,
+    createHomeSession,
     // Actions
     activateProject,
     deleteProjectById,
@@ -705,8 +836,6 @@ export function useAppController() {
     keepChanges,
     switchModel,
     handleProvidersChange,
-    saveSandbox,
-    stopSandbox,
     saveMemories,
     submit,
     stopAgent,

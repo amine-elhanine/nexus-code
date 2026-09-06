@@ -1,20 +1,18 @@
 /// <reference types="vite/client" />
 
 type PlanItem = { content: string; status: "pending" | "in_progress" | "completed" };
-type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number };
+type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
 type SubagentRole = "researcher" | "tester" | "coder";
 type SubagentStep = { toolName: string; summary?: string; timestamp: string };
 type SubagentItem = { id: string; role: SubagentRole; task: string; status: "running" | "completed" | "failed"; steps: SubagentStep[]; output?: string; usage?: AgentUsage };
 type ArtifactStatus = "draft" | "pending_approval" | "approved" | "completed" | "rejected";
 type ArtifactItem = { id: string; sessionId: string; name: string; filename: string; path: string; content: string; status: ArtifactStatus; userFacing: boolean; requestFeedback: boolean; createdAt: string; updatedAt: string };
-type AgentEvent = { type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact"; text: string; timestamp: string; items?: PlanItem[]; usage?: AgentUsage; subagent?: SubagentItem; artifact?: ArtifactItem };
+type AgentEvent = { type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact"; sessionId: string; text: string; timestamp: string; items?: PlanItem[]; usage?: AgentUsage; subagent?: SubagentItem; artifact?: ArtifactItem };
 type ProviderDefinition = { id: string; label: string; packageName: string; envKey: string; defaultBaseUrl?: string; models: string[] };
 type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[] };
-type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; kind?: AgentEvent["type"]; createdAt: string; plan?: PlanItem[]; usage?: AgentUsage; subagent?: SubagentItem; artifact?: ArtifactItem }>; model?: { providerId: string; model: string } };
-type ProjectRecord = { id: string; name: string; root: string; createdAt: string; updatedAt: string; memory: string; sessions: SessionRecord[]; sandbox?: { provider: "local"; mode: "workspace-permissions"; status: string; path: string; lastSyncAt?: string } };
+type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; kind?: AgentEvent["type"]; createdAt: string; plan?: PlanItem[]; usage?: AgentUsage; subagent?: SubagentItem }>; model?: { providerId: string; model: string } };
+type ProjectRecord = { id: string; name: string; root: string; createdAt: string; updatedAt: string; memory: string; sessions: SessionRecord[] };
 type ActiveContext = { project: ProjectRecord; session: SessionRecord | null } | null;
-type SandboxConfig = { provider: "local"; enabled: boolean; requireApproval: boolean; allowNetwork: boolean; commandTimeoutSeconds: number };
-type SandboxStatus = { configured: boolean; status: string; sandbox: ProjectRecord["sandbox"] | null };
 type WorkspaceDiffFile = { path: string; directory: string; name: string; additions: number; deletions: number; status: string; patch: string };
 type McpTransport = "stdio" | "http" | "sse";
 type McpServerConfig = { id: string; name: string; enabled: boolean; transport: McpTransport; command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string> };
@@ -57,10 +55,6 @@ export interface NexusApi {
   openSkillsFolder: (scope: "global" | "project") => Promise<boolean>;
   getSettings: () => Promise<Record<string, unknown>>;
   saveSettings: (settings: unknown) => Promise<unknown>;
-  getSandboxConfig: () => Promise<SandboxConfig | null>;
-  saveSandboxConfig: (config: SandboxConfig) => Promise<SandboxConfig>;
-  getSandboxStatus: () => Promise<SandboxStatus>;
-  stopSandbox: () => Promise<boolean>;
   listWorkspace: () => Promise<string[]>;
   readFile: (file: string) => Promise<{ file: string; content: string; lines: number }>;
   readHead: (file: string) => Promise<string>;
@@ -117,6 +111,14 @@ export interface NexusApi {
   maximizeWindow: () => Promise<boolean>;
   closeWindow: () => Promise<void>;
   isWindowMaximized: () => Promise<boolean>;
+
+  // Home (general assistant)
+  getHome: () => Promise<{ project: ProjectRecord; root: string }>;
+  listHomeFiles: () => Promise<Array<{ path: string; name: string; size: number; modified: string }>>;
+  listHomeSessionFiles: (sessionId: string) => Promise<Array<{ path: string; name: string; size: number; modified: string }>>;
+  readHomeFile: (relativePath: string) => Promise<{ name: string; path: string; size: number; base64: string }>;
+  downloadHomeFile: (relativePath: string) => Promise<string | null>;
+  openHomeFolder: () => Promise<void>;
 
   runAgent: (payload: { request: string; images?: string[]; providerId?: string; model?: string; mode?: string }) => Promise<string>;
   cancelAgent: () => Promise<boolean>;

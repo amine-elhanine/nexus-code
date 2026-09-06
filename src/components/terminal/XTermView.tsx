@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import { Terminal as XTerminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -12,6 +12,9 @@ export const XTermView: React.FC<XTermViewProps> = ({ projectRoot }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  // One terminal instance per mounted view; the id is unique per project so
+  // switching projects gets a fresh shell instead of reusing the old cwd.
+  const terminalId = useMemo(() => `term-${projectRoot ? projectRoot.replace(/[^a-zA-Z0-9_-]/g, "_") : "default"}`, [projectRoot]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -41,7 +44,7 @@ export const XTermView: React.FC<XTermViewProps> = ({ projectRoot }) => {
         brightYellow: "#eab308",
         brightBlue: "#3b82f6",
         brightMagenta: "#a855f7",
-        brightCyan: "#06b6d4",
+        brightCyan: "#06b0d4",
         brightWhite: "#f8fafc",
       },
     });
@@ -57,45 +60,53 @@ export const XTermView: React.FC<XTermViewProps> = ({ projectRoot }) => {
     const api = window.nexus || window.forgepilot;
 
     // Start shell session with initial dimensions
-    void api?.createTerminal?.("main", projectRoot, term.cols, term.rows);
+    void api?.createTerminal?.(terminalId, projectRoot, term.cols, term.rows);
 
     // Listen for incoming data from the backend shell
     const cleanupListener = api?.onTerminalData?.(({ id, data }: { id: string; data: string }) => {
-      if (id === "main") {
+      if (id === terminalId) {
         term.write(data);
       }
     }) ?? (() => {});
 
     // Send user keystrokes to the shell process
     term.onData((data) => {
-      void api?.writeTerminal?.("main", data);
+      void api?.writeTerminal?.(terminalId, data);
     });
 
-    const handleResize = () => {
+    const fitAndResize = () => {
       try {
         fitAddon.fit();
-        api?.resizeTerminal?.("main", term.cols, term.rows);
+        api?.resizeTerminal?.(terminalId, term.cols, term.rows);
       } catch { /* ignore */ }
     };
-    window.addEventListener("resize", handleResize);
+    window.addEventListener("resize", fitAndResize);
+    // The terminal pane resizes when side panels toggle, not just when the
+    // window does — observe the container too.
+    const observer = new ResizeObserver(() => fitAndResize());
+    observer.observe(containerRef.current);
 
     return () => {
-      window.removeEventListener("resize", handleResize);
+      observer.disconnect();
+      window.removeEventListener("resize", fitAndResize);
       cleanupListener();
+      void api?.killTerminal?.(terminalId);
       term.dispose();
+      termRef.current = null;
+      fitAddonRef.current = null;
     };
-  }, [projectRoot]);
+  }, [projectRoot, terminalId]);
 
   const sendQuickCommand = (cmd: string) => {
     const api = window.nexus || window.forgepilot;
-    void api?.writeTerminal?.("main", `${cmd}\r\n`);
+    void api?.writeTerminal?.(terminalId, `${cmd}\r\n`);
   };
 
   const restartShell = () => {
     const api = window.nexus || window.forgepilot;
     termRef.current?.clear();
-    void api?.killTerminal?.("main");
-    void api?.createTerminal?.("main", projectRoot, termRef.current?.cols, termRef.current?.rows);
+    void api?.killTerminal?.(terminalId);
+    void api?.createTerminal?.(terminalId, projectRoot, termRef.current?.cols, termRef.current?.rows);
   };
 
   const clearTerminal = () => {

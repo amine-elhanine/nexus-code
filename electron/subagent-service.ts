@@ -4,7 +4,9 @@ import { createDeepAgent } from "deepagents";
 import { z } from "zod";
 import { createChatModel } from "./providers.js";
 import { createCodeIntelligenceTools } from "./code-tools.js";
-import { getSandboxAgentBackend } from "./sandbox-service.js";
+import { getAgentBackend } from "./command-service.js";
+import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint } from "./rate-limit.js";
+import { StreamUsageTracker } from "./context-service.js";
 import type { ProviderConfig } from "./store.js";
 import type { AgentUsage } from "./agent-service.js";
 
@@ -45,11 +47,11 @@ export const SUBAGENT_CONFIGS: Record<
     title: "Researcher",
     description: "Explore codebase architecture, search symbols, and summarize findings in read-only mode without mutating code.",
     readOnly: true,
-    recursionLimit: 25,
+    recursionLimit: 15,
     systemPrompt: (projectRoot: string) => `You are a Research Subagent in Nexus working on the repository at ${projectRoot}.
 Your goal is to thoroughly explore the codebase to answer the lead agent's inquiry.
 Working guidelines:
-- Use get_symbol_outline and find_symbol_definition for fast structural exploration.
+- Prefer grep_search with a tight query, then read at most 2 file ranges. Avoid outline -> definition -> references chains.
 - Read only the relevant files or excerpts.
 - You have READ-ONLY access. Writing, editing, and destructive commands are disabled.
 - Return a structured, concise briefing highlighting exact file paths, line references, architecture decisions, and potential risks.`,
@@ -89,21 +91,54 @@ function textFromMessage(message: any): string {
   return message.text ?? "";
 }
 
-function toolCallSummary(call: any): string {
-  const args = call?.args;
-  if (args && typeof args === "object") {
-    const parts: string[] = [];
-    for (const key of ["filePath", "file", "path", "command", "symbol", "query"]) {
-      const val = (args as any)[key];
-      if (typeof val === "string" && val) parts.push(`${key}=${val.length > 40 ? `${val.slice(0, 40)}…` : val}`);
-      if (parts.length >= 2) break;
-    }
-    if (parts.length) return parts.join(" ");
-  }
-  return "";
+// Mirrors describeToolCall in agent-service.ts (kept separate to avoid a
+// require cycle). Backend tools use snake_case `file_path`, which a naive
+// key scan misses — leaving subagent steps as bare `read_file()`.
+function shortLine(value: string, max = 90) {
+  const oneLine = value.replace(/\s+/g, " ").trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
 }
 
-import { extractStreamUsage } from "./context-service.js";
+function toolCallSummary(call: any): string {
+  const args = call?.args;
+  if (!args || typeof args !== "object") return "";
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  const name = call?.name || "";
+  const file = str((args as any).file_path || (args as any).filePath || (args as any).file || (args as any).path);
+  if (name === "execute") return shortLine(str((args as any).command), 110);
+  if (name === "read_file_range" && file) return `${file}:${(args as any).startLine ?? 1}-${(args as any).endLine ?? 100}`;
+  if (name === "grep_search") {
+    const query = str((args as any).query);
+    const scope = str((args as any).pathPrefix);
+    return query ? (scope ? `"${shortLine(query, 60)}" in ${scope}` : `"${shortLine(query, 60)}"`) : "";
+  }
+  if (name === "apply_patch") {
+    const files: string[] = [];
+    for (const line of str((args as any).patchText).split(/\r?\n/)) {
+      const m = line.match(/^\*\*\*\s*(?:Add File|Update File|Delete File|Move to)\s*:?\s*(.*)$/i);
+      if (m && m[1].trim() && files.length < 4) files.push(m[1].trim());
+    }
+    return files.join(", ");
+  }
+  if (name === "ask_user" && Array.isArray((args as any).questions)) {
+    return (args as any).questions.map((q: any) => str(q?.header || q?.question)).filter(Boolean).slice(0, 3).join(" · ");
+  }
+  if (name === "delegate_task") {
+    const role = str((args as any).role);
+    const task = shortLine(str((args as any).task), 80);
+    return role && task ? `[${role}] ${task}` : role || task;
+  }
+  if (file) return file;
+  const parts: string[] = [];
+  for (const key of ["command", "url", "pattern", "query", "symbol", "task"]) {
+    const val = (args as any)[key];
+    if (typeof val === "string" && val.trim()) {
+      parts.push(shortLine(val, 70));
+      if (parts.length >= 2) break;
+    }
+  }
+  return parts.join(" · ");
+}
 
 export type ModelPricing = { inputPerMillion: number; outputPerMillion: number };
 
@@ -131,24 +166,28 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   "codestral-latest": { inputPerMillion: 0.30, outputPerMillion: 0.90 },
 };
 
-export function getModelPricing(modelName?: string): ModelPricing {
-  if (!modelName) return { inputPerMillion: 0.15, outputPerMillion: 0.60 };
+export function getModelPricing(modelName?: string): ModelPricing | null {
+  if (!modelName) return null;
   const normalized = modelName.toLowerCase();
-  for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
-    if (normalized.includes(key.toLowerCase())) return pricing;
+  // Longest key wins: "gpt-4.1" would otherwise shadow "gpt-4.1-mini" and
+  // price every mini model at the full rate. Unknown models (Ollama, free
+  // tiers, aggregator catalogues) have no fabricated price — the UI shows "—".
+  let bestKey: string | null = null;
+  for (const key of Object.keys(MODEL_PRICING)) {
+    if (normalized.includes(key.toLowerCase()) && (!bestKey || key.length > bestKey.length)) bestKey = key;
   }
-  return { inputPerMillion: 0.15, outputPerMillion: 0.60 };
+  return bestKey ? MODEL_PRICING[bestKey] : null;
 }
 
 export function calculateAgentUsage(inputTokens: number, outputTokens: number, modelName?: string): AgentUsage {
   const pricing = getModelPricing(modelName);
   const totalTokens = inputTokens + outputTokens;
-  const cost = (inputTokens / 1_000_000) * pricing.inputPerMillion + (outputTokens / 1_000_000) * pricing.outputPerMillion;
+  const cost = pricing === null ? null : Number(((inputTokens / 1_000_000) * pricing.inputPerMillion + (outputTokens / 1_000_000) * pricing.outputPerMillion).toFixed(4));
   return {
     inputTokens,
     outputTokens,
     totalTokens,
-    estimatedCost: Number(cost.toFixed(4)),
+    estimatedCost: cost,
   };
 }
 
@@ -158,7 +197,6 @@ export async function executeSubagentTask(options: {
   projectRoot: string;
   provider: ProviderConfig;
   modelName: string;
-  sandboxConfig: any;
   projectRecord: any;
   mcpTools?: any[];
   skills?: string[];
@@ -166,7 +204,7 @@ export async function executeSubagentTask(options: {
   onEvent?: SubagentEventHandler;
   isCancelled?: () => boolean;
 }): Promise<string> {
-  const { role, task, projectRoot, provider, modelName, sandboxConfig, projectRecord, mcpTools, skills, skillsBackend, onEvent, isCancelled } = options;
+  const { role, task, projectRoot, provider, modelName, projectRecord, mcpTools, skills, skillsBackend, onEvent, isCancelled } = options;
   const config = SUBAGENT_CONFIGS[role] || SUBAGENT_CONFIGS.researcher;
   const subagentId = `sub-${role}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
@@ -183,7 +221,7 @@ export async function executeSubagentTask(options: {
   try {
     if (isCancelled?.()) throw new Error("Subagent cancelled by user");
 
-    const { backend } = await getSandboxAgentBackend(projectRecord, sandboxConfig, {
+    const { backend } = await getAgentBackend(projectRecord, {
       readOnly: config.readOnly,
     });
 
@@ -199,54 +237,102 @@ export async function executeSubagentTask(options: {
       systemPrompt: config.systemPrompt(projectRoot),
     });
 
-    const stream = await (subAgent as any).stream(
-      { messages: [new HumanMessage(task)] },
-      { streamMode: ["values", "updates", "messages"], recursionLimit: config.recursionLimit }
-    );
-
     let finalMessages: any[] = [];
-    let totalInputTokens = Math.max(1, Math.round((task.length + 800) / 4));
-    let totalOutputTokens = 0;
+    const usage = new StreamUsageTracker();
 
-    for await (const item of stream as AsyncIterable<any>) {
-      if (isCancelled?.()) throw new Error("Subagent cancelled by user");
-      const [streamMode, payload] = Array.isArray(item) ? item : ["values", item];
+    // Mirrors the main agent: a provider 429 or dropped connection during a
+    // delegated task must not fail the whole parent run, so the stream is
+    // consumed under bounded retry with the same progress-based counter reset,
+    // and mid-stream failures resume from the furthest complete superstep.
+    let runMessages: any[] = [new HumanMessage(task)];
+    const progress = createProgressTracker();
+    let retryCount = 0;
 
-      if (streamMode === "values" && Array.isArray(payload?.messages)) {
-        finalMessages = payload.messages;
+    const consumeStream = async () => {
+      retryCount++;
+      progress.beginAttempt(runMessages.length);
+      let messagesToStream = runMessages;
+      if (retryCount > 1 && runMessages.length > 1) {
+        messagesToStream = [
+          ...runMessages,
+          new HumanMessage("[System Note: Stream resumed after temporary provider interruption. All preceding tool actions are complete. Continue directly with the subagent task without repeating completed steps.]"),
+        ];
       }
+      const stream = await (subAgent as any).stream(
+        { messages: messagesToStream },
+        { streamMode: ["values", "updates", "messages"], recursionLimit: config.recursionLimit }
+      );
+      try {
+        for await (const item of stream as AsyncIterable<any>) {
+          if (isCancelled?.()) throw new Error("Subagent cancelled by user");
+          const [streamMode, payload] = Array.isArray(item) ? item : ["values", item];
 
-      if (streamMode === "messages") {
-        const [chunk] = Array.isArray(payload) ? payload : [payload];
-        const exact = extractStreamUsage(chunk);
-        if (exact?.inputTokens) totalInputTokens = exact.inputTokens;
-        if (exact?.outputTokens) totalOutputTokens = exact.outputTokens;
-      }
+          if (streamMode === "values" && Array.isArray(payload?.messages)) {
+            finalMessages = payload.messages;
+            progress.noteSuperstep(payload.messages.length);
+          }
 
-      if (streamMode === "updates" && payload && typeof payload === "object") {
-        for (const delta of Object.values<any>(payload)) {
-          for (const message of delta?.messages ?? []) {
-            if (Array.isArray(message?.tool_calls)) {
-              for (const call of message.tool_calls) {
-                const toolName = call?.name || "tool";
-                const summary = toolCallSummary(call);
-                const step: SubagentStep = {
-                  toolName: summary ? `${toolName}(${summary})` : toolName,
-                  summary,
-                  timestamp: new Date().toISOString(),
-                };
-                subagentItem.steps.push(step);
-                onEvent?.({ type: "subagent_step", subagent: { ...subagentItem } });
+          if (streamMode === "messages") {
+            const [chunk] = Array.isArray(payload) ? payload : [payload];
+            usage.noteChunk(chunk);
+          }
+
+          if (streamMode === "updates" && payload && typeof payload === "object") {
+            for (const delta of Object.values<any>(payload)) {
+              for (const message of delta?.messages ?? []) {
+                if (Array.isArray(message?.tool_calls)) {
+                  for (const call of message.tool_calls) {
+                    const toolName = call?.name || "tool";
+                    const summary = toolCallSummary(call);
+                    const step: SubagentStep = {
+                      toolName: summary ? `${toolName} · ${summary}` : toolName,
+                      summary,
+                      timestamp: new Date().toISOString(),
+                    };
+                    subagentItem.steps.push(step);
+                    onEvent?.({ type: "subagent_step", subagent: { ...subagentItem } });
+                  }
+                }
+                if (message?.type === "tool") {
+                  progress.noteToolResult();
+                }
               }
             }
           }
         }
+      } catch (error) {
+        // Keep the furthest complete superstep as the resume checkpoint so the
+        // next attempt continues instead of restarting the delegated task.
+        // Trailing unanswered tool calls are pruned before resuming.
+        if (finalMessages.length > 0) {
+          runMessages = sanitizeResumeCheckpoint(finalMessages);
+        }
+        throw error;
       }
-    }
+    };
+
+    await withRateLimitRetry(consumeStream, {
+      madeProgress: () => progress.madeProgress(),
+      onRetry: ({ delayMs, attempt, maxAttempts, kind, reason, reset }) => {
+        const prefix = reset
+          ? "Resuming from checkpoint"
+          : kind === "rate-limit"
+            ? "Rate limited"
+            : "Connection problem";
+        subagentItem.steps.push({
+          toolName: `${prefix} (${reason}) — retry ${attempt}/${maxAttempts} in ${Math.round(delayMs / 1000)}s`,
+          timestamp: new Date().toISOString(),
+        });
+        onEvent?.({ type: "subagent_step", subagent: { ...subagentItem } });
+      },
+    });
 
     const lastMsg = finalMessages[finalMessages.length - 1];
     const answer = textFromMessage(lastMsg) || `Subagent [${config.title}] completed task without text output.`;
-    if (!totalOutputTokens) totalOutputTokens = Math.max(1, Math.round(answer.length / 4));
+    let totalInputTokens = usage.inputTokens;
+    let totalOutputTokens = usage.outputTokens;
+    if (!usage.sawExactOutput && totalOutputTokens === 0) totalOutputTokens = Math.max(1, Math.round(answer.length / 4));
+    if (!usage.sawExactInput && totalInputTokens === 0) totalInputTokens = Math.max(1, Math.round((task.length + 800) / 4));
 
     subagentItem.status = "completed";
     subagentItem.output = answer;
@@ -267,7 +353,6 @@ export function createSubagentDelegationTool(options: {
   projectRoot: string;
   provider: ProviderConfig;
   modelName: string;
-  sandboxConfig: any;
   projectRecord: any;
   mcpTools?: any[];
   skills?: string[];
@@ -283,7 +368,6 @@ export function createSubagentDelegationTool(options: {
         projectRoot: options.projectRoot,
         provider: options.provider,
         modelName: options.modelName,
-        sandboxConfig: options.sandboxConfig,
         projectRecord: options.projectRecord,
         mcpTools: options.mcpTools,
         skills: options.skills,
@@ -294,7 +378,7 @@ export function createSubagentDelegationTool(options: {
     },
     {
       name: "delegate_task",
-      description: "Delegate an isolated sub-task to a specialized subagent. 'researcher' explores files, symbols, and patterns in read-only mode to prevent polluting main context. 'tester' runs test suites and diagnoses errors. 'coder' applies surgical modifications.",
+      description: "Delegate an isolated sub-task to a specialized subagent (use sparingly, only for genuinely independent multi-file work — never for simple lookups or single-file edits). 'researcher' explores files, symbols, and patterns in read-only mode to prevent polluting main context. 'tester' runs test suites and diagnoses errors. 'coder' applies surgical modifications.",
       schema: z.object({
         role: z.enum(["researcher", "tester", "coder"]).describe("The specialized role: 'researcher' for codebase investigation, 'tester' for test execution, 'coder' for code editing."),
         task: z.string().describe("Clear, actionable instructions for the subagent describing what to find, test, or implement."),

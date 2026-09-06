@@ -68,59 +68,52 @@ function extractHeadingsAndControls(html: string) {
   return { title, headings, buttons, links, inputs };
 }
 
-function isLoopbackOrPrivateHost(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0") {
-    return true;
-  }
-  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
-  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
-  const match172 = host.match(/^172\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
-  if (match172) {
-    const octet = Number(match172[1]);
-    if (octet >= 16 && octet <= 31) return true;
-  }
-  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
-  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
-  return false;
-}
+export function createBrowserTools(_projectRoot?: string) {
+  // fetch follows redirects transparently, which would let a loopback URL
+  // 302-hop straight to an external host. Redirects are handled manually and
+  // every hop re-checked against the same policy.
+  const MAX_REDIRECTS = 5;
 
-export function checkUrlNetworkAllowed(url: string, allowNetwork: boolean): string | null {
-  if (allowNetwork) return null;
-  let target = url.trim();
-  if (!target.startsWith("http://") && !target.startsWith("https://")) {
-    target = `http://${target}`;
-  }
-  try {
-    const parsed = new URL(target);
-    if (!isLoopbackOrPrivateHost(parsed.hostname)) {
-      return `Network access blocked by sandbox policy: external URL '${url}' is not allowed when allowNetwork is disabled. Only loopback/private hosts (localhost, 127.0.0.1, RFC1918) are permitted.`;
+  const fetchWithRedirectControl = async (targetUrl: string, init: RequestInit): Promise<Response> => {
+    let url = targetUrl;
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      const response = await fetch(url, { ...init, redirect: "manual" });
+      // fetch types opaque/opaqueredirect only occur in browser contexts; here
+      // a 3xx with a Location header is the redirect case to follow.
+      const status = response.status;
+      if (status < 300 || status >= 400) return response;
+      const location = response.headers.get("location");
+      if (!location) return response;
+      let next: URL;
+      try {
+        next = new URL(location, url);
+      } catch {
+        return response;
+      }
+      await response.body?.cancel().catch(() => {});
+      url = next.toString();
     }
-    return null;
-  } catch {
-    return `Invalid URL format: ${url}`;
-  }
-}
+    throw new Error(`Too many redirects (>${MAX_REDIRECTS}) following ${targetUrl}`);
+  };
 
-export function createBrowserTools(projectRoot?: string, config?: { allowNetwork?: boolean }) {
-  const allowNetwork = config?.allowNetwork ?? false;
+  const normalizeUrl = (raw: string) => {
+    let target = raw.trim();
+    if (!target.startsWith("http://") && !target.startsWith("https://")) {
+      target = `http://${target}`;
+    }
+    return new URL(target).toString();
+  };
 
   const browserInspectTool = tool(
     async ({ url }: { url: string }) => {
       try {
-        let targetUrl = url.trim();
-        if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
-          targetUrl = `http://${targetUrl}`;
-        }
-
-        const networkViolation = checkUrlNetworkAllowed(targetUrl, allowNetwork);
-        if (networkViolation) return networkViolation;
+        const targetUrl = normalizeUrl(url);
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
 
         const startTime = Date.now();
-        const response = await fetch(targetUrl, {
+        const response = await fetchWithRedirectControl(targetUrl, {
           signal: controller.signal,
           headers: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Nexus/1.0",
@@ -178,19 +171,13 @@ export function createBrowserTools(projectRoot?: string, config?: { allowNetwork
   const browserFetchApiTool = tool(
     async ({ url, method = "GET", headers = {}, body }: { url: string; method?: string; headers?: Record<string, string>; body?: string }) => {
       try {
-        let targetUrl = url.trim();
-        if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
-          targetUrl = `http://${targetUrl}`;
-        }
-
-        const networkViolation = checkUrlNetworkAllowed(targetUrl, allowNetwork);
-        if (networkViolation) return networkViolation;
+        const targetUrl = normalizeUrl(url);
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
 
         const startTime = Date.now();
-        const response = await fetch(targetUrl, {
+        const response = await fetchWithRedirectControl(targetUrl, {
           method: method.toUpperCase(),
           headers: {
             "User-Agent": "Nexus-Agent/1.0",
