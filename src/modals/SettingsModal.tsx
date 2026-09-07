@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from "react";
-import { Eye, EyeOff, KeyRound, FolderOpen, ChevronRight, Globe, Puzzle, Server, Terminal } from "lucide-react";
+import { Eye, EyeOff, KeyRound, FolderOpen, ChevronRight, Globe, Puzzle, Server, Terminal, Download, RefreshCw, Loader2, Check } from "lucide-react";
 import { Modal } from "../components/common/Modal.js";
 import { ProviderManager } from "../components/settings/ProviderManager.js";
 import { McpManager } from "../components/settings/McpManager.js";
 import { SkillsManager } from "../components/settings/SkillsManager.js";
-import type { ProviderConfig, ProviderDefinition } from "../types.js";
+import { MemoryRow } from "../views/MemoryView.js";
+import type { ProviderConfig, ProviderDefinition, UpdaterState } from "../types.js";
 
-type SettingsSection = "browser" | "providers" | "mcp" | "skills" | "services" | "workspace";
+type SettingsSection = "browser" | "providers" | "mcp" | "skills" | "services" | "updates" | "workspace";
 
 export function SettingsModal({
   area,
@@ -17,6 +18,10 @@ export function SettingsModal({
   providerDefinitions,
   onProvidersChange,
   onManageServices,
+  updater,
+  appVersion,
+  onCheckUpdates,
+  onQuitAndInstall,
   onClose,
 }: {
   area: "home" | "code";
@@ -27,6 +32,10 @@ export function SettingsModal({
   providerDefinitions: ProviderDefinition[];
   onProvidersChange: (providers: ProviderConfig[]) => void;
   onManageServices: () => void;
+  updater: UpdaterState;
+  appVersion: string;
+  onCheckUpdates: () => void;
+  onQuitAndInstall: () => void;
   onClose: () => void;
 }) {
   const api = window.nexus || window.forgepilot;
@@ -58,6 +67,7 @@ export function SettingsModal({
     { id: "mcp", label: "MCP servers", icon: <Server size={13} /> },
     { id: "skills", label: "Skills", icon: <Puzzle size={13} /> },
     { id: "services", label: "Services", icon: <Terminal size={13} /> },
+    { id: "updates", label: "Updates", icon: <Download size={13} /> },
     { id: "workspace", label: "Workspace", icon: <FolderOpen size={13} />, hidden: area !== "home" },
   ];
 
@@ -138,6 +148,66 @@ export function SettingsModal({
                 </span>
                 <ChevronRight size={14} />
               </button>
+            </div>
+          )}
+
+          {section === "updates" && (
+            <div className="setting-card">
+              <div className="setting-row">
+                <span className="setting-icon"><Download size={14} /></span>
+                <div className="setting-text">
+                  <strong>App updates</strong>
+                  <small>Checked automatically on launch. Installs on restart.</small>
+                </div>
+              </div>
+              <div style={{ marginTop: "10px" }}>
+                <MemoryRow label="Installed version" value={appVersion ? `v${appVersion}` : "…"} />
+                {updater.status === "checking" && (
+                  <MemoryRow label="Status" value="Checking for updates…" />
+                )}
+                {(updater.status === "idle" || updater.status === "up-to-date") && (
+                  <MemoryRow
+                    label="Status"
+                    value={updater.status === "up-to-date" ? "You're on the latest version" : "Not checked yet"}
+                  />
+                )}
+                {updater.status === "available" && (
+                  <MemoryRow label="Status" value={`v${updater.version} found — downloading…`} />
+                )}
+                {updater.status === "downloading" && (
+                  <MemoryRow label="Status" value={`Downloading v${updater.version}… ${updater.percent}%`} />
+                )}
+                {updater.status === "downloaded" && (
+                  <MemoryRow label="Status" value={`v${updater.version} ready to install`} />
+                )}
+                {updater.status === "error" && (
+                  <MemoryRow label="Status" value={`Check failed: ${updater.message}`} />
+                )}
+              </div>
+              <div className="modal-actions" style={{ marginTop: "12px" }}>
+                {updater.status === "downloaded" ? (
+                  <button className="primary full" onClick={onQuitAndInstall}>
+                    <Check size={14} /> Restart to install v{updater.version}
+                  </button>
+                ) : (
+                  <button
+                    className="secondary full"
+                    disabled={updater.status === "checking" || updater.status === "downloading"}
+                    onClick={onCheckUpdates}
+                  >
+                    {updater.status === "checking" || updater.status === "downloading" ? (
+                      <Loader2 size={13} className="spin" />
+                    ) : (
+                      <RefreshCw size={13} />
+                    )}
+                    {updater.status === "checking" || updater.status === "downloading" ? "Working…" : "Check for updates"}
+                  </button>
+                )}
+              </div>
+              <div className="settings-note" style={{ marginTop: "10px" }}>
+                <Download size={12} />
+                <span>Auto-update covers the installed app. Portable builds must be re-downloaded manually.</span>
+              </div>
             </div>
           )}
 

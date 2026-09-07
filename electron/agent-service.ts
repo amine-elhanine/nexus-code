@@ -477,9 +477,9 @@ const COMPLEX_TASK_PATTERN =
 // request is one short sentence ("build me an app..."). Single-file creates
 // ("create a file/component/function") stay simple.
 const BUILD_TASK_PATTERN =
-  /\b(build|rebuild|scaffold|bootstrap|set\s+up\s+a\s+new)\b/i;
+  /\b(build|building|rebuild|scaffold|scaffolding|bootstrap|bootstrapping|launch|launching|set\s+up\s+a\s+new)\b/i;
 const CREATE_PROJECT_PATTERN =
-  /\b(create|make|develop|generate|start)\b.{0,40}\b(app|application|website|site|project|dashboard|chat\s*app|web\s*app)\b/i;
+  /\b(create|creating|make|making|develop|developing|generate|generating|build|building|launch|launching|start)\b.{0,40}\b(app|application|website|site|platform|portal|hub|project|dashboard|chat\s*app|web\s*app)\b/i;
 // Deliverable builds (slides, docs, spreadsheets) are multi-step projects
 // even in one short sentence: read the skill, write a generator script,
 // run it, verify the file. Classifying them "simple" caps the run at ~3
@@ -545,6 +545,11 @@ export function isWebTask(request: string): boolean {
 export function isNewProjectTask(request: string): boolean {
   const text = (request || "").trim();
   if (!text) return false;
+  // Explicit existing-project signals win over build verbs: "add a dashboard
+  // to this repo" is an edit inside the workspace, not a greenfield scaffold
+  // (which would nest a fresh Vite app + npm install into the current repo).
+  if (/\b(into|in)\s+(this|the|our|my)\s+(repo|repository|project|codebase|app)\b/i.test(text)) return false;
+  if (/\bexisting\s+(repo|repository|project|codebase|app)\b/i.test(text)) return false;
   return BUILD_TASK_PATTERN.test(text) || CREATE_PROJECT_PATTERN.test(text);
 }
 
@@ -755,6 +760,7 @@ ${tail(memory.sessionMemory, 3000) || "(empty)"}
 Working rules:
 - Answer chit-chat and simple questions directly with zero tool calls.
 - For research: use web_search first, then read the most promising pages with browser_fetch_api or browser_inspect before stating facts. Never invent current prices, versions, or news.
+- If the task involves a library, API, or technology you are unsure about — especially anything recently released — research it first: web_search, then read the official docs with browser_inspect. Never invent APIs, import paths, or options; pin the exact version you verified.
 - For documents: check installed skills first — a skill may describe exactly how to build the requested file (Word, PowerPoint, Excel, LaTeX). Follow it: write a script (e.g. Python) with write_file and run it with execute, then verify the output file exists with ls. Once the deliverable is verified, delete the throwaway generator script with the delete tool so only the requested file(s) remain in the Nexus folder.
 - If a command fails because a tool is missing (python, pip packages), install it or fall back to the closest format you CAN produce, and say so clearly.
 - Save finished deliverables with clear file names in the workspace root and end by naming the exact file(s) the user can download.
@@ -791,6 +797,7 @@ Working rules:
 - Never write throwaway verification scripts into the repo (no check-*.js, smoke-test.js, or any scratch files — and never inside .nexus/, which is telemetry storage). Verify with a single inline command instead, then stop: one syntax check plus one smoke run is enough for a small app.
 - Use ask_user sparingly (at most once) when genuinely blocked by ambiguity; otherwise proceed with best guess.
 - Use browser_inspect or browser_fetch_api ONLY for web/dev-server/API-health tasks. Never use them for plain code edits or explanations. browser_inspect renders the page with JavaScript in the built-in browser session (the user can watch in the Browser tab when headless is off), so prefer it for checking what a running dev server actually renders. To interact with the page (click buttons, fill forms, submit, scroll), use browser_act — snapshot first for element refs, then act on refs.
+- If the task involves a library, API, or technology you are unsure about — especially anything recently released — research it first with web_search, then read the official docs with browser_inspect before writing code. Never invent APIs, import paths, or options; pin the exact version you verified.
 - delegate_task is a last resort for genuinely independent multi-file work. Never delegate simple lookups, single-file edits, or Q&A — doing so multiplies steps.
 - Keep diffs minimal and focused; prefer editing existing files over rewriting them.
 - Only use the todo list for tasks with 3+ distinct steps. Skip it entirely for trivial tasks (single question, single-file fix, typo, rename).
@@ -965,7 +972,18 @@ export async function runProjectAgent(options: {
         },
       })
     : [];
-  const webSearchTools = isGeneral ? createWebSearchTools() : [];
+  // Home general runs always get the browser tools; code runs get them for
+  // web-flavored tasks. Web search rides along everywhere (cheap, one tool):
+  // researching unfamiliar or recently-released libraries beats hallucinating
+  // their APIs. Every search is mirrored into the built-in browser.
+  const webSearchTools = createWebSearchTools({
+    // Mirror every search into the built-in browser so it is visible there
+    // (Watching follows it live, otherwise the follow banner shows it).
+    // Fire-and-forget: results come from the search API, never the mirror.
+    onSearch: (_query, url) => {
+      void agentBrowserService.visit(url).catch(() => {});
+    },
+  });
   const usage = new UsageAccumulator();
   // Fast-path routing: simple tasks get fewer tools, no todo planning and
   // no subagent delegation so one lookup cannot fan out into 10+ steps.

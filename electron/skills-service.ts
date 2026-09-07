@@ -6,13 +6,21 @@ import { app, shell } from "electron";
 // instructions below). Per-project skills live inside the repository; the global
 // library lives in app data and is mounted into the agent's backend as
 // /global-skills (see agent-service.ts).
-export const PROJECT_SKILLS_DIR = ".deepagents/skills";
+//
+// Project skills used to live in .deepagents/skills (a leftover from the
+// library's default layout that Nexus never otherwise used — hence the empty
+// folder on every project). They now live in .nexus/skills alongside all
+// other Nexus telemetry; the old location is still READ (never written) so
+// existing skills keep working.
+export const PROJECT_SKILLS_DIR = ".nexus/skills";
+const LEGACY_PROJECT_SKILLS_DIR = ".deepagents/skills";
 export const GLOBAL_SKILLS_ROUTE = "/global-skills";
 
 export type SkillInfo = { name: string; description: string; path: string; source: "global" | "project" };
 
 export function globalSkillsDir() { return path.join(app.getPath("userData"), "skills"); }
 export function projectSkillsDir(projectRoot: string) { return path.join(projectRoot, PROJECT_SKILLS_DIR); }
+function legacyProjectSkillsDir(projectRoot: string) { return path.join(projectRoot, LEGACY_PROJECT_SKILLS_DIR); }
 
 function skillsRootFor(scope: "global" | "project", projectRoot: string) {
   return scope === "global" ? globalSkillsDir() : projectSkillsDir(projectRoot);
@@ -51,9 +59,17 @@ async function readSkillInfo(skillDir: string, source: "global" | "project"): Pr
 
 export async function listSkills(projectRoot?: string | null): Promise<SkillInfo[]> {
   const skills: SkillInfo[] = [];
-  const scopes: ("global" | "project")[] = projectRoot ? ["global", "project"] : ["global"];
-  for (const scope of scopes) {
-    const root = skillsRootFor(scope, projectRoot || "");
+  // A name present in both project locations resolves to the new copy (which
+  // is also where all writes go — legacy is never written anymore). Global
+  // vs project duplicates keep the old behavior: both are listed.
+  const seenProject = new Set<string>();
+  // Project scope reads the new location first, then the legacy one.
+  const roots: Array<{ root: string; scope: "global" | "project" }> = [{ root: globalSkillsDir(), scope: "global" }];
+  if (projectRoot) {
+    roots.push({ root: projectSkillsDir(projectRoot), scope: "project" });
+    roots.push({ root: legacyProjectSkillsDir(projectRoot), scope: "project" });
+  }
+  for (const { root, scope } of roots) {
     let entries: string[] = [];
     try {
       entries = (await fs.readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
@@ -63,7 +79,12 @@ export async function listSkills(projectRoot?: string | null): Promise<SkillInfo
     for (const entry of entries) {
       try {
         const info = await readSkillInfo(path.join(root, entry), scope);
-        if (info) skills.push(info);
+        if (!info) continue;
+        if (scope === "project") {
+          if (seenProject.has(info.name)) continue;
+          seenProject.add(info.name);
+        }
+        skills.push(info);
       } catch { /* skip unreadable skill folders */ }
     }
   }
@@ -221,13 +242,18 @@ function validateSkillPathAllowed(skillPath: string, projectRoot?: string | null
   const resolved = path.resolve(skillPath);
   const globalRoot = path.resolve(globalSkillsDir());
   const projectRootResolved = projectRoot ? path.resolve(projectSkillsDir(projectRoot)) : null;
+  const legacyRootResolved = projectRoot ? path.resolve(legacyProjectSkillsDir(projectRoot)) : null;
 
   const isInsideGlobal = resolved === globalRoot || resolved.startsWith(`${globalRoot}${path.sep}`);
   const isInsideProject = projectRootResolved
     ? (resolved === projectRootResolved || resolved.startsWith(`${projectRootResolved}${path.sep}`))
     : /[\\/](\.deepagents|\.nexus|\.forgepilot)[\\/]skills([\\/]|$)/i.test(resolved);
+  // Legacy project skills remain readable/deletable, never writable.
+  const isInsideLegacy = legacyRootResolved
+    ? (resolved === legacyRootResolved || resolved.startsWith(`${legacyRootResolved}${path.sep}`))
+    : false;
 
-  if (!isInsideGlobal && !isInsideProject) {
+  if (!isInsideGlobal && !isInsideProject && !isInsideLegacy) {
     throw new Error(`Security violation: skill path '${skillPath}' is outside the authorized skills directories.`);
   }
   return resolved;
@@ -255,9 +281,13 @@ const SKILL_STOPWORDS = new Set(
 /** Virtual path the agent uses to read a skill through its backend. */
 export function skillVirtualPath(skill: SkillInfo): string {
   const folder = path.basename(path.dirname(skill.path));
-  return skill.source === "global"
-    ? `${GLOBAL_SKILLS_ROUTE}/${folder}/SKILL.md`
-    : `${PROJECT_SKILLS_DIR}/${folder}/SKILL.md`;
+  if (skill.source === "global") return `${GLOBAL_SKILLS_ROUTE}/${folder}/SKILL.md`;
+  // Legacy skills still live under .deepagents/skills — the virtual path must
+  // point at the real location or the backend read misses.
+  const normalized = skill.path.replace(/\\/g, "/");
+  const legacy = normalized.match(/\.deepagents\/skills\/([^/]+)\/SKILL\.md$/);
+  if (legacy) return `${LEGACY_PROJECT_SKILLS_DIR}/${legacy[1]}/SKILL.md`;
+  return `${PROJECT_SKILLS_DIR}/${folder}/SKILL.md`;
 }
 
 /**

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, RefreshCw, Globe, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, RefreshCw, Globe, X, MessageSquare, Play } from "lucide-react";
 import { CHROME_DESKTOP_UA } from "./IntegratedBrowserView.js";
 
 type MiniWebview = {
@@ -39,8 +39,13 @@ function shortHost(url: string): string {
 
 // Compact browser for the sidebar: address bar, history controls, dev-server
 // chips, and the page itself. Follows the agent (auto in Watching mode,
-// banner otherwise) exactly like the full Browser tab.
-export const SidebarBrowser: React.FC = () => {
+// banner otherwise) exactly like the full Browser tab. onAgentNavigate fires
+// when the agent takes the lead so the host can reveal this panel.
+export const SidebarBrowser: React.FC<{
+  projectRoot?: string;
+  onSendToAgent?: (prompt: string) => void;
+  onAgentNavigate?: () => void;
+}> = ({ projectRoot, onSendToAgent, onAgentNavigate }) => {
   const [url, setUrl] = useState("https://www.google.com");
   const [inputUrl, setInputUrl] = useState("https://www.google.com");
   const [history, setHistory] = useState<string[]>(["https://www.google.com"]);
@@ -49,11 +54,14 @@ export const SidebarBrowser: React.FC = () => {
   const [headless, setHeadless] = useState(true);
   const [agentUrl, setAgentUrl] = useState<string | null>(null);
   const [servers, setServers] = useState<DaemonServer[]>([]);
+  const [startingServer, setStartingServer] = useState(false);
   const webviewRef = useRef<MiniWebview | null>(null);
 
   const headlessRef = useRef(true);
   const navigateRef = useRef<(raw: string) => void>(() => {});
+  const onAgentNavigateRef = useRef<(() => void) | undefined>(undefined);
   headlessRef.current = headless;
+  onAgentNavigateRef.current = onAgentNavigate;
 
   function navigate(raw: string) {
     const finalUrl = resolveMiniUrl(raw);
@@ -75,6 +83,18 @@ export const SidebarBrowser: React.FC = () => {
     setUrl(history[next]);
     setInputUrl(history[next]);
     setLoading(true);
+  }
+
+  async function startDevServer() {
+    const api = window.forgepilot as unknown as {
+      startDaemon?: (name: string, command: string, cwd?: string) => Promise<unknown>;
+    };
+    if (typeof api.startDaemon !== "function") return;
+    setStartingServer(true);
+    try {
+      await api.startDaemon("Dev Server", "npm run dev", projectRoot || "");
+    } catch { /* error surfaces in Services dialog */ }
+    setStartingServer(false);
   }
 
   useEffect(() => {
@@ -111,7 +131,10 @@ export const SidebarBrowser: React.FC = () => {
         if (!payload?.url) return;
         lastAgentUrl = payload.url;
         setAgentUrl(payload.url);
-        if (payload.autoFollow && !headlessRef.current) navigateRef.current(payload.url);
+        if (payload.autoFollow && !headlessRef.current) {
+          navigateRef.current(payload.url);
+          onAgentNavigateRef.current?.();
+        }
       });
     }
     return () => {
@@ -164,6 +187,20 @@ export const SidebarBrowser: React.FC = () => {
         <button type="button" className="browser-btn icon-only" onClick={() => navigate(url)} title="Reload">
           <RefreshCw size={13} className={loading ? "spin" : ""} />
         </button>
+        {onSendToAgent && (
+          <button
+            type="button"
+            className="browser-btn icon-only"
+            onClick={() =>
+              onSendToAgent(
+                `Inspect and test the running web page at ${url}. Verify layout, check console errors or unexpected visual bugs, and validate features.`
+              )
+            }
+            title="Ask the agent about this page"
+          >
+            <MessageSquare size={13} />
+          </button>
+        )}
         <input
           type="text"
           value={inputUrl}
@@ -172,7 +209,7 @@ export const SidebarBrowser: React.FC = () => {
           spellCheck={false}
         />
       </form>
-      {servers.length > 0 && (
+      {servers.length > 0 ? (
         <div className="side-browser-servers">
           {servers.map((srv) => (
             <button key={srv.id} type="button" className="bookmark-chip server-chip" onClick={() => navigate(srv.url)} title={srv.command}>
@@ -181,6 +218,20 @@ export const SidebarBrowser: React.FC = () => {
             </button>
           ))}
         </div>
+      ) : (
+        projectRoot && (
+          <div className="side-browser-servers">
+            <button
+              type="button"
+              className="bookmark-chip server-chip"
+              onClick={() => void startDevServer()}
+              title="Start npm run dev as a background service"
+            >
+              <Play size={11} />
+              <span>{startingServer ? "Starting…" : "Run project"}</span>
+            </button>
+          </div>
+        )
       )}
       <div className="side-browser-view">
         {typeof window !== "undefined" && (window.nexus || window.forgepilot) ? (

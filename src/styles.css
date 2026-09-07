@@ -1620,6 +1620,16 @@
 .context-tab-body{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column}
 .context-tab-body .home-files-list{flex:1;overflow-y:auto}
 .context-tab-body>.context-section:last-child{padding-bottom:16px}
+/* Code sidebar panels: always mounted (terminal/browser keep state),
+hidden panels just don't display. */
+.context-tab-panel{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.context-tab-panel.hidden{display:none}
+.context-tab-panel .file-tree{flex:1;overflow-y:auto;min-height:0}
+.context-tab-panel>.diff-artifact-view,.context-tab-panel>.memory-view{flex:1;min-height:0;overflow-y:auto}
+.context-tab-panel .memory-grid{grid-template-columns:1fr}
+.context-tab-panel .xterm-actions{flex-wrap:wrap;row-gap:4px}
+.context-tabs{overflow-x:auto;scrollbar-width:none}
+.context-tabs button{flex:1 0 auto}
 /* Compact browser living inside the sidebar */
 .side-browser{flex:1;min-height:0;display:flex;flex-direction:column}
 .side-browser-bar{display:flex;align-items:center;gap:4px;padding:8px;border-bottom:1px solid #1c2635;flex:none}
@@ -1667,3 +1677,8 @@ backgrounded webview throttles loads/timers). Same session as visible tabs. */
 .switch.on .knob{left:18px;background:#3ee695}
 .settings-note{display:flex;gap:8px;align-items:flex-start;margin-top:10px;color:#7b8ea3;font-size:10.5px;line-height:1.5}
 .settings-note svg{flex:none;margin-top:1px}
+/* Update pill in the top bar (only rendered when an update exists) */
+.update-pill{display:flex;align-items:center;gap:5px;border:1px solid #1c4b37;background:#0d2319;color:#6ee7b7;font-size:10.5px;font-weight:600;padding:4px 10px;border-radius:20px;white-space:nowrap}
+button.update-pill{cursor:pointer}
+button.update-pill:hover{border-color:#3ee695;color:#3ee695}
+button.update-pill.ready{background:#123626;border-color:#34d399;color:#a7f3d0}

@@ -72,11 +72,17 @@ export async function duckDuckGoSearch(query: string, maxResults = MAX_RESULTS):
   }
 }
 
-export function createWebSearchTools() {
+export function createWebSearchTools(opts?: { onSearch?: (query: string, url: string) => void }) {
   const webSearchTool = tool(
     async ({ query, maxResults = MAX_RESULTS }: { query: string; maxResults?: number }) => {
       const cleanQuery = query.trim();
       if (!cleanQuery) return "A search query is required.";
+      // Visibility mirror: show the query in the built-in browser (Watching
+      // users see the search happen; everyone else gets the follow banner).
+      // Fire-and-forget — results come from the API below either way.
+      try {
+        opts?.onSearch?.(cleanQuery, `https://duckduckgo.com/?q=${encodeURIComponent(cleanQuery)}`);
+      } catch { /* mirror is best-effort */ }
       try {
         const results = await duckDuckGoSearch(cleanQuery, Math.min(Math.max(maxResults, 1), 10));
         if (!results.length) return `No web results found for "${cleanQuery}". Try different keywords.`;

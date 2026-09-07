@@ -112,6 +112,15 @@ const nexusApi = {
 
   // Interactive Terminal
   createTerminal: (id: string, cwd?: string, cols?: number, rows?: number) => invoke("terminal:create", { id, cwd, cols, rows }),
+  // In-app updates
+  checkForUpdates: () => invoke("updater:check"),
+  quitAndInstallUpdate: () => invoke("updater:quit-and-install"),
+  getAppVersion: () => invoke("app:getVersion"),
+  onUpdaterStatus: (listener: (state: { status: string; version?: string; percent?: number; message?: string }) => void) => {
+    const handler = (_event: IpcRendererEvent, state: { status: string; version?: string; percent?: number; message?: string }) => listener(state);
+    ipcRenderer.on("updater:status", handler);
+    return () => ipcRenderer.removeListener("updater:status", handler);
+  },
   writeTerminal: (id: string, data: string) => invoke("terminal:write", { id, data }),
   killTerminal: (id: string) => invoke("terminal:kill", id),
   resizeTerminal: (id: string, cols: number, rows: number) => invoke("terminal:resize", { id, cols, rows }),

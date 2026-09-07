@@ -26,7 +26,7 @@ import {
 } from '../dist-electron/diff-service.js';
 import { parseSymbolsFromCode, formatOutline, createCodeIntelligenceTools } from '../dist-electron/code-tools.js';
 import { SUBAGENT_CONFIGS, createSubagentDelegationTool, calculateAgentUsage, getModelPricing } from '../dist-electron/subagent-service.js';
-import { createSkill, importSkill, listSkills, deleteSkill, readSkillContent } from '../dist-electron/skills-service.js';
+import { createSkill, importSkill, listSkills, deleteSkill, readSkillContent, ensureSkillSourceDirs, skillVirtualPath } from '../dist-electron/skills-service.js';
 import { isGitRepo, createSessionWorktree, getSessionWorktree, mergeWorktreeToMain, discardSessionWorktree } from '../dist-electron/worktree-service.js';
 import { compactHistory, estimateTokens } from '../dist-electron/context-service.js';
 import { saveArtifact, getArtifact, listArtifacts, updateArtifactStatus } from '../dist-electron/artifacts-service.js';
@@ -798,6 +798,42 @@ pub async fn execute_task(task: &str) -> bool { true }
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
+  await test('project skills live in .nexus/skills and .deepagents is never created', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-skill-loc-'));
+    await ensureSkillSourceDirs(tempDir);
+    assert.equal(await fs.stat(path.join(tempDir, '.nexus', 'skills')).then((s) => s.isDirectory()).catch(() => false), true);
+    assert.equal(await fs.stat(path.join(tempDir, '.deepagents')).then(() => true).catch(() => false), false);
+
+    const skill = await createSkill(tempDir, { name: 'loc-check', description: 'd', scope: 'project', content: 'x' });
+    assert.ok(skill.path.includes(path.join('.nexus', 'skills')));
+    assert.match(skillVirtualPath(skill), /\.nexus\/skills\/loc-check\/SKILL\.md/);
+    await deleteSkill(skill.path);
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  await test('legacy .deepagents/skills are still listed, readable and removable', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-skill-legacy-'));
+    const legacyDir = path.join(tempDir, '.deepagents', 'skills', 'old-guide');
+    await fs.mkdir(legacyDir, { recursive: true });
+    await fs.writeFile(path.join(legacyDir, 'SKILL.md'), '---\nname: old-guide\ndescription: legacy skill\n---\n\nLegacy body.', 'utf8');
+
+    const list = await listSkills(tempDir);
+    const found = list.find((s) => s.name === 'old-guide');
+    assert.ok(found);
+    assert.match(skillVirtualPath(found), /\.deepagents\/skills\/old-guide\/SKILL\.md/);
+    assert.match(await readSkillContent(found.path), /Legacy body/);
+
+    // New location wins on name collision; legacy stays readable otherwise.
+    const created = await createSkill(tempDir, { name: 'old-guide', description: 'new copy', scope: 'project', content: 'y' });
+    const listed = (await listSkills(tempDir)).filter((s) => s.name === 'old-guide');
+    assert.equal(listed.length, 1);
+    assert.ok(listed[0].path.includes(path.join('.nexus', 'skills')));
+    await deleteSkill(created.path);
+    await deleteSkill(found.path);
+    assert.equal((await listSkills(tempDir)).filter((s) => s.name === 'old-guide').length, 0);
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
   console.log('\n=== 11. Consumed Tokens & Session Tracking Tests ===');
 
   await test('session accumulates total tokens across multiple requests while messages store per-turn usage', async () => {
@@ -1424,6 +1460,27 @@ pub async fn execute_task(task: &str) -> bool { true }
     // No sender in tests (main.ts wires it at startup) → immediate error,
     // which the browser_act tool / fetch fallback converts, never a hang.
     await assert.rejects(agentBrowserService.act({ action: 'snapshot' }), /not available/);
+  });
+
+  console.log('\n=== 29. Web Search Mirror Tests ===');
+
+  await test('web_search fires the visibility mirror before fetching results', async () => {
+    const { createWebSearchTools } = await import('../dist-electron/websearch-tool.js');
+    const seen = [];
+    const [searchTool] = createWebSearchTools({ onSearch: (query, url) => { seen.push([query, url]); } });
+    // Works offline: the mirror fires before the network fetch, whatever it does.
+    const result = await searchTool.invoke({ query: 'nexus test query', maxResults: 1 });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0][0], 'nexus test query');
+    assert.match(seen[0][1], /^https:\/\/duckduckgo\.com\/\?q=/);
+    assert.equal(typeof result, 'string');
+  });
+
+  await test('web_search without a mirror still works', async () => {
+    const { createWebSearchTools } = await import('../dist-electron/websearch-tool.js');
+    const [searchTool] = createWebSearchTools();
+    const result = await searchTool.invoke({ query: 'nexus test query', maxResults: 1 });
+    assert.equal(typeof result, 'string');
   });
 
   console.log('\n=== 23. Repo Map Tests ===');

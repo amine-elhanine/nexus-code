@@ -109,6 +109,26 @@ Les variables d'environnement suivantes sont également supportées en fallback 
 
 ---
 
+## Publier une mise à jour (auto-update)
+
+L'application vérifie les nouvelles versions au lancement (builds installés uniquement) via `electron-updater` et le flux GitHub Releases du dépôt public `L7A9/nexus` (voir `build.publish` dans `package.json` — le code, lui, reste dans le dépôt privé). Rien ne s'affiche tant qu'aucune release plus récente n'existe ; sinon, un badge apparaît dans la barre du haut, le téléchargement est automatique, et l'utilisateur clique pour redémarrer et installer. La page Réglages → Updates permet aussi de vérifier manuellement.
+
+Pour publier (les releases doivent être **publiques** — un dépôt privé exigerait un token côté utilisateur) :
+
+```powershell
+# 1. Monter la version dans package.json (ex. 0.2.0)
+# 2. Construire + publier la release GitHub (latest.yml inclus) :
+$env:GH_TOKEN = "github_pat_..."
+npm.cmd run dist -- --publish always
+```
+
+Notes :
+
+- Seule la version installée (Setup NSIS) se met à jour seule ; la version Portable se retélécharge manuellement.
+- En développement (`npm start`, non packagé), la vérification rapporte simplement la version locale — tester le flux réel avec `NEXUS_UPDATE_DEV=1` et un fichier `dev-app-update.yml`.
+
+---
+
 ## Structure du projet
 
 - `electron/` : Backend Electron et services système.

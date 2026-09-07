@@ -60,7 +60,6 @@ export function useAppController() {
   const [view, setView] = useState<AppView>("chat");
   const [mode, setMode] = useState("Ask");
   const [showSessions, setShowSessions] = useState(true);
-  const [showFiles, setShowFiles] = useState(true);
   const [showContext, setShowContext] = useState(true);
   const [showProviders, setShowProviders] = useState(false);
   const [showCreateProject, setShowCreateProject] = useState(false);
@@ -771,8 +770,6 @@ export function useAppController() {
     running,
     showSessions,
     setShowSessions,
-    showFiles,
-    setShowFiles,
     showContext,
     setShowContext,
     showProviders,

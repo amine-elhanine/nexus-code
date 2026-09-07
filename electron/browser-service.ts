@@ -222,6 +222,18 @@ class AgentBrowserService {
     return this.formatSnapshot(snap);
   }
 
+  // Lightweight visit: loads the URL in the agent webview (activity + follow
+  // banner included) without extracting a report. Used for visibility mirrors
+  // where the data comes from elsewhere (e.g. web_search results).
+  async visit(rawUrl: string): Promise<string> {
+    await this.ensureSettings();
+    const targetUrl = this.normalizeUrl(rawUrl);
+    const loaded = await this.request({ kind: "load", url: targetUrl }, 25000);
+    if (!loaded.ok) throw new Error(loaded.error || `Could not load ${targetUrl}.`);
+    this.report(loaded.url || targetUrl, !this.headless);
+    return loaded.url || targetUrl;
+  }
+
   // Rendered page inspection with JavaScript executed (dev-server hydration
   // included — the renderer settles before replying).
   async inspect(rawUrl: string): Promise<string> {

@@ -31,3 +31,11 @@ export type ConfirmDialogState = {
   onConfirm: () => void;
 };
 export type TrajectoryStep = { step_index: number; timestamp: string; source: string; type: string; content: string; thinking?: string; tool_calls?: Array<{ name: string; args: any }>; usage?: AgentUsage };
+export type UpdaterState =
+  | { status: "idle" }
+  | { status: "checking" }
+  | { status: "up-to-date"; version: string }
+  | { status: "available"; version: string }
+  | { status: "downloading"; version: string; percent: number }
+  | { status: "downloaded"; version: string }
+  | { status: "error"; message: string };
