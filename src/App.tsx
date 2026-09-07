@@ -1,8 +1,8 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Brain, Check, ChevronDown, ChevronRight, Code2, Coins, Download, FileCode2, FileText,
   FolderOpen, GitBranch, Globe, Home, Info, KeyRound, Loader2, Menu,
-  MessageSquare, PanelLeft, PanelRight, Plus, RefreshCw,
+  MessageSquare, PanelRight, Plus, RefreshCw,
   Server, Settings2, Sparkles, Terminal, Trash2
 } from "lucide-react";
 import { NexusLogo } from "./components/common/NexusLogo.js";
@@ -18,11 +18,10 @@ import { MonacoDiffModal } from "./components/diff/MonacoDiffModal.js";
 import { ProjectRulesModal } from "./components/rules/ProjectRulesModal.js";
 import { ArtifactViewer } from "./components/artifacts/ArtifactViewer.js";
 import { FilePreviewModal } from "./components/home/FilePreviewModal.js";
+import { SidebarBrowser } from "./components/browser/SidebarBrowser.js";
 import { MonacoEditorView } from "./components/editor/MonacoEditorView.js";
 import { XTermView } from "./components/terminal/XTermView.js";
-import { IntegratedBrowserView } from "./components/browser/IntegratedBrowserView.js";
 import { AgentBrowserHost } from "./components/browser/AgentBrowserHost.js";
-import { SidebarBrowser } from "./components/browser/SidebarBrowser.js";
 import { AgentView } from "./views/AgentView.js";
 import { HomeView } from "./views/HomeView.js";
 import { DiffView } from "./views/DiffView.js";
@@ -30,6 +29,7 @@ import { MemoryView, ContextRow, MemoryRow } from "./views/MemoryView.js";
 import { useAppController } from "./state/useAppController.js";
 import { getSessionUsage, fileIcon } from "./utils/format.js";
 import { timeLabel } from "./utils/format.js";
+import type { UpdaterState } from "./types.js";
 import { formatCost, type FileEntry } from "./types.js";
 
 function FileRow({
@@ -92,8 +92,6 @@ function App() {
     running,
     showSessions,
     setShowSessions,
-    showFiles,
-    setShowFiles,
     showContext,
     setShowContext,
     showProviders,
@@ -168,6 +166,14 @@ function App() {
   const [homePreviewPath, setHomePreviewPath] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [homeSideTab, setHomeSideTab] = useState<"session" | "artifacts" | "browser">("session");
+  const [codeSideTab, setCodeSideTab] = useState<"session" | "files" | "browser" | "terminal" | "diff" | "memory">("session");
+  const [updater, setUpdater] = useState<UpdaterState>({ status: "idle" });
+  const [appVersion, setAppVersion] = useState("");
+
+  useEffect(() => {
+    void api.getAppVersion().then(setAppVersion).catch(() => {});
+    return api.onUpdaterStatus((state) => setUpdater(state as UpdaterState));
+  }, []);
   const [contextWidth, setContextWidth] = useState(() => {
     try {
       const saved = Number(localStorage.getItem("nexus-context-width"));
@@ -257,6 +263,24 @@ function App() {
           <button className="icon-plain" onClick={() => setShowSettings(true)} title="Settings">
             <Settings2 size={15} />
           </button>
+          {(updater.status === "available" || updater.status === "downloading") && (
+            <span
+              className="update-pill"
+              title={updater.status === "downloading" ? `Downloading update… ${updater.percent}%` : `Version ${updater.version} is downloading in the background`}
+            >
+              <RefreshCw size={11} className={updater.status === "downloading" ? "spin" : ""} />
+              {updater.status === "downloading" ? `${updater.percent}%` : `v${updater.version}`}
+            </span>
+          )}
+          {updater.status === "downloaded" && (
+            <button
+              className="update-pill ready"
+              onClick={() => void api.quitAndInstallUpdate()}
+              title={`Restart to install version ${updater.version}`}
+            >
+              <Download size={11} /> Restart to update
+            </button>
+          )}
           <span className="user-chip">ME</span>
           <div className="top-separator window-ctrl-sep" />
           <WindowControls />
@@ -373,49 +397,16 @@ function App() {
           {area === "code" && (
           <div className="workspace-bar">
             <div className="workspace-breadcrumb">
-              <button className="bar-toggle" onClick={() => setShowFiles((v) => !v)}>
-                <PanelLeft size={14} />
-              </button>
               <span>{activeProject?.name || "No project"}</span>
               <i>/</i>
-              <strong>
-                {view === "chat"
-                  ? "Agent session"
-                  : view === "memory"
-                  ? "Memory"
-                  : view === "diff"
-                  ? "Git diff"
-                  : view === "terminal"
-                  ? "Terminal"
-                  : view === "browser"
-                  ? "Live Browser"
-                  : activeFile}
-              </strong>
+              <strong>{view === "chat" ? "Agent session" : activeFile || "Editor"}</strong>
             </div>
             <div className="workspace-actions">
               <button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}>
                 <MessageSquare size={13} /> Agent
               </button>
               <button className={view === "files" ? "active" : ""} onClick={() => setView("files")}>
-                <Code2 size={13} /> Files
-              </button>
-              <button
-                className={view === "diff" ? "active" : ""}
-                onClick={() => {
-                  setView("diff");
-                  void refreshDiff();
-                }}
-              >
-                <GitBranch size={13} /> Diff
-              </button>
-              <button className={view === "terminal" ? "active" : ""} onClick={() => setView("terminal")}>
-                <Terminal size={13} /> Terminal
-              </button>
-              <button className={view === "browser" ? "active" : ""} onClick={() => setView("browser")}>
-                <Globe size={13} /> Browser
-              </button>
-              <button className={view === "memory" ? "active" : ""} onClick={() => setView("memory")}>
-                <Brain size={13} /> Memory
+                <Code2 size={13} /> Editor
               </button>
             </div>
           </div>
@@ -452,40 +443,6 @@ function App() {
               />
               </section>
             ) : (
-              <>
-            {showFiles && (
-              <aside className="file-pane">
-                <div className="file-pane-header">
-                  <span>EXPLORER</span>
-                  <div>
-                    <button className="pane-action" onClick={() => void loadWorkspace()}>
-                      <RefreshCw size={13} />
-                    </button>
-                  </div>
-                </div>
-                <div className="root-label">
-                  <ChevronDown size={13} /> {activeProject?.name?.toUpperCase() || "NO WORKSPACE"}
-                </div>
-                <div className="file-tree">
-                  {visibleFiles.map((entry) => (
-                    <FileRow
-                      key={entry.path}
-                      entry={entry}
-                      active={entry.path === activeFile}
-                      expanded={expandedFolders.has(entry.path)}
-                      onClick={() =>
-                        entry.kind === "folder" ? toggleFolder(entry.path) : void openFile(entry.path)
-                      }
-                    />
-                  ))}
-                </div>
-                <div className="file-pane-footer">
-                  <span>{files.filter((entry) => entry.kind === "file").length} files</span>
-                  <span>LOCAL</span>
-                </div>
-              </aside>
-            )}
-
             <section className="center-pane">
               {view === "chat" ? (
                 <AgentView
@@ -523,7 +480,8 @@ function App() {
                   worktreeStatus={worktreeStatus}
                   onOpenArtifact={(art) => setActiveArtifact(art)}
                   onOpenDiff={() => {
-                    setView("diff");
+                    setCodeSideTab("diff");
+                    setShowContext(true);
                     void refreshDiff();
                   }}
                   onMergeSuccess={() => {
@@ -538,26 +496,6 @@ function App() {
                   setAttachedImages={setAttachedImages}
                   customCommands={customCommands}
                 />
-              ) : view === "memory" ? (
-                <MemoryView project={activeProject} session={activeSession} onSave={saveMemories} />
-              ) : view === "diff" ? (
-                <DiffView
-                  diff={diff}
-                  onRefresh={() => void refreshDiff()}
-                  onRevertFile={(f) => void revertSingleFile(f)}
-                  onRevertAll={() => void revertAllChanges()}
-                  onInspectFile={(f) => setInspectDiffFile(f)}
-                />
-              ) : view === "terminal" ? (
-                <XTermView projectRoot={activeProject?.root} />
-              ) : view === "browser" ? (
-                <IntegratedBrowserView
-                  projectRoot={activeProject?.root}
-                  onSendToAgent={(p) => {
-                    setDraft(p);
-                    setView("chat");
-                  }}
-                />
               ) : (
                 <MonacoEditorView
                   activeFile={activeFile}
@@ -571,7 +509,6 @@ function App() {
                 />
               )}
             </section>
-              </>
             )}
           </div>
         </main>
@@ -590,49 +527,128 @@ function App() {
                 <PanelRight size={15} />
               </button>
             </div>
-            <div className="context-summary">
-              <span className="status-ring">{running ? <Loader2 size={13} className="spin" /> : <Check size={13} />}</span>
-              <div>
-                <strong>{running ? "Agent is working" : "Ready to code"}</strong>
-                <small>{running ? "Inspecting and changing your project" : "Plan, implement, review"}</small>
+            <div className="context-tabs" role="tablist" aria-label="Code sidebar">
+              <button type="button" role="tab" aria-selected={codeSideTab === "session"} className={codeSideTab === "session" ? "active" : ""} onClick={() => setCodeSideTab("session")} title="Session status and tools">
+                <Info size={12} /> Session
+              </button>
+              <button type="button" role="tab" aria-selected={codeSideTab === "files"} className={codeSideTab === "files" ? "active" : ""} onClick={() => setCodeSideTab("files")} title="Project files">
+                <FolderOpen size={12} /> Files
+              </button>
+              <button type="button" role="tab" aria-selected={codeSideTab === "browser"} className={codeSideTab === "browser" ? "active" : ""} onClick={() => setCodeSideTab("browser")} title="Built-in browser">
+                <Globe size={12} /> Browser
+              </button>
+              <button type="button" role="tab" aria-selected={codeSideTab === "terminal"} className={codeSideTab === "terminal" ? "active" : ""} onClick={() => setCodeSideTab("terminal")} title="Interactive terminal">
+                <Terminal size={12} /> Term
+              </button>
+              <button type="button" role="tab" aria-selected={codeSideTab === "diff"} className={codeSideTab === "diff" ? "active" : ""} onClick={() => { setCodeSideTab("diff"); void refreshDiff(); }} title="Git diff">
+                <GitBranch size={12} /> Diff{diff.length > 0 ? ` (${diff.length})` : ""}
+              </button>
+              <button type="button" role="tab" aria-selected={codeSideTab === "memory"} className={codeSideTab === "memory" ? "active" : ""} onClick={() => setCodeSideTab("memory")} title="Persistent memory">
+                <Brain size={12} /> Memory
+              </button>
+            </div>
+            <div className={`context-tab-panel${codeSideTab === "session" ? "" : " hidden"}`}>
+              <div className="context-tab-body">
+                <div className="context-summary">
+                  <span className="status-ring">{running ? <Loader2 size={13} className="spin" /> : <Check size={13} />}</span>
+                  <div>
+                    <strong>{running ? "Agent is working" : "Ready to code"}</strong>
+                    <small>{running ? "Inspecting and changing your project" : "Plan, implement, review"}</small>
+                  </div>
+                </div>
+                <div className="context-section">
+                  <div className="context-section-title">
+                    <span>SESSION TOOLS</span>
+                    <small>{running ? "ACTIVE" : "READY"}</small>
+                  </div>
+                  <ContextRow icon={<FileCode2 size={14} />} label="File inspection" detail="Read, search, edit" active={Boolean(activeProject)} />
+                  <ContextRow icon={<Terminal size={14} />} label="Terminal" detail="Interactive live shell" active={Boolean(activeProject)} />
+                  <ContextRow icon={<GitBranch size={14} />} label="Git diff" detail={diff.length ? `${diff.length} changes to review` : "Clean working tree"} active={Boolean(diff.length)} />
+                </div>
+                {currentSessionUsage && currentSessionUsage.totalTokens > 0 && (
+                  <div className="context-section">
+                    <div className="context-section-title">
+                      <span>SESSION TOTAL TOKENS</span>
+                      <small>CUMULATIVE</small>
+                    </div>
+                    <MemoryRow label="Total tokens" value={`${currentSessionUsage.totalTokens.toLocaleString()} tokens`} />
+                    <MemoryRow label="In / Out" value={`${currentSessionUsage.inputTokens.toLocaleString()} in / ${currentSessionUsage.outputTokens.toLocaleString()} out`} />
+                    <MemoryRow label="Est. cost" value={formatCost(currentSessionUsage.estimatedCost)} />
+                  </div>
+                )}
+                {projectRules && projectRules.hasRules && (
+                  <div className="context-section">
+                    <div className="context-section-title">
+                      <span>PROJECT RULES</span>
+                      <button onClick={() => setShowRulesModal(true)}><ChevronRight size={13} /></button>
+                    </div>
+                    <MemoryRow label="Active rule files" value={`${projectRules.ruleFiles.length} file${projectRules.ruleFiles.length === 1 ? "" : "s"}`} />
+                  </div>
+                )}
+                <div className="context-section">
+                  <div className="context-section-title">
+                    <span>MEMORY</span>
+                    <button onClick={() => setCodeSideTab("memory")}><ChevronRight size={13} /></button>
+                  </div>
+                  <MemoryRow label="Project memory" value={activeProject?.memory ? "Updated" : "Empty"} />
+                  <MemoryRow label="Session memory" value={activeSession?.memory ? "Updated" : "Empty"} />
+                </div>
               </div>
             </div>
-            <div className="context-section">
-              <div className="context-section-title">
-                <span>SESSION TOOLS</span>
-                <small>{running ? "ACTIVE" : "READY"}</small>
+            <div className={`context-tab-panel${codeSideTab === "files" ? "" : " hidden"}`}>
+              <div className="file-pane-header">
+                <span>EXPLORER</span>
+                <div>
+                  <button className="pane-action" onClick={() => void loadWorkspace()}>
+                    <RefreshCw size={13} />
+                  </button>
+                </div>
               </div>
-              <ContextRow icon={<FileCode2 size={14} />} label="File inspection" detail="Read, search, edit" active={Boolean(activeProject)} />
-              <ContextRow icon={<Terminal size={14} />} label="Terminal" detail="Interactive live shell" active={Boolean(activeProject)} />
-              <ContextRow icon={<GitBranch size={14} />} label="Git diff" detail={diff.length ? `${diff.length} changes to review` : "Clean working tree"} active={Boolean(diff.length)} />
+              <div className="root-label">
+                <ChevronDown size={13} /> {activeProject?.name?.toUpperCase() || "NO WORKSPACE"}
+              </div>
+              <div className="file-tree">
+                {visibleFiles.map((entry) => (
+                  <FileRow
+                    key={entry.path}
+                    entry={entry}
+                    active={entry.path === activeFile}
+                    expanded={expandedFolders.has(entry.path)}
+                    onClick={() =>
+                      entry.kind === "folder" ? toggleFolder(entry.path) : void openFile(entry.path)
+                    }
+                  />
+                ))}
+              </div>
+              <div className="file-pane-footer">
+                <span>{files.filter((entry) => entry.kind === "file").length} files</span>
+                <span>LOCAL</span>
+              </div>
             </div>
-            {currentSessionUsage && currentSessionUsage.totalTokens > 0 && (
-              <div className="context-section">
-                <div className="context-section-title">
-                  <span>SESSION TOTAL TOKENS</span>
-                  <small>CUMULATIVE</small>
-                </div>
-                <MemoryRow label="Total tokens" value={`${currentSessionUsage.totalTokens.toLocaleString()} tokens`} />
-                <MemoryRow label="In / Out" value={`${currentSessionUsage.inputTokens.toLocaleString()} in / ${currentSessionUsage.outputTokens.toLocaleString()} out`} />
-                <MemoryRow label="Est. cost" value={formatCost(currentSessionUsage.estimatedCost)} />
-              </div>
-            )}
-            {projectRules && projectRules.hasRules && (
-              <div className="context-section">
-                <div className="context-section-title">
-                  <span>PROJECT RULES</span>
-                  <button onClick={() => setShowRulesModal(true)}><ChevronRight size={13} /></button>
-                </div>
-                <MemoryRow label="Active rule files" value={`${projectRules.ruleFiles.length} file${projectRules.ruleFiles.length === 1 ? "" : "s"}`} />
-              </div>
-            )}
-            <div className="context-section">
-              <div className="context-section-title">
-                <span>MEMORY</span>
-                <button onClick={() => setView("memory")}><ChevronRight size={13} /></button>
-              </div>
-              <MemoryRow label="Project memory" value={activeProject?.memory ? "Updated" : "Empty"} />
-              <MemoryRow label="Session memory" value={activeSession?.memory ? "Updated" : "Empty"} />
+            <div className={`context-tab-panel${codeSideTab === "browser" ? "" : " hidden"}`}>
+              <SidebarBrowser
+                projectRoot={activeProject?.root}
+                onSendToAgent={(p) => {
+                  setDraft(p);
+                  setView("chat");
+                }}
+                onAgentNavigate={() => setCodeSideTab("browser")}
+              />
+            </div>
+            <div className={`context-tab-panel${codeSideTab === "terminal" ? "" : " hidden"}`}>
+              <XTermView projectRoot={activeProject?.root} />
+            </div>
+            <div className={`context-tab-panel${codeSideTab === "diff" ? "" : " hidden"}`}>
+              <DiffView
+                diff={diff}
+                onRefresh={() => void refreshDiff()}
+                onRevertFile={(f) => void revertSingleFile(f)}
+                onRevertAll={() => void revertAllChanges()}
+                onInspectFile={(f) => setInspectDiffFile(f)}
+              />
+            </div>
+            <div className={`context-tab-panel${codeSideTab === "memory" ? "" : " hidden"}`}>
+              <MemoryView project={activeProject} session={activeSession} onSave={saveMemories} />
             </div>
           </aside>
           ) : (
@@ -775,7 +791,7 @@ function App() {
             </div>
             )}
             {homeSideTab === "browser" && (
-              <SidebarBrowser />
+              <SidebarBrowser onAgentNavigate={() => setHomeSideTab("browser")} />
             )}
           </aside>
           )
@@ -818,6 +834,10 @@ function App() {
           providers={providers}
           providerDefinitions={providerDefinitions}
           onProvidersChange={handleProvidersChange}
+          updater={updater}
+          appVersion={appVersion}
+          onCheckUpdates={() => void api.checkForUpdates()}
+          onQuitAndInstall={() => void api.quitAndInstallUpdate()}
           onManageServices={() => {
             setShowSettings(false);
             setShowDaemonsModal(true);

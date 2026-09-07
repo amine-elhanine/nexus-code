@@ -20,6 +20,15 @@ type McpTestResult = { ok: boolean; tools: string[]; error?: string };
 type SkillInfo = { name: string; description: string; path: string; source: "global" | "project" };
 type TrajectoryStep = { step_index: number; timestamp: string; source: string; type: string; content: string; thinking?: string; tool_calls?: Array<{ name: string; args: any }>; usage?: AgentUsage };
 
+type UpdaterState =
+  | { status: "idle" }
+  | { status: "checking" }
+  | { status: "up-to-date"; version: string }
+  | { status: "available"; version: string }
+  | { status: "downloading"; version: string; percent: number }
+  | { status: "downloaded"; version: string }
+  | { status: "error"; message: string };
+
 export interface NexusApi {
   listProjects: () => Promise<ProjectRecord[]>;
   selectProject: () => Promise<{ project: ProjectRecord; session: SessionRecord } | null>;
@@ -107,6 +116,11 @@ export interface NexusApi {
 
   // Interactive Terminal
   createTerminal: (id: string, cwd?: string, cols?: number, rows?: number) => Promise<boolean>;
+  // In-app updates
+  checkForUpdates: () => Promise<UpdaterState>;
+  quitAndInstallUpdate: () => Promise<boolean>;
+  getAppVersion: () => Promise<string>;
+  onUpdaterStatus: (listener: (state: UpdaterState) => void) => () => void;
   writeTerminal: (id: string, data: string) => Promise<boolean>;
   killTerminal: (id: string) => Promise<boolean>;
   resizeTerminal: (id: string, cols: number, rows: number) => Promise<boolean>;

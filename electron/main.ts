@@ -33,6 +33,7 @@ import { terminalService } from "./terminal-service.js";
 import { discoverCustomCommands } from "./custom-commands-service.js";
 import { daemonService } from "./daemon-service.js";
 import { agentBrowserService, type AgentBrowserResponse } from "./browser-service.js";
+import { updaterService, type UpdaterState } from "./updater-service.js";
 
 protocol.registerSchemesAsPrivileged([
   { scheme: "nexus-attachment", privileges: { standard: true, secure: true, supportFetchAPI: true } }
@@ -500,6 +501,18 @@ app.whenReady().then(async () => {
   ipcMain.handle("browser:headless:get", () => agentBrowserService.isHeadless());
   ipcMain.handle("browser:headless:set", (_event, value: boolean) => agentBrowserService.setHeadless(value));
 
+  // In-app updates: renderer gets status events + manual check/install.
+  updaterService.onStatus((state: UpdaterState) => {
+    mainWindow?.webContents.send("updater:status", state);
+  });
+  updaterService.init();
+  ipcMain.handle("updater:check", () => updaterService.check(false));
+  ipcMain.handle("updater:quit-and-install", () => {
+    updaterService.quitAndInstall();
+    return true;
+  });
+  ipcMain.handle("app:getVersion", () => app.getVersion());
+
   // Each run collects its own transcript events so they can be persisted to the
   // session in one batch — tool traces and plans survive an app restart now.
   type RunTranscript = { items: Array<{ role: "event"; text: string; kind: AgentEvent["type"]; createdAt: string; plan?: AgentEvent["items"]; subagent?: AgentEvent["subagent"]; artifact?: AgentEvent["artifact"]; usage?: AgentEvent["usage"]; detail?: string }> };
@@ -704,6 +717,13 @@ app.whenReady().then(async () => {
   ipcMain.handle("agent:cancel", (_event, sessionId?: string) => { cancelCommandRun(sessionId); return true; });
 
   createWindow();
+  // Silent startup update check (packaged builds only — dev runs report
+  // up-to-date locally). Delayed so it never slows down launch.
+  if (app.isPackaged) {
+    setTimeout(() => {
+      void updaterService.check(true).catch(() => {});
+    }, 15000);
+  }
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 app.on("before-quit", () => {
