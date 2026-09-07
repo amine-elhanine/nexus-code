@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import {
   Brain, Check, ChevronDown, ChevronRight, Code2, Coins, Download, FileCode2, FileText,
-  FolderOpen, GitBranch, Globe, Home, KeyRound, Loader2, Menu,
+  FolderOpen, GitBranch, Globe, Home, Info, KeyRound, Loader2, Menu,
   MessageSquare, PanelLeft, PanelRight, Plus, RefreshCw,
   Server, Settings2, Sparkles, Terminal, Trash2
 } from "lucide-react";
@@ -11,6 +11,7 @@ import { ConfirmModal } from "./modals/ConfirmModal.js";
 import { ProviderModal } from "./modals/ProviderModal.js";
 import { McpModal } from "./modals/McpModal.js";
 import { SkillsModal } from "./modals/SkillsModal.js";
+import { SettingsModal } from "./modals/SettingsModal.js";
 import { ProjectPickerModal } from "./modals/ProjectPickerModal.js";
 import { DaemonsModal } from "./components/daemons/DaemonsModal.js";
 import { MonacoDiffModal } from "./components/diff/MonacoDiffModal.js";
@@ -20,6 +21,8 @@ import { FilePreviewModal } from "./components/home/FilePreviewModal.js";
 import { MonacoEditorView } from "./components/editor/MonacoEditorView.js";
 import { XTermView } from "./components/terminal/XTermView.js";
 import { IntegratedBrowserView } from "./components/browser/IntegratedBrowserView.js";
+import { AgentBrowserHost } from "./components/browser/AgentBrowserHost.js";
+import { SidebarBrowser } from "./components/browser/SidebarBrowser.js";
 import { AgentView } from "./views/AgentView.js";
 import { HomeView } from "./views/HomeView.js";
 import { DiffView } from "./views/DiffView.js";
@@ -163,6 +166,36 @@ function App() {
   const headerTitle = activeSession?.title || "No session selected";
   const currentSessionUsage = getSessionUsage(activeSession);
   const [homePreviewPath, setHomePreviewPath] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [homeSideTab, setHomeSideTab] = useState<"session" | "artifacts" | "browser">("session");
+  const [contextWidth, setContextWidth] = useState(() => {
+    try {
+      const saved = Number(localStorage.getItem("nexus-context-width"));
+      return saved >= 220 && saved <= 600 ? saved : 300;
+    } catch {
+      return 300;
+    }
+  });
+
+  function startContextResize(event: React.PointerEvent) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startW = contextWidth;
+    let latest = startW;
+    const move = (ev: PointerEvent) => {
+      latest = Math.min(600, Math.max(220, startW + (startX - ev.clientX)));
+      setContextWidth(latest);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      try {
+        localStorage.setItem("nexus-context-width", String(Math.round(latest)));
+      } catch { /* private mode — width just won't persist */ }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
 
   function formatHomeSize(bytes: number) {
     if (bytes < 1024) return `${bytes} B`;
@@ -221,7 +254,7 @@ function App() {
           <button className="top-link" onClick={() => setShowProviders(true)}>
             <KeyRound size={13} /> Providers
           </button>
-          <button className="icon-plain" onClick={() => setShowProviders(true)} title="Settings">
+          <button className="icon-plain" onClick={() => setShowSettings(true)} title="Settings">
             <Settings2 size={15} />
           </button>
           <span className="user-chip">ME</span>
@@ -545,7 +578,8 @@ function App() {
 
         {showContext ? (
           area === "code" ? (
-          <aside className="context-pane">
+          <aside className="context-pane" style={{ width: contextWidth }}>
+            <div className="context-resize" onPointerDown={startContextResize} title="Drag to resize the sidebar" />
             <div className="context-head">
               <div>
                 <span className="context-kicker">CURRENT SESSION</span>
@@ -602,7 +636,8 @@ function App() {
             </div>
           </aside>
           ) : (
-          <aside className="context-pane">
+          <aside className="context-pane" style={{ width: contextWidth }}>
+            <div className="context-resize" onPointerDown={startContextResize} title="Drag to resize the sidebar" />
             <div className="context-head">
               <div>
                 <span className="context-kicker">CURRENT CHAT</span>
@@ -613,6 +648,40 @@ function App() {
                 <PanelRight size={15} />
               </button>
             </div>
+            <div className="context-tabs" role="tablist" aria-label="Home sidebar">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={homeSideTab === "session"}
+                className={homeSideTab === "session" ? "active" : ""}
+                onClick={() => setHomeSideTab("session")}
+                title="Session status, usage and memory"
+              >
+                <Info size={12} /> Session
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={homeSideTab === "artifacts"}
+                className={homeSideTab === "artifacts" ? "active" : ""}
+                onClick={() => setHomeSideTab("artifacts")}
+                title="Files generated in this chat"
+              >
+                <FileText size={12} /> Artifacts{homeSessionFiles.length > 0 ? ` (${homeSessionFiles.length})` : ""}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={homeSideTab === "browser"}
+                className={homeSideTab === "browser" ? "active" : ""}
+                onClick={() => setHomeSideTab("browser")}
+                title="Built-in browser"
+              >
+                <Globe size={12} /> Browser
+              </button>
+            </div>
+            {homeSideTab === "session" && (
+            <div className="context-tab-body">
             <div className="context-summary">
               <span className="status-ring">{running ? <Loader2 size={13} className="spin" /> : <Check size={13} />}</span>
               <div>
@@ -620,6 +689,35 @@ function App() {
                 <small>{running ? "Researching, writing files…" : "Ask, research, create documents"}</small>
               </div>
             </div>
+            {currentSessionUsage && currentSessionUsage.totalTokens > 0 && (
+              <div className="context-section">
+                <div className="context-section-title">
+                  <span>SESSION TOTAL TOKENS</span>
+                  <small>CUMULATIVE</small>
+                </div>
+                <MemoryRow label="Total tokens" value={`${currentSessionUsage.totalTokens.toLocaleString()} tokens`} />
+                <MemoryRow label="In / Out" value={`${currentSessionUsage.inputTokens.toLocaleString()} in / ${currentSessionUsage.outputTokens.toLocaleString()} out`} />
+                <MemoryRow label="Est. cost" value={formatCost(currentSessionUsage.estimatedCost)} />
+              </div>
+            )}
+            <div className="context-section">
+              <div className="context-section-title">
+                <span>MEMORY</span>
+              </div>
+              <MemoryRow label="Project memory" value={activeProject?.memory ? "Updated" : "Empty"} />
+              <MemoryRow label="Session memory" value={activeSession?.memory ? "Updated" : "Empty"} />
+            </div>
+            <div className="context-section">
+              <div className="context-section-title">
+                <span>NEXUS FOLDER</span>
+                <small>{homeFiles.length} TOTAL</small>
+              </div>
+              <MemoryRow label="Location" value={homeRoot ? homeRoot.split(/[\\/]/).pop() || "Nexus" : "Nexus"} />
+            </div>
+            </div>
+            )}
+            {homeSideTab === "artifacts" && (
+            <div className="context-tab-body">
             <div className="context-section">
               <div className="context-section-title">
                 <span>SESSION FILES</span>
@@ -639,7 +737,7 @@ function App() {
               </div>
               {activeSession ? (
                 homeSessionFiles.length ? (
-                  <div className="home-files-list" style={{ maxHeight: 320, overflowY: "auto" }}>
+                  <div className="home-files-list">
                     {homeSessionFiles.map((file) => (
                       <div
                         className="home-file-row clickable"
@@ -674,31 +772,11 @@ function App() {
                 <div className="empty-pane">Start a chat to generate files.</div>
               )}
             </div>
-            {currentSessionUsage && currentSessionUsage.totalTokens > 0 && (
-              <div className="context-section">
-                <div className="context-section-title">
-                  <span>SESSION TOTAL TOKENS</span>
-                  <small>CUMULATIVE</small>
-                </div>
-                <MemoryRow label="Total tokens" value={`${currentSessionUsage.totalTokens.toLocaleString()} tokens`} />
-                <MemoryRow label="In / Out" value={`${currentSessionUsage.inputTokens.toLocaleString()} in / ${currentSessionUsage.outputTokens.toLocaleString()} out`} />
-                <MemoryRow label="Est. cost" value={formatCost(currentSessionUsage.estimatedCost)} />
-              </div>
+            </div>
             )}
-            <div className="context-section">
-              <div className="context-section-title">
-                <span>MEMORY</span>
-              </div>
-              <MemoryRow label="Project memory" value={activeProject?.memory ? "Updated" : "Empty"} />
-              <MemoryRow label="Session memory" value={activeSession?.memory ? "Updated" : "Empty"} />
-            </div>
-            <div className="context-section">
-              <div className="context-section-title">
-                <span>NEXUS FOLDER</span>
-                <small>{homeFiles.length} TOTAL</small>
-              </div>
-              <MemoryRow label="Location" value={homeRoot ? homeRoot.split(/[\\/]/).pop() || "Nexus" : "Nexus"} />
-            </div>
+            {homeSideTab === "browser" && (
+              <SidebarBrowser />
+            )}
           </aside>
           )
         ) : (
@@ -728,6 +806,25 @@ function App() {
         />
       )}
       {showMcp && <McpModal onClose={() => setShowMcp(false)} />}
+      {showSettings && (
+        <SettingsModal
+          area={area}
+          hasProject={Boolean(activeProject)}
+          skillsEnabled={skillsEnabled}
+          onToggleSkills={async (enabled) => {
+            setSkillsEnabled(enabled);
+            await api.saveSkillsConfig({ enabled });
+          }}
+          providers={providers}
+          providerDefinitions={providerDefinitions}
+          onProvidersChange={handleProvidersChange}
+          onManageServices={() => {
+            setShowSettings(false);
+            setShowDaemonsModal(true);
+          }}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
       {showSkills && (
         <SkillsModal
           hasProject={Boolean(activeProject)}
@@ -798,6 +895,8 @@ function App() {
           onDownload={(p) => void api.downloadHomeFile(p)}
         />
       )}
+      {/* Hidden executor for the agent's browsing — same session as the tabs. */}
+      <AgentBrowserHost />
     </div>
   );
 }

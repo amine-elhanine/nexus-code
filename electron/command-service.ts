@@ -7,26 +7,53 @@ import type { ProjectRecord } from "./store.js";
 
 const DEFAULT_COMMAND_TIMEOUT_SECONDS = 180;
 
-// One agent run is active at a time (main.ts holds the lock). Cancelling a run
-// rejects new commands, kills every tracked child process tree (taskkill /T on
-// Windows, a built-in), and the agent loop unwinds at the next chunk or command.
-const activeChildren = new Set<ChildProcess>();
-let runCancelled = false;
+// Cancellation is scoped per run (keyed by session id). The old process-global
+// flag meant cancelling session A killed session B's run too — and starting a
+// new run cleared a pending cancel for another session. Each run now owns its
+// flag plus its child processes; cancelling one run never touches the others.
+type RunState = { cancelled: boolean; children: Set<ChildProcess> };
+const DEFAULT_RUN_ID = "global";
+const runStates = new Map<string, RunState>();
 
-export function beginCommandRun() { runCancelled = false; }
-export function isCommandRunCancelled() { return runCancelled; }
-export function cancelCommandRun() {
-  runCancelled = true;
-  for (const child of activeChildren) {
+function stateFor(runId: string = DEFAULT_RUN_ID): RunState {
+  let state = runStates.get(runId);
+  if (!state) {
+    state = { cancelled: false, children: new Set() };
+    runStates.set(runId, state);
+  }
+  return state;
+}
+
+function killChildren(state: RunState) {
+  for (const child of state.children) {
     try {
       if (process.platform === "win32" && child.pid) spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
       else child.kill();
     } catch { /* child already exited */ }
   }
-  activeChildren.clear();
+  state.children.clear();
 }
 
-function runProcess(shell: string, args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv; timeout?: number; maxBuffer?: number }) {
+export function beginCommandRun(runId: string = DEFAULT_RUN_ID) {
+  // Fresh state for THIS run only — never touches other runs' flags/children.
+  runStates.set(runId, { cancelled: false, children: new Set() });
+  return runId;
+}
+export function isCommandRunCancelled(runId: string = DEFAULT_RUN_ID) { return runStates.get(runId)?.cancelled ?? false; }
+export function cancelCommandRun(runId?: string) {
+  // No id → cancel everything (fallback for stray callers); with an id only
+  // that run's flag is set and only its process trees are killed.
+  const targets = runId ? [runId] : [...runStates.keys()];
+  for (const id of targets) {
+    const state = runStates.get(id);
+    if (!state) continue;
+    state.cancelled = true;
+    killChildren(state);
+  }
+}
+export function endCommandRun(runId: string = DEFAULT_RUN_ID) { runStates.delete(runId); }
+
+function runProcess(shell: string, args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv; timeout?: number; maxBuffer?: number }, state: RunState) {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
     // windowsVerbatimArguments is required on Windows: Node would otherwise
     // backslash-escape the quotes inside the command string, and cmd.exe
@@ -40,11 +67,11 @@ function runProcess(shell: string, args: string[], options: { cwd: string; env?:
       windowsHide: true,
       windowsVerbatimArguments: process.platform === "win32",
     }, (error, stdout, stderr) => {
-      activeChildren.delete(child);
+      state.children.delete(child);
       if (error) { (error as any).stdout = stdout; (error as any).stderr = stderr; reject(error); }
       else resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
     });
-    if (child.pid) activeChildren.add(child);
+    if (child.pid) state.children.add(child);
   });
 }
 
@@ -65,8 +92,9 @@ export function capModelOutput(output: string): { output: string; truncated: boo
   };
 }
 
-export async function executeCommand(projectRoot: string, command: string, options: { timeoutSeconds?: number } = {}): Promise<CommandResult> {
-  if (runCancelled) return { output: "Run cancelled by user.", exitCode: 130, truncated: false };
+export async function executeCommand(projectRoot: string, command: string, options: { timeoutSeconds?: number; runId?: string } = {}): Promise<CommandResult> {
+  const state = stateFor(options.runId);
+  if (state.cancelled) return { output: "Run cancelled by user.", exitCode: 130, truncated: false };
   const trimmed = command.trim();
   if (!trimmed) return { output: "Command is empty.", exitCode: 1, truncated: false };
   if (isDeniedCommand(trimmed)) return { output: "Command blocked by permission policy (destructive pattern).", exitCode: 1, truncated: false };
@@ -81,11 +109,11 @@ export async function executeCommand(projectRoot: string, command: string, optio
       env,
       timeout: Math.max(10, options.timeoutSeconds || DEFAULT_COMMAND_TIMEOUT_SECONDS) * 1000,
       maxBuffer: 8_000_000,
-    });
+    }, state);
     const capped = capModelOutput([result.stdout, result.stderr].filter(Boolean).join("\n"));
     return { output: capped.output, exitCode: 0, truncated: capped.truncated };
   } catch (error: any) {
-    if (runCancelled) return { output: "Run cancelled by user.", exitCode: 130, truncated: false };
+    if (state.cancelled) return { output: "Run cancelled by user.", exitCode: 130, truncated: false };
     const output = [error?.stdout, error?.stderr, error?.message].filter(Boolean).join("\n");
     const capped = capModelOutput(output);
     return { output: capped.output, exitCode: typeof error?.code === "number" ? error.code : 1, truncated: capped.truncated };
@@ -94,7 +122,7 @@ export async function executeCommand(projectRoot: string, command: string, optio
 
 function backendId(project: ProjectRecord) { return `workspace-${project.id}`; }
 
-export async function getAgentBackend(project: ProjectRecord, options: { readOnly?: boolean } = {}) {
+export async function getAgentBackend(project: ProjectRecord, options: { readOnly?: boolean; runId?: string } = {}) {
   const backend: any = new FilesystemBackend({ rootDir: path.resolve(project.root), virtualMode: true });
   backend.id = backendId(project);
   // Cap listing/search fan-out: an uncapped `ls /` or `glob **/*` on a repo
@@ -121,11 +149,11 @@ export async function getAgentBackend(project: ProjectRecord, options: { readOnl
     backend.delete = refuse("delete");
     backend.execute = refuse("execute");
   } else {
-    backend.execute = (command: string) => executeCommand(project.root, command);
+    backend.execute = (command: string) => executeCommand(project.root, command, { runId: options.runId });
   }
   return { backend, workspace: project.root };
 }
 
-export async function runProjectCommand(project: ProjectRecord, command: string) {
-  return executeCommand(project.root, command);
+export async function runProjectCommand(project: ProjectRecord, command: string, runId?: string) {
+  return executeCommand(project.root, command, { runId });
 }

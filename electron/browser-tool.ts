@@ -68,7 +68,44 @@ function extractHeadingsAndControls(html: string) {
   return { title, headings, buttons, links, inputs };
 }
 
-export function createBrowserTools(_projectRoot?: string) {
+export type RenderedInspect = (url: string) => Promise<string>;
+
+// Text-interaction actions the agent can perform in its own Chromium window
+// (snapshot refs like e3 ground clicks/fills — the Playwright-CLI pattern).
+export type BrowserActAction =
+  | "snapshot"
+  | "click"
+  | "fill"
+  | "type"
+  | "press"
+  | "scroll"
+  | "navigate"
+  | "back"
+  | "reload"
+  | "text"
+  | "screenshot";
+
+export type BrowserActInput = {
+  action: BrowserActAction;
+  /** Ref (e3), CSS selector, or visible text of the target element. */
+  target?: string;
+  /** Text for fill/type. */
+  value?: string;
+  /** URL for navigate. */
+  url?: string;
+  /** Key name for press (Enter, Escape, Tab, ArrowUp, …). */
+  key?: string;
+  /** Scroll direction. */
+  direction?: "up" | "down" | "top" | "bottom";
+};
+
+export type AgentBrowser = {
+  inspect: RenderedInspect;
+  act: (input: BrowserActInput) => Promise<string>;
+};
+
+export function createBrowserTools(_projectRoot?: string, opts?: { renderedInspect?: RenderedInspect; agentBrowser?: AgentBrowser }) {
+  const renderedInspect = opts?.renderedInspect ?? opts?.agentBrowser?.inspect;
   // fetch follows redirects transparently, which would let a loopback URL
   // 302-hop straight to an external host. Redirects are handled manually and
   // every hop re-checked against the same policy.
@@ -106,6 +143,16 @@ export function createBrowserTools(_projectRoot?: string) {
 
   const browserInspectTool = tool(
     async ({ url }: { url: string }) => {
+      // Prefer the rendered agent window (real Chromium with JS) when one is
+      // wired in; fall back to plain fetch if it fails or isn't available
+      // (e.g. tests, which never pass a renderer).
+      if (renderedInspect) {
+        try {
+          return await renderedInspect(url);
+        } catch {
+          // fall through to fetch below
+        }
+      }
       try {
         const targetUrl = normalizeUrl(url);
 
@@ -208,5 +255,37 @@ export function createBrowserTools(_projectRoot?: string) {
     }
   );
 
-  return [browserInspectTool, browserFetchApiTool];
+  // Appended last: existing callers index [inspect, fetch] positionally.
+  const extraTools = [];
+  if (opts?.agentBrowser) {
+    const agentBrowser = opts.agentBrowser;
+    extraTools.push(
+      tool(
+        async (input: BrowserActInput) => {
+          try {
+            return await agentBrowser.act(input);
+          } catch (error: any) {
+            return `Browser action failed: ${error instanceof Error ? error.message : String(error)}`;
+          }
+        },
+        {
+          name: "browser_act",
+          description:
+            "Drives the built-in browser (hidden in-app webview sharing the Browser tab session — no separate window). Workflow: snapshot first to get element refs (e3, e7…), then click/fill/type against refs. Actions: snapshot (list interactive elements), click (buttons/links/checkboxes), fill (set input/textarea/select value, React-safe), type (append keystrokes), press (Enter/Escape/Tab/arrows via key), scroll (direction up/down/top/bottom), navigate (open URL), back, reload, text (full rendered text), screenshot (saves PNG under .nexus/browser/, returns its path — the model cannot view images, open it yourself). Refs expire after navigation or DOM changes — snapshot again when an action reports a missing ref.",
+          schema: z.object({
+            action: z
+              .enum(["snapshot", "click", "fill", "type", "press", "scroll", "navigate", "back", "reload", "text", "screenshot"])
+              .describe("The interaction to perform"),
+            target: z.string().optional().describe("Element ref (e3), CSS selector, or visible text for click/fill/type/scroll"),
+            value: z.string().optional().describe("Text for fill/type"),
+            url: z.string().optional().describe("URL for navigate"),
+            key: z.string().optional().describe("Key name for press (Enter, Escape, Tab, ArrowUp, ArrowDown, ArrowLeft, ArrowRight)"),
+            direction: z.enum(["up", "down", "top", "bottom"]).optional().describe("Scroll direction"),
+          }),
+        }
+      )
+    );
+  }
+
+  return [browserInspectTool, browserFetchApiTool, ...extraTools];
 }

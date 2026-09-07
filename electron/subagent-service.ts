@@ -203,8 +203,9 @@ export async function executeSubagentTask(options: {
   skillsBackend?: any;
   onEvent?: SubagentEventHandler;
   isCancelled?: () => boolean;
+  runId?: string;
 }): Promise<string> {
-  const { role, task, projectRoot, provider, modelName, projectRecord, mcpTools, skills, skillsBackend, onEvent, isCancelled } = options;
+  const { role, task, projectRoot, provider, modelName, projectRecord, mcpTools, skills, skillsBackend, onEvent, isCancelled, runId } = options;
   const config = SUBAGENT_CONFIGS[role] || SUBAGENT_CONFIGS.researcher;
   const subagentId = `sub-${role}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
@@ -223,6 +224,7 @@ export async function executeSubagentTask(options: {
 
     const { backend } = await getAgentBackend(projectRecord, {
       readOnly: config.readOnly,
+      runId,
     });
 
     const llm = await createChatModel(provider, modelName);
@@ -359,6 +361,7 @@ export function createSubagentDelegationTool(options: {
   skillsBackend?: any;
   onEvent?: SubagentEventHandler;
   isCancelled?: () => boolean;
+  runId?: string;
 }) {
   return tool(
     async ({ role, task }: { role: "researcher" | "tester" | "coder"; task: string }) => {
@@ -374,6 +377,7 @@ export function createSubagentDelegationTool(options: {
         skillsBackend: options.skillsBackend,
         onEvent: options.onEvent,
         isCancelled: options.isCancelled,
+        runId: options.runId,
       });
     },
     {

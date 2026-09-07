@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import {
   Globe, ArrowLeft, ArrowRight, RefreshCw, ExternalLink, Smartphone,
   Tablet, Monitor, Laptop, Play, Server, MessageSquare, ChevronDown, Check,
-  Plus, X, Copy, Home, Search, BookOpen, Compass, Shield
+  Plus, X, Copy, Home, Search, BookOpen, Compass, Shield, Eye, EyeOff
 } from "lucide-react";
 
 export type DeviceMode = "responsive" | "desktop" | "tablet" | "mobile";
@@ -102,6 +102,11 @@ type ElectronWebview = {
   removeEventListener: (type: string, listener: (event: never) => void) => void;
 };
 
+// Last agent-viewed URL, kept at module level so it survives tab unmounts:
+// the agent keeps browsing while the Browser tab is closed, and Watching
+// mode syncs to it the next time the tab opens.
+let lastAgentUrl: string | null = null;
+
 export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
   projectRoot,
   onSendToAgent,
@@ -124,7 +129,15 @@ export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
   const [isStartingServer, setIsStartingServer] = useState(false);
   const [copiedNote, setCopiedNote] = useState(false);
   const [reloadKey, setReloadKey] = useState(1);
+  const [browserHeadless, setBrowserHeadless] = useState(true);
+  const [agentUrl, setAgentUrl] = useState<string | null>(null);
   const webviewRefs = useRef<Record<string, ElectronWebview | null>>({});
+  // Stable handles for the mount-once agent-activity subscription below.
+  const headlessRef = useRef(true);
+  const activeTabIdRef = useRef(activeTabId);
+  const navigateRef = useRef<((tabId: string, rawInput: string) => void) | null>(null);
+  headlessRef.current = browserHeadless;
+  activeTabIdRef.current = activeTabId;
 
   const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
 
@@ -157,6 +170,55 @@ export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
     return () => clearInterval(interval);
   }, []);
 
+  // Agent browser: headless preference + live follow. Headless ON: the agent
+  // works in the hidden webview and this tab only shows a Follow banner.
+  // Headless OFF (Watching): the visible tab navigates along with the agent
+  // automatically — the built-in browser IS the agent's browser.
+  // (navigateRef/activeTabIdRef are assigned below during render — stable by
+  // the time any activity event fires.)
+  useEffect(() => {
+    const api = window.forgepilot as unknown as {
+      getBrowserHeadless?: () => Promise<boolean>;
+      setBrowserHeadless?: (v: boolean) => Promise<boolean>;
+      onBrowserAgentActivity?: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean }) => void) => () => void;
+    };
+    if (typeof api.getBrowserHeadless === "function") {
+      api.getBrowserHeadless().then((value) => {
+        setBrowserHeadless(value);
+        headlessRef.current = value;
+        // Mount sync: if Watching and the agent already went somewhere while
+        // this tab was closed, jump there instead of showing a stale page.
+        if (!value && lastAgentUrl && lastAgentUrl !== activeTabIdRef.current) {
+          navigateRef.current?.(activeTabIdRef.current, lastAgentUrl);
+        }
+      }).catch(() => {});
+    }
+    if (typeof api.onBrowserAgentActivity === "function") {
+      return api.onBrowserAgentActivity((payload) => {
+        if (!payload?.url) return;
+        lastAgentUrl = payload.url;
+        setAgentUrl(payload.url);
+        if (payload.autoFollow && !headlessRef.current) {
+          navigateRef.current?.(activeTabIdRef.current, payload.url);
+        }
+      });
+    }
+    return undefined;
+  }, []);
+
+  const toggleBrowserHeadless = async () => {
+    const next = !browserHeadless;
+    setBrowserHeadless(next);
+    try {
+      const api = window.forgepilot as unknown as { setBrowserHeadless?: (v: boolean) => Promise<boolean> };
+      if (typeof api.setBrowserHeadless === "function") {
+        setBrowserHeadless(await api.setBrowserHeadless(next));
+      }
+    } catch {
+      setBrowserHeadless(!next);
+    }
+  };
+
   const navigateTab = (tabId: string, rawInput: string) => {
     const finalUrl = resolveUrlOrSearch(rawInput, searchEngine);
     setTabs((prev) =>
@@ -176,6 +238,7 @@ export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
     );
     setReloadKey((k) => k + 1);
   };
+  navigateRef.current = navigateTab;
 
   const activeWebview = () => webviewRefs.current[activeTabId] || null;
 
@@ -505,8 +568,40 @@ export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
             <ExternalLink size={13} />
             <span>Open in Browser</span>
           </button>
+
+          <button
+            className={`browser-btn ${browserHeadless ? "" : "highlight"}`}
+            onClick={() => void toggleBrowserHeadless()}
+            title={browserHeadless ? "Agent browsing runs hidden. Click to show the agent's browser window while it works." : "Agent browser window is visible. Click to run agent browsing hidden in the background."}
+          >
+            {browserHeadless ? <EyeOff size={13} /> : <Eye size={13} />}
+            <span>{browserHeadless ? "Headless" : "Watching"}</span>
+          </button>
         </div>
       </div>
+
+      {agentUrl && (
+        <div className="browser-agent-banner">
+          <span className="status-dot running" style={{ width: 6, height: 6 }} />
+          <span>Agent is viewing {getTitleFromUrl(agentUrl)}</span>
+          <button
+            type="button"
+            className="browser-btn highlight"
+            onClick={() => navigateTab(activeTab.id, agentUrl)}
+            title={`Follow the agent to ${agentUrl}`}
+          >
+            <span>Follow</span>
+          </button>
+          <button
+            type="button"
+            className="browser-btn icon-only"
+            onClick={() => setAgentUrl(null)}
+            title="Dismiss"
+          >
+            <X size={11} />
+          </button>
+        </div>
+      )}
 
       {/* 3. Quick Bookmarks Bar */}
       <div className="browser-bookmarks-bar">

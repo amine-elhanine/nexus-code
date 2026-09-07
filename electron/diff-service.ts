@@ -136,11 +136,30 @@ export async function revertWorkspaceFile(projectRoot: string, relativePath: str
   }
 }
 
+// Paths git clean must never delete during "Discard all", even untracked:
+// agent telemetry, reinstallable-but-slow dirs, and local-only secrets.
+const CLEAN_EXCLUDES = [
+  ".nexus",
+  ".forgepilot",
+  ".deepagents",
+  "node_modules",
+  "dist",
+  "dist-electron",
+  "release",
+  "coverage",
+  ".env",
+  ".env.*",
+];
+
 export async function revertAllWorkspaceChanges(projectRoot: string): Promise<boolean> {
   const root = path.resolve(projectRoot);
   try {
     try { await execFileAsync("git", ["checkout", "HEAD", "--", "."], { cwd: root, maxBuffer: 200_000 }); } catch { /* ignore */ }
-    try { await execFileAsync("git", ["clean", "-fd"], { cwd: root, maxBuffer: 200_000 }); } catch { /* ignore */ }
+    // git clean -fd deletes EVERYTHING untracked — including telemetry dirs,
+    // dependency installs, build output and local secrets. Those are never
+    // "agent changes": exclude them explicitly. (UI still confirms first.)
+    const args = ["clean", "-fd", ...CLEAN_EXCLUDES.flatMap((pattern) => ["-e", pattern])];
+    try { await execFileAsync("git", args, { cwd: root, maxBuffer: 200_000 }); } catch { /* ignore */ }
     return true;
   } catch {
     return false;
