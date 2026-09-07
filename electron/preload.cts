@@ -85,6 +85,31 @@ const nexusApi = {
   // Browser External Navigation
   openExternal: (url: string) => invoke("browser:openExternal", url),
 
+  // Agent browser (headless toggle + activity from the agent's window)
+  getBrowserHeadless: () => invoke("browser:headless:get"),
+  setBrowserHeadless: (value: boolean) => invoke("browser:headless:set", value),
+  onBrowserAgentActivity: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean }) => void) => {
+    const handler = (_event: IpcRendererEvent, payload: { url: string; timestamp: string; autoFollow?: boolean }) => listener(payload);
+    ipcRenderer.on("browser:agent-activity", handler);
+    return () => ipcRenderer.removeListener("browser:agent-activity", handler);
+  },
+
+  // Agent browser bridge: the main process asks the hidden in-app webview to
+  // load pages / run scripts / press keys / screenshot, and awaits the reply.
+  // The agent never owns a window — it drives the built-in browser session.
+  onAgentBrowserRequest: (handler: (request: { id: string; kind: string; url?: string; js?: string; keyCode?: string }) => Promise<unknown>) => {
+    const listener = (_event: IpcRendererEvent, request: { id: string; kind: string; url?: string; js?: string; keyCode?: string }) => {
+      void Promise.resolve()
+        .then(() => handler(request))
+        .then(
+          (reply) => ipcRenderer.send("browser:agent-reply", { id: request.id, reply }),
+          (error) => ipcRenderer.send("browser:agent-reply", { id: request.id, reply: { ok: false, error: error instanceof Error ? error.message : String(error) } })
+        );
+    };
+    ipcRenderer.on("browser:agent-request", listener);
+    return () => ipcRenderer.removeListener("browser:agent-request", listener);
+  },
+
   // Interactive Terminal
   createTerminal: (id: string, cwd?: string, cols?: number, rows?: number) => invoke("terminal:create", { id, cwd, cols, rows }),
   writeTerminal: (id: string, data: string) => invoke("terminal:write", { id, data }),
@@ -114,7 +139,7 @@ const nexusApi = {
   openHomeFolder: () => invoke("home:openFolder"),
 
   runAgent: (payload: { request: string; images?: string[]; providerId?: string; model?: string; mode?: string }) => invoke("agent:run", payload),
-  cancelAgent: () => invoke("agent:cancel"),
+  cancelAgent: (sessionId?: string) => invoke("agent:cancel", sessionId),
   onAgentEvent: (listener: (event: AgentEvent) => void) => {
     const handler = (_event: IpcRendererEvent, payload: AgentEvent) => listener(payload);
     ipcRenderer.on("agent:event", handler);

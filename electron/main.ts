@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-import { runProjectAgent, RunCancelledError, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint, summarizeCompletedSteps, type AgentMode, type AgentSettings, type AgentTurn, type AgentEvent } from "./agent-service.js";
+import { runProjectAgent, RunCancelledError, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint, summarizeCompletedSteps, type AgentMode, type AgentSettings, type AgentEvent, type HistoryInput } from "./agent-service.js";
 import { PROVIDERS, fetchRemoteModels } from "./providers.js";
 import {
   appendSessionMessages, createSession, deleteProject, deleteSession, ensureHomeProject, getProject, getSession,
@@ -19,7 +19,7 @@ import {
 import { HOME_PROJECT_ID, cleanupHomeGeneratorScripts, downloadHomeFile, ensureHomeDir, listHomeFiles, listHomeSessionFiles, openHomeFolder, readHomeFile } from "./home-service.js";
 import { testMcpServer } from "./mcp-service.js";
 import { createSkill, deleteSkill, ensureSkillSourceDirs, importSkill, listSkills, openSkillsFolder, readSkillContent } from "./skills-service.js";
-import { beginCommandRun, cancelCommandRun, isCommandRunCancelled, runProjectCommand, getAgentBackend } from "./command-service.js";
+import { beginCommandRun, cancelCommandRun, endCommandRun, isCommandRunCancelled, runProjectCommand, getAgentBackend } from "./command-service.js";
 import { createWorkspaceCheckpoint, deleteWorkspaceCheckpoint, getWorkspaceDiffFiles, restoreWorkspaceCheckpoint, revertAllWorkspaceChanges, revertWorkspaceFile } from "./diff-service.js";
 import { getWorkspaceGit, listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./project-tools.js";
 import {
@@ -32,6 +32,7 @@ import { discoverProjectRules } from "./rules-service.js";
 import { terminalService } from "./terminal-service.js";
 import { discoverCustomCommands } from "./custom-commands-service.js";
 import { daemonService } from "./daemon-service.js";
+import { agentBrowserService, type AgentBrowserResponse } from "./browser-service.js";
 
 protocol.registerSchemesAsPrivileged([
   { scheme: "nexus-attachment", privileges: { standard: true, secure: true, supportFetchAPI: true } }
@@ -105,12 +106,24 @@ async function clearCheckpoint(projectId: string, sessionId: string, root: strin
   await updateSession(projectId, sessionId, { checkpointId: undefined });
 }
 
+// Attachment URLs are host-style (nexus-attachment://<hash>.png), so the file
+// name lives in the hostname — pathname is empty. basename() alone resolves
+// to "" (the attachments directory itself), whose fetch rejects with
+// ERR_FILE_NOT_FOUND and crashes the main process uncaught.
+function attachmentFileName(attachmentUrl: string): string {
+  const parsed = new URL(attachmentUrl);
+  const candidate = path.basename(parsed.pathname) || parsed.hostname || "";
+  // Never allow traversal no matter what the renderer sends.
+  return path.basename(candidate);
+}
+
 // The model APIs need a fetchable URL for images: nexus-attachment:// is a
 // renderer-only scheme. Convert saved attachments back to inline base64
 // data URLs before they go anywhere near a provider.
 async function resolveImageForModel(imageUrl: string): Promise<string> {
   if (!imageUrl.startsWith("nexus-attachment://")) return imageUrl;
-  const fileName = path.basename(new URL(imageUrl).pathname);
+  const fileName = attachmentFileName(imageUrl);
+  if (!fileName) throw new Error("Invalid attachment URL.");
   const filePath = path.join(app.getPath("userData"), "attachments", fileName);
   const buffer = await fs.readFile(filePath);
   const ext = path.extname(fileName).slice(1).toLowerCase();
@@ -156,10 +169,18 @@ app.whenReady().then(async () => {
     callback({ responseHeaders });
   });
 
-  protocol.handle("nexus-attachment", (request) => {
-    const fileName = path.basename(new URL(request.url).pathname);
-    const filePath = path.join(app.getPath("userData"), "attachments", fileName);
-    return net.fetch(`file://${filePath}`);
+  protocol.handle("nexus-attachment", async (request) => {
+    try {
+      const fileName = attachmentFileName(request.url);
+      if (!fileName) return new Response("Invalid attachment URL.", { status: 400 });
+      const filePath = path.join(app.getPath("userData"), "attachments", fileName);
+      await fs.access(filePath);
+      return net.fetch(`file://${filePath}`);
+    } catch {
+      // Missing file (stale transcript reference, cleaned folder, …) must
+      // render as a broken image — never as an uncaught main-process error.
+      return new Response("Attachment not found.", { status: 404 });
+    }
   });
 
   // Home area bootstrap: fixed folder + built-in project (id "home") so
@@ -463,9 +484,25 @@ app.whenReady().then(async () => {
     return false;
   });
 
+  // Agent browser: headless toggle + activity forwarded to the built-in
+  // Browser tab so the user can follow what the agent is viewing.
+  agentBrowserService.onActivity = (activity) => {
+    mainWindow?.webContents.send("browser:agent-activity", activity);
+  };
+  // Agent browser bridge: tool calls in main execute against the hidden
+  // in-app webview (AgentBrowserHost in the renderer) and reply here.
+  agentBrowserService.setSender((msg) => {
+    mainWindow?.webContents.send("browser:agent-request", msg);
+  });
+  ipcMain.on("browser:agent-reply", (_event, payload: AgentBrowserResponse) => {
+    agentBrowserService.handleReply(payload);
+  });
+  ipcMain.handle("browser:headless:get", () => agentBrowserService.isHeadless());
+  ipcMain.handle("browser:headless:set", (_event, value: boolean) => agentBrowserService.setHeadless(value));
+
   // Each run collects its own transcript events so they can be persisted to the
   // session in one batch — tool traces and plans survive an app restart now.
-  type RunTranscript = { items: Array<{ role: "event"; text: string; kind: AgentEvent["type"]; createdAt: string; plan?: AgentEvent["items"]; subagent?: AgentEvent["subagent"]; artifact?: AgentEvent["artifact"]; usage?: AgentEvent["usage"] }> };
+  type RunTranscript = { items: Array<{ role: "event"; text: string; kind: AgentEvent["type"]; createdAt: string; plan?: AgentEvent["items"]; subagent?: AgentEvent["subagent"]; artifact?: AgentEvent["artifact"]; usage?: AgentEvent["usage"]; detail?: string }> };
 
   ipcMain.handle("agent:run", async (_event, payload: { request: string; images?: string[]; providerId?: string; model?: string; mode?: string }) => {
     const root = requireRoot();
@@ -475,7 +512,7 @@ app.whenReady().then(async () => {
     const sessionId = activeSessionId;
     const projectId = activeProjectId;
     activeRunSessions.add(sessionId);
-    beginCommandRun();
+    beginCommandRun(sessionId);
     const transcript: RunTranscript = { items: [] };
     // Prelude heartbeat: if the run ever wedges before the agent emits,
     // the UI shows the last reached stage instead of a mystery spinner.
@@ -505,10 +542,29 @@ app.whenReady().then(async () => {
         }
       }
 
-      const history: AgentTurn[] = session.messages
-        .filter((message) => message.role === "user" || message.role === "assistant")
-        .slice(-16)
-        .map((message) => ({ role: message.role as AgentTurn["role"], text: message.text }));
+      const history: HistoryInput[] = (() => {
+        // Same-session memory: last user/assistant turns plus recent tool
+        // activity (with truncated results) so the run reuses prior reads
+        // instead of re-reading the project from scratch every request.
+        const recent = session.messages.slice(-80);
+        const turns = recent.filter((m) => m.role === "user" || m.role === "assistant").slice(-16);
+        const events = recent.filter((m) => m.role === "event").slice(-40);
+        const keep = new Set([...turns, ...events]);
+        return recent.filter((m) => keep.has(m)).map((message) =>
+          message.role === "event"
+            ? {
+                role: "event" as const,
+                text: message.text,
+                kind: message.kind,
+                detail: message.detail,
+                plan: message.plan,
+                subagent: message.subagent
+                  ? { role: message.subagent.role, task: message.subagent.task, status: message.subagent.status }
+                  : undefined,
+              }
+            : { role: message.role as "user" | "assistant", text: message.text }
+        );
+      })();
 
       // Continue-resume: a bare "continue" after an interrupt/stop must pick
       // up the prior run's tool checkpoint, plan and diff — otherwise the
@@ -545,7 +601,7 @@ app.whenReady().then(async () => {
 
       const backendRecord = { ...project, root: executionRoot };
       emitFor(sessionId, { type: "status", text: "Preparing workspace…" });
-      const { backend } = await getAgentBackend(backendRecord, { readOnly: mode === "plan" });
+      const { backend } = await getAgentBackend(backendRecord, { readOnly: mode === "plan", runId: sessionId });
       const checkpointId = `cp_${Date.now().toString(36)}`;
       await createWorkspaceCheckpoint(executionRoot, checkpointId);
       await appendSessionMessages(projectId, sessionId, [{ role: "user", text: payload.request, images: payload.images, createdAt: new Date().toISOString() }]);
@@ -589,11 +645,12 @@ app.whenReady().then(async () => {
                 subagent: event.subagent,
                 artifact: event.artifact,
                 usage: event.type === "usage" ? undefined : event.usage,
+                detail: event.detail,
               });
             }
             emit(event);
           },
-          isCancelled: isCommandRunCancelled,
+          isCancelled: () => isCommandRunCancelled(sessionId),
         });
       } catch (error) {
         const errorText = error instanceof Error ? error.message : String(error);
@@ -640,10 +697,11 @@ app.whenReady().then(async () => {
       return result.response;
     } finally {
       activeRunSessions.delete(sessionId);
+      endCommandRun(sessionId);
     }
   });
 
-  ipcMain.handle("agent:cancel", () => { cancelCommandRun(); return true; });
+  ipcMain.handle("agent:cancel", (_event, sessionId?: string) => { cancelCommandRun(sessionId); return true; });
 
   createWindow();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
@@ -651,5 +709,6 @@ app.whenReady().then(async () => {
 app.on("before-quit", () => {
   daemonService.stopAllDaemons();
   terminalService.killAll();
+  agentBrowserService.destroy();
 });
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });

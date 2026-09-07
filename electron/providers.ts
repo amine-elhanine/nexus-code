@@ -38,7 +38,29 @@ export async function createChatModel(config: ProviderConfig, modelName: string)
     return new ChatOpenAI({ apiKey: key || "not-needed", model: modelName, temperature: 0.1, configuration: { baseURL: config.baseUrl } });
   }
   if (provider === "openai") return new ChatOpenAI({ apiKey: key, model: modelName, temperature: 0.1, configuration: config.baseUrl ? { baseURL: config.baseUrl } : undefined });
-  if (provider === "anthropic") { const { ChatAnthropic } = await import("@langchain/anthropic"); return new ChatAnthropic({ apiKey: key, model: modelName, temperature: 0.1 }); }
+  if (provider === "anthropic") {
+    const { ChatAnthropic } = await import("@langchain/anthropic");
+    // Prompt caching: Anthropic 1.5.8 only honors cache_control as a
+    // per-request param (invocationParams reads call options — the
+    // constructor field is dropped), and deepagents owns the per-call path.
+    // So the breakpoint is injected by overriding invocationParams: the
+    // top-level breakpoint auto-attaches to the last cacheable block (system
+    // prompt + tools) and advances as the conversation grows. Within a run
+    // the system prompt is identical across dozens of model calls, so steps
+    // after the first hit cache (~90% input discount + lower latency).
+    // OpenAI-compatible providers and Gemini apply automatic prefix caching
+    // server-side — no code needed there beyond the stable prompt prefix.
+    class CachingChatAnthropic extends ChatAnthropic {
+      override invocationParams(options?: any): any {
+        const params = super.invocationParams(options);
+        if (params && (params as Record<string, unknown>).cache_control == null) {
+          (params as Record<string, unknown>).cache_control = { type: "ephemeral" };
+        }
+        return params;
+      }
+    }
+    return new CachingChatAnthropic({ apiKey: key, model: modelName, temperature: 0.1 });
+  }
   if (provider === "google") { const { ChatGoogleGenerativeAI } = await import("@langchain/google-genai"); return new ChatGoogleGenerativeAI({ apiKey: key, model: modelName, temperature: 0.1 }); }
   if (provider === "mistral") { const { ChatMistralAI } = await import("@langchain/mistralai"); return new ChatMistralAI({ apiKey: key, model: modelName, temperature: 0.1 }); }
   if (provider === "groq") { const { ChatGroq } = await import("@langchain/groq"); return new ChatGroq({ apiKey: key, model: modelName, temperature: 0.1 }); }

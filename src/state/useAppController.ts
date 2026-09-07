@@ -627,7 +627,8 @@ export function useAppController() {
 
   async function stopAgent() {
     try {
-      await api.cancelAgent();
+      // Scoped: only this session's run is cancelled, others keep working.
+      await api.cancelAgent(activeSession?.id);
     } catch {
       /* already stopped */
     }

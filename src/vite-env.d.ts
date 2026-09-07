@@ -7,7 +7,7 @@ type SubagentStep = { toolName: string; summary?: string; timestamp: string };
 type SubagentItem = { id: string; role: SubagentRole; task: string; status: "running" | "completed" | "failed"; steps: SubagentStep[]; output?: string; usage?: AgentUsage };
 type ArtifactStatus = "draft" | "pending_approval" | "approved" | "completed" | "rejected";
 type ArtifactItem = { id: string; sessionId: string; name: string; filename: string; path: string; content: string; status: ArtifactStatus; userFacing: boolean; requestFeedback: boolean; createdAt: string; updatedAt: string };
-type AgentEvent = { type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact"; sessionId: string; text: string; timestamp: string; items?: PlanItem[]; usage?: AgentUsage; subagent?: SubagentItem; artifact?: ArtifactItem };
+type AgentEvent = { type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact"; sessionId: string; text: string; timestamp: string; items?: PlanItem[]; usage?: AgentUsage; subagent?: SubagentItem; artifact?: ArtifactItem; detail?: string };
 type ProviderDefinition = { id: string; label: string; packageName: string; envKey: string; defaultBaseUrl?: string; models: string[] };
 type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[] };
 type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; kind?: AgentEvent["type"]; createdAt: string; plan?: PlanItem[]; usage?: AgentUsage; subagent?: SubagentItem }>; model?: { providerId: string; model: string } };
@@ -96,6 +96,15 @@ export interface NexusApi {
   // Browser External Navigation
   openExternal: (url: string) => Promise<boolean>;
 
+  // Agent browser (headless toggle + activity from the agent's window)
+  getBrowserHeadless: () => Promise<boolean>;
+  setBrowserHeadless: (value: boolean) => Promise<boolean>;
+  onBrowserAgentActivity: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean }) => void) => () => void;
+  // Agent browser bridge: main asks the hidden in-app webview to act.
+  onAgentBrowserRequest: (
+    handler: (request: { id: string; kind: string; url?: string; js?: string; keyCode?: string }) => Promise<unknown>
+  ) => () => void;
+
   // Interactive Terminal
   createTerminal: (id: string, cwd?: string, cols?: number, rows?: number) => Promise<boolean>;
   writeTerminal: (id: string, data: string) => Promise<boolean>;
@@ -121,7 +130,7 @@ export interface NexusApi {
   openHomeFolder: () => Promise<void>;
 
   runAgent: (payload: { request: string; images?: string[]; providerId?: string; model?: string; mode?: string }) => Promise<string>;
-  cancelAgent: () => Promise<boolean>;
+  cancelAgent: (sessionId?: string) => Promise<boolean>;
   onAgentEvent: (listener: (event: AgentEvent) => void) => () => void;
 }
 

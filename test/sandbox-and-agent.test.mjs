@@ -6,13 +6,16 @@ import { app } from 'electron';
 import {
   beginCommandRun,
   cancelCommandRun,
+  endCommandRun,
   isCommandRunCancelled,
   runProjectCommand,
   executeCommand,
   getAgentBackend,
 } from '../dist-electron/command-service.js';
+import { isDeniedCommand } from '../dist-electron/permissions.js';
+import { getRepoMapSection } from '../dist-electron/repo-map-service.js';
 import { upsertProject, upsertProvider, removeProvider, listProviders, createSession, updateSession, getSession, appendSessionMessage, appendSessionMessages, calculateSessionUsage } from '../dist-electron/store.js';
-import { pickVerificationCommand, findTargetedTests } from '../dist-electron/agent-service.js';
+import { pickVerificationCommand, findTargetedTests, buildToolContextBlock, toolResultExcerpt } from '../dist-electron/agent-service.js';
 import {
   revertWorkspaceFile,
   revertAllWorkspaceChanges,
@@ -987,6 +990,68 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.ok(estimateTokens('Hello world this is a test of tokenizer estimation') > 5);
   });
 
+  console.log('\n=== 13b. Session Tool Memory Tests ===');
+
+  await test('toolResultExcerpt flattens string, block-array and object payloads with a cap', () => {
+    assert.equal(toolResultExcerpt('hello'), 'hello');
+    assert.equal(toolResultExcerpt(''), '');
+    assert.equal(toolResultExcerpt([{ text: 'a' }, { text: 'b' }]), 'a\nb');
+    assert.equal(toolResultExcerpt([{ output: 'out' }]), 'out');
+    const big = 'x'.repeat(2000);
+    const capped = toolResultExcerpt(big, 1500);
+    assert.ok(capped.length < big.length);
+    assert.match(capped, /truncated/);
+  });
+
+  await test('buildToolContextBlock merges call/result pairs and skips noise', () => {
+    const items = [
+      { role: 'user', text: 'Fix the login bug' },
+      { role: 'event', kind: 'status', text: 'Preparing context…' },
+      { role: 'event', kind: 'tool', text: 'read_file · src/auth.ts:1-100' },
+      { role: 'event', kind: 'tool', text: 'read_file ✓', detail: 'export function login() {}' },
+      { role: 'event', kind: 'tool', text: 'grep_search · "redirect" in src' },
+      { role: 'event', kind: 'tool', text: 'grep_search ✓', detail: 'src/auth.ts:42: redirect uri' },
+      { role: 'assistant', text: 'Found it.' },
+    ];
+    const block = buildToolContextBlock(items);
+    assert.ok(block);
+    assert.match(block, /read_file · src\/auth\.ts/);
+    assert.match(block, /export function login/);
+    assert.match(block, /redirect uri/);
+    assert.match(block, /Do NOT re-run/);
+    // Noise never lands in the block
+    assert.doesNotMatch(block, /Preparing context/);
+  });
+
+  await test('buildToolContextBlock expands plans, keeps errors, returns null when empty', () => {
+    assert.equal(buildToolContextBlock([]), null);
+    assert.equal(buildToolContextBlock([{ role: 'user', text: 'hi' }]), null);
+    assert.equal(
+      buildToolContextBlock([{ role: 'event', kind: 'status', text: 'Working…' }]),
+      null
+    );
+    const block = buildToolContextBlock([
+      { role: 'event', kind: 'plan', text: 'Working plan', plan: [{ content: 'a', status: 'completed' }, { content: 'b', status: 'in_progress' }] },
+      { role: 'event', kind: 'error', text: 'npm run check failed' },
+    ]);
+    assert.ok(block);
+    assert.match(block, /\[x\] a/);
+    assert.match(block, /npm run check failed/);
+  });
+
+  await test('buildToolContextBlock keeps newest entries under a tight budget', () => {
+    const items = [];
+    for (let i = 0; i < 20; i++) {
+      items.push({ role: 'event', kind: 'tool', text: `read_file · src/file${i}.ts` });
+      items.push({ role: 'event', kind: 'tool', text: 'read_file ✓', detail: `content of file${i} `.repeat(20) });
+    }
+    const tiny = buildToolContextBlock(items, 200);
+    assert.ok(tiny);
+    // Newest file survives, oldest is evicted under the tiny budget
+    assert.match(tiny, /file19/);
+    assert.doesNotMatch(tiny, /file0/);
+  });
+
   console.log('\n=== 14. Artifacts Lifecycle & Status Tests ===');
 
   await test('saveArtifact, getArtifact, listArtifacts and updateArtifactStatus work end-to-end', async () => {
@@ -1291,6 +1356,228 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.equal(isSafeExternalUrl('https://google.com'), true);
     assert.equal(isSafeExternalUrl('javascript:alert(1)'), false);
     assert.equal(isSafeExternalUrl('file:///etc/passwd'), false);
+  });
+
+  console.log('\n=== 27. Browser Act Tool Tests ===');
+
+  await test('browser_act is absent without an agent browser (fetch-only fallback preserved)', async () => {
+    const tools = createBrowserTools('/test');
+    assert.equal(tools.length, 2);
+    assert.equal(tools.find((t) => t.name === 'browser_act'), undefined);
+  });
+
+  await test('browser_act forwards actions to the agent browser and never throws', async () => {
+    const calls = [];
+    const stub = {
+      inspect: async (url) => `rendered:${url}`,
+      act: async (input) => {
+        calls.push(input);
+        if (input.action === 'click' && !input.target) throw new Error('click needs a target');
+        return `acted:${input.action}`;
+      },
+    };
+    const tools = createBrowserTools('/test', { agentBrowser: stub });
+    assert.equal(tools.length, 3);
+    const actTool = tools.find((t) => t.name === 'browser_act');
+    assert.ok(actTool);
+
+    const snap = await actTool.invoke({ action: 'snapshot' });
+    assert.match(String(snap), /acted:snapshot/);
+    assert.deepEqual(calls[0], { action: 'snapshot' });
+
+    const fill = await actTool.invoke({ action: 'fill', target: 'e3', value: 'hello' });
+    assert.match(String(fill), /acted:fill/);
+
+    // Service-level throw becomes a model-readable string, not a rejection.
+    const failed = await actTool.invoke({ action: 'click' });
+    assert.match(String(failed), /Browser action failed/);
+  });
+
+  await test('rendered inspect is preferred, fetch is the fallback on failure', async () => {
+    const okTools = createBrowserTools('/test', {
+      renderedInspect: async (url) => `rendered:${url}`,
+    });
+    const okInspect = okTools.find((t) => t.name === 'browser_inspect');
+    assert.match(String(await okInspect.invoke({ url: 'http://127.0.0.1:59999/x' })), /rendered:/);
+
+    const failingTools = createBrowserTools('/test', {
+      renderedInspect: async () => { throw new Error('window gone'); },
+    });
+    const fallbackInspect = failingTools.find((t) => t.name === 'browser_inspect');
+    const res = String(await fallbackInspect.invoke({ url: 'http://127.0.0.1:59999/x' }));
+    assert.match(res, /Failed to inspect/);
+  });
+
+  console.log('\n=== 28. Agent Browser Bridge Tests ===');
+
+  await test('agent browser input validation rejects before touching any window', async () => {
+    const { agentBrowserService } = await import('../dist-electron/browser-service.js');
+    await assert.rejects(agentBrowserService.act({ action: 'click' }), /needs a target/);
+    await assert.rejects(agentBrowserService.act({ action: 'fill', target: 'e1' }), /needs a value/);
+    await assert.rejects(agentBrowserService.act({ action: 'press' }), /needs a key/);
+    await assert.rejects(agentBrowserService.act({ action: 'navigate', url: 'file:///etc/passwd' }), /Only http/);
+    await assert.rejects(agentBrowserService.act({ action: 'nope' }), /Unknown browser action/);
+  });
+
+  await test('agent browser without a wired renderer fails fast instead of hanging', async () => {
+    const { agentBrowserService } = await import('../dist-electron/browser-service.js');
+    // No sender in tests (main.ts wires it at startup) → immediate error,
+    // which the browser_act tool / fetch fallback converts, never a hang.
+    await assert.rejects(agentBrowserService.act({ action: 'snapshot' }), /not available/);
+  });
+
+  console.log('\n=== 23. Repo Map Tests ===');
+
+  await test('getRepoMapSection outlines symbols, skips ignored dirs, and caches incrementally', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-repomap-'));
+    try {
+      await fs.mkdir(path.join(tempDir, 'src'), { recursive: true });
+      await fs.mkdir(path.join(tempDir, 'node_modules', 'dep'), { recursive: true });
+      await fs.writeFile(path.join(tempDir, 'src', 'app.ts'), 'export class App {\n  start() {}\n}\nexport function boot() {}\n', 'utf8');
+      await fs.writeFile(path.join(tempDir, 'README.md'), '# Demo\n', 'utf8');
+      await fs.writeFile(path.join(tempDir, 'node_modules', 'dep', 'index.js'), 'function hidden() {}\n', 'utf8');
+
+      const first = await getRepoMapSection(tempDir);
+      assert.match(first, /REPO MAP/);
+      assert.match(first, /src\/app\.ts/);
+      assert.match(first, /App/);
+      assert.match(first, /boot/);
+      assert.match(first, /README\.md/);
+      assert.doesNotMatch(first, /node_modules/);
+      // Cache file written
+      assert.ok((await fs.stat(path.join(tempDir, '.nexus', 'repo-map-cache.json'))).isFile());
+
+      // Second call reuses cache (identical output without re-parsing)
+      const second = await getRepoMapSection(tempDir);
+      assert.equal(second, first);
+
+      // Modified file is re-parsed on next call
+      await new Promise((r) => setTimeout(r, 20));
+      await fs.writeFile(path.join(tempDir, 'src', 'app.ts'), 'export class App {}\nexport function boot() {}\nexport function addedLater() {}\n', 'utf8');
+      const third = await getRepoMapSection(tempDir);
+      assert.match(third, /addedLater/);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  console.log('\n=== 24. Per-Session Cancellation Tests ===');
+
+  await test('Cancellation is scoped per run: cancelling one session never touches another', () => {
+    beginCommandRun('sess-a');
+    beginCommandRun('sess-b');
+    cancelCommandRun('sess-a');
+    assert.equal(isCommandRunCancelled('sess-a'), true);
+    assert.equal(isCommandRunCancelled('sess-b'), false);
+    // Starting a new run elsewhere must not clear sess-a's cancel…
+    beginCommandRun('sess-c');
+    assert.equal(isCommandRunCancelled('sess-a'), true);
+    assert.equal(isCommandRunCancelled('sess-c'), false);
+    // …and global cancel still reaches every live run (fallback path).
+    cancelCommandRun();
+    assert.equal(isCommandRunCancelled('sess-b'), true);
+    assert.equal(isCommandRunCancelled('sess-c'), true);
+    endCommandRun('sess-a');
+    endCommandRun('sess-b');
+    endCommandRun('sess-c');
+    assert.equal(isCommandRunCancelled('sess-a'), false);
+  });
+
+  await test("Cancelling another session does not kill this session's command", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-cancel-scope-'));
+    const project = await upsertProject({ id: 'test-cancel-scope', name: 'cancel-scope-test', root: tempDir });
+    try {
+      beginCommandRun('sess-x');
+      const runPromise = runProjectCommand(project, `node -e "setTimeout(() => console.log('still-alive'), 700)"`, 'sess-x');
+      await new Promise((r) => setTimeout(r, 150));
+      cancelCommandRun('sess-unrelated');
+      const result = await runPromise;
+      assert.equal(result.exitCode, 0);
+      assert.match(String(result.output), /still-alive/);
+      endCommandRun('sess-x');
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  console.log('\n=== 25. Destructive-Command Deny List Tests ===');
+
+  await test('isDeniedCommand blocks disk/home/system destruction but allows normal dev work', () => {
+    const denied = [
+      'rm -rf /',
+      'sudo rm -rf / --no-preserve-root',
+      'rm -rf ~',
+      'rm -fr $HOME/.config',
+      'rm -rf /home/deploy/app',
+      'rm -rf /root',
+      'mkfs.ext4 /dev/sda1',
+      'dd if=/dev/zero of=/dev/sda',
+      'chmod -R 777 /',
+      'shutdown -h now',
+      'format D:',
+      'diskpart',
+      'vssadmin delete shadows /all',
+      'wmic shadowcopy delete',
+      'bcdedit /set safeboot minimal',
+      'rd /s /q C:\\',
+      'del /f /s /q C:\\Windows\\Temp\\*',
+      'Remove-Item -Recurse -Force $HOME\\docs',
+      'Remove-Item -Recurse C:\\',
+      'reg delete HKLM\\Software\\Foo /f',
+      'net user hacker P@ssw0rd /add',
+      'net localgroup administrators hacker /add',
+      'takeown /f C:\\Windows',
+    ];
+    for (const cmd of denied) {
+      assert.equal(isDeniedCommand(cmd), true, `should deny: ${cmd}`);
+    }
+    const allowed = [
+      'npm install',
+      'npm run check',
+      'git status',
+      'rm -rf ./dist',
+      'Remove-Item -Recurse .\\temp-build',
+      'reg query HKLM\\Software\\Foo',
+      'curl -fsSL https://example.com/install.sh | sh',
+      'rd /s /q .\\old-output',
+    ];
+    for (const cmd of allowed) {
+      assert.equal(isDeniedCommand(cmd), false, `should allow: ${cmd}`);
+    }
+  });
+
+  console.log('\n=== 26. Revert-All Exclusion Tests ===');
+
+  await test('revertAllWorkspaceChanges restores tracked files but never deletes protected paths', async () => {
+    const tempRepo = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-revertall-'));
+    try {
+      await execFileAsync('git', ['init', '-b', 'main'], { cwd: tempRepo });
+      await execFileAsync('git', ['config', 'user.email', 'test@test.com'], { cwd: tempRepo });
+      await execFileAsync('git', ['config', 'user.name', 'Test'], { cwd: tempRepo });
+      await fs.writeFile(path.join(tempRepo, 'tracked.txt'), 'original\n', 'utf8');
+      await execFileAsync('git', ['add', '.'], { cwd: tempRepo });
+      await execFileAsync('git', ['commit', '-m', 'init'], { cwd: tempRepo });
+
+      // Tracked edit (must restore) + ordinary untracked file (must go)
+      await fs.writeFile(path.join(tempRepo, 'tracked.txt'), 'modified\n', 'utf8');
+      await fs.writeFile(path.join(tempRepo, 'scratch.txt'), 'x\n', 'utf8');
+      // Protected: telemetry, deps, local secrets (must survive)
+      await fs.mkdir(path.join(tempRepo, '.nexus'), { recursive: true });
+      await fs.writeFile(path.join(tempRepo, '.nexus', 'keep.txt'), 'telemetry\n', 'utf8');
+      await fs.mkdir(path.join(tempRepo, 'node_modules', 'pkg'), { recursive: true });
+      await fs.writeFile(path.join(tempRepo, 'node_modules', 'pkg', 'x.js'), 'y\n', 'utf8');
+      await fs.writeFile(path.join(tempRepo, '.env'), 'SECRET=1\n', 'utf8');
+
+      await revertAllWorkspaceChanges(tempRepo);
+
+      assert.equal(await fs.readFile(path.join(tempRepo, 'tracked.txt'), 'utf8'), 'original\n');
+      assert.equal(await fs.stat(path.join(tempRepo, 'scratch.txt')).then(() => true).catch(() => false), false);
+      assert.equal(await fs.readFile(path.join(tempRepo, '.nexus', 'keep.txt'), 'utf8'), 'telemetry\n');
+      assert.equal(await fs.readFile(path.join(tempRepo, 'node_modules', 'pkg', 'x.js'), 'utf8'), 'y\n');
+      assert.equal(await fs.readFile(path.join(tempRepo, '.env'), 'utf8'), 'SECRET=1\n');
+    } finally {
+      await fs.rm(tempRepo, { recursive: true, force: true }).catch(() => {});
+    }
   });
 
   console.log(`\nSummary: ${passed} passed, ${failed} failed.\n`);

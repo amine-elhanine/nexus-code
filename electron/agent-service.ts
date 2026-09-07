@@ -8,6 +8,8 @@ import { createChatModel } from "./providers.js";
 import { createCodeIntelligenceTools, pickRuntimeCodeTools } from "./code-tools.js";
 import { createEditTools, createQuestionTool } from "./edit-tools.js";
 import { createBrowserTools } from "./browser-tool.js";
+import { agentBrowserService } from "./browser-service.js";
+import { getRepoMapSection } from "./repo-map-service.js";
 import { createWebSearchTools } from "./websearch-tool.js";
 import { discoverProjectRules } from "./rules-service.js";
 import { createSubagentDelegationTool, calculateAgentUsage, type SubagentItem } from "./subagent-service.js";
@@ -24,6 +26,18 @@ import type { ProviderConfig } from "./store.js";
 export type AgentMode = "plan" | "ask" | "auto";
 export type PlanItem = { content: string; status: "pending" | "in_progress" | "completed" };
 export type AgentTurn = { role: "user" | "assistant"; text: string };
+// Prior-run tool activity fed back into the next run so it reuses results
+// instead of re-reading files. Kept as plain text (not LangChain ToolMessages,
+// which require matching tool_call_ids the next run doesn't have).
+export type HistoryEventItem = {
+  role: "event";
+  text: string;
+  kind?: string;
+  detail?: string;
+  plan?: PlanItem[];
+  subagent?: { role: string; task: string; status: string };
+};
+export type HistoryInput = AgentTurn | HistoryEventItem;
 export type AgentSettings = { provider?: ProviderConfig; model?: string; apiKey?: string; baseUrl?: string };
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
 export type AgentEvent = {
@@ -35,6 +49,10 @@ export type AgentEvent = {
   usage?: AgentUsage;
   subagent?: SubagentItem;
   artifact?: ArtifactItem;
+  // Truncated tool-result excerpt for tool events. Persisted in the session
+  // transcript (unlike token chunks) so the NEXT run can reuse what this run
+  // already read — without it every run starts cold and re-reads everything.
+  detail?: string;
 };
 export type AgentMemoryContext = { projectMemory: string; sessionMemory: string };
 // "code" = repository work (typecheck/test verification). "general" = the
@@ -341,6 +359,116 @@ function toolCallSummary(call: any) {
   return describeToolCall(call?.name || "", call?.args);
 }
 
+// Truncated plain-text excerpt of a LangChain ToolMessage payload for
+// transcript persistence. Caps size so one giant grep dump can't bloat every
+// future prompt in the session.
+export function toolResultExcerpt(content: unknown, cap = 1500): string {
+  let text = "";
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content)) {
+    text = content
+      .map((block) => {
+        if (typeof block === "string") return block;
+        if (block && typeof block === "object") {
+          const o = block as Record<string, unknown>;
+          if (typeof o.text === "string") return o.text;
+          if (typeof o.output === "string") return o.output;
+          try {
+            return JSON.stringify(o).slice(0, 500);
+          } catch {
+            return "";
+          }
+        }
+        return "";
+      })
+      .join("\n");
+  } else if (content != null) {
+    try {
+      text = typeof content === "object" ? JSON.stringify(content) : String(content);
+    } catch {
+      text = "";
+    }
+  }
+  text = text.trim();
+  if (text.length > cap) text = text.slice(0, cap) + `… [truncated ${text.length - cap} chars]`;
+  return text;
+}
+
+// Builds the "what prior runs already did" context block from persisted
+// session events (OpenCode/Pi-style: tool history rides along in-session).
+// Call + result pairs are merged, plans expanded, noise (status/usage/
+// artifact/token) skipped. Newest-first under the token budget so recent work
+// always survives; returns null when there is nothing worth carrying.
+export function buildToolContextBlock(items: HistoryInput[] | undefined | null, maxTokens = 4000): string | null {
+  if (!items || items.length === 0) return null;
+  const maxChars = Math.max(500, maxTokens * 4);
+  const PER_ITEM_CAP = 1200;
+  const lines: string[] = [];
+  // First pass: merge call/result pairs chronologically.
+  const push = (head: string, tail = "") => {
+    lines.push(tail ? `${head.slice(0, 200)}\n  ↳ ${tail.slice(0, PER_ITEM_CAP)}` : head.slice(0, 200));
+  };
+  let pendingName: string | null = null;
+  for (const item of items) {
+    if (item.role !== "event") {
+      pendingName = null;
+      continue;
+    }
+    const kind = item.kind || "status";
+    if (kind === "status" || kind === "usage" || kind === "token" || kind === "artifact") continue;
+    if (kind === "plan" && item.plan?.length) {
+      pendingName = null;
+      push(`plan: ${item.plan.map((p) => `[${p.status === "completed" ? "x" : " "}] ${p.content}`).join("; ")}`);
+      continue;
+    }
+    if (kind === "error") {
+      pendingName = null;
+      push(`error: ${item.text}`);
+      continue;
+    }
+    if (kind === "subagent" && item.subagent) {
+      pendingName = null;
+      push(`subagent [${item.subagent.role}] ${item.subagent.status}: ${item.subagent.task}`.slice(0, 300));
+      continue;
+    }
+    if (kind !== "tool") {
+      pendingName = null;
+      continue;
+    }
+    const text = item.text || "";
+    if (text.endsWith("✓")) {
+      const name = text.slice(0, -1).trim();
+      if (pendingName && pendingName.split(" · ")[0] === name && item.detail && lines.length) {
+        const idx = lines.length - 1;
+        lines[idx] = `${lines[idx].slice(0, 200)}\n  ↳ ${item.detail.slice(0, PER_ITEM_CAP)}`;
+      } else if (item.detail) {
+        push(name, item.detail);
+      }
+      pendingName = null;
+      continue;
+    }
+    pendingName = text;
+    push(text);
+  }
+  if (!lines.length) return null;
+  // Second pass: newest-first under budget.
+  const kept: string[] = [];
+  let used = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (used + lines[i].length > maxChars && kept.length > 0) break;
+    kept.unshift(lines[i]);
+    used += lines[i].length;
+    if (used >= maxChars) break;
+  }
+  if (!kept.length) return null;
+  return (
+    `[Session tool history — work already done in this session, newest last. ` +
+    `Do NOT re-run these tool calls or re-read these files unless they changed since; build on the results below.]\n` +
+    kept.map((l) => `• ${l}`).join("\n")
+  );
+}
+
 export type TaskComplexity = "simple" | "complex";
 
 const COMPLEX_TASK_PATTERN =
@@ -358,7 +486,18 @@ const CREATE_PROJECT_PATTERN =
 // tool calls — the agent burns them all on skill exploration and never acts.
 const DOC_BUILD_PATTERN =
   /\b(presentation|power ?point|pptx?|slide deck|slideshow|slides?|spreadsheet|excel|xlsx?|workbook|word documents?|docx?|latex)\b/i;
+// "Create/write a report/memo/summary" is a document build even without a
+// format keyword: research + write + save is multi-step, never a lookup.
+const DOC_WRITE_PATTERN =
+  /\b(create|make|generate|write|draft)\b.{0,40}\b(report|document|memo|letter|resume|summary|writeup|write-up)\b/i;
 const WEB_TASK_PATTERN = /\b(localhost|127\.0\.0\.1|https?:\/\/|web ?(app|page|server)|browser|api .*(health|endpoint)|dev server)\b/i;
+// Edit verbs: the request wants the code changed, not explained.
+const EDIT_VERB_PATTERN =
+  /\b(fix|implement|add|change|update|create|delete|remove|write|move|rename|migrate|debug|resolve|handle|support|enable|wire|integrate|replace)\b/i;
+// Bug language: debugging is never a 3-call lookup — it needs
+// reproduce + locate + fix + verify, so it must never route simple.
+const BUG_PATTERN =
+  /\b(bug|error|failing|failed|broken|crash|issue|wrong|exception|stack|traceback|doesn'?t work|not working)\b/i;
 
 /** Heuristic router: trivial lookups / single edits skip planning, delegation and full verification. */
 export function classifyTaskComplexity(request: string): TaskComplexity {
@@ -373,11 +512,26 @@ export function classifyTaskComplexity(request: string): TaskComplexity {
   if (COMPLEX_TASK_PATTERN.test(text)) return "complex";
   if (BUILD_TASK_PATTERN.test(text) || CREATE_PROJECT_PATTERN.test(text)) return "complex";
   if (DOC_BUILD_PATTERN.test(text)) return "complex";
+  if (DOC_WRITE_PATTERN.test(text)) return "complex";
+  // Debugging always needs reproduce + locate + fix + verify: never simple.
+  if (BUG_PATTERN.test(text) && EDIT_VERB_PATTERN.test(text)) return "complex";
+  // An edit verb with any scope signal is real work, not a lookup: two files,
+  // a non-trivial description, pasted code/traces, or verify/test language.
+  const fileMentions = (text.match(/[\w\-./]+\.\w{1,5}/g) || []).length;
+  const hasPastedContext = /```/.test(text) || /^\s*at\s+\S+.*:\d+/m.test(text) || /\b(Error|Exception|Traceback)\s*:/.test(text);
+  if (
+    EDIT_VERB_PATTERN.test(text) &&
+    (fileMentions >= 2 ||
+      text.length > 120 ||
+      hasPastedContext ||
+      /\b(verify|test|tests|check)\b/i.test(text))
+  ) {
+    return "complex";
+  }
   // Long multi-sentence briefs are real projects, not quick tasks.
   const sentences = text.split(/[.!?\n]+/).map((s) => s.trim()).filter(Boolean);
   if (text.length > 350 || (sentences.length >= 3 && text.length > 180)) return "complex";
   // Explicit multi-file / multi-stage signals.
-  const fileMentions = (text.match(/[\w\-./]+\.\w{1,5}/g) || []).length;
   if (fileMentions >= 3) return "complex";
   if (/\b(and then|then verify|step \d|first .* then)\b/i.test(text) && text.length > 120) return "complex";
   return "simple";
@@ -585,7 +739,7 @@ function isRecursionLimitError(error: unknown): boolean {
   return /recursion\s*limit|GRAPH_RECURSION_LIMIT/i.test(text);
 }
 
-function buildSystemPrompt(mode: AgentMode, projectRoot: string, providerLabel: string, modelName: string, memory: AgentMemoryContext, projectRulesSection: string = "", complexity: TaskComplexity = "complex", isNewProject = false, taskKind: AgentTaskKind = "code") {
+function buildSystemPrompt(mode: AgentMode, projectRoot: string, providerLabel: string, modelName: string, memory: AgentMemoryContext, projectRulesSection: string = "", complexity: TaskComplexity = "complex", isNewProject = false, taskKind: AgentTaskKind = "code", repoMapSection: string = "") {
   if (taskKind === "general") {
     let general = `You are Nexus Home, a helpful general-purpose assistant. Your workspace folder is exposed at the virtual root / — use paths relative to it (for example report.docx). Files you create land in the user's Nexus folder, where they can download them.
 
@@ -636,14 +790,15 @@ Working rules:
 - For multi-file edits, prefer a single apply_patch call over N sequential writes/edits.
 - Never write throwaway verification scripts into the repo (no check-*.js, smoke-test.js, or any scratch files — and never inside .nexus/, which is telemetry storage). Verify with a single inline command instead, then stop: one syntax check plus one smoke run is enough for a small app.
 - Use ask_user sparingly (at most once) when genuinely blocked by ambiguity; otherwise proceed with best guess.
-- Use browser_inspect or browser_fetch_api ONLY for web/dev-server/API-health tasks. Never use them for plain code edits or explanations.
+- Use browser_inspect or browser_fetch_api ONLY for web/dev-server/API-health tasks. Never use them for plain code edits or explanations. browser_inspect renders the page with JavaScript in the built-in browser session (the user can watch in the Browser tab when headless is off), so prefer it for checking what a running dev server actually renders. To interact with the page (click buttons, fill forms, submit, scroll), use browser_act — snapshot first for element refs, then act on refs.
 - delegate_task is a last resort for genuinely independent multi-file work. Never delegate simple lookups, single-file edits, or Q&A — doing so multiplies steps.
 - Keep diffs minimal and focused; prefer editing existing files over rewriting them.
 - Only use the todo list for tasks with 3+ distinct steps. Skip it entirely for trivial tasks (single question, single-file fix, typo, rename).
 - Additional MCP tools (if listed in your tools) come from user-configured MCP servers; prefer them for the capabilities they expose (e.g. search, APIs, external systems).
 - Skills listed in your instructions are mandatory pre-reads, not options: before exploring or writing code, check whether any skill covers the task and read its SKILL.md first.
 - Never expose secrets.
-- Finish by reporting files changed, commands run, and remaining risks.`;
+- Finish by reporting files changed, commands run, and remaining risks.
+${repoMapSection ? `\n${repoMapSection}` : ""}`;
 
   // New-project builds must come out production-ready (Claude-Code bar), not
   // as loose static files: real toolchain, installable deps, persisted
@@ -687,7 +842,7 @@ export async function runProjectAgent(options: {
   images?: string[];
   settings: AgentSettings;
   memory: AgentMemoryContext;
-  history: AgentTurn[];
+  history: HistoryInput[];
   mode: AgentMode;
   agentBackend: unknown;
   onEvent: (event: AgentEvent) => void;
@@ -702,8 +857,8 @@ export async function runProjectAgent(options: {
   const taskKind: AgentTaskKind = options.taskKind ?? "code";
   const isGeneral = taskKind === "general";
   const targetTelemetryRoot = telemetryRoot || projectRoot;
-  const emit = (type: AgentEvent["type"], text: string, items?: PlanItem[], usage?: AgentUsage, subagent?: SubagentItem, artifact?: ArtifactItem) => {
-    if (text || items?.length || usage || subagent || artifact) onEvent({ type, sessionId: sessionId || "", text, timestamp: new Date().toISOString(), items, usage, subagent, artifact });
+  const emit = (type: AgentEvent["type"], text: string, items?: PlanItem[], usage?: AgentUsage, subagent?: SubagentItem, artifact?: ArtifactItem, detail?: string) => {
+    if (text || items?.length || usage || subagent || artifact) onEvent({ type, sessionId: sessionId || "", text, timestamp: new Date().toISOString(), items, usage, subagent, artifact, detail });
   };
 
   const trajectory = sessionId ? new TrajectoryLogger(targetTelemetryRoot, sessionId) : null;
@@ -744,15 +899,19 @@ export async function runProjectAgent(options: {
       promise,
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)), ms)),
     ]);
-  // Setup I/O (MCP servers, project rules, skills config) is independent —
-  // fetch in parallel instead of serially.
-  const [mcpResult, rulesResult, skillsConfig] = await Promise.all([
+  // Setup I/O (MCP servers, project rules, skills config, repo map) is
+  // independent — fetch in parallel instead of serially.
+  const [mcpResult, rulesResult, skillsConfig, repoMapSection] = await Promise.all([
     withSetupTimeout(getMcpTools(), 20000, "MCP servers").then(
       (r) => ({ ok: true as const, tools: r.tools, serverNames: r.serverNames }),
       (error: unknown) => ({ ok: false as const, error }),
     ),
     discoverProjectRules(projectRoot),
     getSkillsConfig(),
+    // Code runs get a symbol-outline map so the model orients without
+    // re-listing the tree every task. Home/doc runs skip it (a documents
+    // folder has no useful symbols). Never fails the run.
+    (isGeneral ? Promise.resolve("") : getRepoMapSection(projectRoot).catch(() => "")),
   ]);
 
   let mcpTools: any[] = [];
@@ -798,7 +957,14 @@ export async function runProjectAgent(options: {
   const wantsBrowser = isWebTask(request);
   // Home general runs always get the browser + free web search: research is
   // core to that mode, not an edge case.
-  const browserTools = wantsBrowser || isGeneral ? createBrowserTools(projectRoot) : [];
+  const browserTools = wantsBrowser || isGeneral
+    ? createBrowserTools(projectRoot, {
+        agentBrowser: {
+          inspect: (url) => agentBrowserService.inspect(url),
+          act: (input) => agentBrowserService.act(input, projectRoot),
+        },
+      })
+    : [];
   const webSearchTools = isGeneral ? createWebSearchTools() : [];
   const usage = new UsageAccumulator();
   // Fast-path routing: simple tasks get fewer tools, no todo planning and
@@ -807,10 +973,10 @@ export async function runProjectAgent(options: {
   // A "continue" that resumes prior tool state is never a simple task: it
   // needs the full budget, todo tracking and delegation to finish the job.
   const hasResume = Boolean((resumeMessages && resumeMessages.length) || resumeNote);
-  const effectiveComplexity: TaskComplexity = hasResume ? "complex" : complexity;
-  const isSimple = effectiveComplexity === "simple";
+  let effectiveComplexity: TaskComplexity = hasResume ? "complex" : complexity;
+  let isSimple = effectiveComplexity === "simple";
   const isNewProject = isNewProjectTask(request);
-  const recursionLimit = isSimple ? SIMPLE_TASK_LIMIT : MODE_LIMITS[mode];
+  let recursionLimit = isSimple ? SIMPLE_TASK_LIMIT : MODE_LIMITS[mode];
   // Opencode core: ripgrep-like grep + range-read only for simple tasks.
   const codeTools = pickRuntimeCodeTools(allCodeTools, effectiveComplexity);
   const editTools = createEditTools(projectRoot);
@@ -833,6 +999,7 @@ export async function runProjectAgent(options: {
       emit("subagent", subEvent.type === "subagent_start" ? `Delegated task to ${subEvent.subagent.role} subagent` : subEvent.type === "subagent_finish" ? `Subagent [${subEvent.subagent.role}] completed` : `Subagent working...`, undefined, undefined, subEvent.subagent);
     },
     isCancelled,
+    runId: sessionId,
   });
 
   const deepAgent = await createDeepAgent({
@@ -843,7 +1010,7 @@ export async function runProjectAgent(options: {
       ? [...codeTools, ...editTools, questionTool, ...browserTools, ...webSearchTools, ...mcpTools]
       : [...codeTools, ...editTools, questionTool, ...browserTools, ...webSearchTools, subagentTool, ...mcpTools],
     skills,
-    systemPrompt: buildSystemPrompt(mode, projectRoot, provider.label, modelName, memory, rulesResult.combinedPromptSection, effectiveComplexity, isNewProject, taskKind),
+    systemPrompt: buildSystemPrompt(mode, projectRoot, provider.label, modelName, memory, rulesResult.combinedPromptSection, effectiveComplexity, isNewProject, taskKind, repoMapSection),
   });
 
   // Apply context compaction on history
@@ -877,6 +1044,16 @@ export async function runProjectAgent(options: {
   );
 
   let runMessages: any[] = [...priorMessages, initialHumanMessage];
+  // Same-session tool memory (OpenCode/Pi-style): when this run starts
+  // WITHOUT a full checkpoint behind it, fold the session's recent tool
+  // activity (calls + truncated results, plans, errors) into a context block
+  // so the model reuses prior reads instead of re-reading the same files.
+  // Resume runs skip this — their checkpoint already carries full tool
+  // messages and the block would only duplicate them.
+  if (!resumeMessages?.length) {
+    const toolContext = buildToolContextBlock(history);
+    if (toolContext) runMessages = [...priorMessages, new HumanMessage(toolContext), initialHumanMessage];
+  }
   // Cross-run resume: seed the conversation with the previous run's full
   // tool history so "continue" proceeds instead of restarting. Prune any
   // trailing unanswered tool calls the same way mid-stream retries do.
@@ -997,7 +1174,12 @@ export async function runProjectAgent(options: {
                 }
               }
               if (message?.type === "tool") {
-                emit("tool", `${message.name || "tool"} ✓`);
+                // Persist a truncated result excerpt alongside the ✓ marker so
+                // future runs in this session can reuse what was already read
+                // instead of re-reading the same files. The UI renders only
+                // the short text; detail travels in the transcript + history.
+                const excerpt = toolResultExcerpt((message as { content?: unknown })?.content);
+                emit("tool", `${message.name || "tool"} ✓`, undefined, undefined, undefined, undefined, excerpt || undefined);
                 progress.noteToolResult();
                 if (trajectory) {
                   void trajectory.log({ source: "TOOL", type: "TOOL_RESULT", content: `${message.name || "tool"} finished` });
@@ -1191,33 +1373,59 @@ export async function runProjectAgent(options: {
   // The outer graph only has 2 nodes, but LangGraph's default invoke limit
   // is 25 — pass an explicit budget and turn a limit hit into a resumable
   // partial result instead of a hard GraphRecursionError.
-  const outerLimit = Math.max(recursionLimit, 50);
+  let outerLimit = Math.max(recursionLimit, 50);
   let result: any;
+  let escalated = false;
   try {
     result = await graph.invoke({ projectRoot, request }, { recursionLimit: outerLimit });
   } catch (error) {
     const isDoom = error instanceof DoomLoopError || (error as any)?.name === "DoomLoopError";
-    if (!isRecursionLimitError(error) && !isDoom) throw error;
-    saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
-    const planSummary = lastPlanItems?.length
-      ? `\n\nWorking plan so far:\n${lastPlanItems.map((p) => `- [${p.status === "completed" ? "x" : " "}] ${p.content} (${p.status})`).join("\n")}`
-      : "";
-    const doomTool = isDoom ? (error as DoomLoopError).toolName || "tool" : null;
-    const partial = isDoom
-      ? `I got stuck repeating the same ${doomTool} call without making progress, so I stopped instead of looping forever. Progress is checkpointed — say "continue" and I will resume with a different approach.${planSummary}`
-      : `I hit the step budget before finishing. Progress is checkpointed — say "continue" and I will resume from where I stopped instead of restarting.${planSummary}`;
-    emit("error", isDoom ? `Stuck repeating ${doomTool} — stopped to avoid an infinite loop. Say "continue" to resume differently.` : `Step budget reached (${outerLimit} steps). Progress saved — say "continue" to resume.`);
-    if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: isDoom ? `Doom-loop breaker fired on ${doomTool}; checkpoint saved for resume.` : `Recursion limit hit at ${outerLimit}; checkpoint saved for resume.` });
-    const partialUsage = usage.finalize(modelName, estimatedFallbackInputTokens, 0);
-    return {
-      response: partial,
-      verification: "interrupted",
-      memoryEntry: `Task: ${request}\nOutcome: ${isDoom ? `interrupted in a repeated-${doomTool} loop` : "interrupted at step budget"}; resumable via continue.\nVerification: interrupted`,
-      usage: partialUsage,
-      artifact: undefined,
-      projectMemoryLogEntry: `Interrupted work (${new Date().toISOString().slice(0, 10)}): ${tail(request, 200)}`,
-      interrupted: true as const,
-    };
+    const isBudget = isRecursionLimitError(error);
+    // Misclassified simple tasks die at the 50-step wall even though the run
+    // was making progress. Escalate once to the full mode budget and continue
+    // in place instead of forcing the user to say "continue". The step
+    // history (runMessages) is already checkpointed above, so the retry
+    // resumes where the run stopped. Tools stay simple-scoped, but the
+    // verify node flips to the full cascade via isSimple below.
+    if (isBudget && !isDoom && effectiveComplexity === "simple" && !escalated) {
+      escalated = true;
+      effectiveComplexity = "complex";
+      isSimple = false;
+      recursionLimit = MODE_LIMITS[mode];
+      outerLimit = Math.max(recursionLimit, 50);
+      saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
+      emit("status", `Simple budget exhausted at ${SIMPLE_TASK_LIMIT} steps — escalating to full budget (${outerLimit} steps) and continuing…`);
+      if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: `Simple-task budget hit at ${SIMPLE_TASK_LIMIT}; auto-escalated to complex budget ${outerLimit}.` });
+      try {
+        result = await graph.invoke({ projectRoot, request }, { recursionLimit: outerLimit });
+      } catch (retryError) {
+        error = retryError;
+      }
+    }
+    if (result === undefined) {
+      const retryIsDoom = error instanceof DoomLoopError || (error as any)?.name === "DoomLoopError";
+      if (!isRecursionLimitError(error) && !retryIsDoom) throw error;
+      saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
+      const planSummary = lastPlanItems?.length
+        ? `\n\nWorking plan so far:\n${lastPlanItems.map((p) => `- [${p.status === "completed" ? "x" : " "}] ${p.content} (${p.status})`).join("\n")}`
+        : "";
+      const doomTool = retryIsDoom ? (error as DoomLoopError).toolName || "tool" : null;
+      const partial = retryIsDoom
+        ? `I got stuck repeating the same ${doomTool} call without making progress, so I stopped instead of looping forever. Progress is checkpointed — say "continue" and I will resume with a different approach.${planSummary}`
+        : `I hit the step budget before finishing. Progress is checkpointed — say "continue" and I will resume from where I stopped instead of restarting.${planSummary}`;
+      emit("error", retryIsDoom ? `Stuck repeating ${doomTool} — stopped to avoid an infinite loop. Say "continue" to resume differently.` : `Step budget reached (${outerLimit} steps). Progress saved — say "continue" to resume.`);
+      if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: retryIsDoom ? `Doom-loop breaker fired on ${doomTool}; checkpoint saved for resume.` : `Recursion limit hit at ${outerLimit}; checkpoint saved for resume.` });
+      const partialUsage = usage.finalize(modelName, estimatedFallbackInputTokens, 0);
+      return {
+        response: partial,
+        verification: "interrupted",
+        memoryEntry: `Task: ${request}\nOutcome: ${retryIsDoom ? `interrupted in a repeated-${doomTool} loop` : "interrupted at step budget"}; resumable via continue.\nVerification: interrupted`,
+        usage: partialUsage,
+        artifact: undefined,
+        projectMemoryLogEntry: `Interrupted work (${new Date().toISOString().slice(0, 10)}): ${tail(request, 200)}`,
+        interrupted: true as const,
+      };
+    }
   }
   // Checkpoint the completed run so a follow-up "continue" can build on the
   // full tool history, not just the text transcript.

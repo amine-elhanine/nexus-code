@@ -54,6 +54,7 @@ Si vous avez besoin d'isolation, exécutez Nexus dans une VM ou un conteneur dé
 - **Partition isolée `persist:browser`** : Le composant `<webview>` est isolé dans sa propre partition de session afin de ne pas altérer les cookies de l'application hôte.
 - **Inspection sans redirections surprises** : les outils `browser_inspect` / `browser_fetch_api` suivent les redirections manuellement (chaque saut re-validé, plafonné) pour éviter les contournements via 302.
 - **Vrai historique de navigation** : Back/Forward/reload pilotent le webview en place (`goBack`/`goForward`/`reload`) au lieu de le remonter, préservant l'état des pages.
+- **Fenêtre agent pilotable (`browser_act`)** : l'agent agit directement dans le navigateur intégré via une webview cachée (même session `persist:browser` que l'onglet Browser) — pas de fenêtre séparée. Snapshot d'éléments (`e3`, `e7`…), click, fill (compatible React), touches clavier, scroll, navigation et screenshots (`.nexus/browser/`, `http(s)` uniquement). Bascule **Headless/Watching** : en arrière-plan invisible, ou l'onglet Browser suit l'agent en direct (bannière "Follow" sinon).
 
 ### 8. Intégrations MCP & Compétences (Skills)
 
