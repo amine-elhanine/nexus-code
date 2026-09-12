@@ -150,25 +150,29 @@ app.whenReady().then(async () => {
   ipcMain.handle("window:close", () => { mainWindow?.close(); });
   ipcMain.handle("window:isMaximized", () => mainWindow?.isMaximized() ?? false);
 
-  // Configure dedicated browser webview partition
-  const browserSession = session.fromPartition("persist:browser");
-  browserSession.setUserAgent(CHROME_UA);
-  browserSession.webRequest.onHeadersReceived((details, callback) => {
-    const responseHeaders = { ...details.responseHeaders };
-    delete responseHeaders["x-frame-options"];
-    delete responseHeaders["X-Frame-Options"];
-    if (responseHeaders["content-security-policy"]) {
-      responseHeaders["content-security-policy"] = responseHeaders["content-security-policy"].map((csp) =>
-        csp.replace(/frame-ancestors[^;]+;?/gi, "")
-      );
-    }
-    if (responseHeaders["Content-Security-Policy"]) {
-      responseHeaders["Content-Security-Policy"] = responseHeaders["Content-Security-Policy"].map((csp) =>
-        csp.replace(/frame-ancestors[^;]+;?/gi, "")
-      );
-    }
-    callback({ responseHeaders });
-  });
+  // Two fully separate browser sessions — Home and Code share nothing
+  // (cookies, storage, cache, logins). Each mode's visible tabs and the
+  // agent's hidden webview for that mode all live in the same partition.
+  for (const partition of ["persist:browser-home", "persist:browser-code"]) {
+    const browserSession = session.fromPartition(partition);
+    browserSession.setUserAgent(CHROME_UA);
+    browserSession.webRequest.onHeadersReceived((details, callback) => {
+      const responseHeaders = { ...details.responseHeaders };
+      delete responseHeaders["x-frame-options"];
+      delete responseHeaders["X-Frame-Options"];
+      if (responseHeaders["content-security-policy"]) {
+        responseHeaders["content-security-policy"] = responseHeaders["content-security-policy"].map((csp) =>
+          csp.replace(/frame-ancestors[^;]+;?/gi, "")
+        );
+      }
+      if (responseHeaders["Content-Security-Policy"]) {
+        responseHeaders["Content-Security-Policy"] = responseHeaders["Content-Security-Policy"].map((csp) =>
+          csp.replace(/frame-ancestors[^;]+;?/gi, "")
+        );
+      }
+      callback({ responseHeaders });
+    });
+  }
 
   protocol.handle("nexus-attachment", async (request) => {
     try {

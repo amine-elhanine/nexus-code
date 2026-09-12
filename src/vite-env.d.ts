@@ -108,10 +108,10 @@ export interface NexusApi {
   // Agent browser (headless toggle + activity from the agent's window)
   getBrowserHeadless: () => Promise<boolean>;
   setBrowserHeadless: (value: boolean) => Promise<boolean>;
-  onBrowserAgentActivity: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean }) => void) => () => void;
-  // Agent browser bridge: main asks the hidden in-app webview to act.
+  onBrowserAgentActivity: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean; sessionId?: string }) => void) => () => void;
+  // Agent browser bridge: main asks the hidden in-app webviews to act.
   onAgentBrowserRequest: (
-    handler: (request: { id: string; kind: string; url?: string; js?: string; keyCode?: string }) => Promise<unknown>
+    handler: (request: { id: string; scope?: string; kind: string; url?: string; js?: string; keyCode?: string }) => Promise<unknown>
   ) => () => void;
 
   // Interactive Terminal

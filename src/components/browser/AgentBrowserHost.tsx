@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from "react";
 import { CHROME_DESKTOP_UA } from "./IntegratedBrowserView.js";
 
-type BridgeRequest = { id: string; kind: string; url?: string; js?: string; keyCode?: string };
+type BridgeRequest = { id: string; scope?: string; kind: string; url?: string; js?: string; keyCode?: string };
 type BridgeReply = { ok: boolean; url?: string; title?: string; value?: unknown; dataUrl?: string; width?: number; height?: number; error?: string };
 
 // Minimal webview surface this host needs (full API lives on the real
@@ -22,11 +22,14 @@ type AgentWebview = {
 const SETTLE_MS = 600;
 
 // Always-mounted, offscreen-positioned (never display:none — backgrounded
-// webviews throttle timers/loads) webview that executes the agent's browsing
-// ops. Same persist:browser session as the visible Browser tab, so the agent
-// and the user share cookies, localhost access, and login state.
+// webviews throttle timers/loads) twin webviews that execute the agent's
+// browsing ops — one per browser, fully separate sessions:
+// persist:browser-home and persist:browser-code share NOTHING (cookies,
+// storage, cache, logins). Same partitions as the visible sidebar browsers,
+// so the agent and the user always meet in the same jar.
 export const AgentBrowserHost: React.FC = () => {
-  const ref = useRef<AgentWebview | null>(null);
+  const homeRef = useRef<AgentWebview | null>(null);
+  const codeRef = useRef<AgentWebview | null>(null);
 
   useEffect(() => {
     const api = (window.nexus || window.forgepilot) as unknown as {
@@ -61,7 +64,8 @@ export const AgentBrowserHost: React.FC = () => {
     const settle = () => new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
 
     return api.onAgentBrowserRequest(async (req): Promise<BridgeReply> => {
-      const wv = ref.current;
+      const scope = req.scope === "home" ? "home" : "code";
+      const wv = (scope === "home" ? homeRef : codeRef).current;
       if (!wv) return { ok: false, error: "Agent webview is not mounted yet." };
       try {
         switch (req.kind) {
@@ -121,10 +125,17 @@ export const AgentBrowserHost: React.FC = () => {
   return (
     <div className="agent-webview-host" aria-hidden="true">
       <webview
-        ref={ref as never}
+        ref={homeRef as never}
         src="about:blank"
         useragent={CHROME_DESKTOP_UA}
-        partition="persist:browser"
+        partition="persist:browser-home"
+        webpreferences="contextIsolation=yes"
+      />
+      <webview
+        ref={codeRef as never}
+        src="about:blank"
+        useragent={CHROME_DESKTOP_UA}
+        partition="persist:browser-code"
         webpreferences="contextIsolation=yes"
       />
     </div>
