@@ -515,7 +515,7 @@ function App() {
 
         {showContext ? (
           area === "code" ? (
-          <aside className="context-pane" style={{ width: contextWidth }}>
+          <aside key="code-context" className="context-pane" style={{ width: contextWidth }}>
             <div className="context-resize" onPointerDown={startContextResize} title="Drag to resize the sidebar" />
             <div className="context-head">
               <div>
@@ -627,6 +627,9 @@ function App() {
             </div>
             <div className={`context-tab-panel${codeSideTab === "browser" ? "" : " hidden"}`}>
               <SidebarBrowser
+                key="code-browser"
+                sessionId={activeSession?.id}
+                browserScope="code"
                 projectRoot={activeProject?.root}
                 onSendToAgent={(p) => {
                   setDraft(p);
@@ -652,7 +655,7 @@ function App() {
             </div>
           </aside>
           ) : (
-          <aside className="context-pane" style={{ width: contextWidth }}>
+          <aside key="home-context" className="context-pane" style={{ width: contextWidth }}>
             <div className="context-resize" onPointerDown={startContextResize} title="Drag to resize the sidebar" />
             <div className="context-head">
               <div>
@@ -790,9 +793,9 @@ function App() {
             </div>
             </div>
             )}
-            {homeSideTab === "browser" && (
-              <SidebarBrowser onAgentNavigate={() => setHomeSideTab("browser")} />
-            )}
+            <div className={`context-tab-panel${homeSideTab === "browser" ? "" : " hidden"}`}>
+              <SidebarBrowser key="home-browser" sessionId={activeSession?.id} browserScope="home" onAgentNavigate={() => setHomeSideTab("browser")} />
+            </div>
           </aside>
           )
         ) : (

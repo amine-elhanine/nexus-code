@@ -1639,6 +1639,21 @@ hidden panels just don't display. */
 .side-browser-view{flex:1;min-height:0;display:flex}
 .side-browser-view .browser-iframe{flex:1;width:100%;height:100%;border:0}
 .side-browser .browser-agent-banner{flex:none}
+/* Sidebar browser tab strip (agent tab pinned first) */
+.side-browser-tabs{display:flex;align-items:flex-end;gap:3px;padding:6px 6px 0;border-bottom:1px solid #1c2635;flex:none;overflow-x:auto;scrollbar-width:none}
+.side-tab{flex:1 0 auto;max-width:120px;display:flex;align-items:center;gap:5px;border:0;border-bottom:2px solid transparent;background:transparent;color:#7b8ea3;font-size:10px;font-weight:600;padding:5px 6px 6px;cursor:pointer;white-space:nowrap;overflow:hidden}
+.side-tab:hover{color:#dbe1ea}
+.side-tab.active{color:#dbe1ea;border-bottom-color:#3ee695}
+.side-tab.agent{color:#8f9bb0}
+.side-tab.active.agent{color:#3ee695}
+.side-tab>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side-tab>svg{flex:none}
+.side-tab-close{display:grid;place-items:center;width:15px;height:15px;flex:none;opacity:0;color:#778497;font-style:normal;border-radius:3px}
+.side-tab:hover .side-tab-close{opacity:1}
+.side-tab-close:hover{color:#f08b93;background:#342028}
+.side-tab-new{display:grid;place-items:center;width:22px;height:22px;flex:none;border:0;background:transparent;color:#7b8ea3;border-radius:4px;cursor:pointer}
+.side-tab-new:hover:not(:disabled){background:#141b26;color:#dbe1ea}
+.side-tab-new:disabled{opacity:.3;cursor:default}
 /* Hidden agent webview: offscreen with real size (never display:none — a
 backgrounded webview throttles loads/timers). Same session as visible tabs. */
 .agent-webview-host{position:fixed;left:-10000px;top:0;width:1280px;height:800px;pointer-events:none;overflow:hidden}

@@ -967,8 +967,8 @@ export async function runProjectAgent(options: {
   const browserTools = wantsBrowser || isGeneral
     ? createBrowserTools(projectRoot, {
         agentBrowser: {
-          inspect: (url) => agentBrowserService.inspect(url),
-          act: (input) => agentBrowserService.act(input, projectRoot),
+          inspect: (url) => agentBrowserService.inspect(url, { sessionId, scope: isGeneral ? "home" : "code" }),
+          act: (input) => agentBrowserService.act(input, projectRoot, { sessionId, scope: isGeneral ? "home" : "code" }),
         },
       })
     : [];
@@ -981,7 +981,7 @@ export async function runProjectAgent(options: {
     // (Watching follows it live, otherwise the follow banner shows it).
     // Fire-and-forget: results come from the search API, never the mirror.
     onSearch: (_query, url) => {
-      void agentBrowserService.visit(url).catch(() => {});
+      void agentBrowserService.visit(url, { sessionId, scope: isGeneral ? "home" : "code" }).catch(() => {});
     },
   });
   const usage = new UsageAccumulator();

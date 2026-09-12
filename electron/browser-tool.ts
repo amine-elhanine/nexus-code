@@ -104,6 +104,15 @@ export type AgentBrowser = {
   act: (input: BrowserActInput) => Promise<string>;
 };
 
+// Origin tagging so visible agent tabs only mirror their OWN session's run.
+// Parallel sessions share the hidden actor webviews (one per mode), but each
+// sidebar filters activity by sessionId and ignores foreign runs.
+export type BrowserCallMeta = {
+  sessionId?: string;
+  /** Which browser the run belongs to: home runs use the home partition. */
+  scope?: "home" | "code";
+};
+
 export function createBrowserTools(_projectRoot?: string, opts?: { renderedInspect?: RenderedInspect; agentBrowser?: AgentBrowser }) {
   const renderedInspect = opts?.renderedInspect ?? opts?.agentBrowser?.inspect;
   // fetch follows redirects transparently, which would let a loopback URL

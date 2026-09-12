@@ -2,15 +2,18 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getAppSettings, saveAppSettings } from "./store.js";
-import type { BrowserActInput } from "./browser-tool.js";
+import type { BrowserActInput, BrowserCallMeta } from "./browser-tool.js";
 
-export type AgentBrowserActivity = { url: string; timestamp: string; autoFollow: boolean };
+export type AgentBrowserActivity = { url: string; timestamp: string; autoFollow: boolean; sessionId?: string; scope: "home" | "code" };
 
-// Requests the renderer part executes on the hidden agent webview (see
-// AgentBrowserHost). The agent never touches a window of its own anymore:
-// everything it "sees" is the same persist:browser session as the built-in
-// Browser tab, which can mirror navigations live (Watching) or stay put
-// while the agent works invisibly (Headless).
+// Requests the renderer part executes on the hidden agent webviews (see
+// AgentBrowserHost): one webview per browser — persist:browser-home and
+// persist:browser-code are fully separate sessions (cookies, storage, cache).
+// The agent never touches a window of its own: everything it "sees" is the
+// matching built-in Browser tab's session, which can mirror navigations live
+// (Watching) or stay put while the agent works invisibly (Headless).
+export type BrowserScope = "home" | "code";
+
 export type AgentBrowserOp =
   | { kind: "load"; url: string }
   | { kind: "eval"; js: string }
@@ -23,14 +26,14 @@ export type AgentBrowserReply =
   | { ok: true; url?: string; title?: string; value?: unknown; dataUrl?: string; width?: number; height?: number }
   | { ok: false; error: string };
 
-export type AgentBrowserRequest = { id: string } & AgentBrowserOp;
+export type AgentBrowserRequest = { id: string; scope: BrowserScope } & AgentBrowserOp;
 export type AgentBrowserResponse = { id: string; reply: AgentBrowserReply };
 
 type PendingEntry = { resolve: (reply: AgentBrowserReply) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> };
 
 // Client side of the main→renderer browser bridge. Serializes concurrent
-// callers (parallel sessions share one hidden webview) and times out when the
-// renderer is gone instead of hanging tool calls forever.
+// callers (parallel sessions share the two hidden webviews) and times out
+// when the renderer is gone instead of hanging tool calls forever.
 class AgentBrowserService {
   private sender: ((msg: AgentBrowserRequest) => void) | null = null;
   private pending = new Map<string, PendingEntry>();
@@ -79,8 +82,8 @@ class AgentBrowserService {
   }
 
   // One in-flight bridge call at a time; concurrent sessions queue instead of
-  // interleaving load/eval sequences on the shared webview.
-  private request(op: AgentBrowserOp, timeoutMs = 30000): Promise<AgentBrowserReply> {
+  // interleaving load/eval sequences on the shared webviews.
+  private request(op: AgentBrowserOp, scope: BrowserScope, timeoutMs = 30000): Promise<AgentBrowserReply> {
     const run = async (): Promise<AgentBrowserReply> => {
       const sender = this.sender;
       if (!sender) throw new Error("Agent browser is not available (app window not ready yet).");
@@ -102,7 +105,7 @@ class AgentBrowserService {
         };
         this.pending.set(id, entry);
         try {
-          sender({ id, ...op });
+          sender({ id, scope, ...op });
         } catch (error) {
           this.pending.delete(id);
           clearTimeout(timer);
@@ -118,8 +121,8 @@ class AgentBrowserService {
     return chained;
   }
 
-  private async evalJs<T>(js: string): Promise<T> {
-    const reply = await this.request({ kind: "eval", js });
+  private async evalJs<T>(js: string, scope: BrowserScope): Promise<T> {
+    const reply = await this.request({ kind: "eval", js }, scope);
     if (!reply.ok) throw new Error(reply.error || "Page script failed.");
     return reply.value as T;
   }
@@ -127,12 +130,17 @@ class AgentBrowserService {
   // Reports activity for the built-in tab follow banner. autoFollow navigates
   // the visible tab along — only ever true for fresh navigations, never for
   // clicks/fills (re-navigating would wipe the agent's in-page state).
-  private report(url: string | null, autoFollow: boolean) {
+  // sessionId tags the originating run and scope tags the browser, so each
+  // sidebar only ever mirrors its own mode + chat — never another's.
+  private report(url: string | null, autoFollow: boolean, sessionId: string | undefined, scope: BrowserScope) {
     if (!url) return;
-    this.lastUrl = url;
     try {
-      this.onActivity?.({ url, timestamp: new Date().toISOString(), autoFollow });
+      this.onActivity?.({ url, timestamp: new Date().toISOString(), autoFollow, sessionId, scope });
     } catch { /* listener is best-effort */ }
+  }
+
+  private scopeOf(meta?: BrowserCallMeta): BrowserScope {
+    return meta?.scope || "code";
   }
 
   private normalizeUrl(raw: string): string {
@@ -212,10 +220,11 @@ class AgentBrowserService {
     return `${head}\n${rows.join("\n")}${more}\nRefs expire after navigation or DOM changes — snapshot again if a ref goes missing.`;
   }
 
-  private async snapshotNow(): Promise<string> {
+  private async snapshotNow(scope: BrowserScope): Promise<string> {
     const snap = AgentBrowserService.unwrap(
       await this.evalJs<{ url: string; title: string; count: number; elements: Array<{ ref: string; tag: string; type?: string; role?: string; text: string; href?: string }> }>(
-        AgentBrowserService.pageTry(`return (${AgentBrowserService.SNAPSHOT_SCRIPT});`)
+        AgentBrowserService.pageTry(`return (${AgentBrowserService.SNAPSHOT_SCRIPT});`),
+        scope
       ),
       "snapshot"
     );
@@ -225,24 +234,28 @@ class AgentBrowserService {
   // Lightweight visit: loads the URL in the agent webview (activity + follow
   // banner included) without extracting a report. Used for visibility mirrors
   // where the data comes from elsewhere (e.g. web_search results).
-  async visit(rawUrl: string): Promise<string> {
+  async visit(rawUrl: string, meta?: BrowserCallMeta): Promise<string> {
     await this.ensureSettings();
+    const scope = this.scopeOf(meta);
     const targetUrl = this.normalizeUrl(rawUrl);
-    const loaded = await this.request({ kind: "load", url: targetUrl }, 25000);
+    const loaded = await this.request({ kind: "load", url: targetUrl }, scope, 25000);
     if (!loaded.ok) throw new Error(loaded.error || `Could not load ${targetUrl}.`);
-    this.report(loaded.url || targetUrl, !this.headless);
-    return loaded.url || targetUrl;
+    this.lastUrl = loaded.url || targetUrl;
+    this.report(this.lastUrl, !this.headless, meta?.sessionId, scope);
+    return this.lastUrl;
   }
 
   // Rendered page inspection with JavaScript executed (dev-server hydration
   // included — the renderer settles before replying).
-  async inspect(rawUrl: string): Promise<string> {
+  async inspect(rawUrl: string, meta?: BrowserCallMeta): Promise<string> {
     await this.ensureSettings();
+    const scope = this.scopeOf(meta);
     const targetUrl = this.normalizeUrl(rawUrl);
     const startTime = Date.now();
-    const loaded = await this.request({ kind: "load", url: targetUrl }, 25000);
+    const loaded = await this.request({ kind: "load", url: targetUrl }, scope, 25000);
     if (!loaded.ok) throw new Error(loaded.error || `Could not load ${targetUrl}.`);
-    this.report(loaded.url || targetUrl, !this.headless);
+    this.lastUrl = loaded.url || targetUrl;
+    this.report(this.lastUrl, !this.headless, meta?.sessionId, scope);
 
     const data = AgentBrowserService.unwrap(
       await this.evalJs<{ title: string; headings: string[]; buttons: string[]; links: string[]; inputs: string[]; text: string }>(
@@ -254,7 +267,8 @@ class AgentBrowserService {
       var links=Array.prototype.slice.call(document.querySelectorAll("a[href]")).map(function(a){var t=textOf(a);var href=a.getAttribute("href")||"";return t&&href.indexOf("javascript:")!==0?t+" -> "+href:"";}).filter(Boolean).slice(0,15);
       var inputs=Array.prototype.slice.call(document.querySelectorAll("input")).map(function(el){return 'input[type="'+(el.getAttribute("type")||"text")+'"] name="'+(el.getAttribute("name")||"")+'" placeholder="'+(el.getAttribute("placeholder")||"")+'"';}).slice(0,10);
       var text=(document.body?document.body.innerText:"").split("\\n").map(function(l){return l.trim();}).filter(Boolean).join("\\n").slice(0,3000);
-      return{title:title,headings:headings,buttons:buttons,links:links,inputs:inputs,text:text};})();`)
+      return{title:title,headings:headings,buttons:buttons,links:links,inputs:inputs,text:text};})();`),
+        scope
       ),
       "inspect"
     );
@@ -283,7 +297,7 @@ class AgentBrowserService {
   // browser_act tool converts them to model-readable strings (never throws).
   // projectRoot scopes screenshot output (.nexus/browser/); without it shots
   // fall back to the OS temp dir.
-  async act(input: BrowserActInput, projectRoot?: string): Promise<string> {
+  async act(input: BrowserActInput, projectRoot?: string, meta?: BrowserCallMeta): Promise<string> {
     await this.ensureSettings();
     const action = input?.action;
     if (!action) throw new Error("No action given. Use snapshot, click, fill, type, press, scroll, navigate, back, reload, text, or screenshot.");
@@ -293,26 +307,30 @@ class AgentBrowserService {
     if ((action === "fill" || action === "type") && input.value == null) throw new Error(`${action} needs a value.`);
     if (action === "press" && !(input.key || "").trim()) throw new Error("press needs a key (Enter, Escape, Tab, ArrowUp, …).");
     if (action === "navigate" && !input.url) throw new Error("navigate needs a url.");
+    const scope = this.scopeOf(meta);
 
     switch (action) {
       case "snapshot": {
-        return this.snapshotNow();
+        return this.snapshotNow(scope);
       }
       case "navigate": {
         const targetUrl = this.normalizeUrl(input.url || "");
-        const loaded = await this.request({ kind: "load", url: targetUrl }, 25000);
+        const loaded = await this.request({ kind: "load", url: targetUrl }, scope, 25000);
         if (!loaded.ok) throw new Error(loaded.error || `Could not load ${targetUrl}.`);
-        this.report(loaded.url || targetUrl, !this.headless);
-        return `Navigated to ${targetUrl}.\n${await this.snapshotNow()}`;
+        this.lastUrl = loaded.url || targetUrl;
+        this.report(this.lastUrl, !this.headless, meta?.sessionId, scope);
+        return `Navigated to ${targetUrl}.\n${await this.snapshotNow(scope)}`;
       }
       case "click": {
         const res = AgentBrowserService.unwrap(
           await this.evalJs<{ ok: boolean; error?: string; tag: string; text: string }>(
             `${AgentBrowserService.RESOLVE_FN}\n${AgentBrowserService.pageTry(`var el=__resolve(${JSON.stringify(input.target)});try{el.scrollIntoView({block:'center'});}catch(e){}el.click();return{ok:true,tag:el.tagName.toLowerCase(),text:(el.innerText||'').trim().slice(0,80)};`)}`
+            ,
+            scope
           ),
           "click"
         );
-        this.report(this.lastUrl, false);
+        this.report(this.lastUrl, false, meta?.sessionId, scope);
         return `Clicked <${res.tag}> "${res.text}". Snapshot again to see what changed.`;
       }
       case "fill": {
@@ -327,11 +345,12 @@ class AgentBrowserService {
                 `var proto=tag==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;var desc=Object.getOwnPropertyDescriptor(proto,'value');` +
                 `el.focus();if(desc&&desc.set)desc.set.call(el,value);else el.value=value;` +
                 `el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return{ok:true,tag:tag.toLowerCase()};`
-            )}`
+            )}`,
+            scope
           ),
           "fill"
         );
-        this.report(this.lastUrl, false);
+        this.report(this.lastUrl, false, meta?.sessionId, scope);
         if (res.selected != null) return `Selected "${res.selected}".`;
         if (res.checked != null) return `Checkbox is now ${res.checked ? "checked" : "unchecked"}.`;
         return `Filled <${res.tag || "field"}>.`;
@@ -344,11 +363,12 @@ class AgentBrowserService {
                 `try{ok=document.execCommand('insertText',false,${JSON.stringify(input.value)});}catch(e){ok=false;}` +
                 `if(!ok&&'value' in el){el.value=(el.value||'')+${JSON.stringify(input.value)};el.dispatchEvent(new Event('input',{bubbles:true}));}` +
                 `return{ok:true};`
-            )}`
+            )}`,
+            scope
           ),
           "type"
         );
-        this.report(this.lastUrl, false);
+        this.report(this.lastUrl, false, meta?.sessionId, scope);
         return "Typed into the field (appended).";
       }
       case "press": {
@@ -360,9 +380,9 @@ class AgentBrowserService {
           pageup: "PageUp", pagedown: "PageDown",
         };
         const keyCode = alias[key.toLowerCase()] || (/^f\d{1,2}$/i.test(key) ? key.toUpperCase() : key);
-        const pressed = await this.request({ kind: "press", keyCode });
+        const pressed = await this.request({ kind: "press", keyCode }, scope);
         if (!pressed.ok) throw new Error(pressed.error || "Key press failed.");
-        this.report(this.lastUrl, false);
+        this.report(this.lastUrl, false, meta?.sessionId, scope);
         return `Pressed ${keyCode}. Snapshot again to see what changed.`;
       }
       case "scroll": {
@@ -370,7 +390,8 @@ class AgentBrowserService {
         if (input.target) {
           AgentBrowserService.unwrap(
             await this.evalJs<{ ok: boolean; error?: string }>(
-              `${AgentBrowserService.RESOLVE_FN}\n${AgentBrowserService.pageTry(`var el=__resolve(${JSON.stringify(input.target)});try{el.scrollIntoView({block:'center'});}catch(e){}return{ok:true};`)}`
+              `${AgentBrowserService.RESOLVE_FN}\n${AgentBrowserService.pageTry(`var el=__resolve(${JSON.stringify(input.target)});try{el.scrollIntoView({block:'center'});}catch(e){}return{ok:true};`)}`,
+              scope
             ),
             "scroll"
           );
@@ -380,33 +401,35 @@ class AgentBrowserService {
         await this.evalJs<{ ok: boolean; y: number }>(
           AgentBrowserService.pageTry(
             `(function(){if(${JSON.stringify(dy)}==='top'){window.scrollTo(0,0);}else if(${JSON.stringify(dy)}==='bottom'){window.scrollTo(0,document.body?document.body.scrollHeight:0);}else{window.scrollBy(0,${typeof dy === "number" ? dy : 600});}return{ok:true,y:window.scrollY};})()`
-          )
+          ),
+          scope
         );
         return `Scrolled ${direction}.`;
       }
       case "back": {
-        const went = await this.request({ kind: "back" }, 15000);
+        const went = await this.request({ kind: "back" }, scope, 15000);
         if (!went.ok) throw new Error(went.error || "Could not go back.");
-        this.report(this.lastUrl, false);
+        this.report(this.lastUrl, false, meta?.sessionId, scope);
         return "Went back. Snapshot again to see the page.";
       }
       case "reload": {
-        const reloaded = await this.request({ kind: "reload" }, 20000);
+        const reloaded = await this.request({ kind: "reload" }, scope, 20000);
         if (!reloaded.ok) throw new Error(reloaded.error || "Could not reload.");
-        this.report(this.lastUrl, false);
+        this.report(this.lastUrl, false, meta?.sessionId, scope);
         return "Reloaded. Snapshot again to see the page.";
       }
       case "text": {
         const res = AgentBrowserService.unwrap(
           await this.evalJs<{ text: string }>(
-            AgentBrowserService.pageTry(`return{text:(document.body?document.body.innerText:'').slice(0,4000)};`)
+            AgentBrowserService.pageTry(`return{text:(document.body?document.body.innerText:'').slice(0,4000)};`),
+            scope
           ),
           "text"
         );
         return `Rendered text of ${this.lastUrl || "the page"}:\n----------------------------------------\n${res.text}\n----------------------------------------`;
       }
       case "screenshot": {
-        const shot = await this.request({ kind: "shot" }, 25000);
+        const shot = await this.request({ kind: "shot" }, scope, 25000);
         if (!shot.ok) throw new Error(shot.error || "Screenshot failed.");
         if (!shot.dataUrl) throw new Error("Screenshot came back empty.");
         const base64 = shot.dataUrl.includes(",") ? shot.dataUrl.split(",")[1] : shot.dataUrl;
@@ -437,3 +460,6 @@ class AgentBrowserService {
 }
 
 export const agentBrowserService = new AgentBrowserService();
+
+
+

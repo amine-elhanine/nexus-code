@@ -88,8 +88,8 @@ const nexusApi = {
   // Agent browser (headless toggle + activity from the agent's window)
   getBrowserHeadless: () => invoke("browser:headless:get"),
   setBrowserHeadless: (value: boolean) => invoke("browser:headless:set", value),
-  onBrowserAgentActivity: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean }) => void) => {
-    const handler = (_event: IpcRendererEvent, payload: { url: string; timestamp: string; autoFollow?: boolean }) => listener(payload);
+  onBrowserAgentActivity: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean; sessionId?: string }) => void) => {
+    const handler = (_event: IpcRendererEvent, payload: { url: string; timestamp: string; autoFollow?: boolean; sessionId?: string }) => listener(payload);
     ipcRenderer.on("browser:agent-activity", handler);
     return () => ipcRenderer.removeListener("browser:agent-activity", handler);
   },
@@ -97,8 +97,8 @@ const nexusApi = {
   // Agent browser bridge: the main process asks the hidden in-app webview to
   // load pages / run scripts / press keys / screenshot, and awaits the reply.
   // The agent never owns a window — it drives the built-in browser session.
-  onAgentBrowserRequest: (handler: (request: { id: string; kind: string; url?: string; js?: string; keyCode?: string }) => Promise<unknown>) => {
-    const listener = (_event: IpcRendererEvent, request: { id: string; kind: string; url?: string; js?: string; keyCode?: string }) => {
+  onAgentBrowserRequest: (handler: (request: { id: string; scope?: string; kind: string; url?: string; js?: string; keyCode?: string }) => Promise<unknown>) => {
+    const listener = (_event: IpcRendererEvent, request: { id: string; scope?: string; kind: string; url?: string; js?: string; keyCode?: string }) => {
       void Promise.resolve()
         .then(() => handler(request))
         .then(
