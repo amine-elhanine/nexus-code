@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import {
-  Brain, Check, ChevronDown, ChevronRight, Code2, Coins, Download, FileCode2, FileText,
+  Brain, BookOpen, Check, ChevronDown, ChevronRight, Code2, Coins, Download, FileCode2, FileText,
   FolderOpen, GitBranch, Globe, Home, Info, KeyRound, Loader2, Menu,
   MessageSquare, PanelRight, Plus, RefreshCw,
   Server, Settings2, Sparkles, Terminal, Trash2
@@ -24,6 +24,8 @@ import { XTermView } from "./components/terminal/XTermView.js";
 import { AgentBrowserHost } from "./components/browser/AgentBrowserHost.js";
 import { AgentView } from "./views/AgentView.js";
 import { HomeView } from "./views/HomeView.js";
+import { NotebookView } from "./views/NotebookView.js";
+import { useNotebookController } from "./state/useNotebookController.js";
 import { DiffView } from "./views/DiffView.js";
 import { MemoryView, ContextRow, MemoryRow } from "./views/MemoryView.js";
 import { useAppController } from "./state/useAppController.js";
@@ -134,6 +136,8 @@ function App() {
     refreshHomeSessionFiles,
     enterHome,
     enterCode,
+    enterNotebook,
+    setArea,
     createHomeSession,
     activateProject,
     deleteProjectById,
@@ -161,7 +165,12 @@ function App() {
   } = useAppController();
 
   const api = window.nexus || window.forgepilot;
-  const headerTitle = activeSession?.title || "No session selected";
+  const notebook = useNotebookController(area === "notebook");
+  const headerTitle = area === "notebook"
+    ? (!notebook.activeNotebook
+      ? "Notebook sessions"
+      : (notebook.activeChat ? `${notebook.activeNotebook.name} · ${notebook.activeChat.title}` : notebook.activeNotebook.name))
+    : (activeSession?.title || "No session selected");
   const currentSessionUsage = getSessionUsage(activeSession);
   const [homePreviewPath, setHomePreviewPath] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -227,6 +236,9 @@ function App() {
             </button>
             <button className={area === "code" ? "active" : ""} onClick={() => void enterCode()} title="Coding agent">
               <Code2 size={13} /> Code
+            </button>
+            <button className={area === "notebook" ? "active" : ""} onClick={() => enterNotebook()} title="NotebookLM-style grounded Q&A over your documents">
+              <BookOpen size={13} /> Notebook
             </button>
           </div>
           <div className="top-separator" />
@@ -413,7 +425,103 @@ function App() {
           )}
 
           <div className="workspace-content">
-            {area === "home" ? (
+            {area === "notebook" ? (
+              <section className="center-pane">
+                <NotebookView
+                  notebooks={notebook.notebooks}
+                  activeNotebook={notebook.activeNotebook}
+                  setActiveNotebook={(nb) => notebook.enterNotebook(nb)}
+                  sources={notebook.sources}
+                  chats={notebook.chats}
+                  activeChat={notebook.activeChat}
+                  setActiveChat={(chat) => notebook.setActiveChat(chat)}
+                  stats={notebook.stats}
+                  draft={notebook.draft}
+                  setDraft={notebook.setDraft}
+                  asking={notebook.asking}
+                  notice={notebook.notice}
+                  excludedIds={notebook.excludedIds}
+                  scopedIds={notebook.scopedIds}
+                  streaming={notebook.activeChat ? notebook.streamByChat[notebook.activeChat.id] || "" : ""}
+                  workingSteps={notebook.activeChat ? notebook.stepsByChat[notebook.activeChat.id] || [] : []}
+                  passage={notebook.passage}
+                  settings={notebook.settings}
+                  notes={notebook.notes}
+                  onCreateNotebook={(name) => void notebook.createNotebook(name)}
+                  onDeleteNotebook={(id) => void notebook.removeNotebook(id)}
+                  onCreateChat={() => void notebook.createChat()}
+                  onDeleteChat={(id) => void notebook.removeChat(id)}
+                  onPickFiles={() => void notebook.uploadFromPicker()}
+                  onBrowserFiles={(files) => void notebook.uploadBrowserFiles(files)}
+                  onRefresh={() => {
+                    if (notebook.activeNotebook) void notebook.refreshNotebookDetail(notebook.activeNotebook.id);
+                  }}
+                  onToggleScope={(id) => notebook.toggleScope(id)}
+                  onResetScope={() => notebook.resetScope()}
+                  onOpenPassage={(chunkId) => void notebook.openPassage(chunkId)}
+                  onClosePassage={() => notebook.closePassage()}
+                  onPassageAction={(action, passage) => {
+                    const citation = {
+                      index: 1,
+                      sourceId: passage.sourceId,
+                      sourceName: passage.sourceName,
+                      chunkId: passage.chunkId,
+                      heading: passage.headingPath.join(" › ") || passage.sourceName,
+                      excerpt: passage.text.slice(0, 400),
+                      snippet: passage.text.replace(/\s+/g, " ").slice(0, 200),
+                      score: 1,
+                    };
+                    if (action === "save") {
+                      void notebook.saveNote({ title: passage.headingPath.at(-1) || passage.sourceName, content: passage.text, citations: [citation] });
+                      return;
+                    }
+                    const prompts = {
+                      explain: "Explain this passage clearly, define the important terms, and stay grounded in my notebook sources.",
+                      simplify: "Rewrite this passage in simpler language without losing important meaning.",
+                      compare: "Compare this passage with the other relevant sources in my notebook. Point out agreements, differences, and uncertainty.",
+                      quiz: "Create a short quiz about this passage. Ask me one question at a time and wait for my answer.",
+                    } as const;
+                    notebook.closePassage();
+                    void notebook.ask(selectedProviderId, selectedModel, 8, `${prompts[action]}\n\nPassage from ${passage.sourceName} (${passage.headingPath.join(" › ")}):\n${passage.text}`);
+                  }}
+                  onSaveInstructions={(value) => void notebook.saveInstructions(value)}
+                  onSaveNote={(note) => void notebook.saveNote(note)}
+                  onDeleteNote={(id) => void notebook.removeNote(id)}
+                  onRename={(name) => void notebook.renameCurrentNotebook(name)}
+                  onReindexAll={() => void notebook.reindexAll()}
+                  onDeleteSource={async (sourceId) => {
+                    if (!notebook.activeNotebook) return;
+                    try {
+                      await (api as unknown as { notebookDeleteSource: (a: string, b: string) => Promise<unknown> }).notebookDeleteSource(notebook.activeNotebook.id, sourceId);
+                      await notebook.refreshNotebookDetail(notebook.activeNotebook.id);
+                    } catch (error) {
+                      notebook.setNotice(error instanceof Error ? error.message : "Delete failed.");
+                    }
+                  }}
+                  onReindexSource={async (sourceId) => {
+                    if (!notebook.activeNotebook) return;
+                    try {
+                      notebook.setNotice("Re-indexing source…");
+                      await (api as unknown as { notebookReindexSource: (a: string, b: string) => Promise<unknown> }).notebookReindexSource(notebook.activeNotebook.id, sourceId);
+                      await notebook.refreshNotebookDetail(notebook.activeNotebook.id);
+                      notebook.setNotice("Source re-indexed.");
+                    } catch (error) {
+                      notebook.setNotice(error instanceof Error ? error.message : "Re-index failed.");
+                    }
+                  }}
+                  onAsk={() => void notebook.ask(selectedProviderId, selectedModel)}
+                  onStop={() => {}}
+                  onExitToSessions={() => notebook.exitToSessions()}
+                  selectedProviderId={selectedProviderId}
+                  selectedModel={selectedModel}
+                  providers={providers}
+                  definitions={providerDefinitions}
+                  switchModel={(providerId, model) => void switchModel(providerId, model)}
+                  onOpenProviders={() => setShowProviders(true)}
+                  hasProvider={providers.length > 0}
+                />
+              </section>
+            ) : area === "home" ? (
               <section className="center-pane">
               <HomeView
                 messages={currentMessages}
@@ -513,7 +621,7 @@ function App() {
           </div>
         </main>
 
-        {showContext ? (
+        {showContext && area !== "notebook" ? (
           area === "code" ? (
           <aside key="code-context" className="context-pane" style={{ width: contextWidth }}>
             <div className="context-resize" onPointerDown={startContextResize} title="Drag to resize the sidebar" />
@@ -655,6 +763,8 @@ function App() {
             </div>
           </aside>
           ) : (
+            // Notebook owns its own 3-pane layout (sources / chat / artifacts)
+            // inside NotebookView, so the app-level context pane stays hidden.
           <aside key="home-context" className="context-pane" style={{ width: contextWidth }}>
             <div className="context-resize" onPointerDown={startContextResize} title="Drag to resize the sidebar" />
             <div className="context-head">
@@ -798,11 +908,11 @@ function App() {
             </div>
           </aside>
           )
-        ) : (
+        ) : area !== "notebook" ? (
           <button className="context-restore" onClick={() => setShowContext(true)} title="Open context panel">
             <PanelRight size={15} />
           </button>
-        )}
+        ) : null}
       </div>
 
       {showCreateProject && (

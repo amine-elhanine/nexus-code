@@ -254,3 +254,6 @@
   align-items: center;
   gap: 8px;
 }
+.passage-actions{display:flex;flex-wrap:wrap;gap:6px;padding-top:2px}
+.passage-actions button{display:flex;align-items:center;gap:5px;border:1px solid #28374a;background:#131b26;color:#aeb9c8;border-radius:5px;padding:7px 9px;font-size:10px}
+.passage-actions button:hover{border-color:#34d399;background:#0f241a;color:#a7f3d0}

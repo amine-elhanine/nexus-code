@@ -11,10 +11,10 @@ import { runProjectAgent, RunCancelledError, isContinueRequest, getLastRunCheckp
 import { PROVIDERS, fetchRemoteModels } from "./providers.js";
 import {
   appendSessionMessages, createSession, deleteProject, deleteSession, ensureHomeProject, getProject, getSession,
-  getSkillsConfig, listMcpServers, listProjects, listProviders, listSessions,
-  removeMcpServer, removeProvider, saveSkillsConfig, updateProjectMemory,
-  updateSession, upsertMcpServer, upsertProject, upsertProvider, type McpServerConfig,
-  type ProviderConfig
+  getSkillsConfig, listEmbeddingProviders, listMcpServers, listProjects, listProviders, listSessions,
+  removeEmbeddingProvider, removeMcpServer, removeProvider, saveSkillsConfig, updateProjectMemory,
+  updateSession, upsertEmbeddingProvider, upsertMcpServer, upsertProject, upsertProvider, getAppSettings, saveAppSettings, getNotebookParserConfig, saveNotebookParserConfig, type EmbeddingProviderConfig,
+  type McpServerConfig, type ProviderConfig
 } from "./store.js";
 import { HOME_PROJECT_ID, cleanupHomeGeneratorScripts, downloadHomeFile, ensureHomeDir, listHomeFiles, listHomeSessionFiles, openHomeFolder, readHomeFile } from "./home-service.js";
 import { testMcpServer } from "./mcp-service.js";
@@ -34,6 +34,15 @@ import { discoverCustomCommands } from "./custom-commands-service.js";
 import { daemonService } from "./daemon-service.js";
 import { agentBrowserService, type AgentBrowserResponse } from "./browser-service.js";
 import { updaterService, type UpdaterState } from "./updater-service.js";
+import {
+  appendNotebookMessage, createNotebook, createNotebookChat, deleteNotebook, deleteNotebookChat, deleteNotebookSource,
+  deleteNotebookNote, getNotebookSettings, importSourceBuffer, listNotebookChats, listNotebookNotes, listNotebookSources, listNotebooks,
+  notebookIndexStats, notebookSessionDir, pickAndImportSourceFiles, readSessionDigest, recentChatHistory, renameNotebook, saveNotebookNote, saveNotebookSettings,
+} from "./notebook-store.js";
+import { getNotebookEmbeddingConfig, saveNotebookEmbeddingConfig, testEmbeddingEndpoint, type EmbeddingEndpoint } from "./notebook-embeddings.js";
+import { answerNotebookQuestion, getChunkPassage, hybridRetrieve } from "./notebook-rag.js";
+import { enqueueIngest, recoverInterruptedJobs, reindexSessionFromLibrary, retrySource } from "./notebook-jobs.js";
+import { sessionOutline } from "./notebook-library.js";
 
 protocol.registerSchemesAsPrivileged([
   { scheme: "nexus-attachment", privileges: { standard: true, secure: true, supportFetchAPI: true } }
@@ -196,6 +205,14 @@ app.whenReady().then(async () => {
     await ensureHomeProject(HOME_PROJECT_ID, "Home", homeRoot);
   } catch { /* lazy fallback in home:get */ }
 
+  // Notebook recovery: files stuck mid-ingestion reset to `uploaded` and
+  // re-queue. Re-running converges by design (stable IDs + replace writes).
+  void recoverInterruptedJobs()
+    .then((requeued) => {
+      if (requeued) console.log(`[notebook] recovered ${requeued} interrupted ingestion job(s).`);
+    })
+    .catch(() => { /* best effort */ });
+
   ipcMain.handle("home:get", async () => {
     const homeRoot = await ensureHomeDir();
     const project = await ensureHomeProject(HOME_PROJECT_ID, "Home", homeRoot);
@@ -209,6 +226,117 @@ app.whenReady().then(async () => {
   ipcMain.handle("home:readFile", (_event, relativePath: string) => readHomeFile(relativePath));
   ipcMain.handle("home:download", (_event, relativePath: string) => downloadHomeFile(relativePath));
   ipcMain.handle("home:openFolder", () => openHomeFolder());
+
+  // Notebook (NotebookLM-style isolated RAG): each notebook owns its sources,
+  // vector index and conversations. Retrieval never crosses notebook boundaries.
+  ipcMain.handle("notebook:list", () => listNotebooks());
+  ipcMain.handle("notebook:create", (_event, name: string, description?: string) => createNotebook(name, description));
+  ipcMain.handle("notebook:rename", (_event, notebookId: string, name: string, description?: string) => renameNotebook(notebookId, name, description));
+  ipcMain.handle("notebook:delete", (_event, notebookId: string) => deleteNotebook(notebookId));
+  ipcMain.handle("notebook:stats", (_event, notebookId: string) => notebookIndexStats(notebookId));
+  ipcMain.handle("notebook:sources", (_event, notebookId: string) => listNotebookSources(notebookId));
+  ipcMain.handle("notebook:pickFiles", async (_event, notebookId: string) => {
+    const before = new Set((await listNotebookSources(notebookId)).map((s) => s.id));
+    const sources = await pickAndImportSourceFiles(notebookId);
+    // Upload returns immediately; background jobs do parse → chunk → index.
+    for (const source of sources) {
+      if (!before.has(source.id) && source.status === "uploaded") enqueueIngest(notebookId, source.id);
+    }
+    return sources;
+  });
+  ipcMain.handle("notebook:uploadContent", async (_event, notebookId: string, filename: string, content: string) => {
+    const record = await importSourceBuffer(notebookId, filename, Buffer.from(content, "utf8"));
+    enqueueIngest(notebookId, record.id);
+    return listNotebookSources(notebookId);
+  });
+  ipcMain.handle("notebook:uploadBase64", async (_event, notebookId: string, filename: string, base64: string) => {
+    const record = await importSourceBuffer(notebookId, filename, Buffer.from(base64, "base64"));
+    enqueueIngest(notebookId, record.id);
+    return listNotebookSources(notebookId);
+  });
+  ipcMain.handle("notebook:deleteSource", async (_event, notebookId: string, sourceId: string) => deleteNotebookSource(notebookId, sourceId));
+  ipcMain.handle("notebook:reindexSource", async (_event, notebookId: string, sourceId: string) => {
+    // Retry: wipe the file's derived data and re-enqueue from raw bytes.
+    await retrySource(notebookId, sourceId);
+    return { sources: await listNotebookSources(notebookId) };
+  });
+  ipcMain.handle("notebook:reindexAll", async (_event, notebookId: string) => {
+    // Embedding-model change recovery: re-embed relational chunks in place.
+    const result = await reindexSessionFromLibrary(notebookId);
+    return { result, sources: await listNotebookSources(notebookId) };
+  });
+  ipcMain.handle("notebook:outline", (_event, notebookId: string) => sessionOutline(notebookSessionDir(notebookId), notebookId));
+  ipcMain.handle("notebook:digest", (_event, notebookId: string) => readSessionDigest(notebookId));
+  ipcMain.handle("notebook:settings:get", (_event, notebookId: string) => getNotebookSettings(notebookId));
+  ipcMain.handle("notebook:settings:save", (_event, notebookId: string, instructions: string) => saveNotebookSettings(notebookId, instructions));
+  ipcMain.handle("notebook:notes:list", (_event, notebookId: string) => listNotebookNotes(notebookId));
+  ipcMain.handle("notebook:notes:save", (_event, input: Parameters<typeof saveNotebookNote>[0]) => saveNotebookNote(input));
+  ipcMain.handle("notebook:notes:delete", (_event, notebookId: string, noteId: string) => deleteNotebookNote(notebookId, noteId));
+  ipcMain.handle("notebook:passage", (_event, notebookId: string, chunkId: string) => getChunkPassage(notebookId, chunkId));
+  ipcMain.handle("notebook:chats", (_event, notebookId: string) => listNotebookChats(notebookId));
+  ipcMain.handle("notebook:createChat", (_event, notebookId: string, title?: string) => createNotebookChat(notebookId, title));
+  ipcMain.handle("notebook:deleteChat", (_event, notebookId: string, chatId: string) => deleteNotebookChat(notebookId, chatId));
+  ipcMain.handle("notebook:retrieve", (_event, notebookId: string, query: string, topK?: number, fileIds?: string[]) => hybridRetrieve(notebookId, query, topK || 8, fileIds));
+  ipcMain.handle("notebook:ask", async (_event, payload: { notebookId: string; chatId: string; question: string; fileIds?: string[]; providerId?: string; model?: string; topK?: number }) => {
+    const started = Date.now();
+    // Persist the user turn FIRST: a crash mid-answer must not lose it.
+    await appendNotebookMessage(payload.notebookId, payload.chatId, {
+      role: "user",
+      text: payload.question,
+      createdAt: new Date().toISOString(),
+    });
+    emitFor(payload.chatId, { type: "status", text: "Searching notebook sources…" });
+    const history = (await recentChatHistory(payload.notebookId, payload.chatId))
+      .slice(0, -1)
+      .map((m) => ({ role: m.role as "user" | "assistant", text: m.text }));
+    const notebookSettings = await getNotebookSettings(payload.notebookId);
+    const appSettings = await getAppSettings();
+    const result = await answerNotebookQuestion(payload.notebookId, payload.question, history, {
+      fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
+      chatProviderId: payload.providerId,
+      chatModel: payload.model,
+      topK: payload.topK || 8,
+      instructions: notebookSettings.instructions,
+      rerank: appSettings.notebookRerankEnabled ? {
+        enabled: true,
+        providerId: appSettings.notebookRerankProviderId,
+        model: appSettings.notebookRerankModel,
+      } : undefined,
+      onStatus: (text) => emitFor(payload.chatId, { type: "status", text }),
+      onToken: (delta) => emitFor(payload.chatId, { type: "token", text: delta }),
+    });
+    const chat = await appendNotebookMessage(payload.notebookId, payload.chatId, {
+      role: "assistant",
+      text: result.answer,
+      createdAt: new Date().toISOString(),
+      citations: result.sources,
+      retrieval: result.retrieval,
+      metadata: result.metadata,
+    });
+    const summary = result.metadata.refused
+      ? "not covered in your files — refused rather than guessed"
+      : `answered from ${result.sources.length} passages in ${((Date.now() - started) / 1000).toFixed(1)}s`;
+    emitFor(payload.chatId, { type: "status", text: summary });
+    return { result, chat };
+  });
+  ipcMain.handle("notebook:embedding:get", () => getNotebookEmbeddingConfig());
+  ipcMain.handle("notebook:embedding:save", (_event, config: { providerId: string; model: string }) => saveNotebookEmbeddingConfig(config));
+  ipcMain.handle("notebook:embedding-providers:list", async () => (await listEmbeddingProviders()).map((p) => ({ ...p, apiKey: p.apiKey ? "********" : "" })));
+  ipcMain.handle("notebook:embedding-provider:save", async (_event, input: Omit<EmbeddingProviderConfig, "id"> & { id?: string }) => {
+    const existing = input.id ? (await listEmbeddingProviders()).find((p) => p.id === input.id) : undefined;
+    const payload = { ...input, apiKey: input.apiKey === "********" ? existing?.apiKey || "" : input.apiKey };
+    return (await upsertEmbeddingProvider(payload)).map((p) => ({ ...p, apiKey: p.apiKey ? "********" : "" }));
+  });
+  ipcMain.handle("notebook:embedding-provider:remove", async (_event, providerId: string) => (await removeEmbeddingProvider(providerId)).map((p) => ({ ...p, apiKey: p.apiKey ? "********" : "" })));
+  ipcMain.handle("notebook:embedding-provider:test", async (_event, input: EmbeddingEndpoint & { model: string; id?: string }) => {
+    let apiKey = input.apiKey || "";
+    // Saved providers come back with a masked key — resolve the real one so
+    // testing an existing entry doesn't authenticate with "********".
+    if (apiKey === "********" && input.id) {
+      apiKey = (await listEmbeddingProviders()).find((p) => p.id === input.id)?.apiKey || "";
+    }
+    return testEmbeddingEndpoint({ ...input, apiKey });
+  });
 
   ipcMain.handle("projects:list", () => listProjects());
   ipcMain.handle("project:select", async () => {
@@ -316,6 +444,17 @@ app.whenReady().then(async () => {
     settings = { ...settings, ...next };
     if (next.apiKey === "********") delete settings.apiKey;
     return { ...settings, apiKey: settings.apiKey ? "********" : "" };
+  });
+  ipcMain.handle("app-settings:get", () => getAppSettings());
+  ipcMain.handle("app-settings:save", (_event, input: Parameters<typeof saveAppSettings>[0]) => saveAppSettings(input));
+  ipcMain.handle("notebook:parser:get", async () => {
+    const config = await getNotebookParserConfig();
+    return { ...config, apiKey: config.apiKey ? "********" : "" };
+  });
+  ipcMain.handle("notebook:parser:save", async (_event, input: Parameters<typeof saveNotebookParserConfig>[0]) => {
+    const existing = await getNotebookParserConfig();
+    const config = await saveNotebookParserConfig({ ...input, apiKey: input.apiKey === "********" ? existing.apiKey : input.apiKey });
+    return { ...config, apiKey: config.apiKey ? "********" : "" };
   });
 
   ipcMain.handle("workspace:list", () => listWorkspaceFiles(requireRoot()));

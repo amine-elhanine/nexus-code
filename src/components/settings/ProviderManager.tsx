@@ -1,7 +1,18 @@
 import React, { useState } from "react";
 import { Plus, Settings2, Trash2, KeyRound, X, RefreshCw, Loader2, Check } from "lucide-react";
 import { ConfirmModal } from "../../modals/ConfirmModal.js";
-import type { ProviderConfig, ProviderDefinition } from "../../types.js";
+import type { ChatEndpointKind, ProviderConfig, ProviderDefinition } from "../../types.js";
+
+/** Provider-level default path (mirrors the backend resolver). */
+function defaultEndpointFor(providerId: string): ChatEndpointKind {
+  return providerId === "anthropic" ? "messages" : "chat";
+}
+
+const ENDPOINT_LABELS: Record<ChatEndpointKind, string> = {
+  chat: "/chat/completions",
+  responses: "/responses",
+  messages: "/messages",
+};
 
 type ProviderFormState = {
   id?: string;
@@ -10,6 +21,7 @@ type ProviderFormState = {
   apiKey: string;
   baseUrl: string;
   models: string[];
+  modelEndpoints: Partial<Record<string, ChatEndpointKind>>;
 };
 
 function emptyProviderForm(definitions: ProviderDefinition[]): ProviderFormState {
@@ -20,6 +32,7 @@ function emptyProviderForm(definitions: ProviderDefinition[]): ProviderFormState
     apiKey: "",
     baseUrl: def?.defaultBaseUrl || "",
     models: [...(def?.models || [])],
+    modelEndpoints: {},
   };
 }
 
@@ -31,6 +44,7 @@ function formFromProvider(provider: ProviderConfig): ProviderFormState {
     apiKey: provider.apiKey || "",
     baseUrl: provider.baseUrl || "",
     models: provider.models && provider.models.length ? [...provider.models] : [],
+    modelEndpoints: { ...(provider.modelEndpoints || {}) },
   };
 }
 
@@ -89,15 +103,36 @@ export function ProviderManager({
   function updateModel(index: number, value: string) {
     setForm((prev) => {
       const next = [...prev.models];
+      const oldName = next[index]?.trim();
       next[index] = value;
-      return { ...prev, models: next };
+      // Carry a per-model path override across renames.
+      const endpoints = { ...prev.modelEndpoints };
+      if (oldName && endpoints[oldName] && value.trim() && value.trim() !== oldName) {
+        endpoints[value.trim()] = endpoints[oldName];
+        delete endpoints[oldName];
+      }
+      return { ...prev, models: next, modelEndpoints: endpoints };
     });
   }
 
   function removeModel(index: number) {
     setForm((prev) => {
+      const removed = prev.models[index]?.trim();
       const next = prev.models.filter((_, i) => i !== index);
-      return { ...prev, models: next };
+      const endpoints = { ...prev.modelEndpoints };
+      if (removed) delete endpoints[removed];
+      return { ...prev, models: next, modelEndpoints: endpoints };
+    });
+  }
+
+  function setModelEndpoint(modelName: string, endpoint: "" | ChatEndpointKind) {
+    const name = modelName.trim();
+    if (!name) return;
+    setForm((prev) => {
+      const endpoints = { ...prev.modelEndpoints };
+      if (!endpoint) delete endpoints[name];
+      else endpoints[name] = endpoint;
+      return { ...prev, modelEndpoints: endpoints };
     });
   }
 
@@ -138,6 +173,7 @@ export function ProviderManager({
         apiKey: form.apiKey,
         baseUrl: form.baseUrl.trim() || undefined,
         models,
+        modelEndpoints: form.modelEndpoints,
       });
       onProvidersChange(saved);
       handleNew();
@@ -230,16 +266,29 @@ export function ProviderManager({
             />
           </label>
           <label style={{ marginBottom: "4px" }}>
-            Models ({form.models.length}) <small>each model listed separately</small>
+            Models ({form.models.length}) <small>each model listed separately · default path {ENDPOINT_LABELS[defaultEndpointFor(form.provider)]}</small>
           </label>
           <div className="model-list-editor">
-            {form.models.map((model, idx) => (
+            {form.models.map((model, idx) => {
+              const override = form.modelEndpoints[model.trim()];
+              return (
               <div className="model-row-item" key={idx}>
                 <input
                   value={model}
                   onChange={(e) => updateModel(idx, e.target.value)}
                   placeholder="e.g. gpt-4.1, claude-3-7-sonnet"
                 />
+                <select
+                  value={override || ""}
+                  onChange={(e) => setModelEndpoint(model, e.target.value as "" | ChatEndpointKind)}
+                  title={override ? `Uses ${ENDPOINT_LABELS[override]} (override)` : `Uses default ${ENDPOINT_LABELS[defaultEndpointFor(form.provider)]}`}
+                  className={override ? "model-endpoint-select overridden" : "model-endpoint-select"}
+                >
+                  <option value="">Default</option>
+                  <option value="chat">/chat</option>
+                  <option value="responses">/resp</option>
+                  <option value="messages">/msg</option>
+                </select>
                 <button
                   type="button"
                   onClick={() => removeModel(idx)}
@@ -248,7 +297,8 @@ export function ProviderManager({
                   <X size={13} />
                 </button>
               </div>
-            ))}
+              );
+            })}
             {!form.models.length && (
               <div style={{ color: "#6e7c8e", fontSize: "10.5px", padding: "4px 0" }}>
                 No models added yet. Add a model below.
@@ -285,6 +335,9 @@ export function ProviderManager({
           )}
           {fetchNote && <div style={{ margin: "6px 0", color: "var(--green)", fontSize: "11px" }}>{fetchNote}</div>}
           {fetchError && <div style={{ margin: "6px 0", color: "var(--red)", fontSize: "11px" }}>{fetchError}</div>}
+          <div className="settings-note" style={{ marginTop: 2 }}>
+            <span>Per-model path is for gateways that split models across endpoints (e.g. OpenCode Zen: /chat, /responses, /messages). Leave on Default unless a model fails.</span>
+          </div>
           <div className="modal-actions" style={{ marginTop: "16px" }}>
             {isEditing && <button className="secondary" onClick={handleNew}>Cancel edit</button>}
             <button className="primary full" disabled={!form.provider || (isCustom && !form.baseUrl.trim())} onClick={() => void handleSave()}>
