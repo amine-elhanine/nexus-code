@@ -1,6 +1,61 @@
+import { randomUUID } from "node:crypto";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { ChatOpenAI } from "@langchain/openai";
-import type { ProviderConfig } from "./store.js";
+import type { ChatEndpointKind, ProviderConfig } from "./store.js";
+
+export type { ChatEndpointKind };
+
+/** Provider-level default wire protocol (a per-model entry overrides this). */
+export function defaultEndpointForProvider(providerId: string): ChatEndpointKind {
+  return providerId === "anthropic" ? "messages" : "chat";
+}
+
+/** Resolve which path a model speaks: explicit per-model entry wins. */
+export function resolveModelEndpoint(providerId: string, modelName: string, modelEndpoints?: Partial<Record<string, ChatEndpointKind>>): ChatEndpointKind {
+  const override = modelEndpoints?.[modelName];
+  if (override === "chat" || override === "responses" || override === "messages") return override;
+  return defaultEndpointForProvider(providerId);
+}
+
+/**
+ * The Zen gateway identifies official clients by HTTP headers. Without them,
+ * requests are treated as anonymous: free-tier models are rejected outright
+ * ("free tier can only be used in OpenCode") and the rest get harsh rate
+ * limits. These mirror what the official CLI sends; the session / project /
+ * request IDs are random per client construction so runs don't share buckets.
+ */
+function zenClientHeaders(): Record<string, string> {
+  return {
+    "x-opencode-client": "cli",
+    "x-opencode-session": randomUUID(),
+    "x-opencode-project": randomUUID(),
+    "x-opencode-request": randomUUID(),
+    "User-Agent": "opencode/cli",
+  };
+}
+
+/** True when requests go to the Zen gateway (native entry or custom base). */
+function isZenEndpoint(config: ProviderConfig): boolean {
+  if (config.provider === "opencode-zen") return true;
+  return /opencode\.ai\/zen/i.test(config.baseUrl || "");
+}
+
+/** Default OpenAI-compatible base per provider (saved baseUrl wins). */
+function openAiBaseFor(config: ProviderConfig): string {
+  const raw = (config.baseUrl || "").trim().replace(/\/+$/, "");
+  if (raw) return raw;
+  switch (config.provider) {
+    case "openrouter": return "https://openrouter.ai/api/v1";
+    case "opencode-zen": return "https://opencode.ai/zen/v1";
+    case "together": return "https://api.together.xyz/v1";
+    case "fireworks": return "https://api.fireworks.ai/inference/v1";
+    case "deepseek": return "https://api.deepseek.com/v1";
+    case "groq": return "https://api.groq.com/openai/v1";
+    case "xai": return "https://api.x.ai/v1";
+    case "mistral": return "https://api.mistral.ai/v1";
+    default: return "https://api.openai.com/v1";
+  }
+}
 
 export type ProviderDefinition = {
   id: string;
@@ -21,6 +76,7 @@ export const PROVIDERS: ProviderDefinition[] = [
   { id: "openrouter", label: "OpenRouter", packageName: "@langchain/openrouter", envKey: "OPENROUTER_API_KEY", models: ["anthropic/claude-sonnet-4.6", "openai/gpt-5.5", "google/gemini-3.7-pro"] },
   { id: "ollama", label: "Ollama", packageName: "@langchain/ollama", envKey: "OLLAMA_BASE_URL", defaultBaseUrl: "http://127.0.0.1:11434", models: ["qwen3-coder", "devstral", "llama3.3"] },
   { id: "deepseek", label: "DeepSeek", packageName: "@langchain/deepseek", envKey: "DEEPSEEK_API_KEY", models: ["deepseek-chat", "deepseek-reasoner"] },
+  { id: "opencode-zen", label: "OpenCode Zen", packageName: "@langchain/openai", envKey: "OPENCODE_API_KEY", defaultBaseUrl: "https://opencode.ai/zen/v1", models: ["kimi-k2.6", "kimi-k2.5", "deepseek-v4-pro", "deepseek-v4-flash", "glm-5.2", "qwen3.7-max", "claude-opus-4-6", "claude-sonnet-4-6", "gpt-5.5"] },
   { id: "together", label: "Together AI", packageName: "@langchain/community", envKey: "TOGETHER_AI_API_KEY", models: ["Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"] },
   { id: "fireworks", label: "Fireworks", packageName: "@langchain/community", envKey: "FIREWORKS_API_KEY", models: ["accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/qwen3-coder"] },
   { id: "azure", label: "Azure OpenAI", packageName: "@langchain/openai", envKey: "AZURE_OPENAI_API_KEY", models: ["gpt-5.5", "gpt-4.1", "o3"] },
@@ -33,11 +89,39 @@ export function getProviderDefinition(providerId: string) { return PROVIDERS.fin
 export async function createChatModel(config: ProviderConfig, modelName: string): Promise<BaseChatModel> {
   const key = config.apiKey || process.env[getProviderDefinition(config.provider).envKey];
   const provider = config.provider;
+  // Per-model wire protocol first: gateways (e.g. OpenCode Zen) serve
+  // different models on /chat/completions, /responses and /messages.
+  const endpoint = resolveModelEndpoint(provider, modelName, config.modelEndpoints);
+  const zenHeaders = isZenEndpoint(config) ? zenClientHeaders() : undefined;
+  if (endpoint === "responses") {
+    const { ChatOpenAIResponses } = await import("@langchain/openai");
+    return new ChatOpenAIResponses(modelName, {
+      apiKey: key,
+      temperature: 0.1,
+      configuration: { baseURL: openAiBaseFor(config), ...(zenHeaders ? { defaultHeaders: zenHeaders } : {}) },
+    });
+  }
+  if (endpoint === "messages" && provider !== "anthropic") {
+    const { ChatAnthropic } = await import("@langchain/anthropic");
+    return new ChatAnthropic({
+      apiKey: key,
+      model: modelName,
+      temperature: 0.1,
+      // The Anthropic SDK appends /v1/messages to this base URL.
+      anthropicApiUrl: (config.baseUrl || "").trim().replace(/\/+$/, "") || "https://api.anthropic.com",
+      ...(zenHeaders ? { clientOptions: { defaultHeaders: zenHeaders } } : {}),
+    });
+  }
   if (provider === "custom") {
     if (!config.baseUrl) throw new Error("Custom providers need a base URL (for example http://127.0.0.1:1234/v1). Edit the provider to add one.");
-    return new ChatOpenAI({ apiKey: key || "not-needed", model: modelName, temperature: 0.1, configuration: { baseURL: config.baseUrl } });
+    return new ChatOpenAI({ apiKey: key || "not-needed", model: modelName, temperature: 0.1, configuration: { baseURL: config.baseUrl, ...(zenHeaders ? { defaultHeaders: zenHeaders } : {}) } });
   }
   if (provider === "openai") return new ChatOpenAI({ apiKey: key, model: modelName, temperature: 0.1, configuration: config.baseUrl ? { baseURL: config.baseUrl } : undefined });
+  if (provider === "anthropic" && endpoint === "chat" && config.baseUrl?.trim()) {
+    // Explicit per-model override: speak OpenAI chat completions to a
+    // custom Anthropic-compatible base instead of the native API.
+    return new ChatOpenAI({ apiKey: key, model: modelName, temperature: 0.1, configuration: { baseURL: config.baseUrl.trim().replace(/\/+$/, "") } });
+  }
   if (provider === "anthropic") {
     const { ChatAnthropic } = await import("@langchain/anthropic");
     // Prompt caching: Anthropic 1.5.8 only honors cache_control as a
@@ -77,6 +161,11 @@ export async function createChatModel(config: ProviderConfig, modelName: string)
     });
   }
   if (provider === "deepseek") { const { ChatDeepSeek } = await import("@langchain/deepseek"); return new ChatDeepSeek({ apiKey: key, model: modelName, temperature: 0.1 }); }
+  if (provider === "opencode-zen") {
+    // Curated OpenAI-compatible gateway (chat completions path by default;
+    // per-model responses/messages overrides are handled above).
+    return new ChatOpenAI({ apiKey: key, model: modelName, temperature: 0.1, configuration: { baseURL: openAiBaseFor(config), ...(zenHeaders ? { defaultHeaders: zenHeaders } : {}) } });
+  }
   if (provider === "azure") {
     const { AzureChatOpenAI } = await import("@langchain/openai");
     const AzureModel = AzureChatOpenAI as any;
@@ -91,7 +180,7 @@ export async function createChatModel(config: ProviderConfig, modelName: string)
   }
   if (provider === "bedrock") { const { ChatBedrockConverse } = await import("@langchain/aws"); return new ChatBedrockConverse({ model: modelName, region: process.env.AWS_REGION || "us-east-1", temperature: 0.1 }); }
   const baseUrl = config.baseUrl || (provider === "together" ? "https://api.together.xyz/v1" : "https://api.fireworks.ai/inference/v1");
-  return new ChatOpenAI({ apiKey: key, model: modelName, temperature: 0.1, configuration: { baseURL: baseUrl } });
+  return new ChatOpenAI({ apiKey: key, model: modelName, temperature: 0.1, configuration: { baseURL: baseUrl, ...(zenHeaders ? { defaultHeaders: zenHeaders } : {}) } });
 }
 
 // Query an OpenAI-compatible endpoint's model list (GET /models). Tries the base

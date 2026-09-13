@@ -2,14 +2,69 @@
 // Escape-first: every character with HTML meaning is escaped before any
 // transformation, so model output can never inject markup into the Electron
 // renderer. Only http(s) links become anchors; javascript:, data:, etc. stay literal text.
+import katex from "katex";
 
 const ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 function escapeHtml(text: string) { return text.replace(/[&<>"']/g, (char) => ESCAPES[char]); }
 
+function mathHtml(expression: string, displayMode: boolean): string {
+  try {
+    return katex.renderToString(expression.trim(), {
+      displayMode,
+      throwOnError: false,
+      // The notebook transcript is rendered inside a sanitized HTML surface.
+      // Use KaTeX's visual HTML layer directly; the combined MathML output can
+      // be exposed as flattened text by Electron's selection/accessibility
+      // handling, making fractions and roots appear as `1N` and `sqrt(...)`.
+      output: "html",
+      strict: "ignore",
+    });
+  } catch {
+    // Keep malformed model output visible instead of making the whole answer
+    // disappear when a formula is incomplete.
+    return `<code>${escapeHtml(expression)}</code>`;
+  }
+}
+
+function looksLikeMath(expression: string): boolean {
+  const value = expression.trim();
+  // Many educational models emit equations inside backticks instead of using
+  // $...$ delimiters. Only promote code spans with unmistakable math markers;
+  // ordinary snippets such as `npm run test` remain code.
+  return /(?:\\[A-Za-z]+|[_^]|\b(?:ReLU|softmax|sigmoid|argmax|RMSE|MSE)\b)/.test(value)
+    && (/[=_^]/.test(value) || /\\[A-Za-z]+/.test(value));
+}
+
+function protectMath(source: string): { source: string; math: Array<{ expression: string; display: boolean }> } {
+  const math: Array<{ expression: string; display: boolean }> = [];
+  // Temporarily protect fenced code so dollar signs inside code are never
+  // interpreted as mathematics.
+  const fences: string[] = [];
+  let protectedSource = source.replace(/```[\s\S]*?```/g, (block) => {
+    const token = `\u0000F${fences.length}\u0000`;
+    fences.push(block);
+    return token;
+  });
+  const add = (expression: string, display: boolean) => {
+    const token = `\u0000M${math.length}\u0000`;
+    math.push({ expression, display });
+    return token;
+  };
+  protectedSource = protectedSource
+    .replace(/\$\$([\s\S]*?)\$\$/g, (_m, expression: string) => add(expression, true))
+    .replace(/\\\[([\s\S]*?)\\\]/g, (_m, expression: string) => add(expression, true))
+    .replace(/\\\(([^\n]*?)\\\)/g, (_m, expression: string) => add(expression, false))
+    // Avoid treating currency such as "$5" as math; inline math must contain
+    // a closing dollar on the same line and at least one non-space character.
+    .replace(/(?<!\$)\$([^$\n]+?)\$(?!\$)/g, (_m, expression: string) => add(expression, false));
+  protectedSource = protectedSource.replace(/\u0000F(\d+)\u0000/g, (_m, index: string) => fences[Number(index)] || "");
+  return { source: protectedSource, math };
+}
+
 function inline(escaped: string) {
   const codeSpans: string[] = [];
   let text = escaped.replace(/`([^`\n]+)`/g, (_match, code: string) => {
-    codeSpans.push(`<code>${code}</code>`);
+    codeSpans.push(looksLikeMath(code) ? mathHtml(code, false) : `<code>${code}</code>`);
     return `\u0000C${codeSpans.length - 1}\u0000`;
   });
   text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
@@ -50,7 +105,8 @@ function renderList(lines: string[], ordered: boolean, start: number): { html: s
 }
 
 export function renderMarkdown(source: string): string {
-  const lines = escapeHtml(source ?? "").split(/\r?\n/);
+  const protectedMath = protectMath(source ?? "");
+  const lines = escapeHtml(protectedMath.source).split(/\r?\n/);
   const html: string[] = [];
   let index = 0;
   let paragraph: string[] = [];
@@ -124,5 +180,8 @@ export function renderMarkdown(source: string): string {
     index++;
   }
   flushParagraph();
-  return html.join("\n");
+  return html.join("\n").replace(/\u0000M(\d+)\u0000/g, (_match, index: string) => {
+    const item = protectedMath.math[Number(index)];
+    return item ? mathHtml(item.expression, item.display) : "";
+  });
 }

@@ -24,6 +24,7 @@ export const FALLBACK_PROVIDERS: ProviderDefinition[] = [
   { id: "openrouter", label: "OpenRouter", packageName: "@langchain/openrouter", envKey: "OPENROUTER_API_KEY", models: ["anthropic/claude-sonnet-4.6", "openai/gpt-5.5", "google/gemini-3.7-pro"] },
   { id: "ollama", label: "Ollama", packageName: "@langchain/ollama", envKey: "OLLAMA_BASE_URL", defaultBaseUrl: "http://127.0.0.1:11434", models: ["qwen3-coder", "devstral", "llama3.3"] },
   { id: "deepseek", label: "DeepSeek", packageName: "@langchain/deepseek", envKey: "DEEPSEEK_API_KEY", models: ["deepseek-chat", "deepseek-reasoner"] },
+  { id: "opencode-zen", label: "OpenCode Zen", packageName: "@langchain/openai", envKey: "OPENCODE_API_KEY", defaultBaseUrl: "https://opencode.ai/zen/v1", models: ["kimi-k2.6", "kimi-k2.5", "deepseek-v4-pro", "deepseek-v4-flash", "glm-5.2", "qwen3.7-max", "claude-opus-4-6", "claude-sonnet-4-6", "gpt-5.5"] },
   { id: "together", label: "Together AI", packageName: "@langchain/community", envKey: "TOGETHER_AI_KEY", models: ["Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"] },
   { id: "fireworks", label: "Fireworks", packageName: "@langchain/community", envKey: "FIREWORKS_API_KEY", models: ["accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/qwen3-coder"] },
   { id: "azure", label: "Azure OpenAI", packageName: "@langchain/openai", envKey: "AZURE_OPENAI_API_KEY", models: ["gpt-5.5", "gpt-4.1", "o3"] },
@@ -73,8 +74,8 @@ export function useAppController() {
   const [projectRules, setProjectRules] = useState<{ hasRules: boolean; ruleFiles: any[]; combinedPromptSection: string } | null>(null);
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [customCommands, setCustomCommands] = useState<SlashCommand[]>([]);
-  // Area: "home" = general assistant (built-in Home project), "code" = repo coding agent.
-  const [area, setArea] = useState<"home" | "code">("home");
+  // Area: "home" = general assistant, "code" = repo coding agent, "notebook" = isolated RAG notebooks.
+  const [area, setArea] = useState<"home" | "code" | "notebook">("home");
   const [homeProject, setHomeProject] = useState<ProjectRecord | null>(null);
   const [homeRoot, setHomeRoot] = useState("");
   const [homeFiles, setHomeFiles] = useState<Array<{ path: string; name: string; size: number; modified: string }>>([]);
@@ -472,6 +473,12 @@ export function useAppController() {
     if (target) await activateProject(target.id);
   }
 
+  function enterNotebook() {
+    setArea("notebook");
+    setDraft("");
+    setStreamingText("");
+  }
+
   async function activateSession(sessionId: string) {
     if (!activeProject) return;
     const sess = await api.activateSession(activeProject.id, sessionId);
@@ -814,6 +821,8 @@ export function useAppController() {
     refreshHomeSessionFiles,
     enterHome,
     enterCode,
+    enterNotebook,
+    setArea,
     createHomeSession,
     // Actions
     activateProject,

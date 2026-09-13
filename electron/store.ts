@@ -1,27 +1,73 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { app, safeStorage } from "electron";
+import { createRequire } from "node:module";
+
+// Lazy Electron access (plain-node safe for unit tests): under node,
+// require("electron") resolves to the binary path string, so all property
+// access falls back gracefully. Under Electron this returns the full API.
+const electronRequire = createRequire(import.meta.url);
+type ElectronShim = {
+  app?: { getPath: (name: string) => string };
+  safeStorage?: { isEncryptionAvailable?: () => boolean; encryptString: (value: string) => Buffer; decryptString: (buffer: Buffer) => string };
+};
+function electronMod(): ElectronShim {
+  try {
+    const mod = electronRequire("electron") as unknown;
+    if (mod && typeof mod === "object") return mod as ElectronShim;
+    return {};
+  } catch {
+    return {};
+  }
+}
 
 import type { SubagentItem } from "./subagent-service.js";
 
-export type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[] };
+export type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[]; modelEndpoints?: Partial<Record<string, ChatEndpointKind>> };
+// Wire protocol a model speaks. Providers default to chat completions,
+// except Anthropic-native which defaults to messages. A per-model entry
+// overrides the default — e.g. gateways like OpenCode Zen serve different
+// models on /chat/completions, /responses and /messages behind one key.
+export type ChatEndpointKind = "chat" | "responses" | "messages";
+// Standalone embedding endpoints for Notebook RAG, independent of chat
+// providers: each has its own base URL, API key and embedding model list.
+export type EmbeddingEndpointKind = "openai" | "ollama" | "gemini" | "cohere";
+export type EmbeddingProviderConfig = { id: string; name: string; kind: EmbeddingEndpointKind; baseUrl?: string; apiKey: string; models: string[] };
 export type McpTransport = "stdio" | "http" | "sse";
 export type McpServerConfig = { id: string; name: string; enabled: boolean; transport: McpTransport; command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string> };
 export type SkillsConfig = { enabled: boolean };
-export type AppSettings = { browserHeadless?: boolean };
+export type AppSettings = {
+  browserHeadless?: boolean;
+  notebookRerankEnabled?: boolean;
+  notebookRerankProviderId?: string;
+  notebookRerankModel?: string;
+  notebookVisionEnabled?: boolean;
+  notebookVisionProviderId?: string;
+  notebookVisionModel?: string;
+};
+export type NotebookParserConfig = {
+  provider: "local" | "llamaparse";
+  enabled: boolean;
+  apiKey: string;
+  baseUrl: string;
+  tier: "fast" | "cost_effective" | "agentic" | "agentic_plus";
+  version: string;
+  timeoutSeconds: number;
+};
 export type ProjectRecord = { id: string; name: string; root: string; createdAt: string; updatedAt: string; memory: string; sessions: SessionRecord[] };
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
 export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; subagent?: SubagentItem; detail?: string }>; model?: { providerId: string; model: string } };
-type PersistedState = { projects: ProjectRecord[]; providers: ProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; appSettings?: AppSettings };
+type PersistedState = { projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; appSettings?: AppSettings; notebookParser?: NotebookParserConfig };
 
 let cache: PersistedState | null = null;
 
 function statePath() {
+  const app = electronMod().app;
   const userData = app?.getPath ? app.getPath("userData") : path.join(process.env.APPDATA || process.cwd(), "nexus");
   return path.join(userData, "nexus-state.json");
 }
 
 function candidateStatePaths(): string[] {
+  const app = electronMod().app;
   const userData = app?.getPath ? app.getPath("userData") : path.join(process.env.APPDATA || process.cwd(), "nexus");
   const parent = path.dirname(userData);
   return [
@@ -42,15 +88,16 @@ function uid(prefix: string) { return `${prefix}_${Date.now().toString(36)}_${Ma
 const ENCRYPTED_PREFIX = "safeStorage:v1:";
 function encryptSecret(value: string) {
   if (!value || value.startsWith(ENCRYPTED_PREFIX)) return value;
-  try { if (safeStorage?.isEncryptionAvailable?.()) return ENCRYPTED_PREFIX + safeStorage.encryptString(value).toString("base64"); } catch { /* fall through to plaintext */ }
+  try { const ss = electronMod().safeStorage; if (ss?.isEncryptionAvailable?.()) return ENCRYPTED_PREFIX + ss.encryptString(value).toString("base64"); } catch { /* fall through to plaintext */ }
   return value;
 }
 function decryptSecret(value: string) {
   if (!value) return "";
   if (!value.startsWith(ENCRYPTED_PREFIX)) return value;
   try {
-    if (safeStorage?.isEncryptionAvailable?.()) {
-      return safeStorage.decryptString(Buffer.from(value.slice(ENCRYPTED_PREFIX.length), "base64"));
+    const ss = electronMod().safeStorage;
+    if (ss?.isEncryptionAvailable?.()) {
+      return ss.decryptString(Buffer.from(value.slice(ENCRYPTED_PREFIX.length), "base64"));
     }
   } catch {
     // Encrypted on a different machine/domain/user profile — the key is
@@ -107,9 +154,14 @@ async function ensureLoaded(): Promise<PersistedState> {
     cache = foundState;
     cache.projects = cache.projects || [];
     cache.providers = cache.providers || [];
+    cache.embeddingProviders = cache.embeddingProviders || [];
     cache.providers.forEach((provider) => {
       provider.apiKey = decryptSecret(provider.apiKey);
     });
+    cache.embeddingProviders.forEach((provider) => {
+      provider.apiKey = decryptSecret(provider.apiKey);
+    });
+    if (cache.notebookParser) cache.notebookParser.apiKey = decryptSecret(cache.notebookParser.apiKey);
     cache.projects.forEach((project) => {
       project.sessions = project.sessions || [];
       project.sessions.forEach((session) => {
@@ -120,6 +172,7 @@ async function ensureLoaded(): Promise<PersistedState> {
     cache = {
       projects: [],
       providers: [],
+      embeddingProviders: [],
     };
   }
 
@@ -133,6 +186,8 @@ async function persist() {
   const snapshot: PersistedState = {
     ...cache,
     providers: (cache.providers || []).map((provider) => ({ ...provider, apiKey: encryptSecret(provider.apiKey) })),
+    embeddingProviders: (cache.embeddingProviders || []).map((provider) => ({ ...provider, apiKey: encryptSecret(provider.apiKey) })),
+    notebookParser: cache.notebookParser ? { ...cache.notebookParser, apiKey: encryptSecret(cache.notebookParser.apiKey) } : undefined,
   };
   await fs.writeFile(target, JSON.stringify(snapshot, null, 2), "utf8");
 }
@@ -239,6 +294,36 @@ export async function removeProvider(providerId: string) {
   await persist();
   return state.providers;
 }
+
+const EMBEDDING_KINDS: EmbeddingEndpointKind[] = ["openai", "ollama", "gemini", "cohere"];
+
+export async function listEmbeddingProviders() { return (await ensureLoaded()).embeddingProviders ?? []; }
+export async function upsertEmbeddingProvider(input: Omit<EmbeddingProviderConfig, "id"> & { id?: string }) {
+  const state = await ensureLoaded();
+  const kind: EmbeddingEndpointKind = EMBEDDING_KINDS.includes(input.kind) ? input.kind : "openai";
+  const name = input.name.trim() || "Embedding endpoint";
+  if (!name) throw new Error("Embedding providers need a name.");
+  const models = Array.from(new Set((input.models || []).map((m) => m.trim()).filter(Boolean)));
+  const existing = input.id ? (state.embeddingProviders ?? []).find((p) => p.id === input.id) : undefined;
+  if (existing) {
+    existing.name = name;
+    existing.kind = kind;
+    existing.baseUrl = input.baseUrl?.trim() || undefined;
+    existing.apiKey = input.apiKey || "";
+    existing.models = models;
+  } else {
+    state.embeddingProviders = state.embeddingProviders ?? [];
+    state.embeddingProviders.push({ id: uid("embprovider"), name, kind, baseUrl: input.baseUrl?.trim() || undefined, apiKey: input.apiKey || "", models });
+  }
+  await persist();
+  return state.embeddingProviders ?? [];
+}
+export async function removeEmbeddingProvider(providerId: string) {
+  const state = await ensureLoaded();
+  state.embeddingProviders = (state.embeddingProviders ?? []).filter((provider) => provider.id !== providerId);
+  await persist();
+  return state.embeddingProviders ?? [];
+}
 export async function deleteSession(projectId: string, sessionId: string) {
   const project = await getProject(projectId);
   if (!project) throw new Error("Project not found");
@@ -287,6 +372,34 @@ export async function getSkillsConfig(): Promise<SkillsConfig> { return { enable
 export async function saveSkillsConfig(input: SkillsConfig) { const state = await ensureLoaded(); state.skills = { enabled: input.enabled !== false }; await persist(); return state.skills; }
 export async function getAppSettings(): Promise<AppSettings> { return { ...(await ensureLoaded()).appSettings }; }
 export async function saveAppSettings(input: AppSettings) { const state = await ensureLoaded(); state.appSettings = { ...state.appSettings, ...input }; await persist(); return state.appSettings; }
+export async function getNotebookParserConfig(): Promise<NotebookParserConfig> {
+  const configured = (await ensureLoaded()).notebookParser;
+  return {
+    provider: configured?.provider === "llamaparse" ? "llamaparse" : "local",
+    enabled: configured?.enabled === true,
+    apiKey: configured?.apiKey || "",
+    baseUrl: configured?.baseUrl || "https://api.cloud.llamaindex.ai",
+    tier: configured?.tier || "cost_effective",
+    version: configured?.version || "latest",
+    timeoutSeconds: Math.max(30, configured?.timeoutSeconds || 600),
+  };
+}
+export async function saveNotebookParserConfig(input: Partial<NotebookParserConfig>) {
+  const state = await ensureLoaded();
+  const current = await getNotebookParserConfig();
+  state.notebookParser = {
+    ...current,
+    ...input,
+    provider: input.provider === "llamaparse" ? "llamaparse" : input.provider === "local" ? "local" : current.provider,
+    tier: input.tier || current.tier,
+    baseUrl: (input.baseUrl || current.baseUrl).trim().replace(/\/+$/, ""),
+    version: (input.version || current.version).trim() || "latest",
+    timeoutSeconds: Math.max(30, Math.min(3600, Number(input.timeoutSeconds || current.timeoutSeconds) || 600)),
+    apiKey: input.apiKey ?? current.apiKey,
+  };
+  await persist();
+  return state.notebookParser;
+}
 
 // Declared here so store mutations can drop the cached MCP client when server
 // config changes; the implementation lives in mcp-service.ts to avoid a cycle.

@@ -85,6 +85,8 @@
 .chat-message-text.md th,.chat-message-text.md td{padding:7px 11px;border-bottom:1px solid var(--line);vertical-align:top}
 .chat-message-text.md tbody tr:last-child td{border-bottom:0}
 .chat-message-text.md tbody tr:nth-child(odd){background:rgba(255,255,255,.015)}
+.chat-message-text.md .katex{font-size:1.05em;color:#eef2f8}
+.chat-message-text.md .katex-display{margin:12px 0;overflow-x:auto;overflow-y:hidden;padding:3px 0}
 .provider-fetch{display:flex;align-items:center;gap:10px;margin:-4px 0 12px;flex-wrap:wrap}
 .provider-fetch small{font-size:11px;line-height:1.4}
 .provider-fetch .fetch-ok{color:var(--green)}
@@ -1697,3 +1699,309 @@ backgrounded webview throttles loads/timers). Same session as visible tabs. */
 button.update-pill{cursor:pointer}
 button.update-pill:hover{border-color:#3ee695;color:#3ee695}
 button.update-pill.ready{background:#123626;border-color:#34d399;color:#a7f3d0}
+/* --- Notebook (isolated agentic RAG) --- */
+/* The shared .agent-view caps at 980px centered — the 3-pane notebook needs
+   the full width, with tighter gutters inside the middle column. */
+.agent-view.notebook-view {
+  max-width: none;
+}
+.notebook-layout {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr) 250px;
+  gap: 12px;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  padding: 0 30px 18px;
+}
+.notebook-main .agent-transcript {
+  padding: 0 12px 16px;
+}
+.notebook-main .agent-input-area {
+  padding: 0 12px 16px;
+}
+.notebook-side {
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid #1d2634;
+  border-radius: 10px;
+  background: #0b0f16;
+  padding: 10px;
+}
+.notebook-main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.notebook-main .agent-transcript {
+  flex: 1;
+  min-height: 220px;
+}
+.chat-item {
+  border: 1px solid #1d2634;
+  border-radius: 10px;
+  background: #0b0f16;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.chat-item.user {
+  border-color: #274264;
+  background: #0e1622;
+}
+.chat-item .chat-text {
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #dbe4f0;
+}
+.notebook-answer-meta {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.eval-pill {
+  align-self: flex-start;
+  font-size: 11px;
+  border: 1px solid #2c394c;
+  border-radius: 999px;
+  padding: 2px 10px;
+  color: #c8d3e0;
+  background: #0d1219;
+}
+.citation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.citation-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #9fb0c3;
+}
+.citation-tag {
+  font-family: 'DM Mono', monospace;
+  color: #7ee0a3;
+}
+.citation-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.retrieval-trace {
+  font-size: 11.5px;
+  color: #8b98ab;
+}
+.retrieval-trace summary {
+  cursor: pointer;
+}
+.retrieval-row {
+  display: grid;
+  grid-template-columns: 52px 130px 1fr;
+  gap: 8px;
+  padding: 2px 0;
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+}
+/* --- Notebook sessions overview --- */
+.notebook-sessions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  padding: 4px 30px 24px;
+  overflow-y: auto;
+}
+.notebook-card {
+  position: relative;
+  border: 1px solid #1d2634;
+  border-radius: 12px;
+  background: #0b0f16;
+  padding: 16px 14px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 130px;
+}
+.notebook-card:hover {
+  border-color: #33507a;
+  background: #0e1622;
+}
+.notebook-card-icon {
+  color: #7ee0a3;
+}
+.notebook-card-name {
+  font-size: 14px;
+  font-weight: 650;
+  color: #e6edf5;
+}
+.notebook-card-desc {
+  font-size: 12px;
+  color: #8b98ab;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.notebook-card-meta {
+  margin-top: auto;
+  font-size: 11px;
+  color: #68768a;
+}
+.notebook-card-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+.notebook-card-new {
+  border-style: dashed;
+  align-items: center;
+  justify-content: center;
+  color: #8b98ab;
+  font-size: 13px;
+  gap: 8px;
+}
+.notebook-new-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 0 30px;
+}
+.notebook-new-form .text-field {
+  max-width: 320px;
+}
+/* --- Entered notebook session --- */
+.notebook-enter-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.notebook-enter-head .top-link {
+  margin-top: 2px;
+  white-space: nowrap;
+}
+/* Higher specificity on purpose: the generic .select-field{width:100%} rule
+   below would otherwise win (same specificity, later in the file). */
+.agent-view-meta select.notebook-conv-select {
+  width: auto;
+  max-width: 220px;
+  flex: none;
+}
+.notebook-upload-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.notebook-upload-row .new-session-btn {
+  flex: 1;
+}
+.ingestion-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  border: 1px solid #2c394c;
+  border-radius: 999px;
+  padding: 1px 8px;
+  color: #9fb0c3;
+}
+.ingestion-badge.ready {
+  color: #7ee0a3;
+  border-color: #225239;
+}
+.ingestion-badge.indexing {
+  color: #ffbe6b;
+  border-color: #5a401c;
+}
+.ingestion-badge.error {
+  color: #f08b94;
+  border-color: #5a2630;
+}
+.artifact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.artifact-card {
+  border: 1px solid #1d2634;
+  border-radius: 10px;
+  background: #0d1219;
+  padding: 8px 10px;
+}
+.artifact-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #7ee0a3;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.artifact-card-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifact-card-excerpt {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #9fb0c3;
+  white-space: pre-wrap;
+}
+.field-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #9fb0c3;
+  margin-bottom: 4px;
+}
+.select-field, .text-field {
+  width: 100%;
+  background: #0d1219;
+  border: 1px solid #232f42;
+  border-radius: 8px;
+  color: #dbe4f0;
+  padding: 8px 10px;
+  font-size: 12.5px;
+}
+
+/* --- Notebook pass 2: scope, rename, citations, passage --- */
+.scope-checkbox{flex:none;width:14px;height:14px;accent-color:#34d399;cursor:pointer}
+.notebook-rename-field{max-width:340px}
+.chat-item.refused{border-color:#5a2630}
+.chat-item.streaming{border-color:#274264}
+.notebook-working{margin:12px auto;max-width:760px;border:1px solid #243650;border-radius:12px;background:#0d1622;padding:12px 14px;color:#b7c7da}
+.notebook-working-title{display:flex;align-items:center;gap:8px;color:#dbe8f5;font-size:12px;font-weight:600}
+.notebook-working-steps{display:flex;flex-direction:column;gap:7px;margin:10px 0 0 22px}
+.notebook-working-step{display:flex;align-items:center;gap:8px;font-size:12px;color:#8192a8}
+.notebook-working-step.active{color:#dbe8f5}
+.notebook-step-mark{width:14px;text-align:center;color:#4bd58a;font-weight:700}
+.notebook-working-step.active .notebook-step-mark{color:#72b7ff;animation:blink 1s steps(1) infinite}
+.stream-caret{color:#34d399;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.citation-row.clickable{width:100%;border:0;background:transparent;text-align:left;cursor:pointer;border-radius:5px;padding:2px 4px}
+.citation-row.clickable:hover{background:#141b26}
+.citation-score{font-family:'DM Mono',monospace;font-size:10.5px;color:#68768a;margin-left:auto;flex:none}
+.digest-topics{font-size:11.5px;line-height:1.6;color:#9fb0c3;border:1px solid #1d2634;border-radius:10px;background:#0d1219;padding:8px 10px}
+.artifact-card.clickable{cursor:pointer}
+.artifact-card.clickable:hover{border-color:#33507a}
+.artifact-card-heading{font-size:11px;color:#7ee0a3;margin:2px 0 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.passage-body{display:flex;flex-direction:column;gap:12px;max-height:60vh;overflow-y:auto}
+.passage-label{font:9px 'DM Mono',monospace;letter-spacing:.09em;color:#6f7c8e}
+.passage-main{border:1px solid #274264;border-radius:10px;background:#0e1622;padding:10px 12px}
+.passage-main p,.passage-neighbor p,.passage-summary p{font-size:13px;line-height:1.6;color:#dbe4f0;white-space:pre-wrap;margin:6px 0 0}
+.passage-neighbor{border:1px solid #1d2634;border-radius:10px;padding:8px 10px;color:#8b98ab;font-size:12px}
+.passage-neighbor summary{cursor:pointer}
+.passage-summary p{color:#9fb0c3}
+
+/* --- Provider model endpoint selector --- */
+/* Scoped to .model-row-item select (0,2,1) on purpose: the generic
+   .modal-card select{width:100%} rule (0,1,1) would otherwise stretch the
+   dropdown across the whole row and squeeze the model name input. */
+.model-row-item select.model-endpoint-select{flex:0 0 auto;width:78px;max-width:78px;background:#0d1219;border:1px solid #232f42;border-radius:5px;color:#9fb0c3;padding:7px 4px;font-size:10.5px;cursor:pointer}
+.model-row-item select.model-endpoint-select.overridden{color:#7ee0a3;border-color:#2a5a40}
