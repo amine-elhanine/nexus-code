@@ -107,10 +107,25 @@ export function compactHistory(
 ): CompactTurn[] {
   if (!turns || turns.length === 0) return [];
 
+  const budget = Math.max(64, Math.floor(maxTokens));
+  const enforceBudget = (items: CompactTurn[]): CompactTurn[] => {
+    const result = [...items];
+    // Drop the oldest context first. The newest turn is the most useful piece
+    // of context when a caller gives us an unusually small budget.
+    while (result.length > 1 && result.reduce((sum, item) => sum + estimateTokens(item.text), 0) > budget) result.shift();
+    const total = result.reduce((sum, item) => sum + estimateTokens(item.text), 0);
+    if (total > budget && result.length) {
+      const capChars = Math.max(64, Math.floor(budget * 3.8));
+      const last = result[result.length - 1];
+      result[result.length - 1] = { ...last, text: last.text.slice(-capChars) };
+    }
+    return result;
+  };
+
   // Filter to just user and assistant turns
   const validTurns = turns.filter((t) => t.role === "user" || t.role === "assistant");
   if (validTurns.length <= 4) {
-    return validTurns.map((t) => ({ role: t.role as "user" | "assistant", text: t.text }));
+    return enforceBudget(validTurns.map((t) => ({ role: t.role as "user" | "assistant", text: t.text })));
   }
 
   // Keep last 4 turns completely verbatim
@@ -154,5 +169,5 @@ export function compactHistory(
   result.push(...compactedOlder);
   result.push(...recentTurns.map((t) => ({ role: t.role as "user" | "assistant", text: t.text })));
 
-  return result;
+  return enforceBudget(result);
 }

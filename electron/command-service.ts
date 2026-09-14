@@ -1,11 +1,37 @@
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { FilesystemBackend } from "deepagents";
-import { isDeniedCommand } from "./permissions.js";
+import { isDeniedCommand, classifyCommand } from "./permissions.js";
+import type { CommandPolicy } from "./permissions.js";
+import { requestCommandApproval } from "./approval-service.js";
 import type { ProjectRecord } from "./store.js";
 
 const DEFAULT_COMMAND_TIMEOUT_SECONDS = 180;
+
+async function readCommandPolicy(projectRoot: string): Promise<CommandPolicy> {
+  const candidates = [path.join(projectRoot, ".nexus", "permissions.json")];
+  try {
+    const packageJson = JSON.parse(await readFile(path.join(projectRoot, "package.json"), "utf8"));
+    if (packageJson?.nexus?.permissions) return packageJson.nexus.permissions;
+  } catch { /* optional config */ }
+  for (const file of candidates) {
+    try {
+      const parsed = JSON.parse(await readFile(file, "utf8"));
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch { /* optional config */ }
+  }
+  return {};
+}
+
+function approvalKey(command: string): string {
+  if (/\bgit\s+push\b/i.test(command)) return "git-push";
+  if (/\bgit\s+(reset|clean|rebase)\b/i.test(command)) return "git-history";
+  if (/\b(?:npm|pnpm|yarn|pip|pip3|cargo)\s+(?:install|add|remove|uninstall)\b/i.test(command)) return "dependency-change";
+  if (/\bcurl\b[^\n|]*\|\s*(?:sh|bash)\b|\b(?:Invoke-WebRequest|iwr|irm)\b/i.test(command)) return "download-execute";
+  return "command-change";
+}
 
 // Cancellation is scoped per run (keyed by session id). The old process-global
 // flag meant cancelling session A killed session B's run too — and starting a
@@ -92,12 +118,17 @@ export function capModelOutput(output: string): { output: string; truncated: boo
   };
 }
 
-export async function executeCommand(projectRoot: string, command: string, options: { timeoutSeconds?: number; runId?: string } = {}): Promise<CommandResult> {
+export async function executeCommand(projectRoot: string, command: string, options: { timeoutSeconds?: number; runId?: string; requireApproval?: boolean } = {}): Promise<CommandResult> {
   const state = stateFor(options.runId);
   if (state.cancelled) return { output: "Run cancelled by user.", exitCode: 130, truncated: false };
   const trimmed = command.trim();
   if (!trimmed) return { output: "Command is empty.", exitCode: 1, truncated: false };
-  if (isDeniedCommand(trimmed)) return { output: "Command blocked by permission policy (destructive pattern).", exitCode: 1, truncated: false };
+  const policy = await readCommandPolicy(projectRoot);
+  if (isDeniedCommand(trimmed) || classifyCommand(trimmed, policy) === "deny") return { output: "Command blocked by permission policy (destructive pattern).", exitCode: 1, truncated: false };
+  if (options.requireApproval && classifyCommand(trimmed, policy) === "ask") {
+    const decision = await requestCommandApproval({ runId: options.runId, approvalKey: approvalKey(trimmed), command: trimmed, cwd: path.resolve(projectRoot), reason: "This command can change dependencies, Git history, remote state, or execute downloaded code." });
+    if (decision === "deny") return { output: "Command denied or approval timed out.", exitCode: 126, truncated: false };
+  }
 
   const shell = process.platform === "win32" ? (process.env.ComSpec || "cmd.exe") : "/bin/sh";
   const args = process.platform === "win32" ? ["/d", "/s", "/c", trimmed] : ["-c", trimmed];
@@ -149,7 +180,7 @@ export async function getAgentBackend(project: ProjectRecord, options: { readOnl
     backend.delete = refuse("delete");
     backend.execute = refuse("execute");
   } else {
-    backend.execute = (command: string) => executeCommand(project.root, command, { runId: options.runId });
+    backend.execute = (command: string) => executeCommand(project.root, command, { runId: options.runId, requireApproval: true });
   }
   return { backend, workspace: project.root };
 }

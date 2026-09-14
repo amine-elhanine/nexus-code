@@ -37,7 +37,10 @@ try {
 const sessions = new Map();
 
 function defaultShell() {
-  if (process.platform === "win32") return { file: "powershell.exe", args: ["-NoLogo"] };
+  // The bundled runtime can still trigger an unsigned PSReadLine trust prompt
+  // even with profiles disabled. cmd.exe is deterministic for the default
+  // terminal; users can launch PowerShell explicitly when they need it.
+  if (process.platform === "win32") return { file: process.env.ComSpec || "cmd.exe", args: ["/Q"] };
   return { file: process.env.SHELL || "bash", args: [] };
 }
 

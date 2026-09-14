@@ -1,20 +1,37 @@
 import { promises as fs } from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 
-function safePath(projectRoot: string, requested: string) {
-  const root = path.resolve(projectRoot);
+async function safePath(projectRoot: string, requested: string) {
+  const root = await fs.realpath(path.resolve(projectRoot));
   const candidate = path.resolve(root, requested || ".");
   if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
     throw new Error("Path escapes the selected project root.");
+  }
+  // Resolve the existing target, or the nearest existing parent for a new
+  // file. This prevents a lexical-safe path from traversing an in-repo
+  // symlink that points outside the selected project.
+  let probe = candidate;
+  while (probe !== root) {
+    try {
+      const realProbe = await fs.realpath(probe);
+      if (realProbe !== root && !realProbe.startsWith(`${root}${path.sep}`)) {
+        throw new Error("Path follows a symlink outside the selected project root.");
+      }
+      break;
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") throw error;
+      probe = path.dirname(probe);
+    }
   }
   return candidate;
 }
 
 type PatchOp =
   | { kind: "add"; file: string; body: string }
-  | { kind: "update"; file: string; body: string }
+  | { kind: "update"; file: string; body: string; expectedHash?: string }
   | { kind: "delete"; file: string }
   | { kind: "move"; from: string; to: string };
 
@@ -34,13 +51,14 @@ export function parsePatchText(patchText: string): PatchOp[] {
   let current: { header: string; file: string; body: string[] } | null = null;
   const flush = () => {
     if (!current) return;
-    const file = current.file.trim();
+    const hashMatch = current.file.match(/^(.*?)\s*\(sha256:\s*([a-f0-9]{64})\)\s*$/i);
+    const file = (hashMatch?.[1] || current.file).trim();
     if (!file) {
       current = null;
       return;
     }
     if (current.header.startsWith("add")) ops.push({ kind: "add", file, body: current.body.join("\n") });
-    else ops.push({ kind: "update", file, body: current.body.join("\n") });
+    else ops.push({ kind: "update", file, body: current.body.join("\n"), ...(hashMatch ? { expectedHash: hashMatch[2].toLowerCase() } : {}) });
     current = null;
   };
   for (const line of lines) {
@@ -72,51 +90,190 @@ export function parsePatchText(patchText: string): PatchOp[] {
   return ops;
 }
 
-export function createEditTools(projectRoot: string) {
+const ATTACH_IMPORT_EXT_BY_MIME: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/svg+xml": "svg",
+  "image/bmp": "bmp",
+  "application/pdf": "pdf",
+  "application/msword": "doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.ms-excel": "xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.ms-powerpoint": "ppt",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+  "text/x-tex": "tex",
+  "text/markdown": "md",
+  "text/plain": "txt",
+  "text/csv": "csv",
+  "application/json": "json",
+  "text/yaml": "yaml",
+};
+
+function parseAttachedFile(source: string): { mime: string; data: Buffer; suggestedName: string } | null {
+  // importableAttachments entries are `data:<mime>;base64,<payload>[#<name>]`.
+  const hashIdx = source.lastIndexOf("#");
+  const suggestedName = hashIdx > 0 ? decodeURIComponent(source.slice(hashIdx + 1)) : "attachment";
+  const dataUrl = hashIdx > 0 ? source.slice(0, hashIdx) : source;
+  const match = dataUrl.match(/^data:([^;,]+)?(?:;charset=[^;,]+)?;base64,([\s\S]+)$/);
+  if (!match) return null;
+  const mime = (match[1] || "application/octet-stream").toLowerCase();
+  const data = Buffer.from(match[2].replace(/\s/g, ""), "base64");
+  return { mime, data, suggestedName };
+}
+
+export function createEditTools(projectRoot: string, options: { attachedImages?: string[]; attachedFiles?: string[] } = {}) {
   const applyPatchTool = tool(
     async ({ patchText }: { patchText: string }) => {
+      type Snapshot = { path: string; existed: boolean; content?: Buffer; mode?: number };
+      const snapshots = new Map<string, Snapshot>();
+      const snapshot = async (target: string) => {
+        if (snapshots.has(target)) return;
+        try {
+          const stat = await fs.stat(target);
+          if (!stat.isFile()) throw new Error(`Target is not a regular file: ${target}`);
+          snapshots.set(target, { path: target, existed: true, content: await fs.readFile(target), mode: stat.mode });
+        } catch (error: any) {
+          if (error?.code === "ENOENT") snapshots.set(target, { path: target, existed: false });
+          else throw error;
+        }
+      };
+      const restore = async (entry: Snapshot) => {
+        if (entry.existed) {
+          await fs.mkdir(path.dirname(entry.path), { recursive: true });
+          await fs.writeFile(entry.path, entry.content!);
+          if (entry.mode != null) await fs.chmod(entry.path, entry.mode);
+        } else {
+          await fs.rm(entry.path, { force: true });
+        }
+      };
       try {
         const ops = parsePatchText(patchText || "");
         if (!ops.length) return "No patch operations found. Use markers like '*** Update File: src/a.ts' followed by the new content.";
+        // Validate every path and take all backups before changing anything.
+        // This makes a multi-file patch recoverable if a later operation fails.
+        const resolvedOps = await Promise.all(ops.map(async (op) => {
+          if (op.kind === "move") return { ...op, fromPath: await safePath(projectRoot, op.from), toPath: await safePath(projectRoot, op.to) };
+          return { ...op, targetPath: await safePath(projectRoot, op.file) };
+        }));
+        for (const op of resolvedOps) {
+          if (op.kind === "move") {
+            await snapshot(op.fromPath);
+            await snapshot(op.toPath);
+            if (!snapshots.get(op.fromPath)!.existed) throw new Error(`Cannot move missing file: ${op.from}`);
+            if (snapshots.get(op.toPath)!.existed) throw new Error(`Move target already exists: ${op.to}`);
+          } else {
+            await snapshot(op.targetPath);
+            if (op.kind === "add" && snapshots.get(op.targetPath)!.existed) throw new Error(`Cannot add over existing file: ${op.file}`);
+            if (op.kind === "update" && !snapshots.get(op.targetPath)!.existed) throw new Error(`Cannot update missing file: ${op.file}`);
+            if (op.kind === "update" && op.expectedHash) {
+              const actualHash = crypto.createHash("sha256").update(snapshots.get(op.targetPath)!.content!).digest("hex");
+              if (actualHash !== op.expectedHash) throw new Error(`Stale update rejected for ${op.file}: expected sha256 ${op.expectedHash}, found ${actualHash}`);
+            }
+          }
+        }
         const applied: string[] = [];
-        for (const op of ops) {
+        for (const op of resolvedOps) {
           if (op.kind === "delete") {
-            const target = safePath(projectRoot, op.file);
-            await fs.rm(target, { force: true });
+            await fs.rm(op.targetPath, { force: true });
             applied.push(`deleted ${op.file}`);
           } else if (op.kind === "move") {
-            const from = safePath(projectRoot, op.from);
-            const to = safePath(projectRoot, op.to);
-            await fs.mkdir(path.dirname(to), { recursive: true });
-            await fs.rename(from, to);
+            await fs.mkdir(path.dirname(op.toPath), { recursive: true });
+            await fs.rename(op.fromPath, op.toPath);
             applied.push(`moved ${op.from} -> ${op.to}`);
-          } else if (op.kind === "add") {
-            const target = safePath(projectRoot, op.file);
-            await fs.mkdir(path.dirname(target), { recursive: true });
-            await fs.writeFile(target, op.body.replace(/\s+$/, "") + "\n", "utf8");
-            applied.push(`added ${op.file}`);
           } else {
-            const target = safePath(projectRoot, op.file);
-            await fs.mkdir(path.dirname(target), { recursive: true });
-            await fs.writeFile(target, op.body.replace(/\s+$/, "") + "\n", "utf8");
-            applied.push(`updated ${op.file}`);
+            await fs.mkdir(path.dirname(op.targetPath), { recursive: true });
+            await fs.writeFile(op.targetPath, op.body.replace(/\s+$/, "") + "\n", "utf8");
+            if (op.kind === "add") applied.push(`added ${op.file}`);
+            else applied.push(`updated ${op.file}`);
           }
         }
         return `Applied ${applied.length} patch operation(s):\n${applied.map((a) => `- ${a}`).join("\n")}`;
       } catch (error) {
+        // Restore in reverse order so moves and dependent edits unwind safely.
+        for (const entry of [...snapshots.values()].reverse()) {
+          try { await restore(entry); } catch { /* preserve the original error */ }
+        }
         return `apply_patch failed: ${error instanceof Error ? error.message : String(error)}`;
       }
     },
     {
       name: "apply_patch",
       description:
-        "Apply an atomic multi-file patch in one step (preferred over N sequential edits). Use markers '*** Add File: <path>', '*** Update File: <path>', '*** Delete File: <path>', '*** Move to: <new-path>' with file bodies after Add/Update markers.",
+        "Apply an atomic multi-file patch in one step (preferred over N sequential edits). Use markers '*** Add File: <path>', '*** Update File: <path> (sha256: <hash>)', '*** Delete File: <path>', '*** Move to: <new-path>' with file bodies after Add/Update markers. The optional hash rejects stale updates.",
       schema: z.object({
         patchText: z.string().describe("Patch text with *** markers and file bodies, paths relative to repo root"),
       }),
     }
   );
-  return [applyPatchTool];
+  const tools: any[] = [applyPatchTool];
+  if (options.attachedImages?.length) {
+    const importAttachmentTool = tool(
+      async ({ index, targetPath }: { index: number; targetPath: string }) => {
+        const source = options.attachedImages?.[index];
+        if (!source) return `Attachment import failed: no attached image at index ${index}.`;
+        const match = source.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,([\s\S]+)$/);
+        if (!match) return "Attachment import failed: the selected attachment is not an available image file.";
+        const destination = await safePath(projectRoot, targetPath);
+        try { await fs.access(destination); return `Attachment import refused: ${targetPath} already exists.`; } catch { /* new file */ }
+        const data = Buffer.from(match[2], "base64");
+        if (!data.length || data.length > 20 * 1024 * 1024) return "Attachment import failed: image is empty or larger than 20 MB.";
+        const ext = match[1].toLowerCase().replace("jpeg", "jpg");
+        if (!/^[a-z0-9]+$/.test(ext)) return "Attachment import failed: unsupported image type.";
+        const finalPath = destination.includes(".") ? destination : `${destination}.${ext}`;
+        await fs.mkdir(path.dirname(finalPath), { recursive: true });
+        await fs.writeFile(finalPath, data, { flag: "wx" });
+        return `Imported attached image ${index} to ${path.relative(path.resolve(projectRoot), finalPath).replace(/\\/g, "/")}.`;
+      },
+      {
+        name: "import_attached_image",
+        description: "Import one user-attached image into the project only when the requested deliverable needs the actual asset. Attachments are numbered from 0; choose a project-relative target path such as public/assets/hero.png. Do not import reference-only images.",
+        schema: z.object({
+          index: z.number().int().min(0).describe("Zero-based attached image index"),
+          targetPath: z.string().min(1).max(240).describe("Project-relative destination path"),
+        }),
+      }
+    );
+    tools.push(importAttachmentTool);
+  }
+  if (options.attachedFiles?.length) {
+    const importAnyTool = tool(
+      async ({ index, targetPath }: { index: number; targetPath: string }) => {
+        const source = options.attachedFiles?.[index];
+        if (!source) return `Attachment import failed: no attachment at index ${index}.`;
+        const parsed = parseAttachedFile(source);
+        if (!parsed) return "Attachment import failed: the selected attachment is not available.";
+        if (!parsed.data.length || parsed.data.length > 20 * 1024 * 1024) return "Attachment import failed: file is empty or larger than 20 MB.";
+        const destination = await safePath(projectRoot, targetPath);
+        try { await fs.access(destination); return `Attachment import refused: ${targetPath} already exists.`; } catch { /* new file */ }
+        let finalPath = destination;
+        if (!path.basename(destination).includes(".")) {
+          const fromName = (parsed.suggestedName.split(".").pop() || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+          const fromMime = ATTACH_IMPORT_EXT_BY_MIME[parsed.mime];
+          const ext = /^[a-z0-9]{1,10}$/.test(fromName) ? fromName : fromMime || "bin";
+          finalPath = `${destination}.${ext}`;
+        }
+        await fs.mkdir(path.dirname(finalPath), { recursive: true });
+        await fs.writeFile(finalPath, parsed.data, { flag: "wx" });
+        return `Imported attachment ${index} (${parsed.suggestedName}) to ${path.relative(path.resolve(projectRoot), finalPath).replace(/\\/g, "/")}.`;
+      },
+      {
+        name: "import_attachment",
+        description: "Import one user-attached file (image, PDF, Word, Excel, PowerPoint, TeX, text, …) into the project only when the requested deliverable needs the actual file. Attachments are numbered from 0; choose a project-relative target path such as docs/source.pdf or public/assets/hero.png. Do not import reference-only files.",
+        schema: z.object({
+          index: z.number().int().min(0).describe("Zero-based attachment index"),
+          targetPath: z.string().min(1).max(240).describe("Project-relative destination path"),
+        }),
+      }
+    );
+    // Avoid double-registering when attachedFiles aliases attachedImages.
+    if (!options.attachedImages?.length || options.attachedFiles !== options.attachedImages) {
+      tools.push(importAnyTool);
+    }
+  }
+  return tools;
 }
 
 /**

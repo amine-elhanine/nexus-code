@@ -11,6 +11,20 @@ export interface CustomSlashCommand {
   filePath?: string;
 }
 
+const MAX_COMMAND_FILE_BYTES = 100_000;
+const MAX_COMMAND_PROMPT_CHARS = 20_000;
+const VALID_COMMAND_NAME = /^[a-z0-9][a-z0-9_-]{0,31}$/i;
+
+async function isInsideProject(projectRoot: string, candidate: string): Promise<boolean> {
+  try {
+    const root = await fs.realpath(path.resolve(projectRoot));
+    const actual = await fs.realpath(candidate);
+    return actual === root || actual.startsWith(`${root}${path.sep}`);
+  } catch {
+    return false;
+  }
+}
+
 export const BUILTIN_COMMANDS: CustomSlashCommand[] = [
   {
     command: "/plan",
@@ -97,11 +111,14 @@ export async function discoverCustomCommands(projectRoot?: string): Promise<Cust
 
   for (const customDir of customDirs) {
     try {
+      if (!(await isInsideProject(projectRoot, customDir))) continue;
       const entries = await fs.readdir(customDir, { withFileTypes: true });
       for (const entry of entries) {
         if (entry.isFile() && (entry.name.endsWith(".md") || entry.name.endsWith(".txt"))) {
           const filePath = path.join(customDir, entry.name);
           try {
+            const stat = await fs.stat(filePath);
+            if (stat.size > MAX_COMMAND_FILE_BYTES || !(await isInsideProject(projectRoot, filePath))) continue;
             const raw = await fs.readFile(filePath, "utf8");
             const cmd = parseCommandFile(entry.name, raw, filePath);
             if (cmd) {
@@ -128,6 +145,7 @@ export async function discoverCustomCommands(projectRoot?: string): Promise<Cust
 
 export function parseCommandFile(fileName: string, content: string, filePath: string): CustomSlashCommand | null {
   const baseName = fileName.replace(/\.(md|txt)$/, "").toLowerCase();
+  if (!VALID_COMMAND_NAME.test(baseName)) return null;
   const commandName = baseName.startsWith("/") ? baseName : `/${baseName}`;
 
   let name = baseName.charAt(0).toUpperCase() + baseName.slice(1);
@@ -154,6 +172,8 @@ export function parseCommandFile(fileName: string, content: string, filePath: st
     }
   }
 
+  if (!promptTemplate || promptTemplate.length > MAX_COMMAND_PROMPT_CHARS) return null;
+  if (name.length > 120 || description.length > 500) return null;
   return {
     command: commandName,
     name,

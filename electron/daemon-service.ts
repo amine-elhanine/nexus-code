@@ -77,13 +77,18 @@ export class DaemonService {
 
     try {
       const isWin = process.platform === "win32";
-      const child = spawn(info.command, {
-        shell: true,
+      // Invoke the shell explicitly rather than using spawn({ shell: true }),
+      // which causes Node's shell-string deprecation warning and can change
+      // quoting semantics across Node versions.
+      const shell = isWin ? (process.env.ComSpec || "cmd.exe") : (process.env.SHELL || "/bin/sh");
+      const shellArgs = isWin ? ["/d", "/s", "/c", info.command] : ["-c", info.command];
+      const child = spawn(shell, shellArgs, {
         cwd: info.cwd,
         // Dev servers don't need host secrets; passing the full parent
         // environment would hand them every API key in it.
         env: daemonEnvironment(),
         windowsHide: true,
+        windowsVerbatimArguments: isWin,
         detached: !isWin,
       });
 

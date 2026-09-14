@@ -31,7 +31,9 @@ function hostRuntimes(): { command: string; env: NodeJS.ProcessEnv }[] {
 
 function commandExists(command: string): boolean {
   try {
-    execFileSync(command, ["--version"], { stdio: "ignore", shell: process.platform === "win32" });
+    // Probe the executable directly. Using shell:true here triggers Node's
+    // shell-argument deprecation warning and is unnecessary for `node`.
+    execFileSync(command, ["--version"], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -174,8 +176,8 @@ class TerminalService {
 
   private createPipesSession(id: string, cwd: string, onData: (data: string) => void): TerminalSession {
     const isWindows = os.platform() === "win32";
-    const shell = isWindows ? "powershell.exe" : process.env.SHELL || "bash";
-    const shellArgs = isWindows ? ["-NoLogo"] : ["-i"];
+    const shell = isWindows ? (process.env.ComSpec || "cmd.exe") : process.env.SHELL || "bash";
+    const shellArgs = isWindows ? ["/Q"] : ["-i"];
     const proc = spawn(shell, shellArgs, {
       cwd,
       env: { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" },

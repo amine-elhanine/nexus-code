@@ -119,10 +119,13 @@ export async function revertWorkspaceFile(projectRoot: string, relativePath: str
       return true;
     }
     try {
-      await execFileAsync("git", ["checkout", "HEAD", "--", normalized], { cwd: root, maxBuffer: 100_000 });
+      // Preserve the committed blob's bytes on Windows instead of allowing a
+      // user's global core.autocrlf setting to rewrite line endings during a
+      // discard operation.
+      await execFileAsync("git", ["-c", "core.autocrlf=false", "checkout", "HEAD", "--", normalized], { cwd: root, maxBuffer: 100_000 });
       return true;
     } catch {
-      await execFileAsync("git", ["restore", normalized], { cwd: root, maxBuffer: 100_000 });
+      await execFileAsync("git", ["-c", "core.autocrlf=false", "restore", normalized], { cwd: root, maxBuffer: 100_000 });
       return true;
     }
   } catch (error) {
@@ -154,7 +157,7 @@ const CLEAN_EXCLUDES = [
 export async function revertAllWorkspaceChanges(projectRoot: string): Promise<boolean> {
   const root = path.resolve(projectRoot);
   try {
-    try { await execFileAsync("git", ["checkout", "HEAD", "--", "."], { cwd: root, maxBuffer: 200_000 }); } catch { /* ignore */ }
+    try { await execFileAsync("git", ["-c", "core.autocrlf=false", "checkout", "HEAD", "--", "."], { cwd: root, maxBuffer: 200_000 }); } catch { /* ignore */ }
     // git clean -fd deletes EVERYTHING untracked — including telemetry dirs,
     // dependency installs, build output and local secrets. Those are never
     // "agent changes": exclude them explicitly. (UI still confirms first.)

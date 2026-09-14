@@ -4,8 +4,7 @@
  *   backstop against catastrophic agent mistakes, not a sandbox: it blocks
  *   wiping disks/home dirs, killing the machine, and seizing accounts — never
  *   legitimate workflows.
- * - ask: reserved for future UI approval (currently treated as allow-but-logged
- *   at the execution layer; the agent prompt tells the model to prefer safe variants).
+ * - ask: requires an explicit user approval before execution.
  * - allow: everything else.
  *
  * Deliberately NOT blocked (would break normal dev work): `curl … | sh`
@@ -45,11 +44,28 @@ const DENY_PATTERNS: RegExp[] = [
 ];
 
 export type CommandPermission = "allow" | "ask" | "deny";
+export type CommandPolicy = { allow?: string[]; ask?: string[]; deny?: string[] };
 
-export function classifyCommand(command: string): CommandPermission {
+function matchesPolicy(command: string, patterns: unknown): boolean {
+  if (!Array.isArray(patterns)) return false;
+  return patterns.some((pattern) => {
+    if (typeof pattern !== "string" || !pattern.trim()) return false;
+    const escaped = pattern.trim().replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+    return new RegExp(`^${escaped}$`, "i").test(command);
+  });
+}
+
+export function classifyCommand(command: string, policy: CommandPolicy = {}): CommandPermission {
   const cmd = (command || "").trim();
   if (!cmd) return "deny";
   if (DENY_PATTERNS.some((re) => re.test(cmd))) return "deny";
+  if (matchesPolicy(cmd, policy.deny)) return "deny";
+  if (matchesPolicy(cmd, policy.allow)) return "allow";
+  if (matchesPolicy(cmd, policy.ask)) return "ask";
+  if (/\bgit\s+(push|reset|clean|rebase)\b/i.test(cmd) ||
+      /\b(?:npm|pnpm|yarn|pip|pip3|cargo)\s+(?:install|add|remove|uninstall)\b/i.test(cmd) ||
+      /\bcurl\b[^\n|]*\|\s*(?:sh|bash)\b/i.test(cmd) ||
+      /\b(?:Invoke-WebRequest|iwr|irm)\b/i.test(cmd)) return "ask";
   return "allow";
 }
 

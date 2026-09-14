@@ -1,6 +1,7 @@
 import React from "react";
 import { BookOpen, FileText, HelpCircle, Languages, Save, Split } from "lucide-react";
 import { Modal } from "../common/Modal.js";
+import { RichMarkdown } from "../common/RichMarkdown.js";
 import type { NotebookPassage } from "../../types.js";
 
 export type PassageAction = "explain" | "simplify" | "compare" | "quiz" | "save";
@@ -16,23 +17,23 @@ export function SourcePassageModal({ passage, onClose, onAction }: { passage: No
         {passage.sectionSummary && (
           <div className="passage-summary">
             <span className="passage-label">SECTION SUMMARY</span>
-            <p>{passage.sectionSummary}</p>
+            <RichMarkdown source={passage.sectionSummary} />
           </div>
         )}
         {passage.prevText && (
           <details className="passage-neighbor">
             <summary>Previous passage</summary>
-            <p>{passage.prevText}</p>
+            <RichMarkdown source={passage.prevText} />
           </details>
         )}
         <div className="passage-main">
           <span className="passage-label">CITED PASSAGE</span>
-          <p>{passage.text}</p>
+          <RichMarkdown source={passage.text} />
         </div>
         {passage.nextText && (
           <details className="passage-neighbor">
             <summary>Next passage</summary>
-            <p>{passage.nextText}</p>
+            <RichMarkdown source={passage.nextText} />
           </details>
         )}
         <div className="settings-note">

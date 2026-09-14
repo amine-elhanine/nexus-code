@@ -117,6 +117,7 @@ const nexusApi = {
   // Interactive Terminal
   createTerminal: (id: string, cwd?: string, cols?: number, rows?: number) => invoke("terminal:create", { id, cwd, cols, rows }),
   // In-app updates
+  getUpdaterState: () => invoke("updater:getState"),
   checkForUpdates: () => invoke("updater:check"),
   quitAndInstallUpdate: () => invoke("updater:quit-and-install"),
   getAppVersion: () => invoke("app:getVersion"),
@@ -184,8 +185,14 @@ const nexusApi = {
   removeEmbeddingProvider: (providerId: string) => invoke("notebook:embedding-provider:remove", providerId),
   testEmbeddingProvider: (input: { id?: string; kind: string; baseUrl?: string; apiKey?: string; model: string }) => invoke("notebook:embedding-provider:test", input),
 
-  runAgent: (payload: { request: string; images?: string[]; providerId?: string; model?: string; mode?: string }) => invoke("agent:run", payload),
+  runAgent: (payload: { request: string; images?: string[]; attachments?: Array<{ url: string; name: string; mimeType: string; size: number }>; providerId?: string; model?: string; mode?: string }) => invoke("agent:run", payload),
   cancelAgent: (sessionId?: string) => invoke("agent:cancel", sessionId),
+  resolveCommandApproval: (id: string, decision: "once" | "session" | "deny") => invoke("command:approval", { id, decision }),
+  onCommandApprovalRequest: (listener: (request: { id: string; runId?: string; command: string; cwd: string; reason: string; approvalKey?: string; createdAt: string }) => void) => {
+    const handler = (_event: IpcRendererEvent, request: { id: string; runId?: string; command: string; cwd: string; reason: string; approvalKey?: string; createdAt: string }) => listener(request);
+    ipcRenderer.on("command:approval-request", handler);
+    return () => ipcRenderer.removeListener("command:approval-request", handler);
+  },
   onAgentEvent: (listener: (event: AgentEvent) => void) => {
     const handler = (_event: IpcRendererEvent, payload: AgentEvent) => listener(payload);
     ipcRenderer.on("agent:event", handler);

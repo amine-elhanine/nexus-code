@@ -55,7 +55,8 @@ export type NotebookParserConfig = {
 };
 export type ProjectRecord = { id: string; name: string; root: string; createdAt: string; updatedAt: string; memory: string; sessions: SessionRecord[] };
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
-export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; subagent?: SubagentItem; detail?: string }>; model?: { providerId: string; model: string } };
+export type ChatAttachment = { url: string; name: string; mimeType: string; size: number };
+export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; subagent?: SubagentItem; artifact?: unknown; detail?: string }>; model?: { providerId: string; model: string } };
 type PersistedState = { projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; appSettings?: AppSettings; notebookParser?: NotebookParserConfig };
 
 let cache: PersistedState | null = null;

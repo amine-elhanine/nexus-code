@@ -1,13 +1,14 @@
 import React, { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 import {
   Coins, Sparkles, FolderOpen, Plus, Square, ArrowUp,
-  Image as ImageIcon, FileText, Search, Presentation, Table2, Mic,
+  Paperclip, FileText, Search, Presentation, Table2, Mic,
 } from "lucide-react";
 import { ModelSelect } from "./AgentView.js";
 import { VoiceDictationButton } from "../components/chat/VoiceDictationButton.js";
 import { ChatItemView, ActivityGroupView } from "../components/chat/ChatMessageItem.js";
 import { formatCost } from "../types.js";
-import type { ChatItem, ProviderConfig, ProviderDefinition, AgentUsage } from "../types.js";
+import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
+import type { ChatItem, ProviderConfig, ProviderDefinition, AgentUsage, ChatAttachment } from "../types.js";
 
 export type HomeFile = { path: string; name: string; size: number; modified: string };
 
@@ -42,7 +43,11 @@ export function HomeView({
   onNewChat,
   attachedImages,
   setAttachedImages,
+  attachments,
+  setAttachments,
   hasProvider,
+  onOpenImage,
+  onOpenAttachment,
 }: {
   messages: ChatItem[];
   draft: string;
@@ -67,7 +72,11 @@ export function HomeView({
   onNewChat: () => void;
   attachedImages: string[];
   setAttachedImages: (updater: (current: string[]) => string[]) => void;
+  attachments: ChatAttachment[];
+  setAttachments: (updater: (current: ChatAttachment[]) => ChatAttachment[]) => void;
   hasProvider: boolean;
+  onOpenImage?: (src: string) => void;
+  onOpenAttachment?: (attachment: ChatAttachment) => void;
 }) {
   const api = window.nexus || window.forgepilot;
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -91,6 +100,8 @@ export function HomeView({
           key={`activity-${pendingActivity[0].createdAt}-${transcriptNodes.length}`}
           events={pendingActivity}
           running={false}
+          onOpenImage={onOpenImage}
+          onOpenAttachment={onOpenAttachment}
         />
       );
       pendingActivity = [];
@@ -101,7 +112,7 @@ export function HomeView({
     else {
       flushActivity();
       transcriptNodes.push(
-        <ChatItemView key={`${message.createdAt}-${index}`} message={message} />
+        <ChatItemView key={`${message.createdAt}-${index}`} message={message} onOpenImage={onOpenImage} onOpenAttachment={onOpenAttachment} />
       );
     }
   });
@@ -115,24 +126,37 @@ export function HomeView({
     }
   }
 
+  function openAttachment(attachment: ChatAttachment) {
+    if (onOpenAttachment) {
+      onOpenAttachment(attachment);
+      return;
+    }
+    // Back-compat: image-only preview callback.
+    if (isImageAttachment(attachment)) onOpenImage?.(attachment.url);
+  }
+
   function handleImageFileSelect(event: React.ChangeEvent<HTMLInputElement>) {
     const fileList = event.target.files;
     if (!fileList) return;
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i];
-      if (file.type.startsWith("image/")) {
+      if (file.type || file.name) {
+        const mimeType = file.type || "application/octet-stream";
+        const isImage = mimeType.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(file.name);
         const reader = new FileReader();
         reader.onload = async (loadEvt) => {
           const rawUrl = loadEvt.target?.result as string;
           if (rawUrl) {
             if (api?.saveAttachment) {
               try {
-                const saved = await api.saveAttachment(rawUrl);
-                setAttachedImages((current) => [...current, saved.url]);
+                const saved = await api.saveAttachment(rawUrl, file.name);
+                setAttachments((current) => [...current, { url: saved.url, name: file.name, mimeType, size: file.size }]);
+                if (isImage) setAttachedImages((current) => [...current, saved.url]);
                 return;
               } catch { /* ignore fallback */ }
             }
-            setAttachedImages((current) => [...current, rawUrl]);
+            setAttachments((current) => [...current, { url: rawUrl, name: file.name, mimeType, size: file.size }]);
+            if (isImage) setAttachedImages((current) => [...current, rawUrl]);
           }
         };
         reader.readAsDataURL(file);
@@ -214,9 +238,11 @@ export function HomeView({
           )}
           {transcriptNodes}
           {running && (
-            <ActivityGroupView
-              events={liveEvents}
-              running
+          <ActivityGroupView
+            events={liveEvents}
+            running
+            onOpenImage={onOpenImage}
+            onOpenAttachment={onOpenAttachment}
               currentText={streamingText || (liveEvents.length ? undefined : "Starting the agent… the first step can take a while.")}
             />
           )}
@@ -228,20 +254,32 @@ export function HomeView({
           type="file"
           ref={imageInputRef}
           style={{ display: "none" }}
-          accept="image/*"
+          accept={ATTACHMENT_ACCEPT}
           multiple
           onChange={handleImageFileSelect}
         />
         <div className="agent-input" style={{ position: "relative" }}>
-          {attachedImages.length > 0 && (
+          {attachments.length > 0 && (
             <div className="image-attachments-bar">
-              {attachedImages.map((img, idx) => (
-                <div className="image-preview-chip" key={idx}>
-                  <img src={img} alt="Preview" className="image-preview-thumb" />
+              {attachments.map((attachment, idx) => (
+                <div className="image-preview-chip" key={`${attachment.url}-${idx}`}>
+                  <button
+                    className="attachment-chip-main"
+                    onClick={() => openAttachment(attachment)}
+                    title={`${attachment.name} — click to preview`}
+                  >
+                    {isImageAttachment(attachment)
+                      ? <img src={attachment.url} alt={attachment.name} className="image-preview-thumb" />
+                      : <FileText size={14} />}
+                    <span className="attachment-file-chip">
+                      <span className="attachment-file-name">{attachment.name}</span>
+                      <small>{formatAttachmentSize(attachment.size)}</small>
+                    </span>
+                  </button>
                   <button
                     className="image-preview-remove"
-                    onClick={() => setAttachedImages((current) => current.filter((_, i) => i !== idx))}
-                    title="Remove image"
+                    onClick={() => { setAttachments((current) => current.filter((_, i) => i !== idx)); setAttachedImages((current) => current.filter((image) => image !== attachment.url)); }}
+                    title={`Remove ${attachment.name}`}
                   >
                     ×
                   </button>
@@ -262,9 +300,9 @@ export function HomeView({
               <button
                 className="attach-button"
                 onClick={() => imageInputRef.current?.click()}
-                title="Attach screenshot / image"
+                title="Attach files (images, PDF, Word, Excel, PowerPoint, TeX, text)"
               >
-                <ImageIcon size={14} />
+                <Paperclip size={14} />
               </button>
               <VoiceDictationButton
                 onTranscript={(text) => setDraft(draft ? `${draft} ${text}` : text)}
@@ -281,7 +319,7 @@ export function HomeView({
             </div>
             <button
               className={`send-button${running ? " stop" : ""}`}
-              disabled={(!running && !draft.trim() && attachedImages.length === 0) || (!hasProvider && !running)}
+              disabled={(!running && !draft.trim() && attachments.length === 0) || (!hasProvider && !running)}
               onClick={running ? onStop : () => submit()}
               title={running ? "Stop" : hasProvider ? "Send" : "Configure a provider first"}
             >

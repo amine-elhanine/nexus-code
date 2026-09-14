@@ -39,11 +39,24 @@ const CODE_EXTENSIONS = new Set([
   ".toml", ".css", ".scss", ".html", ".sql", ".sh", ".bash",
 ]);
 
-function safePath(projectRoot: string, requested: string) {
-  const root = path.resolve(projectRoot);
+async function safePath(projectRoot: string, requested: string) {
+  const root = await fs.realpath(path.resolve(projectRoot));
   const candidate = path.resolve(root, requested || ".");
   if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
     throw new Error("Path escapes the selected project root.");
+  }
+  let probe = candidate;
+  while (probe !== root) {
+    try {
+      const realProbe = await fs.realpath(probe);
+      if (realProbe !== root && !realProbe.startsWith(`${root}${path.sep}`)) {
+        throw new Error("Path follows a symlink outside the selected project root.");
+      }
+      break;
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") throw error;
+      probe = path.dirname(probe);
+    }
   }
   return candidate;
 }
@@ -255,7 +268,7 @@ export function createCodeIntelligenceTools(projectRoot: string) {
   const getSymbolOutlineTool = tool(
     async ({ filePath }: { filePath: string }) => {
       try {
-        const target = safePath(projectRoot, filePath);
+        const target = await safePath(projectRoot, filePath);
         const content = await fs.readFile(target, "utf8");
         const lines = content.split(/\r?\n/).length;
         const symbols = parseSymbolsFromCode(content, path.basename(target));
@@ -350,7 +363,7 @@ export function createCodeIntelligenceTools(projectRoot: string) {
   const readFileRangeTool = tool(
     async ({ filePath, startLine = 1, endLine = 100 }: { filePath: string; startLine?: number; endLine?: number }) => {
       try {
-        const target = safePath(projectRoot, filePath);
+        const target = await safePath(projectRoot, filePath);
         const content = await fs.readFile(target, "utf8");
         const lines = content.split(/\r?\n/);
         const totalLines = lines.length;
@@ -387,7 +400,7 @@ export function createCodeIntelligenceTools(projectRoot: string) {
         return `Invalid regex pattern: ${err instanceof Error ? err.message : String(err)}`;
       }
 
-      const searchRoot = pathPrefix ? safePath(projectRoot, pathPrefix) : path.resolve(projectRoot);
+      const searchRoot = pathPrefix ? await safePath(projectRoot, pathPrefix) : path.resolve(projectRoot);
       const fixedString = isRegex ? cleanQuery : cleanQuery.replace(/[.*+?^$+( )|[\]\\]/g, (c) => (c === "\n" ? "\\n" : `\\${c}`));
       let hits: GrepHit[] | null = pathPrefix
         ? null // git grep is root-wide; a scoped prefix goes straight to the walk
