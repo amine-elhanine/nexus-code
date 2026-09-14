@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { app } from 'electron';
 import {
   beginCommandRun,
@@ -12,10 +13,11 @@ import {
   executeCommand,
   getAgentBackend,
 } from '../dist-electron/command-service.js';
-import { isDeniedCommand } from '../dist-electron/permissions.js';
+import { isDeniedCommand, classifyCommand } from '../dist-electron/permissions.js';
+import { requestCommandApproval, resolveCommandApproval, setApprovalNotifier, pendingApprovalCount } from '../dist-electron/approval-service.js';
 import { getRepoMapSection } from '../dist-electron/repo-map-service.js';
 import { upsertProject, upsertProvider, removeProvider, listProviders, createSession, updateSession, getSession, appendSessionMessage, appendSessionMessages, calculateSessionUsage } from '../dist-electron/store.js';
-import { pickVerificationCommand, findTargetedTests, buildToolContextBlock, toolResultExcerpt } from '../dist-electron/agent-service.js';
+import { pickVerificationCommand, pickVerificationCommands, findTargetedTests, buildToolContextBlock, toolResultExcerpt } from '../dist-electron/agent-service.js';
 import {
   revertWorkspaceFile,
   revertAllWorkspaceChanges,
@@ -25,7 +27,7 @@ import {
   deleteWorkspaceCheckpoint,
 } from '../dist-electron/diff-service.js';
 import { parseSymbolsFromCode, formatOutline, createCodeIntelligenceTools } from '../dist-electron/code-tools.js';
-import { SUBAGENT_CONFIGS, createSubagentDelegationTool, calculateAgentUsage, getModelPricing } from '../dist-electron/subagent-service.js';
+import { SUBAGENT_CONFIGS, createSubagentDelegationTool, calculateAgentUsage, getModelPricing, capSubagentOutput, MAX_SUBAGENTS_PER_RUN } from '../dist-electron/subagent-service.js';
 import { createSkill, importSkill, listSkills, deleteSkill, readSkillContent, ensureSkillSourceDirs, skillVirtualPath } from '../dist-electron/skills-service.js';
 import { isGitRepo, createSessionWorktree, getSessionWorktree, mergeWorktreeToMain, discardSessionWorktree } from '../dist-electron/worktree-service.js';
 import { compactHistory, estimateTokens } from '../dist-electron/context-service.js';
@@ -33,6 +35,7 @@ import { saveArtifact, getArtifact, listArtifacts, updateArtifactStatus } from '
 import { TrajectoryLogger, readSessionTrajectory } from '../dist-electron/trajectory-service.js';
 import { discoverProjectRules } from '../dist-electron/rules-service.js';
 import { createBrowserTools } from '../dist-electron/browser-tool.js';
+import { createEditTools } from '../dist-electron/edit-tools.js';
 import { terminalService } from '../dist-electron/terminal-service.js';
 import { discoverCustomCommands, substituteCommandPlaceholders } from '../dist-electron/custom-commands-service.js';
 import { DaemonService, daemonService } from '../dist-electron/daemon-service.js';
@@ -154,6 +157,105 @@ app.whenReady().then(async () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
+  await test('risky commands require explicit approval and denied approvals never execute', async () => {
+    assert.equal(classifyCommand('npm install'), 'ask');
+    assert.equal(classifyCommand('git push origin main'), 'ask');
+    assert.equal(classifyCommand('npm run check'), 'allow');
+    let request;
+    setApprovalNotifier((next) => { request = next; });
+    const pending = requestCommandApproval({ runId: 'approval-test', command: 'npm install', cwd: process.cwd(), reason: 'test' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(request?.id);
+    assert.equal(pendingApprovalCount(), 1);
+    assert.equal(resolveCommandApproval(request.id, 'deny'), true);
+    assert.equal(await pending, 'deny');
+    assert.equal(pendingApprovalCount(), 0);
+    const sessionApproval = requestCommandApproval({ runId: 'approval-session', approvalKey: 'dependency-change', command: 'npm install', cwd: process.cwd(), reason: 'test' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(request?.id);
+    assert.equal(resolveCommandApproval(request.id, 'session'), true);
+    assert.equal(await sessionApproval, 'session');
+    assert.equal(await requestCommandApproval({ runId: 'approval-session', approvalKey: 'dependency-change', command: 'npm add vite', cwd: process.cwd(), reason: 'test' }), 'session');
+    setApprovalNotifier(null);
+  });
+
+  await test('project command policy supports safe explicit allow/ask/deny glob rules', () => {
+    assert.equal(classifyCommand('npm install', { allow: ['npm *'] }), 'allow');
+    assert.equal(classifyCommand('git push origin main', { ask: ['git push *'] }), 'ask');
+    assert.equal(classifyCommand('npm run check', { deny: ['npm run *'] }), 'deny');
+    assert.equal(classifyCommand('rm -rf /'), 'deny', 'hard safety deny cannot be overridden by project config');
+  });
+
+  console.log('\n=== 3b. Transactional Patch Tests ===');
+
+  await test('apply_patch rolls back earlier operations when a later operation fails', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-patch-'));
+    await fs.writeFile(path.join(tempDir, 'existing.txt'), 'original\n');
+    const [patchTool] = createEditTools(tempDir);
+    const result = await patchTool.invoke({ patchText: '*** Update File: existing.txt\nchanged\n*** Update File: missing.txt\nshould fail' });
+    assert.match(String(result), /apply_patch failed/i);
+    assert.equal(await fs.readFile(path.join(tempDir, 'existing.txt'), 'utf8'), 'original\n');
+  });
+
+  await test('apply_patch rejects add-overwrite and update-missing conflicts', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-patch-conflict-'));
+    await fs.writeFile(path.join(tempDir, 'existing.txt'), 'original\n');
+    const [patchTool] = createEditTools(tempDir);
+    const add = await patchTool.invoke({ patchText: '*** Add File: existing.txt\nreplacement' });
+    assert.match(String(add), /existing file|already exists/i);
+    assert.equal(await fs.readFile(path.join(tempDir, 'existing.txt'), 'utf8'), 'original\n');
+    const update = await patchTool.invoke({ patchText: '*** Update File: missing.txt\ncontent' });
+    assert.match(String(update), /missing file/i);
+  });
+
+  await test('apply_patch rejects stale hash-guarded updates without changing the file', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-patch-stale-'));
+    const file = path.join(tempDir, 'existing.txt');
+    await fs.writeFile(file, 'current\n');
+    const [patchTool] = createEditTools(tempDir);
+    const wrongHash = crypto.createHash('sha256').update('old\n').digest('hex');
+    const result = await patchTool.invoke({ patchText: `*** Update File: existing.txt (sha256: ${wrongHash})\nreplacement` });
+    assert.match(String(result), /stale update rejected/i);
+    assert.equal(await fs.readFile(file, 'utf8'), 'current\n');
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  await test('apply_patch rejects symlink paths that escape the project root', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-patch-symlink-'));
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-patch-outside-'));
+    try {
+      await fs.writeFile(path.join(outsideDir, 'secret.txt'), 'secret\n');
+      try {
+        await fs.symlink(outsideDir, path.join(tempDir, 'linked'), 'junction');
+      } catch (error) {
+        if (process.platform === 'win32') return; // junction creation may be unavailable in restricted hosts
+        throw error;
+      }
+      const [patchTool] = createEditTools(tempDir);
+      const result = await patchTool.invoke({ patchText: '*** Update File: linked/secret.txt\nnot secret' });
+      assert.match(String(result), /symlink|outside/i);
+      assert.equal(await fs.readFile(path.join(outsideDir, 'secret.txt'), 'utf8'), 'secret\n');
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+      await fs.rm(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  await test('attached images can be imported only when the agent chooses a project path', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-attachment-import-'));
+    try {
+      const [patchTool, importTool] = createEditTools(tempDir, { attachedImages: ['data:image/png;base64,aGVsbG8='] });
+      assert.equal(patchTool.name, 'apply_patch');
+      assert.equal(importTool.name, 'import_attached_image');
+      const imported = await importTool.invoke({ index: 0, targetPath: 'public/assets/reference.png' });
+      assert.match(String(imported), /Imported attached image/);
+      assert.equal(await fs.readFile(path.join(tempDir, 'public', 'assets', 'reference.png'), 'utf8'), 'hello');
+      await assert.rejects(() => importTool.invoke({ index: 0, targetPath: '../outside.png' }), /escapes/i);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   console.log('\n=== 4. Verification Command Selection Tests ===');
 
   await test('Verification command picks npm run typecheck when typecheck script exists', async () => {
@@ -231,6 +333,17 @@ app.whenReady().then(async () => {
     const cmd = pickVerificationCommand(tempDir);
     assert.equal(cmd, null);
     await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  await test('Project verification configuration overrides heuristics and supports multiple gates', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-verification-config-'));
+    try {
+      await fs.mkdir(path.join(tempDir, '.nexus'), { recursive: true });
+      await fs.writeFile(path.join(tempDir, '.nexus', 'verification.json'), JSON.stringify({ commands: ['npm run build', 'npm test', 'npm run integration'] }), 'utf8');
+      assert.deepEqual(pickVerificationCommands(tempDir), ['npm run build', 'npm test', 'npm run integration']);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   console.log('\n=== 5. Checkpointing & Revert Tests ===');
@@ -617,6 +730,8 @@ pub async fn execute_task(task: &str) -> bool { true }
 
     assert.equal(delegationTool.name, 'delegate_task');
     assert.ok(delegationTool.description.includes('subagent'));
+    assert.equal(MAX_SUBAGENTS_PER_RUN, 3);
+    assert.ok(capSubagentOutput('x'.repeat(20), 10).length < 20);
   });
 
   await test('Researcher subagent backend blocks write operations in read-only mode', async () => {
@@ -1088,6 +1203,26 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.doesNotMatch(tiny, /file0/);
   });
 
+  await test('compactHistory treats the token budget as a hard ceiling for oversized recent turns', () => {
+    const compacted = compactHistory([
+      { role: 'user', text: 'a'.repeat(1800) },
+      { role: 'assistant', text: 'b'.repeat(1800) },
+      { role: 'user', text: 'c'.repeat(1800) },
+      { role: 'assistant', text: 'latest answer' },
+    ], 100);
+    const estimated = compacted.reduce((sum, item) => sum + estimateTokens(item.text), 0);
+    assert.ok(estimated <= 100, `estimated ${estimated} tokens exceeded budget`);
+    assert.match(compacted[compacted.length - 1].text, /latest answer/);
+  });
+
+  await test('buildToolContextBlock preserves verification failure details for resumed runs', () => {
+    const block = buildToolContextBlock([
+      { role: 'event', kind: 'tool', text: 'Verification failed · npm run check', detail: 'TS2322: Type string is not assignable to type number' },
+    ]);
+    assert.match(block, /Verification failed · npm run check/);
+    assert.match(block, /TS2322/);
+  });
+
   console.log('\n=== 14. Artifacts Lifecycle & Status Tests ===');
 
   await test('saveArtifact, getArtifact, listArtifacts and updateArtifactStatus work end-to-end', async () => {
@@ -1305,6 +1440,12 @@ pub async fn execute_task(task: &str) -> bool { true }
         diffSummary: '3 files changed (+45/-10)',
         input: 'Focus on memory consumption',
       });
+      assert.match(expanded, /src\/core\/engine\.ts/);
+      await fs.writeFile(path.join(tempDir, '.nexus', 'commands', 'bad name.md'), 'should not load', 'utf8');
+      await fs.writeFile(path.join(tempDir, '.nexus', 'commands', 'huge.md'), 'x'.repeat(20_001), 'utf8');
+      const hardened = await discoverCustomCommands(tempDir);
+      assert.equal(hardened.some((c) => c.command === '/bad name'), false);
+      assert.equal(hardened.some((c) => c.command === '/huge'), false);
 
       assert.match(expanded, /Perform an extensive code quality audit on src\/core\/engine\.ts/);
       assert.match(expanded, /branch feature\/elite-superpowers/);
@@ -1490,7 +1631,8 @@ pub async fn execute_task(task: &str) -> bool { true }
     try {
       await fs.mkdir(path.join(tempDir, 'src'), { recursive: true });
       await fs.mkdir(path.join(tempDir, 'node_modules', 'dep'), { recursive: true });
-      await fs.writeFile(path.join(tempDir, 'src', 'app.ts'), 'export class App {\n  start() {}\n}\nexport function boot() {}\n', 'utf8');
+      await fs.writeFile(path.join(tempDir, 'src', 'helper.ts'), 'export const helper = true;\n', 'utf8');
+      await fs.writeFile(path.join(tempDir, 'src', 'app.ts'), 'import { helper } from "./helper";\nexport class App {\n  start() { return helper; }\n}\nexport function boot() {}\n', 'utf8');
       await fs.writeFile(path.join(tempDir, 'README.md'), '# Demo\n', 'utf8');
       await fs.writeFile(path.join(tempDir, 'node_modules', 'dep', 'index.js'), 'function hidden() {}\n', 'utf8');
 
@@ -1499,6 +1641,7 @@ pub async fn execute_task(task: &str) -> bool { true }
       assert.match(first, /src\/app\.ts/);
       assert.match(first, /App/);
       assert.match(first, /boot/);
+      assert.match(first, /imports: \.\/helper/);
       assert.match(first, /README\.md/);
       assert.doesNotMatch(first, /node_modules/);
       // Cache file written

@@ -33,6 +33,35 @@ export type SubagentEventHandler = (event: {
   subagent: SubagentItem;
 }) => void;
 
+export const MAX_SUBAGENTS_PER_RUN = 3;
+export const MAX_SUBAGENT_OUTPUT_CHARS = 12_000;
+const activeSubagents = new Map<string, number>();
+
+function runKey(runId?: string) { return runId || "global"; }
+function tryAcquireSubagent(runId?: string): boolean {
+  const key = runKey(runId);
+  const active = activeSubagents.get(key) || 0;
+  if (active >= MAX_SUBAGENTS_PER_RUN) return false;
+  activeSubagents.set(key, active + 1);
+  return true;
+}
+function releaseSubagent(runId?: string) {
+  const key = runKey(runId);
+  const next = (activeSubagents.get(key) || 1) - 1;
+  if (next <= 0) activeSubagents.delete(key);
+  else activeSubagents.set(key, next);
+}
+
+export function capSubagentOutput(output: string, maxChars = MAX_SUBAGENT_OUTPUT_CHARS): string {
+  if (output.length <= maxChars) return output;
+  const marker = `\n…[subagent output truncated: ${output.length} chars total]…\n`;
+  if (maxChars <= marker.length) return marker.slice(0, maxChars);
+  const available = maxChars - marker.length;
+  const head = Math.ceil(available * 0.7);
+  const tail = available - head;
+  return `${output.slice(0, head)}${marker}${output.slice(-tail)}`;
+}
+
 export const SUBAGENT_CONFIGS: Record<
   SubagentRole,
   {
@@ -209,6 +238,10 @@ export async function executeSubagentTask(options: {
   const config = SUBAGENT_CONFIGS[role] || SUBAGENT_CONFIGS.researcher;
   const subagentId = `sub-${role}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
+  if (!task.trim()) return `[Subagent: ${config.title} Failed]\nA subagent task is required.`;
+  if (task.length > 4_000) return `[Subagent: ${config.title} Failed]\nSubagent task is too large; narrow it to a focused subtask (maximum 4,000 characters).`;
+  if (!tryAcquireSubagent(runId)) return `[Subagent: ${config.title} Failed]\nSubagent concurrency limit reached (${MAX_SUBAGENTS_PER_RUN} active tasks for this run).`;
+
   const subagentItem: SubagentItem = {
     id: subagentId,
     role,
@@ -291,7 +324,7 @@ export async function executeSubagentTask(options: {
                       summary,
                       timestamp: new Date().toISOString(),
                     };
-                    subagentItem.steps.push(step);
+                    if (subagentItem.steps.length < 100) subagentItem.steps.push(step);
                     onEvent?.({ type: "subagent_step", subagent: { ...subagentItem } });
                   }
                 }
@@ -330,7 +363,7 @@ export async function executeSubagentTask(options: {
     });
 
     const lastMsg = finalMessages[finalMessages.length - 1];
-    const answer = textFromMessage(lastMsg) || `Subagent [${config.title}] completed task without text output.`;
+    const answer = capSubagentOutput(textFromMessage(lastMsg) || `Subagent [${config.title}] completed task without text output.`);
     let totalInputTokens = usage.inputTokens;
     let totalOutputTokens = usage.outputTokens;
     if (!usage.sawExactOutput && totalOutputTokens === 0) totalOutputTokens = Math.max(1, Math.round(answer.length / 4));
@@ -348,6 +381,8 @@ export async function executeSubagentTask(options: {
     subagentItem.output = `Subagent failed: ${errorMsg}`;
     onEvent?.({ type: "subagent_finish", subagent: { ...subagentItem } });
     return `[Subagent: ${config.title} Failed]\n${errorMsg}`;
+  } finally {
+    releaseSubagent(runId);
   }
 }
 
@@ -385,7 +420,7 @@ export function createSubagentDelegationTool(options: {
       description: "Delegate an isolated sub-task to a specialized subagent (use sparingly, only for genuinely independent multi-file work — never for simple lookups or single-file edits). 'researcher' explores files, symbols, and patterns in read-only mode to prevent polluting main context. 'tester' runs test suites and diagnoses errors. 'coder' applies surgical modifications.",
       schema: z.object({
         role: z.enum(["researcher", "tester", "coder"]).describe("The specialized role: 'researcher' for codebase investigation, 'tester' for test execution, 'coder' for code editing."),
-        task: z.string().describe("Clear, actionable instructions for the subagent describing what to find, test, or implement."),
+        task: z.string().min(1).max(4_000).describe("Clear, focused instructions for the subagent describing what to find, test, or implement. Maximum 4,000 characters."),
       }),
     }
   );

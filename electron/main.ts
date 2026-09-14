@@ -34,6 +34,7 @@ import { discoverCustomCommands } from "./custom-commands-service.js";
 import { daemonService } from "./daemon-service.js";
 import { agentBrowserService, type AgentBrowserResponse } from "./browser-service.js";
 import { updaterService, type UpdaterState } from "./updater-service.js";
+import { cancelCommandApprovals, resolveCommandApproval, setApprovalNotifier, type CommandApprovalRequest } from "./approval-service.js";
 import {
   appendNotebookMessage, createNotebook, createNotebookChat, deleteNotebook, deleteNotebookChat, deleteNotebookSource,
   deleteNotebookNote, getNotebookSettings, importSourceBuffer, listNotebookChats, listNotebookNotes, listNotebookSources, listNotebooks,
@@ -96,6 +97,7 @@ function createWindow() {
     if (/^https?:/i.test(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
+  setApprovalNotifier((request) => mainWindow?.webContents.send("command:approval-request", request));
 }
 
 // Agent events are tagged with the session they belong to, so the renderer can
@@ -130,6 +132,68 @@ function attachmentFileName(attachmentUrl: string): string {
 // The model APIs need a fetchable URL for images: nexus-attachment:// is a
 // renderer-only scheme. Convert saved attachments back to inline base64
 // data URLs before they go anywhere near a provider.
+const ATTACHMENT_MIME_BY_EXT: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  bmp: "image/bmp",
+  pdf: "application/pdf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ppsx: "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+  tex: "text/x-tex",
+  md: "text/markdown",
+  markdown: "text/markdown",
+  txt: "text/plain",
+  csv: "text/csv",
+  tsv: "text/tab-separated-values",
+  json: "application/json",
+  yaml: "text/yaml",
+  yml: "text/yaml",
+  xml: "application/xml",
+  html: "text/html",
+  htm: "text/html",
+  log: "text/plain",
+  toml: "text/plain",
+};
+const ATTACHMENT_EXT_BY_MIME: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/svg+xml": "svg",
+  "image/bmp": "bmp",
+  "application/pdf": "pdf",
+  "application/msword": "doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.ms-excel": "xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.ms-powerpoint": "ppt",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+  "application/vnd.openxmlformats-officedocument.presentationml.slideshow": "ppsx",
+  "text/x-tex": "tex",
+  "text/markdown": "md",
+  "text/plain": "txt",
+  "text/csv": "csv",
+  "text/tab-separated-values": "tsv",
+  "application/json": "json",
+  "text/yaml": "yaml",
+  "application/xml": "xml",
+  "text/html": "html",
+};
+
+function attachmentMimeForFileName(fileName: string): string {
+  const ext = path.extname(fileName).slice(1).toLowerCase();
+  return ATTACHMENT_MIME_BY_EXT[ext] || "application/octet-stream";
+}
+
 async function resolveImageForModel(imageUrl: string): Promise<string> {
   if (!imageUrl.startsWith("nexus-attachment://")) return imageUrl;
   const fileName = attachmentFileName(imageUrl);
@@ -137,8 +201,30 @@ async function resolveImageForModel(imageUrl: string): Promise<string> {
   const filePath = path.join(app.getPath("userData"), "attachments", fileName);
   const buffer = await fs.readFile(filePath);
   const ext = path.extname(fileName).slice(1).toLowerCase();
-  const mime = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+  const mime = ATTACHMENT_MIME_BY_EXT[ext] || "application/octet-stream";
   return `data:${mime};base64,${buffer.toString("base64")}`;
+}
+
+// Raw bytes for any attachment URL (nexus-attachment:// file or inline
+// data: URL). Used to extract document text for the model and to let the
+// agent import non-image files into the project.
+async function resolveAttachmentBytes(attachmentUrl: string): Promise<{ buffer: Buffer; fileName: string; mimeType: string }> {
+  if (attachmentUrl.startsWith("data:")) {
+    const match = attachmentUrl.match(/^data:([^;,]+)?(?:;charset=[^;,]+)?;base64,([\s\S]+)$/);
+    if (!match) throw new Error("Unsupported attachment encoding.");
+    const mimeType = (match[1] || "application/octet-stream").toLowerCase();
+    const buffer = Buffer.from(match[2].replace(/\s/g, ""), "base64");
+    const ext = ATTACHMENT_EXT_BY_MIME[mimeType] || "bin";
+    return { buffer, fileName: `attachment.${ext}`, mimeType };
+  }
+  if (attachmentUrl.startsWith("nexus-attachment://")) {
+    const fileName = attachmentFileName(attachmentUrl);
+    if (!fileName) throw new Error("Invalid attachment URL.");
+    const filePath = path.join(app.getPath("userData"), "attachments", fileName);
+    const buffer = await fs.readFile(filePath);
+    return { buffer, fileName, mimeType: attachmentMimeForFileName(fileName) };
+  }
+  throw new Error("Unsupported attachment URL.");
 }
 
 app.whenReady().then(async () => {
@@ -158,6 +244,7 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("window:close", () => { mainWindow?.close(); });
   ipcMain.handle("window:isMaximized", () => mainWindow?.isMaximized() ?? false);
+  ipcMain.handle("command:approval", (_event, payload: { id: string; decision: "once" | "session" | "deny" }) => resolveCommandApproval(payload.id, payload.decision));
 
   // Two fully separate browser sessions — Home and Code share nothing
   // (cookies, storage, cache, logins). Each mode's visible tabs and the
@@ -475,18 +562,35 @@ app.whenReady().then(async () => {
     const attachmentsDir = path.join(app.getPath("userData"), "attachments");
     await fs.mkdir(attachmentsDir, { recursive: true });
 
+    // Accept any data URL (images, PDFs, Office docs, TeX, …), not just
+    // images. Extension prefers the original filename so .docx stays .docx
+    // (mime sniffing alone can't distinguish Office containers); the data-URL
+    // mime is the fallback. The hash covers raw bytes so identical uploads
+    // dedupe to one file.
     let base64Data = payload.data;
-    let ext = "png";
-    const match = payload.data.match(/^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/);
+    let mimeType = "application/octet-stream";
+    const match = payload.data.match(/^data:([^;,]+)?(?:;charset=[^;,]+)?;base64,([\s\S]+)$/);
     if (match) {
-      ext = match[1] === "jpeg" ? "jpg" : match[1];
-      base64Data = match[2];
+      mimeType = (match[1] || "application/octet-stream").toLowerCase();
+      base64Data = match[2].replace(/\s/g, "");
     }
-    const hash = crypto.createHash("sha256").update(base64Data).digest("hex").slice(0, 16);
-    const fileName = `${hash}.${ext}`;
-    const filePath = path.join(attachmentsDir, fileName);
-    await fs.writeFile(filePath, Buffer.from(base64Data, "base64"));
-    return { fileName, filePath, url: `nexus-attachment://${fileName}` };
+    const originalExt = (payload.filename?.split(".").pop() || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const mimeExt = ATTACHMENT_EXT_BY_MIME[mimeType];
+    // Trust a sane filename extension first (docx/xlsx/pptx/tex/…); fall back
+    // to the mime-derived one; never trust exotic suffixes on disk.
+    const ext = /^[a-z0-9]{1,10}$/.test(originalExt) && originalExt !== "bin"
+      ? originalExt === "jpeg" ? "jpg" : originalExt
+      : mimeExt || "bin";
+    const buffer = Buffer.from(base64Data, "base64");
+    if (!buffer.length) throw new Error("Attachment is empty.");
+    if (buffer.length > 25 * 1024 * 1024) throw new Error("Attachment is larger than 25 MB.");
+    const hash = crypto.createHash("sha256").update(buffer).digest("hex").slice(0, 16);
+    const safeBase = (payload.filename || "attachment").split(/[\\/]/).pop()!.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 60) || "attachment";
+    const fileName = `${hash}-${safeBase.includes(".") ? safeBase : `${safeBase}.${ext}`}`;
+    const normalizedName = fileName.toLowerCase().endsWith(`.${ext}`) ? fileName : `${fileName}.${ext}`;
+    const filePath = path.join(attachmentsDir, normalizedName);
+    await fs.writeFile(filePath, buffer);
+    return { fileName: normalizedName, filePath, url: `nexus-attachment://${normalizedName}`, mimeType };
   });
   ipcMain.handle("workspace:write", (_event, file: string, content: string) => writeWorkspaceFile(requireRoot(), file, content));
   ipcMain.handle("workspace:diff", async () => {
@@ -649,6 +753,10 @@ app.whenReady().then(async () => {
     mainWindow?.webContents.send("updater:status", state);
   });
   updaterService.init();
+  // Lets a (re)loaded renderer pick up the current state — e.g. an update
+  // that finished downloading before the UI subscribed — instead of
+  // sitting on "idle" with no install button.
+  ipcMain.handle("updater:getState", () => updaterService.getState());
   ipcMain.handle("updater:check", () => updaterService.check(false));
   ipcMain.handle("updater:quit-and-install", () => {
     updaterService.quitAndInstall();
@@ -660,7 +768,7 @@ app.whenReady().then(async () => {
   // session in one batch — tool traces and plans survive an app restart now.
   type RunTranscript = { items: Array<{ role: "event"; text: string; kind: AgentEvent["type"]; createdAt: string; plan?: AgentEvent["items"]; subagent?: AgentEvent["subagent"]; artifact?: AgentEvent["artifact"]; usage?: AgentEvent["usage"]; detail?: string }> };
 
-  ipcMain.handle("agent:run", async (_event, payload: { request: string; images?: string[]; providerId?: string; model?: string; mode?: string }) => {
+  ipcMain.handle("agent:run", async (_event, payload: { request: string; images?: string[]; attachments?: Array<{ url: string; name: string; mimeType: string; size: number }>; providerId?: string; model?: string; mode?: string }) => {
     const root = requireRoot();
     if (!activeProjectId || !activeSessionId) throw new Error("Create a session first.");
     if (activeRunSessions.has(activeSessionId)) throw new Error("An agent run is already in progress in this session.");
@@ -760,12 +868,65 @@ app.whenReady().then(async () => {
       const { backend } = await getAgentBackend(backendRecord, { readOnly: mode === "plan", runId: sessionId });
       const checkpointId = `cp_${Date.now().toString(36)}`;
       await createWorkspaceCheckpoint(executionRoot, checkpointId);
-      await appendSessionMessages(projectId, sessionId, [{ role: "user", text: payload.request, images: payload.images, createdAt: new Date().toISOString() }]);
+      await appendSessionMessages(projectId, sessionId, [{ role: "user", text: payload.request, images: payload.images, attachments: payload.attachments, createdAt: new Date().toISOString() }]);
 
       // Renderer-only attachment URLs become inline data URLs for the model.
       const modelImages = payload.images?.length
         ? await Promise.all(payload.images.map((img) => resolveImageForModel(img).catch(() => img)))
         : undefined;
+
+      // Document attachments (pdf/docx/xlsx/pptx/tex/…) are extracted to text
+      // here so the model actually sees them. Images stay vision-only; text
+      // files are decoded inline; Office/PDF go through the notebook parsers.
+      // Each file is capped so one giant spreadsheet can't eat the context.
+      const ATTACH_DOC_CHAR_CAP = 20_000;
+      const attachmentDocs: Array<{ name: string; mimeType: string; text: string; truncated: boolean }> = [];
+      if (payload.attachments?.length) {
+        const { parseToMarkdown } = await import("./notebook-parse.js");
+        for (const attachment of payload.attachments) {
+          try {
+            const isImage = (attachment.mimeType || "").toLowerCase().startsWith("image/");
+            if (isImage) continue;
+            const { buffer, fileName, mimeType } = await resolveAttachmentBytes(attachment.url);
+            const name = attachment.name || fileName;
+            const mime = attachment.mimeType || mimeType;
+            // Small text-ish files: decode directly, no parser overhead.
+            if (/^(text\/|application\/json|application\/xml)/.test(mime.toLowerCase()) || /\.(txt|tex|md|markdown|csv|tsv|json|yaml|yml|xml|html|htm|log|toml)$/i.test(name)) {
+              const text = buffer.toString("utf8").replace(/^\uFEFF/, "").replace(/\u0000/g, "");
+              if (!text.trim()) continue;
+              const truncated = text.length > ATTACH_DOC_CHAR_CAP;
+              attachmentDocs.push({ name, mimeType: mime, text: truncated ? text.slice(0, ATTACH_DOC_CHAR_CAP) : text, truncated });
+              continue;
+            }
+            try {
+              const parsed = await parseToMarkdown(buffer, name);
+              if (!parsed.markdown.trim()) continue;
+              const truncated = parsed.markdown.length > ATTACH_DOC_CHAR_CAP || parsed.truncated;
+              attachmentDocs.push({ name, mimeType: mime, text: parsed.markdown.slice(0, ATTACH_DOC_CHAR_CAP), truncated });
+            } catch {
+              // Unparseable binary (legacy .doc/.ppt/.xls, …): still tell the
+              // model the file exists so it can ask for another format.
+              attachmentDocs.push({ name, mimeType: mime, text: `[Binary file ${name} could not be text-extracted in-app. Ask the user for a .docx/.xlsx/.pptx/.pdf/.txt export if its contents are needed.]`, truncated: false });
+            }
+          } catch {
+            // One bad attachment must never fail the whole run.
+          }
+        }
+      }
+      // Import tool needs the raw bytes for every attachment (images + docs)
+      // so the agent can materialize them in the project on request.
+      const importableAttachments: string[] = [];
+      if (payload.attachments?.length) {
+        for (const attachment of payload.attachments) {
+          try {
+            const { buffer, mimeType } = await resolveAttachmentBytes(attachment.url);
+            const mime = attachment.mimeType || mimeType;
+            importableAttachments.push(`data:${mime};base64,${buffer.toString("base64")}#${encodeURIComponent(attachment.name || "attachment")}`);
+          } catch { /* skip unreadable */ }
+        }
+      } else if (modelImages?.length) {
+        importableAttachments.push(...modelImages);
+      }
 
       // Home sessions run the general assistant: same tool loop, but no
       // code-project verification and a Home-oriented system prompt.
@@ -780,6 +941,9 @@ app.whenReady().then(async () => {
           sessionId,
           request: payload.request,
           images: modelImages,
+          attachments: modelImages,
+          attachmentDocs,
+          importableAttachments: importableAttachments.length ? importableAttachments : undefined,
           settings: runSettings,
           memory: { projectMemory: project.memory, sessionMemory: session.memory },
           history,
@@ -857,7 +1021,7 @@ app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.handle("agent:cancel", (_event, sessionId?: string) => { cancelCommandRun(sessionId); return true; });
+  ipcMain.handle("agent:cancel", (_event, sessionId?: string) => { cancelCommandRun(sessionId); cancelCommandApprovals(sessionId); return true; });
 
   createWindow();
   // Silent startup update check (packaged builds only — dev runs report

@@ -1,15 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   Coins, Sparkles, GitBranch, RotateCcw, Check, FileCode2,
-  Image as ImageIcon, Plus, Square, ArrowUp, ShieldCheck, ChevronDown, X
+  Paperclip, FileText, Plus, Square, ArrowUp, ShieldCheck, ChevronDown, X
 } from "lucide-react";
 import { WorktreeBar } from "../components/worktree/WorktreeBar.js";
 import { SlashCommandPopup, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
 import { VoiceDictationButton } from "../components/chat/VoiceDictationButton.js";
 import { ChatItemView, ActivityGroupView } from "../components/chat/ChatMessageItem.js";
 import { fileIcon } from "../utils/format.js";
+import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
 import { formatCost } from "../types.js";
-import type { ChatItem, FileEntry, ProviderConfig, ProviderDefinition, AgentUsage, ArtifactItem } from "../types.js";
+import type { ChatItem, FileEntry, ProviderConfig, ProviderDefinition, AgentUsage, ArtifactItem, ChatAttachment } from "../types.js";
 
 export function ModelSelect({
   selectedProviderId,
@@ -95,11 +96,15 @@ export function AgentView({
   activeSessionId,
   worktreeStatus,
   onOpenArtifact,
+  onOpenImage,
+  onOpenAttachment,
   onOpenDiff,
   onMergeSuccess,
   onDiscardSuccess,
   attachedImages,
   setAttachedImages,
+  attachments,
+  setAttachments,
   customCommands,
 }: {
   hasProject: boolean;
@@ -131,11 +136,15 @@ export function AgentView({
   activeSessionId?: string;
   worktreeStatus?: { isGit: boolean; worktree: { worktreePath: string; branch: string } | null } | null;
   onOpenArtifact?: (artifact: ArtifactItem) => void;
+  onOpenImage?: (src: string) => void;
+  onOpenAttachment?: (attachment: ChatAttachment) => void;
   onOpenDiff?: () => void;
   onMergeSuccess?: () => void;
   onDiscardSuccess?: () => void;
   attachedImages: string[];
   setAttachedImages: React.Dispatch<React.SetStateAction<string[]>>;
+  attachments: ChatAttachment[];
+  setAttachments: React.Dispatch<React.SetStateAction<ChatAttachment[]>>;
   customCommands?: SlashCommand[];
 }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -171,11 +180,20 @@ export function AgentView({
           events={pendingActivity}
           running={false}
           onOpenArtifact={onOpenArtifact}
+          onOpenImage={onOpenImage}
+          onOpenAttachment={onOpenAttachment}
         />
       );
       pendingActivity = [];
     }
   };
+  function openAttachment(attachment: ChatAttachment) {
+    if (onOpenAttachment) {
+      onOpenAttachment(attachment);
+      return;
+    }
+    if (isImageAttachment(attachment)) onOpenImage?.(attachment.url);
+  }
   messages.forEach((message, index) => {
     if (message.role === "event") pendingActivity.push(message);
     else {
@@ -185,6 +203,8 @@ export function AgentView({
           key={`${message.createdAt}-${index}`}
           message={message}
           onOpenArtifact={onOpenArtifact}
+          onOpenImage={onOpenImage}
+          onOpenAttachment={onOpenAttachment}
         />
       );
     }
@@ -264,11 +284,13 @@ export function AgentView({
             if (rawUrl) {
               if (api?.saveAttachment) {
                 try {
-                  const saved = await api.saveAttachment(rawUrl);
+                  const saved = await api.saveAttachment(rawUrl, file.name || "pasted-image.png");
+                  setAttachments((current) => [...current, { url: saved.url, name: file.name || "pasted-image.png", mimeType: file.type || "image/png", size: file.size }]);
                   setAttachedImages((current) => [...current, saved.url]);
                   return;
                 } catch { /* ignore fallback */ }
               }
+              setAttachments((current) => [...current, { url: rawUrl, name: file.name || "pasted-image.png", mimeType: file.type || "image/png", size: file.size }]);
               setAttachedImages((current) => [...current, rawUrl]);
             }
           };
@@ -283,19 +305,23 @@ export function AgentView({
     if (!fileList) return;
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i];
-      if (file.type.startsWith("image/")) {
+      if (file.type || file.name) {
+        const mimeType = file.type || "application/octet-stream";
+        const isImage = mimeType.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(file.name);
         const reader = new FileReader();
         reader.onload = async (loadEvt) => {
           const rawUrl = loadEvt.target?.result as string;
           if (rawUrl) {
             if (api?.saveAttachment) {
               try {
-                const saved = await api.saveAttachment(rawUrl);
-                setAttachedImages((current) => [...current, saved.url]);
+                const saved = await api.saveAttachment(rawUrl, file.name);
+                setAttachments((current) => [...current, { url: saved.url, name: file.name, mimeType, size: file.size }]);
+                if (isImage) setAttachedImages((current) => [...current, saved.url]);
                 return;
               } catch { /* ignore fallback */ }
             }
-            setAttachedImages((current) => [...current, rawUrl]);
+            setAttachments((current) => [...current, { url: rawUrl, name: file.name, mimeType, size: file.size }]);
+            if (isImage) setAttachedImages((current) => [...current, rawUrl]);
           }
         };
         reader.readAsDataURL(file);
@@ -467,6 +493,8 @@ export function AgentView({
             running
             currentText={streamingText || (liveEvents.length ? undefined : "Starting the agent… the first step can take a while.")}
             onOpenArtifact={onOpenArtifact}
+            onOpenImage={onOpenImage}
+            onOpenAttachment={onOpenAttachment}
           />
         )}
       </div>
@@ -475,7 +503,7 @@ export function AgentView({
           type="file"
           ref={imageInputRef}
           style={{ display: "none" }}
-          accept="image/*"
+          accept={ATTACHMENT_ACCEPT}
           multiple
           onChange={handleImageFileSelect}
         />
@@ -502,17 +530,30 @@ export function AgentView({
               onSelect={handleSlashSelect}
             />
           )}
-          {attachedImages.length > 0 && (
+          {attachments.length > 0 && (
             <div className="image-attachments-bar">
-              {attachedImages.map((img, idx) => (
-                <div className="image-preview-chip" key={idx}>
-                  <img src={img} alt="Preview" className="image-preview-thumb" />
+              {attachments.map((attachment, idx) => (
+                <div className="image-preview-chip" key={`${attachment.url}-${idx}`}>
+                  <button
+                    className="attachment-chip-main"
+                    onClick={() => openAttachment(attachment)}
+                    title={`${attachment.name} — click to preview`}
+                  >
+                    {isImageAttachment(attachment)
+                      ? <img src={attachment.url} alt={attachment.name} className="image-preview-thumb" />
+                      : <FileText size={14} />}
+                    <span className="attachment-file-chip">
+                      <span className="attachment-file-name">{attachment.name}</span>
+                      <small>{formatAttachmentSize(attachment.size)}</small>
+                    </span>
+                  </button>
                   <button
                     className="image-preview-remove"
-                    onClick={() =>
-                      setAttachedImages((current) => current.filter((_, i) => i !== idx))
-                    }
-                    title="Remove image"
+                    onClick={() => {
+                      setAttachments((current) => current.filter((_, i) => i !== idx));
+                      setAttachedImages((current) => current.filter((image) => image !== attachment.url));
+                    }}
+                    title={`Remove ${attachment.name}`}
                   >
                     <X size={12} />
                   </button>
@@ -558,7 +599,7 @@ export function AgentView({
                         setShowComposerMenu(false);
                       }}
                     >
-                      <ImageIcon size={13} /> Attach screenshot / image
+                      <Paperclip size={13} /> Attach file (image, PDF, Word, Excel, …)
                     </button>
                   </div>
                 )}
@@ -589,7 +630,7 @@ export function AgentView({
             </div>
             <button
               className={`send-button${running ? " stop" : ""}`}
-              disabled={!running && !draft.trim() && attachedImages.length === 0}
+              disabled={!running && !draft.trim() && attachments.length === 0}
               onClick={running ? onStop : () => submit()}
               title={running ? "Stop the agent" : "Send"}
             >

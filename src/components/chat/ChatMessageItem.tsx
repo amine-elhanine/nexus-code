@@ -1,17 +1,22 @@
 import React, { useState } from "react";
-import { Bot, Coins, Terminal, Activity, X, Brain, Check, Loader2, ChevronDown, ChevronRight } from "lucide-react";
+import { Bot, Coins, Terminal, Activity, X, Brain, Check, Loader2, ChevronDown, ChevronRight, FileText } from "lucide-react";
 import { renderMarkdown } from "../../markdown.js";
 import { timeLabel } from "../../utils/format.js";
+import { isImageAttachment, formatAttachmentSize } from "../../utils/attachments.js";
 import { PlanCard } from "./PlanCard.js";
 import { SubagentCardView } from "./SubagentCard.js";
 import { ArtifactCard } from "./ArtifactCard.js";
-import type { ChatItem, ArtifactItem } from "../../types.js";
+import type { ChatAttachment, ChatItem, ArtifactItem } from "../../types.js";
 export function ChatItemView({
   message,
   onOpenArtifact,
+  onOpenImage,
+  onOpenAttachment,
 }: {
   message: ChatItem;
   onOpenArtifact?: (artifact: ArtifactItem) => void;
+  onOpenImage?: (src: string) => void;
+  onOpenAttachment?: (attachment: ChatAttachment) => void;
 }) {
   if (message.artifact) {
     return (
@@ -64,8 +69,28 @@ export function ChatItemView({
       {message.images && message.images.length > 0 && (
         <div className="chat-message-images">
           {message.images.map((img, idx) => (
-            <img key={idx} src={img} alt="Attached screenshot" className="chat-attached-img" />
+            <button key={idx} className="chat-attached-image-button" onClick={() => onOpenImage?.(img)} title="Open attached image">
+              <img src={img} alt="Attached screenshot" className="chat-attached-img" />
+            </button>
           ))}
+        </div>
+      )}
+      {message.attachments && message.attachments.length > 0 && (
+        <div className="chat-message-images">
+          {message.attachments
+            .filter((attachment) => !isImageAttachment(attachment))
+            .map((attachment, idx) => (
+              <button
+                key={`${attachment.name}-${idx}`}
+                className="chat-attached-file-button"
+                onClick={() => onOpenAttachment?.(attachment)}
+                title={`${attachment.name} — click to preview`}
+              >
+                <FileText size={13} />
+                <span className="chat-attached-file-name">{attachment.name}</span>
+                <small>{formatAttachmentSize(attachment.size)}</small>
+              </button>
+            ))}
         </div>
       )}
       <div
@@ -94,11 +119,15 @@ export function ActivityGroupView({
   running,
   currentText,
   onOpenArtifact,
+  onOpenImage,
+  onOpenAttachment,
 }: {
   events: ChatItem[];
   running: boolean;
   currentText?: string;
   onOpenArtifact?: (artifact: ArtifactItem) => void;
+  onOpenImage?: (src: string) => void;
+  onOpenAttachment?: (attachment: ChatAttachment) => void;
 }) {
   const [expanded, setExpanded] = useState(running);
   const latest =
@@ -142,7 +171,7 @@ export function ActivityGroupView({
                 <ChevronRight size={12} />
               </summary>
               <div className="activity-step-detail">
-                <ChatItemView message={event} onOpenArtifact={onOpenArtifact} />
+              <ChatItemView message={event} onOpenArtifact={onOpenArtifact} onOpenImage={onOpenImage} onOpenAttachment={onOpenAttachment} />
               </div>
             </details>
           ))}

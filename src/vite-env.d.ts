@@ -11,7 +11,8 @@ type AgentEvent = { type: "status" | "tool" | "token" | "assistant" | "plan" | "
 type ProviderDefinition = { id: string; label: string; packageName: string; envKey: string; defaultBaseUrl?: string; models: string[] };
 type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[]; modelEndpoints?: Partial<Record<string, ChatEndpointKind>> };
 type ChatEndpointKind = "chat" | "responses" | "messages";
-type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; kind?: AgentEvent["type"]; createdAt: string; plan?: PlanItem[]; usage?: AgentUsage; subagent?: SubagentItem }>; model?: { providerId: string; model: string } };
+type ChatAttachment = { url: string; name: string; mimeType: string; size: number };
+type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: AgentEvent["type"]; createdAt: string; plan?: PlanItem[]; usage?: AgentUsage; subagent?: SubagentItem }>; model?: { providerId: string; model: string } };
 type ProjectRecord = { id: string; name: string; root: string; createdAt: string; updatedAt: string; memory: string; sessions: SessionRecord[] };
 type ActiveContext = { project: ProjectRecord; session: SessionRecord | null } | null;
 type WorkspaceDiffFile = { path: string; directory: string; name: string; additions: number; deletions: number; status: string; patch: string };
@@ -80,6 +81,8 @@ export interface NexusApi {
   restoreCheckpoint: (checkpointId: string) => Promise<boolean>;
   getGit: () => Promise<{ isRepository: boolean; branch: string; status: string[]; aheadBehind: string }>;
   runCommand: (command: string) => Promise<string>;
+  resolveCommandApproval: (id: string, decision: "once" | "session" | "deny") => Promise<boolean>;
+  onCommandApprovalRequest: (listener: (request: { id: string; runId?: string; command: string; cwd: string; reason: string; approvalKey?: string; createdAt: string }) => void) => () => void;
 
   // Worktrees
   createWorktree: (sessionId: string) => Promise<{ worktreePath: string; branch: string; isNew: boolean }>;
@@ -122,6 +125,7 @@ export interface NexusApi {
   // Interactive Terminal
   createTerminal: (id: string, cwd?: string, cols?: number, rows?: number) => Promise<boolean>;
   // In-app updates
+  getUpdaterState: () => Promise<UpdaterState>;
   checkForUpdates: () => Promise<UpdaterState>;
   quitAndInstallUpdate: () => Promise<boolean>;
   getAppVersion: () => Promise<string>;
@@ -180,7 +184,7 @@ export interface NexusApi {
   removeEmbeddingProvider: (providerId: string) => Promise<Array<{ id: string; name: string; kind: string; baseUrl?: string; apiKey: string; models: string[] }>>;
   testEmbeddingProvider: (input: { id?: string; kind: string; baseUrl?: string; apiKey?: string; model: string }) => Promise<{ dims: number }>;
 
-  runAgent: (payload: { request: string; images?: string[]; providerId?: string; model?: string; mode?: string }) => Promise<string>;
+  runAgent: (payload: { request: string; images?: string[]; attachments?: ChatAttachment[]; providerId?: string; model?: string; mode?: string }) => Promise<string>;
   cancelAgent: (sessionId?: string) => Promise<boolean>;
   onAgentEvent: (listener: (event: AgentEvent) => void) => () => void;
 }

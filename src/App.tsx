@@ -3,7 +3,7 @@ import {
   Brain, BookOpen, Check, ChevronDown, ChevronRight, Code2, Coins, Download, FileCode2, FileText,
   FolderOpen, GitBranch, Globe, Home, Info, KeyRound, Loader2, Menu,
   MessageSquare, PanelRight, Plus, RefreshCw,
-  Server, Settings2, Sparkles, Terminal, Trash2
+  Server, Settings2, Sparkles, Terminal, Trash2, TriangleAlert
 } from "lucide-react";
 import { NexusLogo } from "./components/common/NexusLogo.js";
 import { WindowControls } from "./components/common/WindowControls.js";
@@ -18,6 +18,7 @@ import { MonacoDiffModal } from "./components/diff/MonacoDiffModal.js";
 import { ProjectRulesModal } from "./components/rules/ProjectRulesModal.js";
 import { ArtifactViewer } from "./components/artifacts/ArtifactViewer.js";
 import { FilePreviewModal } from "./components/home/FilePreviewModal.js";
+import { AttachmentPreviewModal } from "./components/home/AttachmentPreviewModal.js";
 import { SidebarBrowser } from "./components/browser/SidebarBrowser.js";
 import { MonacoEditorView } from "./components/editor/MonacoEditorView.js";
 import { XTermView } from "./components/terminal/XTermView.js";
@@ -31,7 +32,7 @@ import { MemoryView, ContextRow, MemoryRow } from "./views/MemoryView.js";
 import { useAppController } from "./state/useAppController.js";
 import { getSessionUsage, fileIcon } from "./utils/format.js";
 import { timeLabel } from "./utils/format.js";
-import type { UpdaterState } from "./types.js";
+import type { ChatAttachment, UpdaterState } from "./types.js";
 import { formatCost, type FileEntry } from "./types.js";
 
 function FileRow({
@@ -117,6 +118,8 @@ function App() {
     worktreeStatus,
     attachedImages,
     setAttachedImages,
+    attachments,
+    setAttachments,
     projectRules,
     showRulesModal,
     setShowRulesModal,
@@ -173,16 +176,37 @@ function App() {
     : (activeSession?.title || "No session selected");
   const currentSessionUsage = getSessionUsage(activeSession);
   const [homePreviewPath, setHomePreviewPath] = useState<string | null>(null);
+  const [attachmentPreview, setAttachmentPreview] = useState<ChatAttachment | null>(null);
+  function openImagePreview(src: string) {
+    const match = attachments.find((a) => a.url === src);
+    if (match) setAttachmentPreview(match);
+    else setAttachmentPreview({ url: src, name: src.split("/").pop() || "image", mimeType: "image/png", size: 0 });
+  }
   const [showSettings, setShowSettings] = useState(false);
   const [homeSideTab, setHomeSideTab] = useState<"session" | "artifacts" | "browser">("session");
   const [codeSideTab, setCodeSideTab] = useState<"session" | "files" | "browser" | "terminal" | "diff" | "memory">("session");
   const [updater, setUpdater] = useState<UpdaterState>({ status: "idle" });
   const [appVersion, setAppVersion] = useState("");
+  const [approvalRequest, setApprovalRequest] = useState<{ id: string; runId?: string; command: string; cwd: string; reason: string; approvalKey?: string } | null>(null);
 
   useEffect(() => {
     void api.getAppVersion().then(setAppVersion).catch(() => {});
+    // Pick up whatever the main process already knows (e.g. a download that
+    // finished before this view subscribed) so the install button can't get
+    // stuck hidden on "idle".
+    void api.getUpdaterState?.().then((state) => {
+      if (state && typeof state === "object" && "status" in state) setUpdater(state as UpdaterState);
+    }).catch(() => {});
     return api.onUpdaterStatus((state) => setUpdater(state as UpdaterState));
   }, []);
+  useEffect(() => api.onCommandApprovalRequest((request) => setApprovalRequest(request)), [api]);
+
+  async function answerApproval(decision: "once" | "session" | "deny") {
+    const request = approvalRequest;
+    if (!request) return;
+    setApprovalRequest(null);
+    await api.resolveCommandApproval(request.id, decision).catch(() => {});
+  }
   const [contextWidth, setContextWidth] = useState(() => {
     try {
       const saved = Number(localStorage.getItem("nexus-context-width"));
@@ -291,6 +315,15 @@ function App() {
               title={`Restart to install version ${updater.version}`}
             >
               <Download size={11} /> Restart to update
+            </button>
+          )}
+          {updater.status === "error" && (
+            <button
+              className="update-pill error"
+              onClick={() => void api.checkForUpdates()}
+              title={`Update check failed: ${updater.message} — click to retry`}
+            >
+              <TriangleAlert size={11} /> Update failed — retry
             </button>
           )}
           <span className="user-chip">ME</span>
@@ -547,7 +580,11 @@ function App() {
                 onNewChat={() => void createHomeSession()}
                 attachedImages={attachedImages}
                 setAttachedImages={setAttachedImages}
+                attachments={attachments}
+                setAttachments={setAttachments}
                 hasProvider={providers.length > 0}
+                onOpenImage={openImagePreview}
+                onOpenAttachment={setAttachmentPreview}
               />
               </section>
             ) : (
@@ -587,6 +624,8 @@ function App() {
                   activeSessionId={activeSession?.id}
                   worktreeStatus={worktreeStatus}
                   onOpenArtifact={(art) => setActiveArtifact(art)}
+                  onOpenImage={openImagePreview}
+                  onOpenAttachment={setAttachmentPreview}
                   onOpenDiff={() => {
                     setCodeSideTab("diff");
                     setShowContext(true);
@@ -602,6 +641,8 @@ function App() {
                   }}
                   attachedImages={attachedImages}
                   setAttachedImages={setAttachedImages}
+                  attachments={attachments}
+                  setAttachments={setAttachments}
                   customCommands={customCommands}
                 />
               ) : (
@@ -1021,6 +1062,26 @@ function App() {
           onCancel={() => setConfirmDialog(null)}
         />
       )}
+      {approvalRequest && (
+        <div className="modal-layer confirm-layer" onClick={() => void answerApproval("deny")}>
+          <div className="modal-card confirm-card" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-card-head" style={{ marginBottom: "10px" }}>
+              <div>
+                <span className="view-kicker" style={{ color: "var(--orange)" }}>COMMAND APPROVAL</span>
+                <h2 style={{ fontSize: "16px", margin: "6px 0 4px" }}>Allow the agent to run this command?</h2>
+              </div>
+            </div>
+            <p style={{ color: "#a6b2c2", fontSize: "11px", lineHeight: "1.5", margin: "0 0 10px" }}>{approvalRequest.reason}</p>
+            <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: "0 0 18px", padding: "10px", border: "1px solid #28374a", borderRadius: "5px", background: "#090d14", color: "#e5aa64", font: "10px/1.5 'DM Mono', monospace" }}>{approvalRequest.command}</pre>
+            <small style={{ color: "#687588", display: "block", marginBottom: "14px" }}>Working directory: {approvalRequest.cwd}</small>
+            <div className="modal-actions" style={{ marginTop: "0" }}>
+              <button className="secondary" onClick={() => void answerApproval("deny")}>Deny</button>
+              <button className="secondary" onClick={() => void answerApproval("session")}>Allow for run</button>
+              <button className="primary" onClick={() => void answerApproval("once")}>Allow once</button>
+            </div>
+          </div>
+        </div>
+      )}
       {homePreviewPath && (
         <FilePreviewModal
           filePath={homePreviewPath}
@@ -1028,6 +1089,7 @@ function App() {
           onDownload={(p) => void api.downloadHomeFile(p)}
         />
       )}
+      {attachmentPreview && <AttachmentPreviewModal attachment={attachmentPreview} onClose={() => setAttachmentPreview(null)} />}
       {/* Hidden executor for the agent's browsing — same session as the tabs. */}
       <AgentBrowserHost />
     </div>

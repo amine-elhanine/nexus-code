@@ -339,6 +339,54 @@ async function parsePptx(buffer: Buffer, describeImage?: ImageDescriber): Promis
   return { markdown, parser: "pptx", truncated };
 }
 
+// ---- Spreadsheets (xlsx lib, loaded lazily) ----
+
+function formatCellValue(value: unknown): string {
+  if (value == null) return "";
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? "" : value.toISOString();
+  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+  return String(value);
+}
+
+async function parseWorkbook(buffer: Buffer, filename: string): Promise<ParsedDocument> {
+  const mod = await import("xlsx");
+  // CJS/ESM interop: the API may sit on default or directly on the namespace.
+  const XLSX = ((mod as unknown as { default?: unknown }).default ?? mod) as {
+    read: (data: Buffer, opts: Record<string, unknown>) => { SheetNames: string[]; Sheets: Record<string, unknown> };
+    utils: { sheet_to_json: (ws: unknown, opts: Record<string, unknown>) => unknown[][] };
+  };
+  const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true, sheetStubs: false });
+  if (!workbook.SheetNames.length) throw new Error(`No readable sheets found in ${filename}.`);
+  const MAX_SHEETS = 20;
+  const MAX_ROWS = 200;
+  const MAX_COLS = 50;
+  const parts: string[] = [`# ${filename}`];
+  let truncated = false;
+  for (const name of workbook.SheetNames.slice(0, MAX_SHEETS)) {
+    const ws = workbook.Sheets[name];
+    if (!ws) continue;
+    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: "" }) as unknown[][];
+    // Drop fully-empty rows (stubs/padding) so sparse sheets stay compact.
+    const rows = raw.filter((row) => Array.isArray(row) && row.some((cell) => cell !== "" && cell != null));
+    if (!rows.length) continue;
+    if (rows.length > MAX_ROWS || raw.length > MAX_ROWS) truncated = true;
+    const clipped = rows.slice(0, MAX_ROWS).map((row) =>
+      row.slice(0, MAX_COLS).map((cell) => formatCellValue(cell).replace(/\|/g, "\\|").replace(/\s+/g, " ").trim())
+    );
+    if (raw.some((row) => Array.isArray(row) && row.length > MAX_COLS)) truncated = true;
+    parts.push(`## Sheet: ${name}`);
+    const width = Math.max(...clipped.map((r) => r.length));
+    const norm = clipped.map((r) => [...r, ...new Array(Math.max(0, width - r.length)).fill("")]);
+    parts.push(`| ${norm[0].join(" | ")} |`);
+    parts.push(`| ${norm[0].map(() => "---").join(" | ")} |`);
+    for (const r of norm.slice(1)) parts.push(`| ${r.join(" | ")} |`);
+  }
+  if (workbook.SheetNames.length > MAX_SHEETS) truncated = true;
+  if (parts.length <= 1) throw new Error(`No readable data found in ${filename}.`);
+  const { markdown, truncated: capped } = cap(parts.join("\n\n"));
+  return { markdown, parser: "xlsx", truncated: truncated || capped };
+}
+
 // ---- PDF (pdf-parse v2, lazy) ----
 
 async function parsePdf(buffer: Buffer, describeImage?: ImageDescriber): Promise<ParsedDocument> {
@@ -514,6 +562,11 @@ export async function parseToMarkdown(buffer: Buffer, filename: string, options?
       break;
     case "tsv":
       parsed = parseCsv(buffer, "\t");
+      break;
+    case "xlsx":
+    case "xls":
+    case "ods":
+      parsed = await parseWorkbook(buffer, filename);
       break;
     case "html":
     case "htm":

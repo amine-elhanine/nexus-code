@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type SetStateAction } from "react";
 import type { SlashCommand } from "../components/chat/SlashCommandPopup.js";
 import { nowIso, pushLiveEvent } from "../utils/format.js";
 import type {
@@ -12,6 +12,7 @@ import type {
   ProviderDefinition,
   SessionRecord,
   WorkspaceDiffFile,
+  ChatAttachment,
 } from "../types.js";
 
 export const FALLBACK_PROVIDERS: ProviderDefinition[] = [
@@ -49,7 +50,11 @@ export function useAppController() {
   const [fileContent, setFileContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [diff, setDiff] = useState<WorkspaceDiffFile[]>([]);
-  const [draft, setDraft] = useState("");
+  // Keep each workspace's composer independent. Switching between Home and
+  // Code must not leak an unfinished prompt or its attachments into the
+  // other agent, and returning should restore exactly what was left there.
+  const [homeDraft, setHomeDraft] = useState("");
+  const [codeDraft, setCodeDraft] = useState("");
   const [streamingText, setStreamingText] = useState("");
   // Live events are bucketed per session so concurrent runs in different
   // sessions each render their own activity, never each other's.
@@ -70,7 +75,10 @@ export function useAppController() {
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [activeArtifact, setActiveArtifact] = useState<ArtifactItem | null>(null);
   const [worktreeStatus, setWorktreeStatus] = useState<{ isGit: boolean; worktree: { worktreePath: string; branch: string } | null } | null>(null);
-  const [attachedImages, setAttachedImages] = useState<string[]>([]);
+  const [homeAttachedImages, setHomeAttachedImages] = useState<string[]>([]);
+  const [codeAttachedImages, setCodeAttachedImages] = useState<string[]>([]);
+  const [homeAttachments, setHomeAttachments] = useState<ChatAttachment[]>([]);
+  const [codeAttachments, setCodeAttachments] = useState<ChatAttachment[]>([]);
   const [projectRules, setProjectRules] = useState<{ hasRules: boolean; ruleFiles: any[]; combinedPromptSection: string } | null>(null);
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [customCommands, setCustomCommands] = useState<SlashCommand[]>([]);
@@ -84,6 +92,19 @@ export function useAppController() {
   const [showMcp, setShowMcp] = useState(false);
   const [showSkills, setShowSkills] = useState(false);
   const [inspectDiffFile, setInspectDiffFile] = useState<WorkspaceDiffFile | null>(null);
+
+  const draft = area === "home" ? homeDraft : codeDraft;
+  const setDraft = (value: SetStateAction<string>) => (area === "home" ? setHomeDraft(value) : setCodeDraft(value));
+  const attachedImages = area === "home" ? homeAttachedImages : codeAttachedImages;
+  const setAttachedImages = (updater: SetStateAction<string[]>) => {
+    if (area === "home") setHomeAttachedImages(updater);
+    else setCodeAttachedImages(updater);
+  };
+  const attachments = area === "home" ? homeAttachments : codeAttachments;
+  const setAttachments = (updater: SetStateAction<ChatAttachment[]>) => {
+    if (area === "home") setHomeAttachments(updater);
+    else setCodeAttachments(updater);
+  };
 
   const dirty = fileContent !== savedContent;
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId);
@@ -436,7 +457,6 @@ export function useAppController() {
 
   async function enterHome() {
     setArea("home");
-    setDraft("");
     setStreamingText("");
     try {
       const info = await api.getHome();
@@ -466,7 +486,6 @@ export function useAppController() {
 
   async function enterCode() {
     setArea("code");
-    setDraft("");
     setStreamingText("");
     const codeProjects = projects.filter((p) => p.id !== "home");
     const target = codeProjects.find((p) => p.id === activeProject?.id && p.id !== "home") || codeProjects[0];
@@ -475,7 +494,6 @@ export function useAppController() {
 
   function enterNotebook() {
     setArea("notebook");
-    setDraft("");
     setStreamingText("");
   }
 
@@ -540,8 +558,12 @@ export function useAppController() {
   }
 
   async function submit(overrideRequest?: string) {
-    const request = (overrideRequest || draft).trim();
-    if (!request || running) return;
+    const rawRequest = (overrideRequest || draft).trim();
+    const hasFiles = attachedImages.length > 0 || attachments.length > 0;
+    if ((!rawRequest && !hasFiles) || running) return;
+    // Attachment-only sends get a readable transcript line; the agent still
+    // receives the extracted file contents via attachmentDocs.
+    const request = rawRequest || `Please review the attached file${attachments.length === 1 ? "" : "s"}: ${attachments.map((a) => a.name).join(", ")}`;
     // Home creates its chat lazily on first send so landing on Home never
     // litters the sidebar with empty sessions.
     let session = activeSession;
@@ -557,7 +579,9 @@ export function useAppController() {
       return;
     }
     const imagesToSend = attachedImages.length ? [...attachedImages] : undefined;
+    const attachmentsToSend = attachments.length ? [...attachments] : undefined;
     setAttachedImages([]);
+    setAttachments([]);
     setRunningSessionIds((current) => new Set(current).add(session.id));
     setDraft("");
     setStreamingText("");
@@ -568,7 +592,7 @@ export function useAppController() {
       current
         ? {
             ...current,
-            messages: [...current.messages, { role: "user", text: request, images: imagesToSend, createdAt: nowIso() }],
+            messages: [...current.messages, { role: "user", text: request, images: imagesToSend, attachments: attachmentsToSend, createdAt: nowIso() }],
           }
         : current
     );
@@ -576,6 +600,7 @@ export function useAppController() {
       await api.runAgent({
         request,
         images: imagesToSend,
+        attachments: attachmentsToSend,
         providerId: selectedProviderId || undefined,
         model: selectedModel || undefined,
         // Home always runs fully autonomously; the coding area keeps its
@@ -800,6 +825,8 @@ export function useAppController() {
     worktreeStatus,
     attachedImages,
     setAttachedImages,
+    attachments,
+    setAttachments,
     projectRules,
     showRulesModal,
     setShowRulesModal,

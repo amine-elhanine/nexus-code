@@ -176,6 +176,39 @@ export function pickVerificationCommand(projectRoot: string): string | null {
 }
 
 /**
+ * Project-level verification override. A repository may provide
+ * `.nexus/verification.json` with `{ "commands": ["npm run check", "npm test"] }`
+ * or the same object under `package.json.nexus.verification`. This keeps the
+ * safe heuristics as a fallback while letting projects define their real build
+ * and integration gates.
+ */
+export function pickVerificationCommands(projectRoot: string): string[] {
+  try {
+    const root = path.resolve(projectRoot);
+    const candidates = [path.join(root, ".nexus", "verification.json")];
+    const pkgPath = path.join(root, "package.json");
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+      if (pkg?.nexus?.verification) candidates.push("package.json:nexus.verification");
+      for (const candidate of candidates) {
+        const raw = candidate === "package.json:nexus.verification" ? pkg.nexus.verification : JSON.parse(readFileSync(candidate, "utf8"));
+        const commands = Array.isArray(raw) ? raw : raw?.commands;
+        if (Array.isArray(commands)) {
+          const valid = commands.filter((command: unknown): command is string => typeof command === "string" && Boolean(command.trim())).map((command) => command.trim()).slice(0, 8);
+          if (valid.length) return valid;
+        }
+      }
+    } else if (existsSync(candidates[0])) {
+      const raw = JSON.parse(readFileSync(candidates[0], "utf8"));
+      const commands = Array.isArray(raw) ? raw : raw?.commands;
+      if (Array.isArray(commands)) return commands.filter((command: unknown): command is string => typeof command === "string" && Boolean(command.trim())).map((command) => command.trim()).slice(0, 8);
+    }
+  } catch { /* invalid configuration falls back to detection */ }
+  const fallback = pickVerificationCommand(projectRoot);
+  return fallback ? [fallback] : [];
+}
+
+/**
  * Opencode-style fast path: for small diffs, lint only the changed files
  * instead of typechecking the whole project. Returns null when no fast
  * scoped check applies (caller falls back to pickVerificationCommand).
@@ -449,7 +482,7 @@ export function buildToolContextBlock(items: HistoryInput[] | undefined | null, 
       continue;
     }
     pendingName = text;
-    push(text);
+    push(text, item.detail || "");
   }
   if (!lines.length) return null;
   // Second pass: newest-first under budget.
@@ -841,12 +874,17 @@ function appendMemoryLog(existing: string | undefined, entry: string): string {
   return lines.slice(-PROJECT_MEMORY_RUN_LOG_CAP).join("\n");
 }
 
+export type AttachmentDoc = { name: string; mimeType: string; text: string; truncated: boolean };
+
 export async function runProjectAgent(options: {
   projectRoot: string;
   telemetryRoot?: string;
   sessionId?: string;
   request: string;
   images?: string[];
+  attachments?: string[];
+  attachmentDocs?: AttachmentDoc[];
+  importableAttachments?: string[];
   settings: AgentSettings;
   memory: AgentMemoryContext;
   history: HistoryInput[];
@@ -859,7 +897,7 @@ export async function runProjectAgent(options: {
   resumeNote?: string | null;
   taskKind?: AgentTaskKind;
 }) {
-  const { projectRoot, telemetryRoot, sessionId, request, images, settings, memory, history, mode, agentBackend, onEvent, isCancelled } = options;
+  const { projectRoot, telemetryRoot, sessionId, request, images, attachments, attachmentDocs, importableAttachments, settings, memory, history, mode, agentBackend, onEvent, isCancelled } = options;
   const { resumeMessages, resumePlanItems, resumeNote } = options;
   const taskKind: AgentTaskKind = options.taskKind ?? "code";
   const isGeneral = taskKind === "general";
@@ -928,6 +966,10 @@ export async function runProjectAgent(options: {
   } else {
     emit("error", `MCP servers could not be reached, continuing without them: ${mcpResult.error instanceof Error ? mcpResult.error.message : String(mcpResult.error)}`);
   }
+  // Plan mode is a hard read-only boundary. MCP tools are user-defined and
+  // may mutate files or external systems, so none can be safely exposed while
+  // the agent is only supposed to investigate and plan.
+  if (mode === "plan") mcpTools = [];
   if (rulesResult.hasRules) {
     emit("status", `Loaded ${rulesResult.ruleFiles.length} project rule file${rulesResult.ruleFiles.length === 1 ? "" : "s"} (${rulesResult.ruleFiles.map((r) => r.filename).join(", ")})`);
   }
@@ -941,8 +983,21 @@ export async function runProjectAgent(options: {
   };
 
   const skills = skillsConfig.enabled ? [PROJECT_SKILLS_DIR, GLOBAL_SKILLS_ROUTE] : [];
+  let globalSkillsBackend: any = null;
+  if (skills.length) {
+    globalSkillsBackend = new FilesystemBackend({ rootDir: globalSkillsDir(), virtualMode: true });
+    if (mode === "plan") {
+      const refuseSkillWrite = (action: string) => async () => {
+        throw new Error(`Plan mode is read-only: skill ${action} is disabled.`);
+      };
+      globalSkillsBackend.write = refuseSkillWrite("write_file");
+      globalSkillsBackend.edit = refuseSkillWrite("edit_file");
+      globalSkillsBackend.delete = refuseSkillWrite("delete");
+      globalSkillsBackend.execute = refuseSkillWrite("execute");
+    }
+  }
   const compositeBackend = skills.length
-    ? new CompositeBackend(agentBackend as any, { [GLOBAL_SKILLS_ROUTE]: new FilesystemBackend({ rootDir: globalSkillsDir(), virtualMode: true }) })
+    ? new CompositeBackend(agentBackend as any, { [GLOBAL_SKILLS_ROUTE]: globalSkillsBackend })
     : agentBackend;
 
   // Skill shortlist: the framework injects the full catalog, but models —
@@ -972,6 +1027,11 @@ export async function runProjectAgent(options: {
         },
       })
     : [];
+  // Browser actions and non-GET API calls can mutate external state. Plan mode
+  // may inspect pages, but must not click, fill, navigate, or send requests.
+  const safeBrowserTools = mode === "plan"
+    ? browserTools.filter((candidate: any) => candidate?.name === "browser_inspect")
+    : browserTools;
   // Home general runs always get the browser tools; code runs get them for
   // web-flavored tasks. Web search rides along everywhere (cheap, one tool):
   // researching unfamiliar or recently-released libraries beats hallucinating
@@ -997,7 +1057,11 @@ export async function runProjectAgent(options: {
   let recursionLimit = isSimple ? SIMPLE_TASK_LIMIT : MODE_LIMITS[mode];
   // Opencode core: ripgrep-like grep + range-read only for simple tasks.
   const codeTools = pickRuntimeCodeTools(allCodeTools, effectiveComplexity);
-  const editTools = createEditTools(projectRoot);
+  // The backend is also read-only in Plan mode, but keep the invariant at the
+  // tool-registration boundary too: custom tools must not bypass the backend.
+  // importableAttachments covers every file type (images + docs); the legacy
+  // attachedImages alias keeps image imports working for older callers.
+  const editTools = mode === "plan" ? [] : createEditTools(projectRoot, { attachedImages: attachments, attachedFiles: importableAttachments ?? attachments });
   const questionTool = createQuestionTool((questions) => {
     emit("status", `Clarifying questions: ${questions.map((q) => q.header).join(", ")}`);
     if (trajectory) {
@@ -1025,8 +1089,8 @@ export async function runProjectAgent(options: {
     backend: compositeBackend as any,
     middleware: isSimple ? [] : [todoListMiddleware()],
     tools: isSimple
-      ? [...codeTools, ...editTools, questionTool, ...browserTools, ...webSearchTools, ...mcpTools]
-      : [...codeTools, ...editTools, questionTool, ...browserTools, ...webSearchTools, subagentTool, ...mcpTools],
+      ? [...codeTools, ...editTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...mcpTools]
+      : [...codeTools, ...editTools, questionTool, ...safeBrowserTools, ...webSearchTools, subagentTool, ...mcpTools],
     skills,
     systemPrompt: buildSystemPrompt(mode, projectRoot, provider.label, modelName, memory, rulesResult.combinedPromptSection, effectiveComplexity, isNewProject, taskKind, repoMapSection),
   });
@@ -1039,7 +1103,21 @@ export async function runProjectAgent(options: {
       : new HumanMessage(tail(turn.text, HISTORY_CHAR_CAP))
   );
 
-  const requestText = [request, resumeNote, skillNote].filter(Boolean).join("\n\n");
+  const imageNote = attachments?.length
+    ? `[Attached image context: ${attachments.length} image${attachments.length === 1 ? " is" : "s are"} available, numbered ${attachments.map((_, index) => index).join(", ")}. Treat them as reference material by default. If the requested deliverable needs the actual image file in the project, use import_attached_image with the appropriate index and destination; otherwise do not copy them.]`
+    : null;
+  // Document attachments arrive pre-extracted (main.ts via notebook parsers):
+  // inline them as a context block so the model reads PDFs/Office/TeX without
+  // needing a tool round-trip. Import stays opt-in via import_attachment.
+  const docNote = attachmentDocs?.length
+    ? attachmentDocs.map((doc, index) =>
+        `[Attached file ${index + 1}/${attachmentDocs.length}: ${doc.name} (${doc.mimeType || "unknown type"})${doc.truncated ? " — truncated to fit context" : ""}]\n${doc.text}`
+      ).join("\n\n")
+    : null;
+  const importNote = (attachmentDocs?.length || attachments?.length)
+    ? `[Attachment imports: ${(attachmentDocs?.length || 0) + (attachments?.length || 0)} file(s) available via import_attachment (index 0..${(attachmentDocs?.length || 0) + (attachments?.length || 0) - 1}: ${[...(attachmentDocs || []).map((d) => d.name), ...(attachments || []).map((_, i) => `image-${i}`)].join(", ")}). Only import when the deliverable needs the actual file in the project; reference content above is already in context.]`
+    : null;
+  const requestText = [request, resumeNote, skillNote, imageNote, docNote, importNote].filter(Boolean).join("\n\n");
   let initialHumanMessage: HumanMessage;
   if (images && images.length > 0) {
     const contentParts: any[] = [{ type: "text", text: requestText }];
@@ -1298,7 +1376,7 @@ export async function runProjectAgent(options: {
         if (isCancelled()) throw new RunCancelledError();
         const scopedOutput = String((scopedResult as any)?.output ?? "").trim();
         if ((scopedResult as any)?.exitCode !== 0) {
-          emit("tool", `Verification failed · ${scoped}`);
+          emit("tool", `Verification failed · ${scoped}`, undefined, undefined, undefined, undefined, tail(scopedOutput, VERIFY_OUTPUT_CAP));
           if (currentRepairs < maxRepairs && scopedOutput) {
             return {
               repairs: currentRepairs + 1,
@@ -1341,24 +1419,25 @@ export async function runProjectAgent(options: {
         }
       }
 
-      // 1. Static checks cascade (typecheck -> check -> tsc -> lint -> multi-language)
-      const command = staticCommand ?? pickVerificationCommand(projectRoot);
-      if (command) {
-        emit("status", `Verifying changes with \`${command}\``);
-        const result = await runCommand(command);
+      // 1. Static/build checks. Projects may override the heuristic with
+      // .nexus/verification.json or package.json.nexus.verification.commands.
+      const configuredCommands = staticCommand ? [staticCommand] : pickVerificationCommands(projectRoot);
+      for (const verificationCommand of configuredCommands) {
+        emit("status", `Verifying changes with \`${verificationCommand}\``);
+        const result = await runCommand(verificationCommand);
         if (isCancelled()) throw new RunCancelledError();
         const output = String((result as any)?.output ?? "").trim();
         if ((result as any)?.exitCode !== 0) {
-          emit("tool", `Verification failed · ${command}`);
+            emit("tool", `Verification failed · ${verificationCommand}`, undefined, undefined, undefined, undefined, tail(output, VERIFY_OUTPUT_CAP));
           if (currentRepairs < maxRepairs && output) {
             return {
               repairs: currentRepairs + 1,
-              verifyFeedback: `The verification command \`${command}\` failed (repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${tail(output, VERIFY_OUTPUT_CAP)}\n\nFix these failures with minimal, focused changes, then summarize what you changed.`,
+              verifyFeedback: `The verification command \`${verificationCommand}\` failed (repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${tail(output, VERIFY_OUTPUT_CAP)}\n\nFix these failures with minimal, focused changes, then summarize what you changed.`,
             };
           }
           return { verification: "failed" };
         }
-        emit("tool", `Verification passed · ${command}`);
+        emit("tool", `Verification passed · ${verificationCommand}`);
       }
 
       // 2. Targeted test detection for modified files (reuse the diff above)
@@ -1369,7 +1448,7 @@ export async function runProjectAgent(options: {
         if (isCancelled()) throw new RunCancelledError();
         const testOutput = String((testResult as any)?.output ?? "").trim();
         if ((testResult as any)?.exitCode !== 0) {
-          emit("tool", `Targeted test failed · ${targetTestCmd}`);
+          emit("tool", `Targeted test failed · ${targetTestCmd}`, undefined, undefined, undefined, undefined, tail(testOutput, VERIFY_OUTPUT_CAP));
           if (currentRepairs < maxRepairs && testOutput) {
             return {
               repairs: currentRepairs + 1,
@@ -1381,7 +1460,7 @@ export async function runProjectAgent(options: {
         emit("tool", `Targeted test passed · ${targetTestCmd}`);
       }
 
-      return { verification: command || scoped || targetTestCmd ? "passed" : "none" };
+      return { verification: configuredCommands.length || scoped || targetTestCmd ? "passed" : "none" };
     })
     .addEdge(START, "deep_agent")
     .addConditionalEdges("deep_agent", () => (mode === "plan" ? "end" : "verify"), { verify: "verify", end: END })

@@ -57,9 +57,9 @@ const MAP_FILE_SIZE_CAP = 300_000;
 const MAX_MAP_FILES = 800;
 const MAX_SYMBOLS_PER_FILE = 60;
 const MAX_MAP_CHARS = 15000;
-const MAP_CACHE_VERSION = 1;
+const MAP_CACHE_VERSION = 2;
 
-type MapCacheEntry = { mtimeMs: number; size: number; symbols: string[]; listOnly: boolean };
+type MapCacheEntry = { mtimeMs: number; size: number; symbols: string[]; imports: string[]; listOnly: boolean };
 type MapCache = { version: number; files: Record<string, MapCacheEntry> };
 
 function mapCachePath(projectRoot: string) {
@@ -122,6 +122,19 @@ function formatSymbol(s: { kind: string; name: string; signature: string }): str
   return `- ${sig}`;
 }
 
+function extractLocalImports(content: string, relPath: string): string[] {
+  const ext = path.extname(relPath).toLowerCase();
+  if ([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(ext)) {
+    const found = [...content.matchAll(/(?:from\s*["']|import\s*["']|require\(\s*["'])(\.?\.?\/[^"']+)["']/g)].map((match) => match[1]);
+    return [...new Set(found)].slice(0, 12);
+  }
+  if ([".py"].includes(ext)) {
+    const found = [...content.matchAll(/(?:from\s+([.\w]+)\s+import|import\s+([.\w]+))/g)].map((match) => match[1] || match[2]).filter((value) => value?.startsWith("."));
+    return [...new Set(found)].slice(0, 12);
+  }
+  return [];
+}
+
 // Returns the markdown section ("" when the project has nothing mappable).
 // Incremental: per-file mtime+size cache under .nexus/ — unchanged files are
 // never re-read or re-parsed.
@@ -158,9 +171,11 @@ export async function getRepoMapSection(projectRoot: string): Promise<string> {
       const ext = path.extname(rel).toLowerCase();
       const listOnly = MAP_LIST_ONLY_EXTS.has(ext) || path.basename(rel) === "Dockerfile";
       let symbols: string[] = [];
+      let imports: string[] = [];
       if (!listOnly && stat.size <= MAP_FILE_SIZE_CAP) {
         try {
           const content = await fs.readFile(abs, "utf8");
+          imports = extractLocalImports(content, rel);
           // parseSymbolsFromCode(content, filename): content holds newlines so
           // the arg-order heuristic resolves correctly.
           symbols = parseSymbolsFromCode(content, rel)
@@ -168,14 +183,15 @@ export async function getRepoMapSection(projectRoot: string): Promise<string> {
             .map(formatSymbol);
         } catch { /* unreadable — list bare */ }
       }
-      entry = { mtimeMs: stat.mtimeMs, size: stat.size, symbols, listOnly };
+      entry = { mtimeMs: stat.mtimeMs, size: stat.size, symbols, imports, listOnly };
     }
     nextFiles[rel] = entry;
 
     const body = entry.listOnly || entry.symbols.length === 0
       ? ""
       : `\n${entry.symbols.join("\n")}`;
-    const block = `## ${rel}${body}`;
+    const imports = entry.imports?.length ? `\n  imports: ${entry.imports.join(", ")}` : "";
+    const block = `## ${rel}${imports}${body}`;
     if (used + block.length > MAX_MAP_CHARS) {
       truncated = true;
       break;
@@ -184,11 +200,13 @@ export async function getRepoMapSection(projectRoot: string): Promise<string> {
     used += block.length;
   }
 
-  void saveMapCache(root, { version: MAP_CACHE_VERSION, files: nextFiles });
+  // Await the cache write so callers can rely on the cache existing when the
+  // map promise resolves (and so a follow-up run does not race the first one).
+  await saveMapCache(root, { version: MAP_CACHE_VERSION, files: nextFiles });
 
   if (!sections.length) return "";
   return (
-    `REPO MAP (symbol outline of the project — paths relative to /. ` +
+    `REPO MAP (symbol outline and local dependency hints — paths relative to /. ` +
     `Read the specific files you need with read_file_range before editing; do not re-list the tree.)\n` +
     sections.join("\n") +
     (truncated ? `\n…[map truncated to ${MAX_MAP_CHARS} chars — grep_search for the rest]` : "")

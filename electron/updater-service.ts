@@ -34,6 +34,10 @@ class UpdaterService {
   private listener: UpdaterListener | null = null;
   private started = false;
   private lastState: UpdaterState = { status: "idle" };
+  // Version of the update currently being downloaded (or downloaded and
+  // awaiting restart). Tracked explicitly because download-progress events
+  // don't carry it and lastState may be mid-transition when they arrive.
+  private pendingVersion = "";
 
   onStatus(listener: UpdaterListener | null) {
     this.listener = listener;
@@ -44,6 +48,13 @@ class UpdaterService {
   }
 
   private emit(state: UpdaterState) {
+    // A downloaded update is pending restart: nothing may hide the install
+    // affordance again. A later re-check that re-finds the same update just
+    // re-downloads (ending in downloaded again); a check that reports
+    // anything else while an update sits uninstalled must not clear it —
+    // otherwise the topbar button appears for a second and vanishes.
+    // update-downloaded always wins so a newer version refreshes the pill.
+    if (this.lastState.status === "downloaded" && state.status !== "downloaded") return;
     this.lastState = state;
     try {
       this.listener?.(state);
@@ -61,23 +72,20 @@ class UpdaterService {
       autoUpdater.forceDevUpdateConfig = true;
     }
     autoUpdater.on("checking-for-update", () => this.emit({ status: "checking" }));
-    autoUpdater.on("update-available", (info) =>
-      this.emit({ status: "available", version: info?.version ?? "" })
-    );
+    autoUpdater.on("update-available", (info) => {
+      this.pendingVersion = info?.version ?? "";
+      this.emit({ status: "available", version: this.pendingVersion });
+    });
     autoUpdater.on("update-not-available", (info) =>
       this.emit({ status: "up-to-date", version: info?.version ?? app.getVersion() })
     );
     autoUpdater.on("download-progress", (progress) => {
-      const current = this.lastState;
-      const version =
-        current.status === "available" || current.status === "downloading" || current.status === "downloaded"
-          ? current.version
-          : "";
-      this.emit({ status: "downloading", version, percent: Math.round(progress?.percent ?? 0) });
+      this.emit({ status: "downloading", version: this.pendingVersion, percent: Math.round(progress?.percent ?? 0) });
     });
-    autoUpdater.on("update-downloaded", (info) =>
-      this.emit({ status: "downloaded", version: info?.version ?? "" })
-    );
+    autoUpdater.on("update-downloaded", (info) => {
+      this.pendingVersion = info?.version ?? this.pendingVersion;
+      this.emit({ status: "downloaded", version: this.pendingVersion });
+    });
     autoUpdater.on("error", (error) =>
       this.emit({
         status: "error",
