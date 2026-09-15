@@ -422,6 +422,13 @@ export const SidebarBrowser: React.FC<{
 // One mounted webview per tab (CSS-hidden when inactive): pages keep their
 // state, the agent tab keeps working while you browse elsewhere, and
 // did-navigate events keep each tab's address bar truthful.
+//
+// Critical: the webview's committed `src` is captured ONCE per mount
+// (explicit user/agent navigations remount via the nav-epoch key above).
+// Event-synced URLs (link clicks, SPA pushState, title updates) only update
+// React state for the address bar — they are NEVER fed back into `src`.
+// Feeding them back makes the webview re-navigate to the page it just
+// reached, which reloads forever.
 function SideTabWebview({
   tab,
   visible,
@@ -436,29 +443,49 @@ function SideTabWebview({
   onEvent: (patch: Partial<SideTab>) => void;
 }) {
   const ref = useRef<MiniWebview | null>(null);
+  // Committed on mount only — epoch bumps remount for explicit navigations.
+  const committedSrc = useRef(tab.url);
+  const onEventRef = useRef(onEvent);
+  onEventRef.current = onEvent;
+  const isAgentRef = useRef(tab.isAgent);
+  isAgentRef.current = tab.isAgent;
+  // Last URL/title already synced to state — skips no-op updates so a chatty
+  // page (title flips, same-document navs) can't cause a render/reload storm.
+  const lastSynced = useRef<{ url: string; title: string }>({ url: tab.url, title: tab.title });
 
   useEffect(() => {
     registerRef(ref.current);
     return () => registerRef(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Sync state from the live page: link clicks, JS navigations, titles.
   useEffect(() => {
     const el = ref.current;
     if (!el) return undefined;
-    const onStart = () => onEvent({ loading: true });
-    const onStop = () => onEvent({ loading: false });
+    const emit = (patch: Partial<SideTab>) => onEventRef.current(patch);
+    const onStart = () => emit({ loading: true });
+    const onStop = () => emit({ loading: false });
     const onNav = (event?: { url?: string; title?: string }) => {
-      const next: Partial<SideTab> = { loading: false };
-      const currentUrl = el.getURL?.() || event?.url;
-      if (currentUrl) {
-        next.url = currentUrl;
-        next.inputUrl = currentUrl;
-        next.title = event?.title || titleFor(currentUrl, tab.isAgent);
-      } else if (event?.title) {
-        next.title = event.title;
+      let currentUrl: string | undefined;
+      try {
+        currentUrl = el.getURL?.() || event?.url;
+      } catch {
+        currentUrl = event?.url;
       }
-      onEvent(next);
+      if (currentUrl) {
+        const nextTitle = event?.title || titleFor(currentUrl, isAgentRef.current);
+        const prev = lastSynced.current;
+        if (prev.url === currentUrl && prev.title === nextTitle) return;
+        lastSynced.current = { url: currentUrl, title: nextTitle };
+        emit({ loading: false, url: currentUrl, inputUrl: currentUrl, title: nextTitle });
+      } else if (event?.title) {
+        if (lastSynced.current.title === event.title) return;
+        lastSynced.current = { url: lastSynced.current.url, title: event.title };
+        emit({ loading: false, title: event.title });
+      } else {
+        emit({ loading: false });
+      }
     };
     el.addEventListener("did-start-loading", onStart);
     el.addEventListener("did-stop-loading", onStop);
@@ -491,7 +518,7 @@ function SideTabWebview({
   return (
     <webview
       ref={ref as never}
-      src={tab.url}
+      src={committedSrc.current}
       useragent={CHROME_DESKTOP_UA}
       className="browser-iframe"
       partition={partition}

@@ -1,13 +1,27 @@
-# DeepAgents JS sandbox findings
+# Nexus — execution model (current)
 
-DeepAgents JavaScript treats sandboxes as backends. A sandbox backend exposes the standard filesystem tools (`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`) plus an `execute` tool for shell commands inside the isolated environment. The isolation boundary protects the host from files, credentials and arbitrary commands.
+This note replaces the old sandbox theory. Nexus has **no sandbox**. All agent work runs directly on the host with user privileges.
 
-The official docs show `LangSmithSandbox` with `SandboxClient` and mention LangSmith, AgentCore, Daytona and other providers. Sandboxes can be thread-scoped or assistant-scoped; a project-focused coding app should use an assistant/project-scoped sandbox and map sessions to isolated worktrees or directories inside it. Sandboxes need an explicit lifecycle and cleanup/TTL.
+## What actually runs where
 
-`FilesystemBackend` is not a process sandbox: it scopes file operations to a root directory, while `LocalShellBackend` explicitly runs unrestricted shell commands on the host and must not be presented as isolated. For production safety, the agent should use a real sandbox backend, not the current direct `execFile` path.
+- `electron/command-service.ts` executes shell commands via `execFile` in `projectRoot` (or the session worktree when active). There is no container, no network filter, no tool allowlist. Pipes, chaining and redirections work.
+- DeepAgents file tools are scoped by `FilesystemBackend` to the project root (path-escape blocked in `project-tools.ts`), but the **shell is unrestricted** apart from the two gates below.
+- MCP servers (`stdio` / `http` / `sse`) and dev daemons also run with your privileges. Daemons get a scrubbed env (structural vars such as `PATH` only).
 
-Sources:
+## The two gates that do exist
 
-- https://docs.langchain.com/oss/javascript/deepagents/sandboxes
-- https://docs.langchain.com/oss/javascript/deepagents/backends
-- https://www.langchain.com/blog/execute-code-with-sandboxes-for-deepagents
+1. **Deny backstop** (`electron/permissions.ts`, `isDeniedCommand` / `classifyCommand`): catastrophic patterns never run — `rm -rf /`, `rm -rf ~` / `$HOME` / `/home/…` / `/root`, `mkfs`, `dd … of=/dev/…`, `chmod/chown -R /`, fork bombs, `shutdown/reboot/halt/poweroff`, `format`, `diskpart`, shadow-copy deletion, `bcdedit`, `reg delete`, recursive deletes of drive roots/profiles, `takeown` / `icacls grant`, `net user/localgroup /add`. This is a backstop against agent mistakes, not isolation.
+2. **Ask gate** (approval modal: **Deny / Allow for run / Allow once**): `git push|reset|clean|rebase`, dependency mutations (`npm|pnpm|yarn|pip|pip3|cargo install|add|remove|uninstall`), `curl … | sh|bash` and `Invoke-WebRequest|iwr|irm`. Project policy can extend this via `.nexus/permissions.json` or the `nexus.permissions` key in `package.json` (`allow` / `ask` / `deny` glob lists).
+
+## Consequences
+
+- `npm run` scripts, installers and MCP tools execute with full user rights including network access.
+- Per-run cancellation is scoped by run id; Stop kills only that run's process tree (`taskkill /T /F` on Windows).
+- API keys are encrypted at rest with `safeStorage` and only decrypted in memory.
+- If you need isolation, run Nexus in a dedicated VM or container — the app itself is not a security boundary.
+
+## Related code
+
+- `electron/command-service.ts`, `electron/permissions.ts`, `electron/approval-service.ts`
+- `electron/daemon-service.ts` (scrubbed env), `electron/mcp-service.ts`, `electron/store.ts` (encrypted keys)
+- UI copy: `src/views/AgentView.tsx` input note (“Nexus runs real commands…”)

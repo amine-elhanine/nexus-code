@@ -79,6 +79,7 @@ const nexusApi = {
   startDaemon: (name: string, command: string, cwd?: string) => invoke("daemons:start", { name, command, cwd }),
   stopDaemon: (id: string) => invoke("daemons:stop", id),
   restartDaemon: (id: string) => invoke("daemons:restart", id),
+  removeDaemon: (id: string) => invoke("daemons:remove", id),
   getDaemonLogs: (id: string) => invoke("daemons:logs", id),
   onDaemonLog: (listener: (payload: { id: string; data: string }) => void) => {
     const handler = (_event: IpcRendererEvent, payload: { id: string; data: string }) => listener(payload);

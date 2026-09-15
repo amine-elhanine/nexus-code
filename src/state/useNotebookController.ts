@@ -25,6 +25,9 @@ export function useNotebookController(enabled: boolean) {
   const [notes, setNotes] = useState<NotebookNote[]>([]);
   const activeChatRef = useRef<NotebookChat | null>(null);
   activeChatRef.current = activeChat;
+  // Guards the one-chat-per-session ensure below against parallel creates
+  // (detail refresh + polling + ask can overlap).
+  const ensuringChatRef = useRef<Promise<NotebookChat | null> | null>(null);
 
   const refreshNotebooks = useCallback(async () => {
     const typed = api as unknown as { listNotebooks?: () => Promise<NotebookMeta[]> };
@@ -43,6 +46,36 @@ export function useNotebookController(enabled: boolean) {
     }
   }, []);
 
+  // One chat per session: the session IS the conversation. Ensures exactly
+  // one chat exists (creating it on first enter) and returns it.
+  const ensureSingleChat = useCallback(async (notebookId: string): Promise<NotebookChat | null> => {
+    if (ensuringChatRef.current) return ensuringChatRef.current;
+    const run = (async () => {
+      const typed = api as unknown as {
+        notebookChats: (id: string) => Promise<NotebookChat[]>;
+        notebookCreateChat: (id: string) => Promise<NotebookChat>;
+      };
+      try {
+        const existing = await typed.notebookChats(notebookId);
+        // Legacy sessions may hold several conversations — the session's
+        // single chat is the first; extras are left alone, never surfaced.
+        if (existing.length) {
+          setChats(existing);
+          return existing[0];
+        }
+        const chat = await typed.notebookCreateChat(notebookId);
+        setChats([chat]);
+        return chat;
+      } catch {
+        return null;
+      } finally {
+        ensuringChatRef.current = null;
+      }
+    })();
+    ensuringChatRef.current = run;
+    return run;
+  }, []);
+
   const refreshNotebookDetail = useCallback(
     async (notebookId: string) => {
       const typed = api as unknown as {
@@ -55,21 +88,27 @@ export function useNotebookController(enabled: boolean) {
       try {
         const [s, c, st, config, savedNotes] = await Promise.all([typed.notebookSources(notebookId), typed.notebookChats(notebookId), typed.notebookStats(notebookId), typed.notebookSettings(notebookId), typed.notebookNotes(notebookId)]);
         setSources(s);
-        setChats(c);
         setStats(st);
         setSettings(config);
         setNotes(savedNotes);
-        setActiveChat((prev) => {
-          if (prev && prev.notebookId === notebookId) {
-            return c.find((x) => x.id === prev.id) || c[0] || null;
-          }
-          return c[0] || null;
-        });
+        if (c.length) {
+          setChats(c);
+          setActiveChat((prev) => {
+            if (prev && prev.notebookId === notebookId) {
+              return c.find((x) => x.id === prev.id) || c[0];
+            }
+            return c[0];
+          });
+        } else {
+          // First enter: the session gets its one and only chat.
+          const chat = await ensureSingleChat(notebookId);
+          setActiveChat(chat);
+        }
       } catch {
         /* backend unavailable */
       }
     },
-    []
+    [ensureSingleChat]
   );
 
   useEffect(() => {
@@ -265,22 +304,6 @@ export function useNotebookController(enabled: boolean) {
     }
   }
 
-  async function createChat() {
-    if (!activeNotebook) return;
-    const typed = api as unknown as { notebookCreateChat: (id: string) => Promise<NotebookChat> };
-    const chat = await typed.notebookCreateChat(activeNotebook.id);
-    setChats((prev) => [chat, ...prev]);
-    setActiveChat(chat);
-  }
-
-  async function removeChat(chatId: string) {
-    if (!activeNotebook) return;
-    const typed = api as unknown as { notebookDeleteChat: (a: string, b: string) => Promise<NotebookChat[]> };
-    const next = await typed.notebookDeleteChat(activeNotebook.id, chatId);
-    setChats(next);
-    if (activeChat?.id === chatId) setActiveChat(next[0] || null);
-  }
-
   async function uploadFromPicker() {
     if (!activeNotebook) return;
     setNotice("Importing files…");
@@ -409,9 +432,7 @@ export function useNotebookController(enabled: boolean) {
     exitToSessions,
     renameCurrentNotebook,
     sources,
-    chats,
     activeChat,
-    setActiveChat,
     stats,
     draft,
     setDraft,
@@ -438,8 +459,6 @@ export function useNotebookController(enabled: boolean) {
     refreshNotebookDetail,
     createNotebook,
     removeNotebook,
-    createChat,
-    removeChat,
     uploadFromPicker,
     uploadBrowserFiles,
     ask,

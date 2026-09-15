@@ -1,0 +1,427 @@
+/* --- App themes: palette overrides bound to html[data-theme] --- */
+
+:root,
+html[data-theme="nexus"] {
+  --bg: #080a0f;
+  --panel: #0d1219;
+  --panel2: #121822;
+  --line: #1c2635;
+  --line2: #27364b;
+  --text: #e2e8f0;
+  --muted: #7b8ea3;
+  --faint: #526377;
+  --purple: #34d399;
+  --green: #34d399;
+  --orange: #e5aa64;
+  --red: #eb808a;
+  --nexus-green: #34d399;
+  --nexus-bright: #3ee695;
+  --nexus-glow: rgba(52, 211, 153, 0.25);
+  --accent-soft: rgba(52, 211, 153, 0.12);
+}
+
+html[data-theme="midnight"] {
+  color-scheme: dark;
+  --bg: #060b16;
+  --panel: #0b1424;
+  --panel2: #111c32;
+  --line: #1e2d4d;
+  --line2: #2c4168;
+  --text: #e2eaf6;
+  --muted: #8498b3;
+  --faint: #5a6d88;
+  --purple: #60a5fa;
+  --green: #38bdf8;
+  --orange: #e5aa64;
+  --red: #eb808a;
+  --nexus-green: #60a5fa;
+  --nexus-bright: #93c5fd;
+  --nexus-glow: rgba(96, 165, 250, 0.22);
+  --accent-soft: rgba(96, 165, 250, 0.14);
+}
+
+html[data-theme="grape"] {
+  color-scheme: dark;
+  --bg: #0c0a15;
+  --panel: #141026;
+  --panel2: #1c1533;
+  --line: #2a2145;
+  --line2: #3d3163;
+  --text: #e9e4f7;
+  --muted: #9a8fb8;
+  --faint: #6d6390;
+  --purple: #a78bfa;
+  --green: #a78bfa;
+  --orange: #e5aa64;
+  --red: #eb808a;
+  --nexus-green: #a78bfa;
+  --nexus-bright: #c4b5fd;
+  --nexus-glow: rgba(167, 139, 250, 0.22);
+  --accent-soft: rgba(167, 139, 250, 0.14);
+}
+
+html[data-theme="ember"] {
+  color-scheme: dark;
+  --bg: #0f0a07;
+  --panel: #191009;
+  --panel2: #221610;
+  --line: #332217;
+  --line2: #4d3423;
+  --text: #f3e9df;
+  --muted: #b39b84;
+  --faint: #84705c;
+  --purple: #fb923c;
+  --green: #fb923c;
+  --orange: #fbbf24;
+  --red: #eb808a;
+  --nexus-green: #fb923c;
+  --nexus-bright: #fdba74;
+  --nexus-glow: rgba(251, 146, 60, 0.22);
+  --accent-soft: rgba(251, 146, 60, 0.14);
+}
+
+html[data-theme="crimson"] {
+  color-scheme: dark;
+  --bg: #10080c;
+  --panel: #1b1016;
+  --panel2: #25141d;
+  --line: #3a1f2a;
+  --line2: #552b3b;
+  --text: #f6e4e9;
+  --muted: #b58c98;
+  --faint: #82606b;
+  --purple: #fb7185;
+  --green: #fb7185;
+  --orange: #e5aa64;
+  --red: #fb7185;
+  --nexus-green: #fb7185;
+  --nexus-bright: #fda4af;
+  --nexus-glow: rgba(251, 113, 133, 0.22);
+  --accent-soft: rgba(251, 113, 133, 0.13);
+}
+
+html[data-theme="lagoon"] {
+  color-scheme: dark;
+  --bg: #061110;
+  --panel: #0a1a19;
+  --panel2: #102524;
+  --line: #1c3a38;
+  --line2: #2a5451;
+  --text: #ddf3ee;
+  --muted: #86a8a3;
+  --faint: #5d7d79;
+  --purple: #2dd4bf;
+  --green: #2dd4bf;
+  --orange: #e5aa64;
+  --red: #eb808a;
+  --nexus-green: #2dd4bf;
+  --nexus-bright: #5eead4;
+  --nexus-glow: rgba(45, 212, 191, 0.2);
+  --accent-soft: rgba(45, 212, 191, 0.12);
+}
+
+html[data-theme="moss"] {
+  color-scheme: dark;
+  --bg: #090e06;
+  --panel: #121a0c;
+  --panel2: #1a2511;
+  --line: #27351a;
+  --line2: #3a4f26;
+  --text: #eaf3dc;
+  --muted: #9aae83;
+  --faint: #6e7f5e;
+  --purple: #a3e635;
+  --green: #4ade80;
+  --orange: #e5aa64;
+  --red: #eb808a;
+  --nexus-green: #a3e635;
+  --nexus-bright: #bef264;
+  --nexus-glow: rgba(163, 230, 53, 0.18);
+  --accent-soft: rgba(163, 230, 53, 0.12);
+}
+
+html[data-theme="daylight"] {
+  color-scheme: light;
+  --bg: #eef1f4;
+  --panel: #ffffff;
+  --panel2: #f1f4f8;
+  --line: #dfe5ec;
+  --line2: #c9d3df;
+  --text: #1b2432;
+  --muted: #5f6f84;
+  --faint: #93a1b3;
+  --purple: #059669;
+  --green: #059669;
+  --orange: #b45309;
+  --red: #dc2626;
+  --nexus-green: #059669;
+  --nexus-bright: #047857;
+  --nexus-glow: rgba(5, 150, 105, 0.14);
+  --accent-soft: rgba(5, 150, 105, 0.1);
+}
+
+/* --- Bind major hardcoded dark surfaces to theme vars --- */
+html[data-theme] body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+html[data-theme] .product-shell {
+  background: var(--bg);
+}
+
+html[data-theme] .product-topbar {
+  background: var(--panel);
+  border-bottom-color: var(--line);
+}
+
+html[data-theme] .green-dot {
+  background: var(--nexus-green);
+  box-shadow: 0 0 0 3px var(--nexus-glow);
+}
+
+/* Accent remap: previously hardcoded emerald -> theme accent */
+html[data-theme] .settings-side button.active,
+html[data-theme] .area-tabs button.active,
+html[data-theme] .seg button.active,
+html[data-theme] .context-tabs button.active,
+html[data-theme] .side-tab.active,
+html[data-theme] .side-tab.active.agent {
+  color: var(--nexus-bright);
+}
+
+html[data-theme] .settings-side button.active,
+html[data-theme] .area-tabs button.active,
+html[data-theme] .seg button.active {
+  background: var(--accent-soft);
+}
+
+html[data-theme] .setting-card {
+  background: var(--panel);
+  border-color: var(--line);
+}
+
+html[data-theme] .setting-text strong {
+  color: var(--text);
+}
+
+html[data-theme] .setting-text small,
+html[data-theme] .settings-note {
+  color: var(--muted);
+}
+
+html[data-theme] .setting-icon {
+  background: var(--accent-soft);
+  color: var(--nexus-green);
+}
+
+html[data-theme] .setting-nav-row:hover .setting-text strong,
+html[data-theme] .home-suggestion:hover,
+html[data-theme] .file-preview-tabs button.active {
+  color: var(--nexus-bright);
+}
+
+html[data-theme] .file-preview-tabs button.active,
+html[data-theme] .home-suggestion:hover {
+  border-color: var(--nexus-green);
+}
+
+html[data-theme] .seg {
+  background: var(--bg);
+  border-color: var(--line);
+}
+
+html[data-theme] .switch.on {
+  background: var(--accent-soft);
+  border-color: var(--nexus-green);
+}
+
+html[data-theme] .switch.on .knob {
+  background: var(--nexus-bright);
+}
+
+html[data-theme] .settings-side {
+  border-right-color: var(--line);
+}
+
+html[data-theme] .settings-side button {
+  color: var(--muted);
+}
+
+html[data-theme] .side-browser-bar input:focus {
+  border-color: var(--nexus-green);
+}
+
+html[data-theme] .scope-checkbox {
+  accent-color: var(--nexus-green);
+}
+
+html[data-theme] .stream-caret {
+  color: var(--nexus-green);
+}
+
+/* --- Appearance picker --- */
+.theme-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.theme-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 10px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.theme-card:hover {
+  border-color: var(--line2);
+}
+
+.theme-card.selected {
+  border-color: var(--nexus-green);
+  box-shadow: 0 0 0 1px var(--nexus-green), 0 8px 24px var(--nexus-glow);
+}
+
+.theme-preview {
+  height: 54px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.theme-preview-top {
+  height: 14px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+}
+
+.theme-preview-top i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: block;
+}
+
+.theme-preview-body {
+  flex: 1;
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+}
+
+.theme-preview-side {
+  width: 26px;
+  border-radius: 4px;
+}
+
+.theme-preview-main {
+  flex: 1;
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+}
+
+.theme-preview-main i {
+  display: block;
+  height: 5px;
+  border-radius: 3px;
+}
+
+.theme-meta {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.theme-meta strong {
+  font-size: 12px;
+  display: block;
+}
+
+.theme-meta small {
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.4;
+  display: block;
+  margin-top: 2px;
+}
+
+.theme-check {
+  margin-left: auto;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line2);
+  color: transparent;
+}
+
+.theme-card.selected .theme-check {
+  background: var(--nexus-green);
+  border-color: var(--nexus-green);
+  color: #fff;
+}
+
+.theme-swatches {
+  display: flex;
+  gap: 5px;
+}
+
+.theme-swatches i {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--line2);
+  display: block;
+}
+
+/* Light theme needs broader surface remapping since base CSS is dark-first */
+html[data-theme="daylight"] .product-topbar .session-top-title,
+html[data-theme="daylight"] .session-title-text {
+  color: var(--text);
+}
+
+html[data-theme="daylight"] .modal-card {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+html[data-theme="daylight"] .settings-side button:hover {
+  background: var(--panel2);
+  color: var(--text);
+}
+
+html[data-theme="daylight"] .text-field,
+html[data-theme="daylight"] .select-field,
+html[data-theme="daylight"] input,
+html[data-theme="daylight"] select,
+html[data-theme="daylight"] textarea {
+  background: var(--panel);
+  border-color: var(--line2);
+  color: var(--text);
+}
+
+html[data-theme="daylight"] .seg button {
+  color: var(--muted);
+}
+
+html[data-theme="daylight"] .seg button:hover {
+  color: var(--text);
+}

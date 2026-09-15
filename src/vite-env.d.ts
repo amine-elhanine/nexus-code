@@ -66,7 +66,7 @@ export interface NexusApi {
   openSkillsFolder: (scope: "global" | "project") => Promise<boolean>;
   getSettings: () => Promise<Record<string, unknown>>;
   saveSettings: (settings: unknown) => Promise<unknown>;
-  getAppSettings: () => Promise<{ browserHeadless?: boolean; notebookRerankEnabled?: boolean; notebookRerankProviderId?: string; notebookRerankModel?: string; notebookVisionEnabled?: boolean; notebookVisionProviderId?: string; notebookVisionModel?: string }>;
+  getAppSettings: () => Promise<{ browserHeadless?: boolean; notebookRerankEnabled?: boolean; notebookRerankProviderId?: string; notebookRerankModel?: string; notebookVisionEnabled?: boolean; notebookVisionProviderId?: string; notebookVisionModel?: string; theme?: string }>;
   saveAppSettings: (settings: unknown) => Promise<unknown>;
   getNotebookParser: () => Promise<{ provider: "local" | "llamaparse"; enabled: boolean; apiKey: string; baseUrl: string; tier: string; version: string; timeoutSeconds: number }>;
   saveNotebookParser: (config: unknown) => Promise<unknown>;
@@ -107,6 +107,7 @@ export interface NexusApi {
   startDaemon: (name: string, command: string, cwd?: string) => Promise<{ id: string; name: string; command: string; cwd: string; status: "running" | "stopped" | "crashed"; pid?: number; port?: number; startTime: string; logsCount: number }>;
   stopDaemon: (id: string) => Promise<boolean>;
   restartDaemon: (id: string) => Promise<boolean>;
+  removeDaemon: (id: string) => Promise<boolean>;
   getDaemonLogs: (id: string) => Promise<string[]>;
   onDaemonLog: (listener: (payload: { id: string; data: string }) => void) => () => void;
 

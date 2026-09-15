@@ -5,7 +5,6 @@ import {
   MessageSquare, PanelRight, Plus, RefreshCw,
   Server, Settings2, Sparkles, Terminal, Trash2, TriangleAlert
 } from "lucide-react";
-import { NexusLogo } from "./components/common/NexusLogo.js";
 import { WindowControls } from "./components/common/WindowControls.js";
 import { ConfirmModal } from "./modals/ConfirmModal.js";
 import { ProviderModal } from "./modals/ProviderModal.js";
@@ -30,6 +29,7 @@ import { useNotebookController } from "./state/useNotebookController.js";
 import { DiffView } from "./views/DiffView.js";
 import { MemoryView, ContextRow, MemoryRow } from "./views/MemoryView.js";
 import { useAppController } from "./state/useAppController.js";
+import { applyTheme } from "./state/theme.js";
 import { getSessionUsage, fileIcon } from "./utils/format.js";
 import { timeLabel } from "./utils/format.js";
 import type { ChatAttachment, UpdaterState } from "./types.js";
@@ -170,9 +170,7 @@ function App() {
   const api = window.nexus || window.forgepilot;
   const notebook = useNotebookController(area === "notebook");
   const headerTitle = area === "notebook"
-    ? (!notebook.activeNotebook
-      ? "Notebook sessions"
-      : (notebook.activeChat ? `${notebook.activeNotebook.name} · ${notebook.activeChat.title}` : notebook.activeNotebook.name))
+    ? (notebook.activeNotebook ? notebook.activeNotebook.name : "Notebook sessions")
     : (activeSession?.title || "No session selected");
   const currentSessionUsage = getSessionUsage(activeSession);
   const [homePreviewPath, setHomePreviewPath] = useState<string | null>(null);
@@ -200,6 +198,15 @@ function App() {
     return api.onUpdaterStatus((state) => setUpdater(state as UpdaterState));
   }, []);
   useEffect(() => api.onCommandApprovalRequest((request) => setApprovalRequest(request)), [api]);
+
+  useEffect(() => {
+    const typed = api as unknown as { getAppSettings?: () => Promise<{ theme?: string }> };
+    typed.getAppSettings?.().then((value) => {
+      if (value && typeof value.theme === "string" && value.theme) {
+        applyTheme(value.theme);
+      }
+    }).catch(() => {});
+  }, [api]);
 
   async function answerApproval(decision: "once" | "session" | "deny") {
     const request = approvalRequest;
@@ -250,7 +257,6 @@ function App() {
             <Menu size={15} />
           </button>
           <div className="product-logo">
-            <NexusLogo size={20} />
             <span className="nexus-title">nexus<span className="nexus-cursor">_</span></span>
           </div>
           <div className="top-separator" />
@@ -465,9 +471,7 @@ function App() {
                   activeNotebook={notebook.activeNotebook}
                   setActiveNotebook={(nb) => notebook.enterNotebook(nb)}
                   sources={notebook.sources}
-                  chats={notebook.chats}
                   activeChat={notebook.activeChat}
-                  setActiveChat={(chat) => notebook.setActiveChat(chat)}
                   stats={notebook.stats}
                   draft={notebook.draft}
                   setDraft={notebook.setDraft}
@@ -482,8 +486,6 @@ function App() {
                   notes={notebook.notes}
                   onCreateNotebook={(name) => void notebook.createNotebook(name)}
                   onDeleteNotebook={(id) => void notebook.removeNotebook(id)}
-                  onCreateChat={() => void notebook.createChat()}
-                  onDeleteChat={(id) => void notebook.removeChat(id)}
                   onPickFiles={() => void notebook.uploadFromPicker()}
                   onBrowserFiles={(files) => void notebook.uploadBrowserFiles(files)}
                   onRefresh={() => {

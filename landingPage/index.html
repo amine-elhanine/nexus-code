@@ -4,21 +4,22 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#080a0f" />
-  <meta name="description" content="Nexus — the autonomous AI coding agent for your desktop. Plan, build, verify and repair, with any LLM provider." />
+  <meta name="description" content="Nexus — one desk for code, work and knowledge. A coding workshop that verifies its work, a home desk that writes your documents, and a notebook that answers with receipts. 15 LLM providers, your keys stay home." />
   <link rel="icon" type="image/png" href="./icon.png" />
-  <title>Nexus — Autonomous AI Coding Agent</title>
+  <title>Nexus — Code it. Draft it. Prove it.</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <header class="nav">
+  <header class="masthead">
     <a class="brand" href="#top">
       <span class="logo">nexus<span class="cursor">_</span></span>
+      <span class="edition">field manual · windows edition</span>
     </a>
     <nav class="nav-links">
-      <a href="#features">Features</a>
-      <a href="#how">How it works</a>
-      <a href="#download">Download</a>
-      <a href="https://github.com/L7A9/nexus/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="#desk">The desk</a>
+      <a href="#hood">Under the hood</a>
+      <a href="#shots">In the app</a>
+      <a href="#fineprint">Fine print</a>
     </nav>
     <a class="btn btn-small btn-primary download-setup" href="https://github.com/L7A9/nexus/releases/latest" data-dl="setup">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -28,12 +29,13 @@
 
   <main id="top">
     <section class="hero">
-      <p class="kicker">Autonomous AI coding agent · Windows</p>
-      <h1>Ship code with an agent<br />that <em>verifies its work</em>.</h1>
+      <p class="kicker">nexus_ · a desk, not a chatbot</p>
+      <h1>Code it. Draft it.<br /><em>Prove it.</em></h1>
       <p class="lede">
-        Nexus opens your repository, plans the change, implements it, runs your
-        typecheck and tests — and repairs failures automatically. Any LLM provider,
-        your machine, your keys.
+        Most assistants hand you a paragraph and wish you luck. Nexus keeps the
+        whole trail: the diff it changed, the document it saved, the source it
+        quoted. Three tabs, one window — a workshop for your repo, a desk for
+        your day, an archive for your documents.
       </p>
       <div class="cta-row">
         <a class="btn btn-primary btn-big download-setup" href="https://github.com/L7A9/nexus/releases/latest" data-dl="setup">
@@ -46,64 +48,146 @@
         <span class="dot"></span>
         <span class="version-text">Checking latest release…</span>
       </p>
-      <div class="hero-shot" aria-hidden="true">
-        <div class="shot-bar"><i></i><i></i><i></i></div>
-        <div class="shot-body">
-          <div class="shot-side"></div>
-          <div class="shot-main">
-            <div class="shot-line w60"></div>
-            <div class="shot-line w90"></div>
-            <div class="shot-line w75"></div>
-            <div class="shot-tool">✓ read_file · src/App.tsx</div>
-            <div class="shot-line w85"></div>
-            <div class="shot-tool">✓ Verification passed · npm run check</div>
-          </div>
+      <dl class="factstrip">
+        <div><dt>Providers</dt><dd>15, keys OS-encrypted</dd></div>
+        <div><dt>Platform</dt><dd>Windows 10 / 11, 64-bit</dd></div>
+        <div><dt>Regret</dt><dd>one-click Undo on every run</dd></div>
+        <div><dt>Receipts</dt><dd>diffs, files &amp; citations kept</dd></div>
+      </dl>
+    </section>
+
+    <nav class="contents" aria-label="Contents">
+      <p class="contents-title">Contents</p>
+      <ol>
+        <li><a href="#desk"><span>01</span>The desk — three tabs</a></li>
+        <li><a href="#hood"><span>02</span>Under the hood</a></li>
+        <li><a href="#shots"><span>03</span>In the app, unretouched</a></li>
+        <li><a href="#fineprint"><span>04</span>Fine print, up front</a></li>
+        <li><a href="#download"><span>05</span>Get Nexus</a></li>
+      </ol>
+    </nav>
+
+    <section id="desk" class="chapter">
+      <p class="chap-no">Chapter 01</p>
+      <h2>Pick a tab. Stay&nbsp;in&nbsp;flow.</h2>
+      <p class="chap-sub">No mode-switching between five apps. The model picker, the attachments, the voice button — same everywhere. What changes is what the agent is allowed to promise you.</p>
+
+      <article class="mode">
+        <p class="mode-index">i.</p>
+        <div class="mode-body">
+          <p class="mode-tag">Code — the workshop</p>
+          <h3>Bring a repo. Leave with a diff.</h3>
+          <p>Plan read-only, Ask for the usual, Auto when you want it to keep going and fix its own failures. Every change ends in a Monaco diff you can revert file-by-file — or nuke the whole run with Undo.</p>
+          <p class="try">Try: <code>fix the flaky test in auth/, then show me the diff</code></p>
+          <ul class="ticks">
+            <li>typecheck + targeted tests, then auto-repair</li>
+            <li>opt-in worktree per session, one-click merge</li>
+            <li>real PTY, dev servers, agent-driven browser</li>
+          </ul>
         </div>
+      </article>
+
+      <article class="mode">
+        <p class="mode-index">ii.</p>
+        <div class="mode-body">
+          <p class="mode-tag">Home — the desk</p>
+          <h3>No repo. Just the thing you need.</h3>
+          <p>Research, then a file that actually exists: a Word report, a deck, a spreadsheet, a PDF. It lands in <code>~/Documents/Nexus</code>, owned by the chat that made it, previewed in-app, downloaded wherever you want.</p>
+          <p class="try">Try: <code>research EV tariffs and draft me a 2-page brief (.docx)</code></p>
+          <ul class="ticks">
+            <li>web search with real sources, not vibes</li>
+            <li>throwaway generator scripts cleaned up after</li>
+            <li>images, PDFs, voice — straight into the prompt</li>
+          </ul>
+        </div>
+      </article>
+
+      <article class="mode">
+        <p class="mode-index">iii.</p>
+        <div class="mode-body">
+          <p class="mode-tag">Notebook — the archive</p>
+          <h3>Ask your documents. Get receipts.</h3>
+          <p>Drop in the PDFs, the contracts, the field notes. Every answer carries <code>[S1]</code>-style citations you can click open — plus a verdict: grounded, partial, or ungrounded. Scope sources in and out per question.</p>
+          <p class="try">Try: <code>compare what §4 and §7 say about termination</code></p>
+          <ul class="ticks">
+            <li>hybrid retrieval, passage inspector, quizzes</li>
+            <li>save anything as a cited studio note</li>
+            <li>works offline with local embeddings</li>
+          </ul>
+        </div>
+      </article>
+    </section>
+
+    <section id="hood" class="chapter">
+      <p class="chap-no">Chapter 02</p>
+      <h2>Built like a workbench, not&nbsp;a&nbsp;demo.</h2>
+      <p class="chap-sub">The unglamorous parts are the point: verification before praise, transcripts you can audit, keys that never leave the machine.</p>
+      <dl class="ledger">
+        <div>
+          <dt>Verify, then talk</dt>
+          <dd>Code runs go <code>brief → agent → verify → repair</code>. Typecheck and targeted tests run first; failures go back to the agent with the transcript intact. Plan mode skips all of it and just writes the plan.</dd>
+        </div>
+        <div>
+          <dt>Your keys stay home</dt>
+          <dd>15 providers — OpenAI, Anthropic, Gemini, Mistral, Groq, xAI, OpenRouter, Ollama, DeepSeek, Zen, Together, Fireworks, Azure, Bedrock, anything OpenAI-compatible. Secrets live in OS-encrypted storage, decrypted only in memory.</dd>
+        </div>
+        <div>
+          <dt>Undo is a feature</dt>
+          <dd>Disk snapshots before every run. A run you hate is one click from never having happened. Worktrees are opt-in, telemetry survives discards, and <code>.nexus/</code> never pollutes your diff.</dd>
+        </div>
+        <div>
+          <dt>Extend it your way</dt>
+          <dd>MCP servers (stdio/http/sse), <code>SKILL.md</code> playbooks global or per-project, auto-loaded project rules, slash commands with <code>/</code> — including your own <code>.nexus/commands/*.md</code>.</dd>
+        </div>
+        <div>
+          <dt>A browser the agent can touch</dt>
+          <dd>Isolated partitions per tab, a hidden executor for the agent (click, fill, scroll, screenshot), and a Watching toggle so the sidebar follows along live over your dev server.</dd>
+        </div>
+        <div>
+          <dt>Updates that don't nag</dt>
+          <dd>Installed builds check for updates on launch, download quietly, and offer one restart-to-install pill. Portable stays portable — re-download when you feel like it.</dd>
+        </div>
+      </dl>
+    </section>
+
+    <section id="shots" class="chapter dark">
+      <p class="chap-no">Chapter 03</p>
+      <h2>No mockups. This is it.</h2>
+      <p class="chap-sub">Actual windows from a working session — the desk, the workshop, the archive.</p>
+      <div class="shot-picker" role="tablist" aria-label="App screenshots">
+        <button class="on" data-shot="home" role="tab" aria-selected="true">Home</button>
+        <button data-shot="code" role="tab" aria-selected="false">Code</button>
+        <button data-shot="notebook" role="tab" aria-selected="false">Notebook</button>
+      </div>
+      <div class="shot-frame">
+        <img src="./shot-home.png" alt="Nexus Home — general assistant chat with session tokens and Nexus folder sidebar" data-shot-img="home" />
+        <img src="./shot-code.png" alt="Nexus Code — coding agent with file changes, commands run, and built-in browser on localhost" data-shot-img="code" hidden />
+        <img src="./shot-notebook.png" alt="Nexus Notebook — grounded answers with citations, sources and session digest" data-shot-img="notebook" hidden />
       </div>
     </section>
 
-    <section id="features" class="section">
-      <h2>Everything around the agent, in one window</h2>
-      <div class="grid">
-        <div class="card">
-          <h3>Plan → build → verify → repair</h3>
-          <p>A deterministic loop runs your typecheck and targeted tests after every change and feeds failures back for an automatic repair pass.</p>
-        </div>
-        <div class="card">
-          <h3>Any model, your keys</h3>
-          <p>OpenAI, Anthropic, Gemini, Ollama, DeepSeek, Azure and any OpenAI-compatible endpoint. Keys stay encrypted on your machine.</p>
-        </div>
-        <div class="card">
-          <h3>Agent-driven browser</h3>
-          <p>The agent inspects and clicks through your running dev server in the built-in browser — watch it work or let it run headless.</p>
-        </div>
-        <div class="card">
-          <h3>Safe experimentation</h3>
-          <p>Isolated git worktrees per session, one-click merge or discard, and instant rollback of any run you don't like.</p>
-        </div>
-        <div class="card">
-          <h3>Dev servers &amp; terminal</h3>
-          <p>Start background services, follow their ports in the browser, and drop into a real PTY terminal without leaving the app.</p>
-        </div>
-        <div class="card">
-          <h3>MCP + Skills, auto-updates</h3>
-          <p>Extend the agent with MCP servers and SKILL.md playbooks. New releases install themselves on restart.</p>
-        </div>
+    <section id="fineprint" class="chapter">
+      <p class="chap-no">Chapter 04</p>
+      <div class="stamp">
+        <h2>No sandbox. No theater.</h2>
+        <p>Nexus runs real commands on your machine with your privileges — installs, scripts, MCP tools, all of it. A deny-list blocks catastrophes (<code>rm -rf /</code> and friends) and risky moves ask first (pushes, installs, <code>curl | sh</code>). Everything else just runs. If that sentence worries you, run Nexus in a VM. We'd rather tell you than surprise you.</p>
       </div>
     </section>
 
-    <section id="how" class="section">
-      <h2>Running in three steps</h2>
+    <section id="how" class="chapter">
+      <p class="chap-no">Chapter 05</p>
+      <h2>Three steps, five minutes.</h2>
       <ol class="steps">
-        <li><strong>Install Nexus</strong><span>Grab the Setup below — updates arrive automatically.</span></li>
-        <li><strong>Connect a provider</strong><span>Paste one API key, or point it at a local Ollama server.</span></li>
-        <li><strong>Open a project and prompt</strong><span>Plan a refactor, fix a bug, scaffold an app — then review the diff.</span></li>
+        <li><span class="step-no">1</span><div><strong>Install it</strong><span>Grab the Windows Setup below — updates install on restart.</span></div></li>
+        <li><span class="step-no">2</span><div><strong>Bring one key</strong><span>Paste any provider key — or point it at local Ollama and pay nothing.</span></div></li>
+        <li><span class="step-no">3</span><div><strong>Pick a tab</strong><span>Fix something in Code, draft something in Home, interrogate something in Notebook.</span></div></li>
       </ol>
     </section>
 
-    <section id="download" class="section download">
+    <section id="download" class="closer">
+      <p class="kicker">nexus · windows · free</p>
       <h2>Get Nexus</h2>
-      <p class="release-notes" hidden></p>
+      <!-- <p class="release-notes" hidden></p> -->
       <div class="cta-row">
         <a class="btn btn-primary btn-big download-setup" href="https://github.com/L7A9/nexus/releases/latest" data-dl="setup">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -115,15 +199,48 @@
         <span class="dot"></span>
         <span class="version-text">Checking latest release…</span>
       </p>
-      <p class="reqs">Windows 10/11 64-bit · ~150 MB · Free · <a href="https://github.com/L7A9/nexus/releases">all releases</a></p>
+      <p class="reqs">Windows 10/11 64-bit · Free · Updates install on restart</p>
     </section>
   </main>
 
   <footer>
     <span class="logo small">nexus<span class="cursor">_</span></span>
-    <span>Autonomous AI coding agent · Built with Electron + LangChain</span>
+    <span>Code it. Draft it. Prove it. · Set in Fraunces, DM Sans &amp; DM Mono · Electron + LangChain + LangGraph</span>
   </footer>
 
+  <script>
+    // Screenshot tabs + graceful hide for shots not yet added.
+    (function () {
+      var buttons = Array.prototype.slice.call(document.querySelectorAll('[data-shot]'));
+      var images = Array.prototype.slice.call(document.querySelectorAll('[data-shot-img]'));
+      function show(name) {
+        buttons.forEach(function (b) {
+          var on = b.getAttribute('data-shot') === name;
+          b.classList.toggle('on', on);
+          b.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        images.forEach(function (img) {
+          img.hidden = img.getAttribute('data-shot-img') !== name;
+        });
+      }
+      buttons.forEach(function (b) {
+        b.addEventListener('click', function () { show(b.getAttribute('data-shot')); });
+      });
+      images.forEach(function (img) {
+        img.addEventListener('error', function () {
+          img.remove();
+          var btn = document.querySelector('[data-shot="' + img.getAttribute('data-shot-img') + '"]');
+          if (btn) btn.remove();
+          var first = document.querySelector('[data-shot]');
+          if (first) show(first.getAttribute('data-shot'));
+          if (!document.querySelector('[data-shot]')) {
+            var sec = document.getElementById('shots');
+            if (sec) sec.hidden = true;
+          }
+        });
+      });
+    })();
+  </script>
   <script src="./app.js"></script>
 </body>
 </html>

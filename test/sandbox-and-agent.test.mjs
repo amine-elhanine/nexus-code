@@ -1482,7 +1482,7 @@ pub async fn execute_task(task: &str) -> bool { true }
     const logs = customDaemonService.getDaemonLogs(info.id);
     assert.ok(logs.length > 0);
 
-    const stopped = customDaemonService.stopDaemon(info.id);
+    const stopped = await customDaemonService.stopDaemon(info.id);
     assert.equal(stopped, true);
   });
 

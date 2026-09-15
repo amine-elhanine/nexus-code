@@ -27,14 +27,32 @@ export const DaemonsModal: React.FC<DaemonsModalProps> = ({ onClose, projectRoot
   const [showAddForm, setShowAddForm] = useState(false);
   const [newName, setNewName] = useState("");
   const [newCommand, setNewCommand] = useState("");
+  // Service an action (stop/restart/delete) is currently running on — buttons
+  // stay disabled until the backend confirms, so double-clicks can't race it.
+  const [actingId, setActingId] = useState<string | null>(null);
+  // Last action failure (e.g. the OS refused to kill the process).
+  const [actionError, setActionError] = useState<string | null>(null);
   const logsEndRef = useRef<HTMLDivElement | null>(null);
+  const logsConsoleRef = useRef<HTMLDivElement | null>(null);
+  // Mirror of the selection for the polling loop below: the interval is
+  // registered once, so reading `selectedId` state directly would always see
+  // the initial value ("") and reset the selection to the top item on every
+  // refresh. The ref always holds the current selection instead.
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+  // Auto-scroll sticks to the bottom only while the user is already near the
+  // bottom — reading older output no longer gets yanked away by new lines.
+  const stickToBottomRef = useRef(true);
 
   const loadDaemons = async () => {
     try {
       const list = await window.forgepilot.listDaemons();
       setDaemons(list);
-      if (list.length && (!selectedId || !list.some((d) => d.id === selectedId))) {
+      const current = selectedIdRef.current;
+      if (list.length && (!current || !list.some((d) => d.id === current))) {
         setSelectedId(list[0].id);
+      } else if (!list.length && current) {
+        setSelectedId("");
       }
     } catch {
       setDaemons([]);
@@ -61,6 +79,7 @@ export const DaemonsModal: React.FC<DaemonsModalProps> = ({ onClose, projectRoot
 
   useEffect(() => {
     if (selectedId) {
+      stickToBottomRef.current = true;
       void loadLogs(selectedId);
       const unsub = window.forgepilot.onDaemonLog?.(({ id, data }) => {
         if (id === selectedId) {
@@ -72,7 +91,9 @@ export const DaemonsModal: React.FC<DaemonsModalProps> = ({ onClose, projectRoot
   }, [selectedId]);
 
   useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (stickToBottomRef.current) {
+      logsEndRef.current?.scrollIntoView({ behavior: "auto" });
+    }
   }, [logs]);
 
   const handleStartNew = async (e: React.FormEvent) => {
@@ -95,14 +116,57 @@ export const DaemonsModal: React.FC<DaemonsModalProps> = ({ onClose, projectRoot
   };
 
   const handleStop = async (id: string) => {
-    await window.forgepilot.stopDaemon(id);
-    await loadDaemons();
+    setActingId(id);
+    setActionError(null);
+    try {
+      const ok = await window.forgepilot.stopDaemon(id);
+      await loadDaemons();
+      await loadLogs(id);
+      if (!ok) {
+        const port = daemons.find((d) => d.id === id)?.port;
+        setActionError(
+          `Could not stop "${daemons.find((d) => d.id === id)?.name || "service"}" — the process is still alive${port ? ` (port ${port} still in use)` : ""}. Try again, or kill it manually.`
+        );
+      }
+    } finally {
+      setActingId(null);
+    }
   };
 
   const handleRestart = async (id: string) => {
-    await window.forgepilot.restartDaemon(id);
-    await loadDaemons();
-    await loadLogs(id);
+    setActingId(id);
+    setActionError(null);
+    try {
+      const ok = await window.forgepilot.restartDaemon(id);
+      await loadDaemons();
+      await loadLogs(id);
+      if (!ok) setActionError("Restart failed — the old process could not be stopped.");
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  const handleRemove = async (id: string) => {
+    if (typeof window.forgepilot.removeDaemon !== "function") return;
+    setActingId(id);
+    try {
+      await window.forgepilot.removeDaemon(id);
+      setLogs([]);
+      try {
+        const list = await window.forgepilot.listDaemons();
+        setDaemons(list);
+        // Keep the selection on a neighbour instead of jumping to the top.
+        setSelectedId((prev) => {
+          if (prev !== id) return prev;
+          return list.length ? list[list.length - 1].id : "";
+        });
+      } catch {
+        setDaemons([]);
+        setSelectedId("");
+      }
+    } finally {
+      setActingId(null);
+    }
   };
 
   const selectedDaemon = daemons.find((d) => d.id === selectedId);
@@ -242,25 +306,69 @@ export const DaemonsModal: React.FC<DaemonsModalProps> = ({ onClose, projectRoot
                       </a>
                     )}
                     {selectedDaemon.status === "running" ? (
-                      <button className="xterm-btn danger" onClick={() => handleStop(selectedDaemon.id)} title="Stop process">
+                      <button
+                        className="xterm-btn danger"
+                        onClick={() => void handleStop(selectedDaemon.id)}
+                        disabled={actingId === selectedDaemon.id}
+                        title="Stop process"
+                      >
                         <Square size={12} fill="currentColor" />
-                        <span>Stop</span>
+                        <span>{actingId === selectedDaemon.id ? "Stopping…" : "Stop"}</span>
                       </button>
                     ) : (
-                      <button className="xterm-btn success" onClick={() => handleRestart(selectedDaemon.id)} title="Start process">
+                      <button
+                        className="xterm-btn success"
+                        onClick={() => void handleRestart(selectedDaemon.id)}
+                        disabled={actingId === selectedDaemon.id}
+                        title="Start process"
+                      >
                         <Play size={12} fill="currentColor" />
-                        <span>Start</span>
+                        <span>{actingId === selectedDaemon.id ? "Starting…" : "Start"}</span>
                       </button>
                     )}
-                    <button className="xterm-btn" onClick={() => handleRestart(selectedDaemon.id)} title="Restart process">
+                    <button
+                      className="xterm-btn"
+                      onClick={() => void handleRestart(selectedDaemon.id)}
+                      disabled={actingId === selectedDaemon.id}
+                      title="Restart process"
+                    >
                       <RefreshCw size={12} />
                       <span>Restart</span>
                     </button>
+                    {selectedDaemon.status !== "running" && (
+                      <button
+                        className="xterm-btn danger"
+                        onClick={() => void handleRemove(selectedDaemon.id)}
+                        disabled={actingId === selectedDaemon.id}
+                        title="Delete this stopped service from the list"
+                      >
+                        <Trash2 size={12} />
+                        <span>Delete</span>
+                      </button>
+                    )}
                   </div>
                 </div>
 
+                {actionError && (
+                  <div className="daemon-action-error" role="alert">
+                    <AlertCircle size={13} />
+                    <span>{actionError}</span>
+                    <button className="pane-action" onClick={() => setActionError(null)} title="Dismiss">
+                      <X size={12} />
+                    </button>
+                  </div>
+                )}
+
                 {/* Console Logs */}
-                <div className="daemon-logs-console">
+                <div
+                  className="daemon-logs-console"
+                  ref={logsConsoleRef}
+                  onScroll={() => {
+                    const el = logsConsoleRef.current;
+                    if (!el) return;
+                    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+                  }}
+                >
                   {logs.map((line, idx) => (
                     <div key={idx} className="daemon-log-line">
                       {line}
