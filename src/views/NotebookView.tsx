@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import { ModelSelect } from "./AgentView.js";
 import { renderMarkdown } from "../markdown.js";
+import { timeLabel } from "../utils/format.js";
 import { SourcePassageModal, type PassageAction } from "../components/notebook/SourcePassageModal.js";
 import type { NotebookChat, NotebookMeta, NotebookNote, NotebookPassage, NotebookSettings, NotebookSource, NotebookStats, ProviderConfig, ProviderDefinition } from "../types.js";
 
@@ -27,9 +28,7 @@ export function NotebookView({
   activeNotebook,
   setActiveNotebook,
   sources,
-  chats,
   activeChat,
-  setActiveChat,
   stats,
   draft,
   setDraft,
@@ -44,8 +43,6 @@ export function NotebookView({
   notes,
   onCreateNotebook,
   onDeleteNotebook,
-  onCreateChat,
-  onDeleteChat,
   onPickFiles,
   onBrowserFiles,
   onRefresh,
@@ -76,9 +73,7 @@ export function NotebookView({
   activeNotebook: NotebookMeta | null;
   setActiveNotebook: (nb: NotebookMeta) => void;
   sources: NotebookSource[];
-  chats: NotebookChat[];
   activeChat: NotebookChat | null;
-  setActiveChat: (chat: NotebookChat) => void;
   stats: NotebookStats | null;
   draft: string;
   setDraft: (value: string) => void;
@@ -93,8 +88,6 @@ export function NotebookView({
   notes: NotebookNote[];
   onCreateNotebook: (name: string) => void;
   onDeleteNotebook: (id: string) => void;
-  onCreateChat: () => void;
-  onDeleteChat: (id: string) => void;
   onPickFiles: () => void;
   onBrowserFiles: (files: FileList | File[]) => void;
   onRefresh: () => void;
@@ -184,7 +177,7 @@ export function NotebookView({
           <div>
             <span className="view-kicker">NOTEBOOK · SESSIONS</span>
             <h1>Notebook sessions</h1>
-            <p>Each session is isolated — its own sources, index, and conversations. Click one to enter it.</p>
+            <p>Each session is isolated — its own sources, index, and chat. Click one to enter it.</p>
           </div>
           <div className="agent-view-meta">
             <button className="top-link" onClick={() => onCreateNotebook("")} title="Create a new notebook session">
@@ -269,23 +262,6 @@ export function NotebookView({
           </div>
         </div>
         <div className="agent-view-meta">
-          <select
-            className="select-field notebook-conv-select"
-            value={activeChat?.id || ""}
-            title="Conversations in this session (isolated)"
-            onChange={(e) => {
-              const chat = chats.find((c) => c.id === e.target.value);
-              if (chat) setActiveChat(chat);
-            }}
-          >
-            <option value="" disabled>{chats.length ? "Select conversation…" : "No conversations yet"}</option>
-            {chats.map((chat) => (
-              <option key={chat.id} value={chat.id}>{chat.title} ({chat.messages.length})</option>
-            ))}
-          </select>
-          <button className="top-link" onClick={onCreateChat} title="Start a new conversation in this session">
-            <Plus size={12} /> New chat
-          </button>
           <button className="top-link" onClick={onRefresh} title="Refresh sources and stats">
             <RefreshCw size={12} /> Refresh
           </button>
@@ -361,12 +337,27 @@ export function NotebookView({
         {/* Middle: chatting interface */}
         <div className="notebook-main">
           <div className="agent-transcript" ref={transcriptRef}>
-            {!activeChat && <div className="empty-pane">Start a conversation (New chat above), upload sources on the left, then ask.</div>}
+            {!activeChat && <div className="empty-pane">Starting the chat… upload sources on the left, then ask.</div>}
             {activeChat && !activeChat.messages.length && !streaming && (
               <div className="empty-pane">No messages yet — ask anything about your sources.</div>
             )}
             {activeChat?.messages.map((message, index) => (
               <div key={`${message.createdAt}-${index}`} className={`chat-item ${message.role}${message.metadata?.refused ? " refused" : ""}`}>
+                <div className="chat-author">
+                  {message.role === "assistant" ? (
+                    <>
+                      <span className="agent-avatar">
+                        <BookOpen size={12} />
+                      </span>{" "}
+                      Notebook
+                    </>
+                  ) : (
+                    <>
+                      <span className="you-avatar">ME</span> You
+                    </>
+                  )}
+                  <time>{timeLabel(message.createdAt)}</time>
+                </div>
                 {message.role === "assistant" ? (
                   <div className="chat-message-text md" dangerouslySetInnerHTML={{ __html: renderMarkdown(message.text) }} />
                 ) : (
@@ -409,6 +400,12 @@ export function NotebookView({
             ))}
             {!!streaming && (
               <div className="chat-item assistant streaming">
+                <div className="chat-author">
+                  <span className="agent-avatar">
+                    <BookOpen size={12} />
+                  </span>{" "}
+                  Notebook
+                </div>
                 <div className="chat-message-text md" dangerouslySetInnerHTML={{ __html: renderMarkdown(streaming) }} />
                 <span className="stream-caret">▍</span>
               </div>
@@ -505,14 +502,9 @@ export function NotebookView({
             </div>
           )}
           <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
-            <button className="new-session-btn" onClick={exportTranscript} disabled={!activeChat?.messages.length} title="Download this conversation as Markdown">
+            <button className="new-session-btn" onClick={exportTranscript} disabled={!activeChat?.messages.length} title="Download this chat as Markdown">
               <Download size={13} /> Export chat
             </button>
-            {activeChat && (
-              <button className="pane-action" onClick={() => onDeleteChat(activeChat.id)} title="Delete this conversation">
-                <Trash2 size={12} />
-              </button>
-            )}
           </div>
         </div>
       </div>

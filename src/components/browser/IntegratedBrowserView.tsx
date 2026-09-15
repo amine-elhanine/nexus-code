@@ -135,11 +135,13 @@ export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
   // Stable handles for the mount-once agent-activity subscription below.
   const headlessRef = useRef(true);
   const activeTabIdRef = useRef(activeTabId);
+  const activeTabUrlRef = useRef(tabs.find((t) => t.id === activeTabId)?.url || "");
   const navigateRef = useRef<((tabId: string, rawInput: string) => void) | null>(null);
   headlessRef.current = browserHeadless;
   activeTabIdRef.current = activeTabId;
 
   const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
+  activeTabUrlRef.current = activeTab.url;
 
   const loadServers = async () => {
     try {
@@ -188,7 +190,9 @@ export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
         headlessRef.current = value;
         // Mount sync: if Watching and the agent already went somewhere while
         // this tab was closed, jump there instead of showing a stale page.
-        if (!value && lastAgentUrl && lastAgentUrl !== activeTabIdRef.current) {
+        // (Compares URLs — the old check compared the URL against the tab
+        // ID, which is never equal, so it re-navigated on every mount.)
+        if (!value && lastAgentUrl && lastAgentUrl !== activeTabUrlRef.current) {
           navigateRef.current?.(activeTabIdRef.current, lastAgentUrl);
         }
       }).catch(() => {});
@@ -198,7 +202,9 @@ export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
         if (!payload?.url) return;
         lastAgentUrl = payload.url;
         setAgentUrl(payload.url);
-        if (payload.autoFollow && !headlessRef.current) {
+        // Skip if the visible tab is already there — otherwise repeated
+        // activity for the same page remounts the webview in a loop.
+        if (payload.autoFollow && !headlessRef.current && payload.url !== activeTabUrlRef.current) {
           navigateRef.current?.(activeTabIdRef.current, payload.url);
         }
       });
@@ -650,15 +656,16 @@ export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
 
           {typeof window !== "undefined" && (window.nexus || window.forgepilot) ? (
             <BrowserWebview
+              key={activeTab.id}
               tab={activeTab}
               reloadKey={reloadKey}
-              onLoadingChange={(loading) =>
-                setTabs((prev) => prev.map((t) => (t.id === activeTab.id ? { ...t, isLoading: loading } : t)))
+              onLoadingChange={(loading, tabId) =>
+                setTabs((prev) => prev.map((t) => (t.id === (tabId || activeTab.id) ? { ...t, isLoading: loading } : t)))
               }
-              onNavigated={(url, title) =>
+              onNavigated={(url, title, tabId) =>
                 setTabs((prev) =>
                   prev.map((t) =>
-                    t.id === activeTab.id
+                    t.id === (tabId || activeTab.id)
                       ? { ...t, url, inputUrl: url, title: title || getTitleFromUrl(url), isLoading: false }
                       : t
                   )
@@ -708,8 +715,14 @@ export const IntegratedBrowserView: React.FC<IntegratedBrowserViewProps> = ({
 
 // The webview keeps its own load state via DOM events: did-start-loading /
 // did-stop-loading clear the spinner, did-navigate-in-page and
-// did-navigate update URL/title without remounting (no key= on the element —
-// the reload key only forces a fresh src when the user hits Reload).
+// did-navigate update URL/title WITHOUT remounting.
+//
+// Critical: the committed `src` only changes on explicit user navigations
+// (navigateTab/back/forward bump `reloadKey`, tab switches change `tab.id`).
+// Event-synced URLs from the live page only update React state for the
+// address bar — never `src`. Keying or re-setting `src` from the synced URL
+// makes the webview re-navigate to the page it just reached: an endless
+// reload loop (especially on SPAs, redirects, and title updates).
 function BrowserWebview({
   tab,
   reloadKey,
@@ -719,50 +732,94 @@ function BrowserWebview({
 }: {
   tab: BrowserTab;
   reloadKey: number;
-  onLoadingChange: (loading: boolean) => void;
-  onNavigated: (url: string, title?: string) => void;
+  onLoadingChange: (loading: boolean, tabId?: string) => void;
+  onNavigated: (url: string, title?: string, tabId?: string) => void;
   registerRef: (el: ElectronWebview | null) => void;
 }) {
   const ref = useRef<ElectronWebview | null>(null);
-  const srcRef = useRef("");
-
-  // Remount only when the *source URL* changes, not on every reloadKey bump;
-  // reload() re-navigates in place and keeps page state.
-  if (srcRef.current !== tab.url) {
-    srcRef.current = tab.url;
+  // Committed src for this mount — updated only for explicit navigations.
+  const committedSrc = useRef(tab.url);
+  const lastNav = useRef({ id: tab.id, key: reloadKey });
+  if (lastNav.current.id !== tab.id || lastNav.current.key !== reloadKey) {
+    lastNav.current = { id: tab.id, key: reloadKey };
+    committedSrc.current = tab.url;
+  }
+  const onLoadingChangeRef = useRef(onLoadingChange);
+  onLoadingChangeRef.current = onLoadingChange;
+  const onNavigatedRef = useRef(onNavigated);
+  onNavigatedRef.current = onNavigated;
+  const registerRefRef = useRef(registerRef);
+  registerRefRef.current = registerRef;
+  const lastSynced = useRef({ url: tab.url, title: tab.title });
+  if (lastSynced.current.url !== tab.url && lastNav.current.key === reloadKey) {
+    // Keep the guard in sync when the parent commits a new explicit URL.
+    lastSynced.current = { url: tab.url, title: tab.title };
   }
 
   useEffect(() => {
+    registerRefRef.current(ref.current);
+    return () => registerRefRef.current(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     const el = ref.current;
-    if (!el) return;
-    const handleLoadStart = () => onLoadingChange(true);
-    const handleLoadStop = () => onLoadingChange(false);
+    if (!el) return undefined;
+    const ownId = lastNav.current.id;
+    const emitLoading = (loading: boolean) => onLoadingChangeRef.current(loading, ownId);
+    const handleLoadStart = () => emitLoading(true);
+    const handleLoadStop = () => emitLoading(false);
     const handleNavigate = (event: { url?: string }) => {
-      if (event.url) onNavigated(event.url);
+      let currentUrl: string | undefined;
+      try {
+        currentUrl = el.getURL?.() || event.url;
+      } catch {
+        currentUrl = event.url;
+      }
+      if (!currentUrl) return;
+      if (lastSynced.current.url === currentUrl) {
+        emitLoading(false);
+        return;
+      }
+      lastSynced.current = { url: currentUrl, title: lastSynced.current.title };
+      onNavigatedRef.current(currentUrl, undefined, ownId);
     };
     const handleTitle = (event: { title?: string }) => {
-      if (event.title) onNavigated(el.getURL?.() || tab.url, event.title);
+      if (!event.title) return;
+      let currentUrl: string;
+      try {
+        currentUrl = el.getURL?.() || committedSrc.current;
+      } catch {
+        currentUrl = committedSrc.current;
+      }
+      if (lastSynced.current.url === currentUrl && lastSynced.current.title === event.title) return;
+      lastSynced.current = { url: currentUrl, title: event.title };
+      onNavigatedRef.current(currentUrl, event.title, ownId);
     };
     el.addEventListener("did-start-loading", handleLoadStart);
     el.addEventListener("did-stop-loading", handleLoadStop);
+    el.addEventListener("did-fail-load", handleLoadStop);
     el.addEventListener("did-navigate", handleNavigate);
     el.addEventListener("did-navigate-in-page", handleNavigate);
     el.addEventListener("page-title-set", handleTitle as never);
+    el.addEventListener("page-title-updated", handleTitle as never);
     return () => {
       el.removeEventListener("did-start-loading", handleLoadStart as never);
       el.removeEventListener("did-stop-loading", handleLoadStop as never);
+      el.removeEventListener("did-fail-load", handleLoadStop as never);
       el.removeEventListener("did-navigate", handleNavigate as never);
       el.removeEventListener("did-navigate-in-page", handleNavigate as never);
       el.removeEventListener("page-title-set", handleTitle as never);
+      el.removeEventListener("page-title-updated", handleTitle as never);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab.url]);
+  }, [tab.id, reloadKey]);
 
   return (
     <webview
-      key={`wv-${srcRef.current}`}
+      key={`wv-${tab.id}-${reloadKey}`}
       ref={ref as never}
-      src={srcRef.current}
+      src={committedSrc.current}
       useragent={CHROME_DESKTOP_UA}
       className="browser-iframe"
       partition="persist:browser"

@@ -1,95 +1,56 @@
-# Nexus — Remediation Plan
+# Nexus — implementation record (current as of v0.3.6)
 
-Source: full codebase review (2026-08-30). Ordered by priority; each phase is independently shippable and ends with a green `npm run check` + `npm test`.
+> This file was originally the 2026-08-30 remediation plan. It is kept as a **historical record**: everything below describes the behavior **as implemented in the code today**. For user-facing docs, read `README.md`.
 
-## Phase 0 — Housekeeping (30 min)
+## Brand (done)
 
-1. `git init` this project itself and commit a baseline before any changes.
-2. Decide the brand, once: keep **Nexus** (app name, window title, README, logo) and keep `forgepilot` only as a legacy IPC alias / state-file fallback path. Sweep user-visible "ForgePilot" strings (`App.tsx` input-note, `AgentView` copy, `sandbox-service.ts` approval dialog title, `worktree-service.ts` branch prefix is fine to keep).
-3. Delete dead code: `EditorView` and `TerminalView` in `App.tsx`, `injectPromptCacheControl` in `context-service.ts` (+ its test), the bogus `import { treeKill } from "node:child_process"` in `daemon-service.ts`, `tmp-smoke.mjs` / `tmp-mcp-server.mjs` (move to `scripts/` if wanted).
-4. Move `electron-builder` from `dependencies` to `devDependencies`.
+- Product name is **Nexus** everywhere user-visible (window title, README, logo, Home folder `~/Documents/Nexus`, `.nexus/` telemetry).
+- `forgepilot` survives only as a **legacy alias**: `window.forgepilot` IPC bridge (`electron/preload.cts`), `forgepilot-state.json` fallback (`electron/store.ts`), `.forgepilot/` fallbacks for worktrees/rules/commands/trajectories, `forgepilot/session-*` branch prefix (`electron/worktree-service.ts`), and `.forgepilot` in ignore sets. Do not reintroduce user-visible ForgePilot strings.
 
-## Phase 1 — Critical correctness: worktree / checkpoint / diff triangle
+## Worktree / checkpoint / diff triangle (done — opt-in isolation)
 
-**Decision (recommended): make worktree isolation opt-in, not automatic.** The automatic path is what breaks Undo-run and the Diff tab; explicit worktrees via the existing WorktreeBar stay coherent because the user opts into that workflow.
+- No automatic worktree creation on `agent:run`; runs execute in `project.root` unless the user explicitly created a session worktree via `worktree:create`.
+- Active worktree routing: tree-scoped IPC resolves `getSessionWorktree(root, sessionId)` first, root fallback.
+- `restoreWorkspaceCheckpoint` uses the checkpoint's own stored `projectRoot`; unknown checkpoints return an explicit error (no silent mass-revert).
+- Telemetry always lives in the real project root (`telemetryRoot` through `agent-service.ts`): `TrajectoryLogger` and `saveArtifact` survive worktree discard.
+- Ignore sets everywhere: `.nexus/`, `.forgepilot/`, `.deepagents/`, `.git/` in `diff-service.ts`, `project-tools.ts` (`IGNORED`), `code-tools.ts` (`IGNORED_DIRS`), `repo-map-service.ts`.
+- Current paths: checkpoints `.nexus/checkpoints/<id>.json`, run resumption `.nexus/run-checkpoints/`, worktrees `.forgepilot/worktrees/<session-id>`, artifacts `.nexus/artifacts/`, trajectories `.nexus/trajectories/`.
+- Tests: `test/sandbox-and-agent.test.mjs` covers checkpoint-restore root fidelity, unknown-checkpoint behavior, and `.nexus/` exclusion from diffs.
 
-1. `electron/main.ts` (`agent:run`): remove the automatic `createSessionWorktree` call; run in `project.root`. Keep `worktree:create` IPC for explicit isolation.
-2. When a worktree IS active, route the tree-scoped IPC handlers through the session's worktree instead of `requireRoot()`:
-   - `workspace:diff`, `workspace:revert-file`, `workspace:revert-all`, `checkpoint:restore`, `trajectory:get`, `artifacts:*` → resolve `getSessionWorktree(root, activeSessionId)` first, fall back to root.
-3. `restoreWorkspaceCheckpoint` (`diff-service.ts`): use the checkpoint's own `projectRoot` (already stored in the snapshot) rather than trusting the caller's root; return false with a clear error if the checkpoint is unknown instead of silently doing `revertAllWorkspaceChanges`.
-4. Telemetry must always live in the real project root, never the worktree: `runProjectAgent` already receives `projectRoot`; pass the *original* root for `TrajectoryLogger` and `saveArtifact` (add an explicit `telemetryRoot` option in `agent-service.ts`) so logs survive worktree discard.
-5. Add `.nexus`, `.forgepilot`, `.deepagents` to the ignore sets in `diff-service.ts` (untracked scan), `project-tools.ts` (`IGNORED`), and `code-tools.ts` (`IGNORED_DIRS`) so agent telemetry never appears as a change to verify or review.
-6. Tests: extend `test/sandbox-and-agent.test.mjs` — (a) checkpoint restore restores the snapshot's own root; (b) unknown checkpoint returns false instead of reverting everything; (c) `getWorkspaceDiffFiles` ignores `.nexus/`.
+## Command model (done — no sandbox)
 
-## Phase 2 — Security alignment
+- Direct execution (`electron/command-service.ts`) with per-run cancellation; no allowlist, no network filter.
+- `electron/permissions.ts`: `deny` backstop (destructive/privilege-escalation) + `ask` for `git push|reset|clean|rebase`, dependency mutations, `curl|sh` / `Invoke-WebRequest` patterns. Everything else `allow`. Project policy via `.nexus/permissions.json` / `package.json#nexus.permissions`.
+- Browser partitions are isolated (`persist:browser-home`, `persist:browser-code`); `defaultSession` headers untouched. `setWindowOpenHandler` denies + `openExternal`.
+- Skills IPC confined to `globalSkillsDir()` / `projectSkillsDir(projectRoot)` (`electron/skills-service.ts`).
+- Current budgets: Plan 40 / Ask 100 / Auto 150, `SIMPLE_TASK_LIMIT` 50, repairs Plan 0 / Ask 1 / Auto 3 (`electron/agent-service.ts:85-91`).
 
-1. **Network tools obey the sandbox switch.** `createBrowserTools(projectRoot)` → `createBrowserTools(projectRoot, config)`; when `allowNetwork === false`, restrict `browser_inspect` / `browser_fetch_api` to loopback/private hosts (`localhost`, `127.0.0.0.0/8`, `::1`, RFC1918) and return a policy message otherwise. Pass the sandbox config through `agent-service.ts`.
-2. **Stop stripping security headers globally** (`electron/main.ts:102-117`). Move the webview to a dedicated `partition` (e.g. `persist:browser`) and strip headers only on that session; leave `defaultSession` intact. Keep `setWindowOpenHandler` deny + `openExternal`.
-3. **Default the approval gate on.** `DEFAULT_SANDBOX_CONFIG.requireApproval: true`; `main.ts` auto-save paths (`agent:run`, `workspace:command`) stop forcing `false`; `App.tsx` initial state already assumes true. Existing saved configs keep their value.
-4. **Expand `APPROVAL_REQUIRED`** (`sandbox-service.ts:35`): add `git clean`, `git stash drop|clear`, `git branch -D`, `git worktree remove`, `git remote`, `git config`, and `npx <anything>` (npx downloads and executes arbitrary packages — it should always require approval, or be removed from the allowlist).
-5. **Validate skills IPC.** `skills:read` / `skills:delete` may only touch paths inside `globalSkillsDir()` or `projectSkillsDir(projectRoot)`; reject anything else in `skills-service.ts` before touching the filesystem.
-6. **Fix Windows quoting**: in `quoteForShell` / `commandPolicy`, reject tokens containing embedded `"` (post-tokenize) instead of re-emitting `\"`, which `cmd.exe` does not interpret the way the tokenizer assumed.
-7. Tests: policy cases for `git clean -fd`, `npx foo`, embedded quotes; a loopback-vs-external test for the browser tools.
+## Agent quality (done)
 
-## Phase 3 — Agent quality
+- Repair pass keeps its transcript: streamed updates stored in `AgentState.runMessages`; repair iteration passes `[...priorMessages, initialHumanMessage, ...previousRunMessages, verifyFeedback]`.
+- `findTargetedTests` returns `null` (not `node <file>`) for JS/TS; keeps `pytest` / cargo / go conventions.
+- Provider-aware costs: unknown/local models → `estimatedCost: null`, UI renders `—` (`src/types.ts:formatCost`).
+- Subagent usage from real `usage_metadata` (`electron/subagent-service.ts`), not `task.length / 4`.
+- Azure accepts instance/base-URL configuration; per-model `chat|responses|messages` overrides with Zen `x-opencode-*` headers.
 
-1. **Repair pass keeps its transcript.** In `streamDeepAgent`, collect the streamed `updates`/`values` messages for the pass; store them in the graph state (new `AgentState` channel, e.g. `runMessages`); on the repair iteration pass `[...priorMessages, initialHumanMessage, ...previousRunMessages, verifyFeedback]` to the model so it can see what it did.
-2. **`findTargetedTests` fallback**: return `null` instead of `node ${rel}` for JS/TS; for `.py` keep `pytest`, `.rs`/`.go` keep existing.
-3. **Provider-aware cost estimates.** Add a `pricing: { inputPer1M, outputPer1M } | null` field to `PROVIDERS` definitions (`providers.ts`); `calculateAgentUsage` takes the pricing (unknown provider / local models → `estimatedCost: null`, UI renders "—" instead of a fabricated `$`). Default OpenAI pricing only for OpenAI-compatible endpoints without pricing info, labeled "estimate".
-4. **Subagent usage**: extract real `usage_metadata` from the subagent stream (`extractStreamUsage`) instead of `task.length / 4`.
-5. **Azure fix** (`providers.ts:58`): accept the instance name properly (store base URL vs instance separately, or document that Azure config uses the instance name field).
-6. Tests: repair-context accumulation (assert second `deep_agent` invocation receives prior messages), `findTargetedTests` no longer returns `node …`.
+## Frontend (done)
 
-## Phase 4 — Frontend refactor
+- `App.tsx` split: `src/types.ts`, `src/state/useAppController.ts`, `src/state/useNotebookController.ts`, `src/views/` (Home, Agent, Notebook, Diff, Memory), `src/modals/`, `src/components/{chat,browser,terminal,editor,diff,daemons,worktree,rules,artifacts,home,notebook,settings,common}/`.
+- `WorktreeBar` uses `ConfirmModal`, not `window.confirm`.
+- Session usage is recomputed from messages (no double-count on `agent:event`); `listSessions` refresh after runs.
+- Pasted images stored as files via `attachments:save` → `nexus-attachment://` (no base64 in `nexus-state.json`).
+- `MonacoDiffModal` uses `workspace:readHead` (`git show HEAD:<path>`) as original; patch parse only as fallback for untracked/single-hunk files.
 
-1. Split `App.tsx` (2,109 lines) into:
-   - `src/types.ts` (shared types currently duplicated in `vite-env.d.ts` and `App.tsx`)
-   - `src/state/useAppController.ts` (projects/sessions/providers/run lifecycle)
-   - `src/views/` (AgentView, DiffView, MemoryView), `src/modals/` (Provider, Sandbox, Mcp, Skills already exist as components — move the remaining inline ones)
-   - `src/components/chat/` gets `ChatItemView`, `ActivityGroupView`, `SubagentCardView`, `ModelSelect`, `FileRow`, `Modal`, `ConfirmModal`.
-2. `WorktreeBar`: replace `window.confirm` with the existing `ConfirmModal` for consistency.
-3. Session usage double-counting: in `App.tsx`'s `onAgentEvent`, don't add `event.usage` onto `session.usage` cumulatively (the store already recomputes from messages); rely on `listSessions` refresh after the run.
-4. Store pasted images as files, not base64 in state JSON: new IPC `attachments:save` writes to `userData/attachments/<id>.png` and returns a `nexus-attachment://` path the renderer can display; session messages store the path. Prevents `nexus-state.json` bloat.
-5. `MonacoDiffModal`: stop reconstructing original/modified from the patch. Add IPC `workspace:readHead(file)` using `git show HEAD:<path>`; use that as `original` and the current file as `modified` (patch parse only as fallback for untracked files, single-hunk).
+## Runtime / UX (done, incl. Phase 7 PTY)
 
-## Phase 5 — Runtime / UX
+- Real PTY out-of-process: `electron/pty-host.cjs` (JSON-lines `spawn/write/resize/kill` → `ready/data/exit/error`) under system Node + `@homebridge/node-pty-prebuilt-multiarch`; `terminal-service.ts` is PTY-first with piped-shell fallback; generation-guarded teardown; `terminal:resize` reaches a real PTY.
+- `before-quit` stops daemons + `terminalService.killAll()`.
+- Daemon stop on POSIX uses detached group semantics; Windows uses `taskkill /T /F`.
+- `session:delete` discards that session's own project worktree (project id threaded through).
+- `VoiceDictationButton` hides when SpeechRecognition is unavailable in Electron.
 
-1. **Real PTY**: swap `terminal-service.ts` to `node-pty` (or `@lydell/node-pty`), propagate `cols`/`rows` from the FitAddon via a new `terminal:resize` IPC, remove the "Live PTY" badge until it's true.
-2. **Cleanup on quit**: `app.on("before-quit")` → `daemonService.stopAllDaemons()` + `terminalService` kill-all (add a `killAll()`).
-3. Daemon `stopDaemon` on non-Windows: `process.kill(-pid)` requires a detached group leader; spawn with `detached: true` on POSIX or use `tree-kill` package properly.
-4. `main.ts` `session:delete`: discard the worktree for the session's *own* project (pass `projectId` through and resolve its root), not blindly `activeProjectRoot`.
-5. `VoiceDictationButton`: feature-detect and hide when SpeechRecognition is unavailable in Electron (it usually is); note it in the tooltip.
+## Verification (per change)
 
-## Phase 6 — Docs honesty
-
-1. README: rename "Bac à sable local" to "Politique de commandes locale" (local command policy); state explicitly that `npm run` scripts and MCP tools execute with user-level privileges and that the sandbox is workspace scoping + command validation, not isolation.
-2. Document the new defaults (approvals on, network tools loopback-only, worktrees opt-in).
-3. Update the sandbox modal warning text to match (it's already mostly honest).
-
-## Phase 7 — Real PTY terminal (completed 2026-08-31)
-
-`node-pty` cannot load inside Electron (native module targets system Node's ABI, and no MSVC
-toolchain is available to rebuild it), so the PTY runs out-of-process:
-
-1. `electron/pty-host.cjs` — JSON-lines stdio protocol (`spawn`/`write`/`resize`/`kill` in,
-   `ready`/`data`/`exit`/`error` out) running under system Node. Packaged builds fall back
-   to `app.asar.unpacked` via the asarUnpack config.
-2. `electron/terminal-service.ts` — PTY-first with automatic piped-shell fallback when the
-   host cannot start. Host exit teardown is generation-guarded so a stale host dying after
-   `killAll()`+restart cannot kill its replacement's sessions. `resize` now reaches a real
-   PTY instead of being a silent no-op on a plain `ChildProcess`.
-3. Dimensions flow: XTerm FitAddon → `createTerminal(id, cwd, cols, rows)` +
-   `resizeTerminal(id, cols, rows)` → host `pty.resize`.
-4. Dependency: `@homebridge/node-pty-prebuilt-multiarch` (prebuilt binaries, no compiler
-   needed). The duplicate `node-pty` dependency was removed.
-5. Tests: section 19 now asserts PTY mode with `process.stdout.isTTY === true` in the child,
-   resize acceptance, invalid-dimension rejection, concurrent session lifecycle, and
-   `killAll` teardown.
-
-## Verification after each phase
-
-- `npm run check` (both tsconfigs)
-- `npm test` (electron integration suite, extended per-phase)
-- Manual pass: run an Auto task on a scratch git repo → Diff tab shows changes → Undo run restores → targeted tests fire; Skills import/delete; MCP save/test; browser view on localhost with `allowNetwork=false` and an external URL blocked.
-- Phase 7 additionally verified: PTY host protocol under system Node, host bootstrap under
-  Electron, and end-to-end `MODE: pty` + `IS_true` + resize through the terminal service.
+- `npm run check` (both tsconfigs).
+- `npm test` (Electron integration), `npm run test:unit` (rate-limit, checkpoint-resume), `npm run test:notebook` (text, parse, library, pipeline).
+- Manual: Auto task on a scratch git repo → Diff shows changes → Undo restores → targeted tests fire; Skills import/delete; MCP save/test; browser on localhost + external URL behavior; PTY `MODE: pty` + resize.

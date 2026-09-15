@@ -43,6 +43,7 @@ export type AppSettings = {
   notebookVisionEnabled?: boolean;
   notebookVisionProviderId?: string;
   notebookVisionModel?: string;
+  theme?: string;
 };
 export type NotebookParserConfig = {
   provider: "local" | "llamaparse";

@@ -1,13 +1,14 @@
 import React, { useEffect, useState } from "react";
-import { Eye, EyeOff, KeyRound, FolderOpen, ChevronRight, Globe, Puzzle, Server, Terminal, Download, RefreshCw, Loader2, Check, BookOpen, Plus, Settings2, Trash2, X } from "lucide-react";
+import { Eye, EyeOff, KeyRound, FolderOpen, ChevronRight, Globe, Puzzle, Server, Terminal, Download, RefreshCw, Loader2, Check, BookOpen, Plus, Settings2, Trash2, X, Palette } from "lucide-react";
 import { Modal } from "../components/common/Modal.js";
 import { ProviderManager } from "../components/settings/ProviderManager.js";
 import { McpManager } from "../components/settings/McpManager.js";
 import { SkillsManager } from "../components/settings/SkillsManager.js";
 import { MemoryRow } from "../views/MemoryView.js";
+import { APP_THEMES, applyTheme, getStoredThemeId } from "../state/theme.js";
 import type { EmbeddingEndpointKind, EmbeddingProviderConfig, ProviderConfig, ProviderDefinition, UpdaterState } from "../types.js";
 
-type SettingsSection = "browser" | "providers" | "notebook" | "mcp" | "skills" | "services" | "updates" | "workspace";
+type SettingsSection = "appearance" | "browser" | "providers" | "notebook" | "mcp" | "skills" | "services" | "updates" | "workspace";
 
 export function SettingsModal({
   area,
@@ -39,7 +40,9 @@ export function SettingsModal({
   onClose: () => void;
 }) {
   const api = window.nexus || window.forgepilot;
-  const [section, setSection] = useState<SettingsSection>("browser");
+  const [section, setSection] = useState<SettingsSection>("appearance");
+  const [themeId, setThemeId] = useState(() => getStoredThemeId());
+  const [themeNote, setThemeNote] = useState("");
   const [headless, setHeadless] = useState(true);
   const [rerankEnabled, setRerankEnabled] = useState(false);
   const [rerankProviderId, setRerankProviderId] = useState("");
@@ -79,7 +82,7 @@ export function SettingsModal({
   }, []);
 
   useEffect(() => {
-    const typed = api as unknown as { getAppSettings?: () => Promise<{ notebookRerankEnabled?: boolean; notebookRerankProviderId?: string; notebookRerankModel?: string; notebookVisionEnabled?: boolean; notebookVisionProviderId?: string; notebookVisionModel?: string }> };
+    const typed = api as unknown as { getAppSettings?: () => Promise<{ notebookRerankEnabled?: boolean; notebookRerankProviderId?: string; notebookRerankModel?: string; notebookVisionEnabled?: boolean; notebookVisionProviderId?: string; notebookVisionModel?: string; theme?: string }> };
     typed.getAppSettings?.().then((value) => {
       setRerankEnabled(Boolean(value.notebookRerankEnabled));
       setRerankProviderId(value.notebookRerankProviderId || "");
@@ -87,8 +90,29 @@ export function SettingsModal({
       setVisionEnabled(value.notebookVisionEnabled !== false);
       setVisionProviderId(value.notebookVisionProviderId || "");
       setVisionModel(value.notebookVisionModel || "");
-    }).catch(() => {});
+      if (typeof value.theme === "string" && value.theme) {
+        setThemeId(applyTheme(value.theme));
+      } else {
+        applyTheme(getStoredThemeId());
+      }
+    }).catch(() => {
+      applyTheme(getStoredThemeId());
+    });
   }, []);
+
+  async function selectTheme(nextId: string) {
+    const applied = applyTheme(nextId);
+    setThemeId(applied);
+    setThemeNote("");
+    try {
+      const typed = api as unknown as { saveAppSettings?: (value: unknown) => Promise<unknown> };
+      if (typeof typed.saveAppSettings === "function") {
+        await typed.saveAppSettings({ theme: applied });
+      }
+    } catch (error) {
+      setThemeNote(error instanceof Error ? error.message : "Could not save theme.");
+    }
+  }
 
   async function saveRerankConfig() {
     const typed = api as unknown as { saveAppSettings?: (value: unknown) => Promise<unknown> };
@@ -296,6 +320,7 @@ export function SettingsModal({
   const activeEmbProvider = embProviders.find((p) => p.id === embeddingProviderId);
 
   const items: Array<{ id: SettingsSection; label: string; icon: React.ReactNode; hidden?: boolean }> = [
+    { id: "appearance", label: "Appearance", icon: <Palette size={13} /> },
     { id: "browser", label: "Browser", icon: <Globe size={13} /> },
     { id: "providers", label: "Providers", icon: <KeyRound size={13} /> },
     { id: "notebook", label: "Notebook", icon: <BookOpen size={13} /> },
@@ -325,6 +350,61 @@ export function SettingsModal({
             ))}
         </aside>
         <section className="settings-body">
+          {section === "appearance" && (
+            <div className="setting-card">
+              <div className="setting-row">
+                <span className="setting-icon"><Palette size={14} /></span>
+                <div className="setting-text">
+                  <strong>Color theme</strong>
+                  <small>Pick a palette for the whole app. Changes apply immediately and are saved.</small>
+                </div>
+              </div>
+              <div className="theme-grid">
+                {APP_THEMES.map((theme) => {
+                  const selected = theme.id === themeId;
+                  return (
+                    <button
+                      key={theme.id}
+                      type="button"
+                      className={`theme-card${selected ? " selected" : ""}`}
+                      onClick={() => void selectTheme(theme.id)}
+                      title={theme.description}
+                    >
+                      <span className="theme-preview" style={{ background: theme.swatches[0] }}>
+                        <span className="theme-preview-top" style={{ background: theme.swatches[1] }}>
+                          <i style={{ background: "#ff5f57" }} />
+                          <i style={{ background: "#febc2e" }} />
+                          <i style={{ background: theme.accent }} />
+                        </span>
+                        <span className="theme-preview-body">
+                          <span className="theme-preview-side" style={{ background: theme.swatches[1] }} />
+                          <span className="theme-preview-main" style={{ background: theme.swatches[1] }}>
+                            <i style={{ background: theme.accent, width: "70%" }} />
+                            <i style={{ background: theme.swatches[3], width: "45%" }} />
+                            <i style={{ background: "currentColor", opacity: 0.25, width: "85%" }} />
+                          </span>
+                        </span>
+                      </span>
+                      <span className="theme-meta">
+                        <span>
+                          <strong>{theme.name}</strong>
+                          <small>{theme.description}</small>
+                        </span>
+                        <span className="theme-check"><Check size={12} /></span>
+                      </span>
+                      <span className="theme-swatches">
+                        {theme.swatches.map((color) => (
+                          <i key={color} style={{ background: color }} />
+                        ))}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              {!!themeNote && <div className="settings-note" style={{ marginTop: 8 }}><Check size={12} /><span>{themeNote}</span></div>}
+            </div>
+          )}
+
           {section === "browser" && (
             <div className="setting-card">
               <div className="setting-row">

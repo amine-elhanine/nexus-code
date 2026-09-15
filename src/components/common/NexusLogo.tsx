@@ -10,10 +10,10 @@ export function NexusLogo({ size = 20 }: { size?: number }) {
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
-        background: "#18202a",
+        background: "var(--panel2)",
         borderRadius: Math.round(size * 0.24),
-        border: "1px solid #27364b",
-        boxShadow: "0 0 10px rgba(52, 211, 153, 0.35)",
+        border: "1px solid var(--line2)",
+        boxShadow: "0 0 10px var(--nexus-glow)",
         flexShrink: 0,
       }}
     >
@@ -26,11 +26,11 @@ export function NexusLogo({ size = 20 }: { size?: number }) {
       >
         <polygon
           points="50,6 88,28 88,72 50,94 12,72 12,28"
-          fill="#34d399"
+          style={{ fill: "var(--nexus-green)" }}
         />
         <polygon
           points="50,28 73,41 73,69 50,82 27,69 27,41"
-          fill="#18202a"
+          style={{ fill: "var(--panel2)" }}
         />
       </svg>
     </div>

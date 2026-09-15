@@ -706,13 +706,21 @@ app.whenReady().then(async () => {
 
   ipcMain.handle("daemons:start", (_event, { name, command, cwd }: { name: string; command: string; cwd?: string }) => {
     const root = cwd || activeProjectRoot || process.cwd();
-    return daemonService.startDaemon(name, command, root, (data) => {
-      mainWindow?.webContents.send("daemon:log", { id: name, data });
+    const created = daemonService.startDaemon(name, command, root);
+    // Stream this service's output under its id (the renderer filters live
+    // log lines by selected service id).
+    daemonService.subscribeToLogs(created.id, (data) => {
+      mainWindow?.webContents.send("daemon:log", { id: created.id, data });
     });
+    return created;
   });
 
   ipcMain.handle("daemons:stop", (_event, id: string) => {
     return daemonService.stopDaemon(id);
+  });
+
+  ipcMain.handle("daemons:remove", (_event, id: string) => {
+    return daemonService.removeDaemon(id);
   });
 
   ipcMain.handle("daemons:restart", (_event, id: string) => {
@@ -1034,7 +1042,7 @@ app.whenReady().then(async () => {
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 app.on("before-quit", () => {
-  daemonService.stopAllDaemons();
+  void daemonService.stopAllDaemons().catch(() => {});
   terminalService.killAll();
   agentBrowserService.destroy();
 });
