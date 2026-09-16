@@ -29,8 +29,24 @@ export function formatAttachmentSize(bytes: number): string {
 
 /** Load raw bytes for an attachment URL (nexus-attachment:// via fetch, or inline data: URL). */
 export async function loadAttachmentBytes(attachment: Pick<ChatAttachment, "url" | "name" | "mimeType">): Promise<{ buffer: ArrayBuffer; mimeType: string }> {
+  // Prefer the main-process reader (same IPC pattern as the generated-file
+  // preview): it resolves nexus-attachment:// and data: URLs to bytes
+  // without depending on custom-scheme fetch from the renderer.
+  try {
+    const api = (window as unknown as { nexus?: { readAttachment?: (url: string) => Promise<{ base64: string; mimeType: string }> }; forgepilot?: { readAttachment?: (url: string) => Promise<{ base64: string; mimeType: string }> } }).nexus
+      || (window as unknown as { forgepilot?: { readAttachment?: (url: string) => Promise<{ base64: string; mimeType: string }> } }).forgepilot;
+    if (api?.readAttachment) {
+      const file = await api.readAttachment(attachment.url);
+      const binary = atob(file.base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return { buffer: bytes.buffer, mimeType: file.mimeType || attachment.mimeType || "application/octet-stream" };
+    }
+  } catch {
+    // Fall through to the renderer-side loaders below.
+  }
   if (attachment.url.startsWith("data:")) {
-    const match = attachment.url.match(/^data:([^;,]+)?(?:;charset=[^;,]+)?;base64,([\s\S]+)$/);
+    const match = attachment.url.match(/^data:([^;,]+)?(?:;[^;,=]+=[^;,]+)*;base64,([\s\S]+)$/);
     if (!match) throw new Error("Unsupported attachment encoding.");
     const mimeType = (match[1] || attachment.mimeType || "application/octet-stream").toLowerCase();
     const binary = atob(match[2].replace(/\s/g, ""));

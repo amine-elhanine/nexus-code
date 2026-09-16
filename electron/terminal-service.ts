@@ -54,6 +54,19 @@ class TerminalService {
   private host: PtyHost | null = null;
   private hostStarting: Promise<PtyHost | null> | null = null;
   private hostGeneration = 0;
+  // Set on before-quit (killAll). Late IPC from a tearing-down renderer
+  // (pending writes/resizes) must be dropped, never written to dead pipes.
+  private shutdown = false;
+
+  // A Socket/pipe write to a dead child reports EPIPE asynchronously via an
+  // 'error' event — try/catch can't see it, and without a listener it becomes
+  // an uncaught exception (the "JavaScript error in the main process" dialog
+  // on quit). Every child stdin we write to gets a swallow listener up front.
+  private guardStdin(stdin: { on: (ev: string, cb: () => void) => void } | null | undefined) {
+    try {
+      stdin?.on("error", () => { /* dead pipe — callers treat this as not-writable */ });
+    } catch { /* already destroyed */ }
+  }
 
   private hostPath() {
     return hostScriptPath();
@@ -73,6 +86,7 @@ class TerminalService {
         return;
       }
       const state: PtyHost = { child, ready: false, generation: 0 };
+      this.guardStdin(child.stdin);
       let buffer = "";
       let settled = false;
       const finish = (result: PtyHost | null) => {
@@ -140,9 +154,15 @@ class TerminalService {
   }
 
   private send(op: object): boolean {
-    if (!this.host?.child.stdin?.writable) return false;
+    if (this.shutdown) return false;
+    const stdin = this.host?.child.stdin;
+    if (!stdin || !stdin.writable || stdin.destroyed || stdin.writableEnded) return false;
     try {
-      this.host.child.stdin.write(JSON.stringify(op) + "\n");
+      // Per-write callback swallows async EPIPE (host died between the
+      // writability check and the flush) so it can never go uncaught.
+      stdin.write(JSON.stringify(op) + "\n", (err) => {
+        if (err) this.host = this.host?.child.stdin === stdin ? null : this.host;
+      });
       return true;
     } catch {
       return false;
@@ -185,6 +205,7 @@ class TerminalService {
     });
     const entry: SessionEntry = { id, cwd, mode: "pipes", cols: 80, rows: 24, alive: true, onData, proc };
     this.sessions.set(id, entry);
+    this.guardStdin(proc.stdin);
 
     proc.stdout?.on("data", (chunk: Buffer) => onData(chunk.toString("utf8")));
     proc.stderr?.on("data", (chunk: Buffer) => onData(chunk.toString("utf8")));
@@ -200,12 +221,23 @@ class TerminalService {
   }
 
   public write(id: string, data: string): boolean {
+    if (this.shutdown) return false;
     const session = this.sessions.get(id);
     if (!session || !session.alive) return false;
     if (session.mode === "pty") return this.send({ op: "write", id, data });
-    if (!session.proc?.stdin?.writable) return false;
-    session.proc.stdin.write(data);
-    return true;
+    const stdin = session.proc?.stdin;
+    if (!stdin || !stdin.writable || stdin.destroyed || stdin.writableEnded) return false;
+    try {
+      stdin.write(data, (err) => {
+        if (err) {
+          session.alive = false;
+          this.sessions.delete(id);
+        }
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   public killSession(id: string): boolean {
@@ -228,6 +260,7 @@ class TerminalService {
   }
 
   public resize(id: string, cols: number, rows: number): boolean {
+    if (this.shutdown) return false;
     const session = this.sessions.get(id);
     if (!session || !session.alive || cols < 2 || rows < 2) return false;
     if (session.mode !== "pty") return false;
@@ -237,11 +270,14 @@ class TerminalService {
   }
 
   public killAll(): void {
+    this.shutdown = true;
     for (const id of [...this.sessions.keys()]) {
       this.killSession(id);
     }
     if (this.host) {
-      // Killing the host closes its stdin; the host then kills every PTY it owns.
+      // Killing the host closes its stdin; destroy our end too so any
+      // buffered late write fails silently instead of raising EPIPE.
+      try { this.host.child.stdin?.destroy(); } catch { /* already gone */ }
       try { this.host.child.kill(); } catch { /* already exited */ }
       this.host = null;
     }

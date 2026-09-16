@@ -326,6 +326,62 @@ app.whenReady().then(async () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
+  await test('Verification command picks mvn test when pom.xml exists', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'forgepilot-verify-mvn-'));
+    await fs.writeFile(path.join(tempDir, 'pom.xml'), '<project></project>', 'utf8');
+
+    const cmd = pickVerificationCommand(tempDir);
+    assert.equal(cmd, 'mvn -q test');
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  await test('Verification command picks gradle build, preferring the wrapper', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'forgepilot-verify-gradle-'));
+    await fs.writeFile(path.join(tempDir, 'build.gradle'), 'plugins { id "java" }', 'utf8');
+
+    assert.equal(pickVerificationCommand(tempDir), 'gradle build');
+    await fs.writeFile(path.join(tempDir, 'gradlew'), '#!/bin/sh\nexec gradle "$@"', 'utf8');
+    assert.equal(pickVerificationCommand(tempDir), './gradlew build');
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  await test('Verification command picks dotnet test when a project file exists', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'forgepilot-verify-dotnet-'));
+    await fs.writeFile(path.join(tempDir, 'App.csproj'), '<Project Sdk="Microsoft.NET.Sdk"></Project>', 'utf8');
+
+    const cmd = pickVerificationCommand(tempDir);
+    assert.equal(cmd, 'dotnet test');
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  await test('Verification command picks pytest when Python tests exist', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'forgepilot-verify-pytest-'));
+    await fs.mkdir(path.join(tempDir, 'tests'), { recursive: true });
+    await fs.writeFile(path.join(tempDir, 'requirements.txt'), 'flask\n', 'utf8');
+
+    const cmd = pickVerificationCommand(tempDir);
+    assert.equal(cmd, 'pytest -q');
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  await test('Verification command picks Django check when manage.py exists', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'forgepilot-verify-django-'));
+    await fs.writeFile(path.join(tempDir, 'manage.py'), '# django', 'utf8');
+
+    const cmd = pickVerificationCommand(tempDir);
+    assert.equal(cmd, 'python manage.py check');
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  await test('Verification command falls back to compileall for bare Python projects', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'forgepilot-verify-pybare-'));
+    await fs.writeFile(path.join(tempDir, 'requirements.txt'), 'fastapi\n', 'utf8');
+
+    const cmd = pickVerificationCommand(tempDir);
+    assert.equal(cmd, 'python -m compileall -q .');
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
   await test('Verification command returns null when no matching script, tsconfig, or manifest exists', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'forgepilot-verify-'));
     await fs.writeFile(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { start: 'node app.js' } }), 'utf8');

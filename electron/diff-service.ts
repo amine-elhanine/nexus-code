@@ -2,6 +2,7 @@ import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { getHeadCommit, resetNexusCommitsOnly } from "./repo-service.js";
 
 const execFileAsync = promisify(execFile);
 export type WorkspaceDiffFile = { path: string; directory: string; name: string; additions: number; deletions: number; status: string; patch: string };
@@ -175,7 +176,10 @@ export async function revertAllWorkspaceChanges(projectRoot: string): Promise<bo
 const MAX_CHECKPOINT_FILES = 2000;
 
 type CheckpointFileEntry = { path: string; content: string | null };
-type CheckpointManifest = { id: string; projectRoot: string; timestamp: string; truncated: boolean; files: CheckpointFileEntry[] };
+// headCommit is the git HEAD at snapshot time (null = unborn/non-git).
+// It powers the durable undo layer: restore resets only Nexus-owned commits
+// made after this point, never user commits.
+type CheckpointManifest = { id: string; projectRoot: string; timestamp: string; truncated: boolean; headCommit: string | null; files: CheckpointFileEntry[] };
 
 function checkpointsDir(projectRoot: string) {
   return path.join(projectRoot, ".nexus", "checkpoints");
@@ -193,7 +197,7 @@ function checkpointPath(projectRoot: string, checkpointId: string) {
 // — the index resolves those without guessing.
 const checkpointRootIndex = new Map<string, string>();
 
-export async function createWorkspaceCheckpoint(projectRoot: string, checkpointId: string): Promise<string> {
+export async function createWorkspaceCheckpoint(projectRoot: string, checkpointId: string, opts?: { headCommit?: string | null }): Promise<string> {
   const root = path.resolve(projectRoot);
   const diffs = await getWorkspaceDiffFiles(root);
   const files: CheckpointFileEntry[] = [];
@@ -207,7 +211,15 @@ export async function createWorkspaceCheckpoint(projectRoot: string, checkpointI
       files.push({ path: file.path, content: null });
     }
   }
-  const manifest: CheckpointManifest = { id: checkpointId, projectRoot: root, timestamp: new Date().toISOString(), truncated, files };
+  let headCommit: string | null = opts?.headCommit ?? null;
+  if (opts?.headCommit === undefined) {
+    try {
+      headCommit = await getHeadCommit(root);
+    } catch {
+      headCommit = null;
+    }
+  }
+  const manifest: CheckpointManifest = { id: checkpointId, projectRoot: root, timestamp: new Date().toISOString(), truncated, headCommit, files };
   await fs.mkdir(checkpointsDir(root), { recursive: true });
   await fs.writeFile(checkpointPath(root, checkpointId), JSON.stringify(manifest), "utf8");
   checkpointRootIndex.set(checkpointId, root);
@@ -237,8 +249,19 @@ async function loadCheckpoint(projectRoot: string, checkpointId: string): Promis
   } catch { /* best effort — keep the roots collected so far */ }
   for (const root of roots) {
     try {
-      const manifest: CheckpointManifest = JSON.parse(await fs.readFile(checkpointPath(root, checkpointId), "utf8"));
-      if (manifest && manifest.id === checkpointId) return manifest;
+      const raw = JSON.parse(await fs.readFile(checkpointPath(root, checkpointId), "utf8")) as Partial<CheckpointManifest>;
+      if (raw && raw.id === checkpointId) {
+        // Backfill pre-headCommit manifests.
+        const manifest: CheckpointManifest = {
+          id: raw.id,
+          projectRoot: raw.projectRoot || root,
+          timestamp: raw.timestamp || new Date(0).toISOString(),
+          truncated: Boolean(raw.truncated),
+          headCommit: raw.headCommit ?? null,
+          files: Array.isArray(raw.files) ? raw.files as CheckpointManifest["files"] : [],
+        };
+        return manifest;
+      }
     } catch { /* try next root */ }
   }
   return null;
@@ -265,9 +288,16 @@ export async function restoreWorkspaceCheckpoint(projectRoot: string, checkpoint
       // Did not exist before the run — remove it (also no-op if already gone).
       await fs.rm(abs, { force: true, recursive: true });
     } else {
+      await fs.mkdir(path.dirname(abs), { recursive: true });
       await fs.writeFile(abs, priorContent, "utf8");
     }
   }
+  // Durable layer: if Nexus auto-committed on an isolated session branch
+  // since the snapshot, roll those commits back. Mixed/user commits are left
+  // untouched by resetNexusCommitsOnly (file restore above still applies).
+  try {
+    await resetNexusCommitsOnly(root, checkpoint.headCommit ?? null);
+  } catch { /* file restore already succeeded — commit reset is best-effort */ }
   return true;
 }
 

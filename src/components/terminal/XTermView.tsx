@@ -3,18 +3,28 @@ import { Terminal as XTerminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { Terminal, RefreshCw, Trash2, Play, GitBranch, CheckCircle2 } from "lucide-react";
+import { detectStack } from "../../utils/stack.js";
 
 interface XTermViewProps {
   projectRoot?: string;
+  /** Workspace file entries (`path` with `/` separators); root-level names drive stack detection. */
+  files?: Array<{ path: string; kind: "file" | "folder" }>;
 }
 
-export const XTermView: React.FC<XTermViewProps> = ({ projectRoot }) => {
+export const XTermView: React.FC<XTermViewProps> = ({ projectRoot, files = [] }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   // One terminal instance per mounted view; the id is unique per project so
   // switching projects gets a fresh shell instead of reusing the old cwd.
   const terminalId = useMemo(() => `term-${projectRoot ? projectRoot.replace(/[^a-zA-Z0-9_-]/g, "_") : "default"}`, [projectRoot]);
+  // Stack-aware quick commands: only offer the ecosystem's own test/check
+  // commands (npm test for Node, pytest for Python, go test for Go, …).
+  // Unknown stack → no test buttons at all, rather than wrong ones.
+  const stack = useMemo(
+    () => detectStack(files.filter((f) => f.kind === "file" && !f.path.includes("/")).map((f) => f.path)),
+    [files]
+  );
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -123,14 +133,18 @@ export const XTermView: React.FC<XTermViewProps> = ({ projectRoot }) => {
         </div>
 
         <div className="xterm-actions">
-          <button className="xterm-btn" onClick={() => sendQuickCommand("npm test")} title="Run tests">
-            <Play size={12} />
-            <span>npm test</span>
-          </button>
-          <button className="xterm-btn" onClick={() => sendQuickCommand("npm run check")} title="Run typecheck">
-            <CheckCircle2 size={12} />
-            <span>typecheck</span>
-          </button>
+          {stack && (
+            <button className="xterm-btn" onClick={() => sendQuickCommand(stack.testCmd)} title={`Run tests (${stack.testCmd})`}>
+              <Play size={12} />
+              <span>{stack.testLabel}</span>
+            </button>
+          )}
+          {stack && stack.checkCmd && (
+            <button className="xterm-btn" onClick={() => { const cmd = stack.checkCmd; if (cmd) sendQuickCommand(cmd); }} title={`Run ${stack.checkLabel} (${stack.checkCmd})`}>
+              <CheckCircle2 size={12} />
+              <span>{stack.checkLabel}</span>
+            </button>
+          )}
           <button className="xterm-btn" onClick={() => sendQuickCommand("git status")} title="Git status">
             <GitBranch size={12} />
             <span>git status</span>

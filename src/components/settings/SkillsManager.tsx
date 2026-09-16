@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { FolderOpen, Puzzle, Trash2, Upload, Plus, FileCode2, File, X } from "lucide-react";
 import { ConfirmModal } from "../../modals/ConfirmModal.js";
+import { Toggle } from "../common/Toggle.js";
 import type { SkillInfo } from "../../types.js";
 
 export function SkillsManager({
@@ -149,13 +150,17 @@ export function SkillsManager({
 
   return (
     <>
-      <label className="toggle-row">
+      <div className="toggle-row">
         <span>
           <strong>Enable skills middleware</strong>
           <small>Allow the agent to load global and project SKILL.md files.</small>
         </span>
-        <input type="checkbox" checked={enabled} onChange={(event) => void onToggle(event.target.checked)} />
-      </label>
+        <Toggle
+          checked={enabled}
+          onChange={(next) => void onToggle(next)}
+          title={enabled ? "Disable skills middleware" : "Enable skills middleware"}
+        />
+      </div>
 
       <div className="provider-layout">
         <div className="provider-list">

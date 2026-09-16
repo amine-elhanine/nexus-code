@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Eye, EyeOff, KeyRound, FolderOpen, ChevronRight, Globe, Puzzle, Server, Terminal, Download, RefreshCw, Loader2, Check, BookOpen, Plus, Settings2, Trash2, X, Palette } from "lucide-react";
 import { Modal } from "../components/common/Modal.js";
+import { Toggle } from "../components/common/Toggle.js";
 import { ProviderManager } from "../components/settings/ProviderManager.js";
 import { McpManager } from "../components/settings/McpManager.js";
 import { SkillsManager } from "../components/settings/SkillsManager.js";
@@ -504,10 +505,10 @@ export function SettingsModal({
                   <small>LlamaParse handles OCR, layouts, tables, figures, slides, and scanned pages before the notebook indexes the result. The local parser remains available as an offline fallback.</small>
                 </div>
               </div>
-              <label className="toggle-row" style={{ marginTop: 10 }}>
-                <input type="checkbox" checked={parserEnabled} onChange={(e) => setParserEnabled(e.target.checked)} />
+              <div className="toggle-row" style={{ marginTop: 10 }}>
+                <Toggle checked={parserEnabled} onChange={setParserEnabled} title={parserEnabled ? "Disable configured parser" : "Use configured parser for new and re-indexed files"} />
                 <span>Use configured parser for new and re-indexed files</span>
-              </label>
+              </div>
               <label className="field-label" style={{ marginTop: 10 }}>Parser</label>
               <select className="select-field" value={parserProvider} onChange={(e) => setParserProvider(e.target.value as "local" | "llamaparse")}>
                 <option value="llamaparse">LlamaParse (Llama Cloud)</option>
@@ -537,10 +538,10 @@ export function SettingsModal({
                   <small>Used for standalone images, embedded Office images, PDF figures, and scanned PDF pages. Leave the model blank to use the provider default.</small>
                 </div>
               </div>
-              <label className="toggle-row" style={{ marginTop: 10 }}>
-                <input type="checkbox" checked={visionEnabled} onChange={(e) => setVisionEnabled(e.target.checked)} />
+              <div className="toggle-row" style={{ marginTop: 10 }}>
+                <Toggle checked={visionEnabled} onChange={setVisionEnabled} title={visionEnabled ? "Disable visual analysis" : "Enable visual analysis during ingestion"} />
                 <span>Enable visual analysis during ingestion</span>
-              </label>
+              </div>
               <label className="field-label" style={{ marginTop: 10 }}>Vision provider</label>
               <select className="select-field" value={visionProviderId} onChange={(e) => { setVisionProviderId(e.target.value); setVisionModel(""); }} disabled={!visionEnabled}>
                 <option value="">Use first configured provider</option>
@@ -565,10 +566,10 @@ export function SettingsModal({
                   <small>Optionally ask a configured chat model to judge which retrieved passages best answer each question. This adds latency and model cost.</small>
                 </div>
               </div>
-              <label className="toggle-row" style={{ marginTop: 10 }}>
-                <input type="checkbox" checked={rerankEnabled} onChange={(e) => setRerankEnabled(e.target.checked)} />
+              <div className="toggle-row" style={{ marginTop: 10 }}>
+                <Toggle checked={rerankEnabled} onChange={setRerankEnabled} title={rerankEnabled ? "Disable model-based reranking" : "Enable model-based reranking"} />
                 <span>Enable model-based reranking</span>
-              </label>
+              </div>
               <label className="field-label" style={{ marginTop: 10 }}>Reranker provider</label>
               <select className="select-field" value={rerankProviderId} onChange={(e) => { setRerankProviderId(e.target.value); setRerankModel(""); }} disabled={!rerankEnabled}>
                 <option value="">Use first configured provider</option>

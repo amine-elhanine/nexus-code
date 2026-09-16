@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, promises as fsPromises } from "node:fs";
+import { existsSync, readFileSync, readdirSync, promises as fsPromises } from "node:fs";
 import path from "node:path";
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
@@ -168,7 +168,40 @@ export function pickVerificationCommand(projectRoot: string): string | null {
 
     if (existsSync(path.join(root, "Cargo.toml"))) return "cargo check";
     if (existsSync(path.join(root, "go.mod"))) return "go vet ./...";
+    // JVM: Maven first, then Gradle (wrapper preferred when checked in).
+    if (existsSync(path.join(root, "pom.xml"))) return "mvn -q test";
+    if (
+      existsSync(path.join(root, "build.gradle")) ||
+      existsSync(path.join(root, "build.gradle.kts")) ||
+      existsSync(path.join(root, "settings.gradle")) ||
+      existsSync(path.join(root, "settings.gradle.kts"))
+    ) {
+      if (process.platform === "win32" && existsSync(path.join(root, "gradlew.bat"))) return "gradlew.bat build";
+      if (existsSync(path.join(root, "gradlew"))) return "./gradlew build";
+      return "gradle build";
+    }
+    // .NET: any SDK-style project or solution at the root.
+    try {
+      const entries = readdirSync(root);
+      if (entries.some((name) => /\.(csproj|fsproj|sln)$/i.test(name))) return "dotnet test";
+    } catch { /* fall through to Python */ }
+    // Python: Django check, then pytest when tests are present, then ruff,
+    // then a dependency-free syntax compile as last resort.
+    if (existsSync(path.join(root, "manage.py"))) return "python manage.py check";
+    if (
+      existsSync(path.join(root, "pytest.ini")) ||
+      existsSync(path.join(root, "tox.ini")) ||
+      existsSync(path.join(root, "tests")) ||
+      existsSync(path.join(root, "test"))
+    ) return "pytest -q";
     if (existsSync(path.join(root, "pyproject.toml")) || existsSync(path.join(root, "ruff.toml"))) return "ruff check";
+    if (
+      existsSync(path.join(root, "requirements.txt")) ||
+      existsSync(path.join(root, "setup.py")) ||
+      existsSync(path.join(root, "setup.cfg")) ||
+      existsSync(path.join(root, "Pipfile")) ||
+      existsSync(path.join(root, "poetry.lock"))
+    ) return "python -m compileall -q .";
     return null;
   } catch {
     return null;
@@ -217,13 +250,23 @@ export function pickFileScopedVerification(projectRoot: string, modifiedFiles: s
   try {
     if (!modifiedFiles.length || modifiedFiles.length > 5) return null;
     const root = path.resolve(projectRoot);
-    const pkgPath = path.join(root, "package.json");
-    if (!existsSync(pkgPath)) return null;
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-    const devDeps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
-    const hasEslint = Boolean(devDeps.eslint || typeof pkg.scripts?.lint === "string");
     const quoted = modifiedFiles.map((f) => `"${f.replace(/"/g, "")}"`).join(" ");
-    if (hasEslint) return `npx eslint ${quoted}`;
+    const pkgPath = path.join(root, "package.json");
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+      const devDeps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
+      const hasEslint = Boolean(devDeps.eslint || typeof pkg.scripts?.lint === "string");
+      if (hasEslint) return `npx eslint ${quoted}`;
+      return null;
+    }
+    // Python-only change with a ruff config: lint just the touched files.
+    if (
+      modifiedFiles.length > 0 &&
+      modifiedFiles.every((f) => f.endsWith(".py")) &&
+      (existsSync(path.join(root, "pyproject.toml")) || existsSync(path.join(root, "ruff.toml")))
+    ) {
+      return `ruff check ${quoted}`;
+    }
     return null;
   } catch {
     return null;
@@ -240,6 +283,17 @@ export function findTargetedTests(projectRoot: string, modifiedFiles: string[]):
       hasTestScript = typeof pkg.scripts?.test === "string";
     }
 
+    const hasPom = existsSync(path.join(root, "pom.xml"));
+    const hasGradle =
+      existsSync(path.join(root, "build.gradle")) ||
+      existsSync(path.join(root, "build.gradle.kts")) ||
+      existsSync(path.join(root, "settings.gradle")) ||
+      existsSync(path.join(root, "settings.gradle.kts"));
+    let hasDotnet = false;
+    try {
+      hasDotnet = readdirSync(root).some((name) => /\.(csproj|fsproj|sln)$/i.test(name));
+    } catch { /* ignore */ }
+
     // Heuristic: check if any modified file has a corresponding test file
     for (const file of modifiedFiles) {
       const parsed = path.parse(file);
@@ -249,6 +303,13 @@ export function findTargetedTests(projectRoot: string, modifiedFiles: string[]):
         path.join(root, "test", `${parsed.name}.test${parsed.ext}`),
         path.join(root, "tests", `test_${parsed.name}${parsed.ext}`),
       ];
+      // Java: Foo.java <-> FooTest.java in the same package or under src/test.
+      if (parsed.ext === ".java") {
+        candidates.push(
+          path.join(root, parsed.dir, `${parsed.name}Test.java`),
+          path.join(root, parsed.dir, `Test${parsed.name}.java`),
+        );
+      }
       for (const cand of candidates) {
         if (existsSync(cand)) {
           const rel = path.relative(root, cand).replace(/\\/g, "/");
@@ -256,9 +317,17 @@ export function findTargetedTests(projectRoot: string, modifiedFiles: string[]):
           if (parsed.ext === ".py") return `pytest ${rel}`;
           if (parsed.ext === ".rs") return `cargo test ${parsed.name}`;
           if (parsed.ext === ".go") return `go test ./${path.dirname(rel)}`;
+          if (parsed.ext === ".java") {
+            const testClass = path.basename(cand, ".java");
+            if (hasPom) return `mvn -q -Dtest=${testClass} test`;
+            if (hasGradle) return `gradle test --tests "*${testClass}*"`;
+          }
+          if (parsed.ext === ".cs" && hasDotnet) return "dotnet test";
           return null;
         }
       }
+      // .NET without a colocated test file: a test run still validates the change.
+      if (parsed.ext === ".cs" && hasDotnet) return "dotnet test";
     }
     return null;
   } catch {

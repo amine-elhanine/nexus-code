@@ -319,6 +319,40 @@ export function useNotebookController(enabled: boolean) {
     }
   }
 
+  async function importYouTube(url: string) {
+    if (!activeNotebook || asking) return;
+    const link = url.trim();
+    if (!link) return;
+    setNotice("Fetching the video transcript…");
+    try {
+      const typed = api as unknown as { notebookImportYouTube: (id: string, u: string) => Promise<NotebookSource[]> };
+      const next = await typed.notebookImportYouTube(activeNotebook.id, link);
+      setSources(next);
+      setNotice("Transcript added — indexing in the background, ask in a moment.");
+      setTimeout(() => activeNotebook && void refreshNotebookDetail(activeNotebook.id), 4000);
+      setTimeout(() => activeNotebook && void refreshNotebookDetail(activeNotebook.id), 10000);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "YouTube import failed.");
+    }
+  }
+
+  async function importWebsite(url: string) {
+    if (!activeNotebook || asking) return;
+    const link = url.trim();
+    if (!link) return;
+    setNotice("Reading the website (start page plus linked pages)…");
+    try {
+      const typed = api as unknown as { notebookImportWebsite: (id: string, u: string) => Promise<NotebookSource[]> };
+      const next = await typed.notebookImportWebsite(activeNotebook.id, link);
+      setSources(next);
+      setNotice("Website added — indexing in the background, ask in a moment.");
+      setTimeout(() => activeNotebook && void refreshNotebookDetail(activeNotebook.id), 4000);
+      setTimeout(() => activeNotebook && void refreshNotebookDetail(activeNotebook.id), 10000);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Website import failed.");
+    }
+  }
+
   async function uploadBrowserFiles(files: FileList | File[]) {
     if (!activeNotebook) return;
     const list = Array.from(files).slice(0, 10);
@@ -459,6 +493,8 @@ export function useNotebookController(enabled: boolean) {
     refreshNotebookDetail,
     createNotebook,
     removeNotebook,
+    importYouTube,
+    importWebsite,
     uploadFromPicker,
     uploadBrowserFiles,
     ask,
