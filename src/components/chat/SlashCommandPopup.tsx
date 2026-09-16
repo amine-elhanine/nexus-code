@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import {
   Sparkles, Terminal, FileText, CheckCircle2, GitBranch, RotateCcw,
   HelpCircle, ShieldCheck, Wrench, BookOpen, Code2, Cpu
@@ -65,10 +65,19 @@ export const SlashCommandPopup: React.FC<SlashCommandPopupProps> = ({
       c.description.toLowerCase().includes(query)
   );
 
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  // Keep the keyboard-highlighted item in view as the user arrows through
+  // a list taller than the popup (block: nearest avoids yanking on tiny moves).
+  useEffect(() => {
+    menuRef.current
+      ?.querySelector(".slash-command-item.selected")
+      ?.scrollIntoView({ block: "nearest" });
+  }, [selectedIndex, query]);
+
   if (!filtered.length) return null;
 
   return (
-    <div className="slash-command-menu">
+    <div className="slash-command-menu" ref={menuRef}>
       <div className="slash-command-header">Commands & Shortcuts</div>
       {filtered.map((item, index) => {
         const isSelected = index === selectedIndex % filtered.length;

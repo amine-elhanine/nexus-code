@@ -5,7 +5,6 @@ import {
 } from "lucide-react";
 import { WorktreeBar } from "../components/worktree/WorktreeBar.js";
 import { SlashCommandPopup, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
-import { VoiceDictationButton } from "../components/chat/VoiceDictationButton.js";
 import { ChatItemView, ActivityGroupView } from "../components/chat/ChatMessageItem.js";
 import { fileIcon } from "../utils/format.js";
 import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
@@ -86,6 +85,7 @@ export function AgentView({
   files,
   checkpointId,
   diffCount,
+  undoLevels,
   onUndoRun,
   onKeepChanges,
   switchModel,
@@ -126,6 +126,7 @@ export function AgentView({
   files: FileEntry[];
   checkpointId?: string;
   diffCount: number;
+  undoLevels?: number;
   onUndoRun: (id: string) => void;
   onKeepChanges: () => void;
   switchModel: (providerId: string, model: string) => void;
@@ -465,23 +466,28 @@ export function AgentView({
           </div>
         )}
         {transcriptNodes}
-        {checkpointId && diffCount > 0 && !running && (
+        {checkpointId && !running && (diffCount > 0 || (undoLevels || 0) > 0) && (
           <div className="rollback-card">
             <div className="rollback-info">
               <GitBranch size={14} />
               <span>
-                Agent made changes in <strong>{diffCount} file{diffCount === 1 ? "" : "s"}</strong>
+                {diffCount > 0 ? (
+                  <>Agent made changes in <strong>{diffCount} file{diffCount === 1 ? "" : "s"}</strong></>
+                ) : (
+                  <>Session has committed work ready to undo</>
+                )}
+                {(undoLevels || 0) > 1 && <> · <strong>{undoLevels} levels</strong></>}
               </span>
             </div>
             <div className="rollback-actions">
               <button
                 className="secondary"
                 onClick={() => onUndoRun(checkpointId)}
-                title="Discard all changes from this run"
+                title="Restore pre-run files and roll back Nexus-only session commits"
               >
-                <RotateCcw size={12} /> Undo run
+                <RotateCcw size={12} /> {(undoLevels || 0) > 1 ? `Undo (${undoLevels})` : "Undo run"}
               </button>
-              <button className="primary" onClick={onKeepChanges} title="Accept and keep all changes">
+              <button className="primary" onClick={onKeepChanges} title="Accept and clear all undo history for this session">
                 <Check size={12} /> Keep changes
               </button>
             </div>
@@ -604,10 +610,6 @@ export function AgentView({
                   </div>
                 )}
               </div>
-              <VoiceDictationButton
-                onTranscript={(text) => setDraft(draft ? `${draft} ${text}` : text)}
-                disabled={running}
-              />
               <div className="mode-select">
                 {["Plan", "Ask", "Auto"].map((item) => (
                   <button

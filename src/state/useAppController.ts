@@ -68,9 +68,6 @@ export function useAppController() {
   const [showSessions, setShowSessions] = useState(true);
   const [showContext, setShowContext] = useState(true);
   const [showProviders, setShowProviders] = useState(false);
-  const [showCreateProject, setShowCreateProject] = useState(false);
-  const [newProjectName, setNewProjectName] = useState("");
-  const [newProjectRoot, setNewProjectRoot] = useState("");
   const [skillsEnabled, setSkillsEnabled] = useState(true);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [activeArtifact, setActiveArtifact] = useState<ArtifactItem | null>(null);
@@ -92,6 +89,7 @@ export function useAppController() {
   const [showMcp, setShowMcp] = useState(false);
   const [showSkills, setShowSkills] = useState(false);
   const [inspectDiffFile, setInspectDiffFile] = useState<WorkspaceDiffFile | null>(null);
+  const [undoing, setUndoing] = useState(false);
 
   const draft = area === "home" ? homeDraft : codeDraft;
   const setDraft = (value: SetStateAction<string>) => (area === "home" ? setHomeDraft(value) : setCodeDraft(value));
@@ -210,10 +208,10 @@ export function useAppController() {
         });
         void api.listSessions(activeProject?.id || "").then((fresh) => {
           if (!fresh) return;
-          setSessions(fresh);
-          const freshCurrent = fresh.find((s) => s.id === targetSessionId);
+          setSessions(fresh as unknown as SessionRecord[]);
+          const freshCurrent = (fresh as unknown as SessionRecord[]).find((s) => s.id === targetSessionId);
           if (freshCurrent) {
-            setActiveSession((prev) => (prev && prev.id === targetSessionId ? { ...prev, messages: freshCurrent.messages, usage: freshCurrent.usage, checkpointId: freshCurrent.checkpointId } : prev));
+            setActiveSession((prev) => (prev && prev.id === targetSessionId ? { ...prev, messages: freshCurrent.messages, usage: freshCurrent.usage, checkpointId: freshCurrent.checkpointId, checkpointIds: freshCurrent.checkpointIds } : prev));
           }
         }).catch(() => { /* sidebar keeps its current list */ });
         return;
@@ -292,6 +290,12 @@ export function useAppController() {
       const first = mapped.find((item) => item.kind === "file");
       if (first) await openFile(first.path);
       await loadGit();
+      // Keep the Undo button / diff counts truthful right after (re)load.
+      try {
+        setDiff(await api.getDiff());
+      } catch {
+        /* diff stays empty */
+      }
     } catch {
       setFiles([]);
       setGitBranch("No Git repository");
@@ -369,6 +373,19 @@ export function useAppController() {
     });
   }
 
+  async function renameSession(sessionId: string, title: string) {
+    if (!activeProject) return;
+    const next = title.trim().slice(0, 80);
+    if (!next) return;
+    try {
+      const updated = await api.updateSession(activeProject.id, sessionId, { title: next });
+      setSessions((current) => current.map((s) => (s.id === updated.id ? updated : s)));
+      setActiveSession((current) => (current && current.id === updated.id ? updated : current));
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
   async function openProjectFromDialog() {
     const result = await api.selectProject();
     if (!result) return;
@@ -379,27 +396,6 @@ export function useAppController() {
     setSessions(result.project.sessions);
     setSelectedProviderId(result.session.model?.providerId || "");
     setSelectedModel(result.session.model?.model || "");
-    await loadWorkspace();
-  }
-
-  async function createProject() {
-    if (!newProjectRoot.trim()) {
-      await openProjectFromDialog();
-      setShowCreateProject(false);
-      return;
-    }
-    const result = await api.createProject(
-      newProjectName.trim() || newProjectRoot.split(/[\\/]/).pop() || "New project",
-      newProjectRoot.trim()
-    );
-    resetWorkspace();
-    setProjects(await api.listProjects());
-    setActiveProject(result.project);
-    setActiveSession(result.session);
-    setSessions(result.project.sessions);
-    setSelectedProviderId("");
-    setSelectedModel("");
-    setShowCreateProject(false);
     await loadWorkspace();
   }
 
@@ -612,10 +608,10 @@ export function useAppController() {
       try {
         if (activeProject) {
           const freshSessions = await api.listSessions(activeProject.id);
-          setSessions(freshSessions);
-          const freshCurrent = freshSessions.find((s) => s.id === session.id);
+          setSessions(freshSessions as unknown as SessionRecord[]);
+          const freshCurrent = (freshSessions as unknown as SessionRecord[]).find((s) => s.id === session.id);
           if (freshCurrent) {
-            setActiveSession((prev) => (prev && prev.id === session.id ? { ...prev, messages: freshCurrent.messages, usage: freshCurrent.usage, checkpointId: freshCurrent.checkpointId } : prev));
+            setActiveSession((prev) => (prev && prev.id === session.id ? { ...prev, messages: freshCurrent.messages, usage: freshCurrent.usage, checkpointId: freshCurrent.checkpointId, checkpointIds: freshCurrent.checkpointIds } : prev));
           }
           const wt = await api.getWorktreeStatus(session.id);
           setWorktreeStatus(wt);
@@ -627,6 +623,11 @@ export function useAppController() {
         if (area === "home") {
           await refreshHomeFiles();
           await refreshHomeSessionFiles(session.id);
+        } else {
+          // Code runs edit the workspace: refresh files + diff so the
+          // one-click Undo button and the Diff tab are correct immediately.
+          await refreshDiff();
+          await loadWorkspace();
         }
       } catch {
         /* sidebar keeps its current list */
@@ -665,12 +666,30 @@ export function useAppController() {
     }
   }
 
-  async function undoRun(checkpointId: string) {
-    if (!checkpointId || !activeSession || !activeProject) return;
+  async function refreshActiveSession() {
+    if (!activeProject || !activeSession) return;
     try {
+      const freshSessions = await api.listSessions(activeProject.id);
+      setSessions(freshSessions as unknown as SessionRecord[]);
+      const freshCurrent = (freshSessions as unknown as SessionRecord[]).find((s) => s.id === activeSession.id);
+      if (freshCurrent) setActiveSession(freshCurrent);
+    } catch { /* keep current session on failure */ }
+  }
+
+  function undoStack(): string[] {
+    if (activeSession?.checkpointIds?.length) return activeSession.checkpointIds;
+    if (activeSession?.checkpointId) return [activeSession.checkpointId];
+    return [];
+  }
+
+  async function undoRun(checkpointId: string) {
+    if (!checkpointId || !activeSession || !activeProject || undoing) return;
+    setUndoing(true);
+    try {
+      // Main pops the id from the stack; refresh from the store so the
+      // remaining levels stay exact (multi-level Undo).
       await api.restoreCheckpoint(checkpointId);
-      const updated = await api.updateSession(activeProject.id, activeSession.id, { checkpointId: undefined });
-      setActiveSession(updated);
+      await refreshActiveSession();
       await refreshDiff();
       await loadWorkspace();
     } catch (error) {
@@ -683,16 +702,46 @@ export function useAppController() {
         danger: false,
         onConfirm: () => setConfirmDialog(null),
       });
-      // Clear the stale checkpoint so the card doesn't keep offering a dead action.
-      const updated = await api.updateSession(activeProject.id, activeSession.id, { checkpointId: undefined }).catch(() => null);
-      if (updated) setActiveSession(updated);
+      await refreshActiveSession();
+    } finally {
+      setUndoing(false);
     }
   }
 
+  // One-click Undo for the Code area: pops the latest pre-run snapshot
+  // (files + Nexus-only session-branch commits), otherwise falls back to
+  // discarding the current git diff (manual saves with no checkpoint).
+  async function undoLatest() {
+    if (undoing || running) return;
+    const stack = undoStack();
+    if (stack.length && activeSession && activeProject) {
+      await undoRun(stack[stack.length - 1]);
+      return;
+    }
+    // No checkpoint (manual edits, or history already kept/cleared):
+    // refresh first so we don't offer a stale destructive action.
+    let currentDiff = diff;
+    try {
+      currentDiff = await api.getDiff();
+      setDiff(currentDiff);
+    } catch {
+      /* keep the last known diff */
+    }
+    if (!currentDiff.length) return;
+    revertAllChanges();
+  }
+
+  const undoLevels = undoStack().length;
+  const canUndo = undoLevels > 0 || diff.length > 0;
+
   async function keepChanges() {
     if (activeProject && activeSession) {
-      const updated = await api.updateSession(activeProject.id, activeSession.id, { checkpointId: undefined });
-      setActiveSession(updated);
+      try {
+        await api.clearCheckpoints();
+      } catch {
+        /* backend clear is best-effort; still refresh below */
+      }
+      await refreshActiveSession();
     }
   }
 
@@ -810,12 +859,6 @@ export function useAppController() {
     setShowMcp,
     showSkills,
     setShowSkills,
-    showCreateProject,
-    setShowCreateProject,
-    newProjectName,
-    setNewProjectName,
-    newProjectRoot,
-    setNewProjectRoot,
     skillsEnabled,
     setSkillsEnabled,
     confirmDialog,
@@ -855,10 +898,10 @@ export function useAppController() {
     activateProject,
     deleteProjectById,
     openProjectFromDialog,
-    createProject,
     createSession,
     activateSession,
     deleteActiveSession,
+    renameSession,
     openFile,
     saveFile,
     toggleFolder,
@@ -867,6 +910,11 @@ export function useAppController() {
     revertSingleFile,
     revertAllChanges,
     undoRun,
+    undoLatest,
+    undoStack,
+    undoLevels,
+    canUndo,
+    undoing,
     keepChanges,
     switchModel,
     handleProvidersChange,

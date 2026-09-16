@@ -1,5 +1,5 @@
 import React, { useState, type ReactNode } from "react";
-import { RotateCcw, RefreshCw, ChevronDown, ChevronRight, Columns, GitBranch } from "lucide-react";
+import { RotateCcw, RefreshCw, ChevronDown, ChevronRight, Columns, GitBranch, Undo2 } from "lucide-react";
 import type { WorkspaceDiffFile, SplitDiffRow, DiffSide } from "../types.js";
 import { fileIcon } from "../utils/format.js";
 
@@ -108,12 +108,18 @@ export function DiffPatch({ patch }: { patch: string }) {
 
 export function DiffView({
   diff,
+  checkpointId,
+  undoing,
+  onUndoRun,
   onRefresh,
   onRevertFile,
   onRevertAll,
   onInspectFile,
 }: {
   diff: WorkspaceDiffFile[];
+  checkpointId?: string;
+  undoing?: boolean;
+  onUndoRun?: (checkpointId: string) => void;
   onRefresh: () => void;
   onRevertFile: (path: string) => void;
   onRevertAll: () => void;
@@ -148,6 +154,16 @@ export function DiffView({
           </select>
           <span className="diff-total-add">+{additions}</span>
           <span className="diff-total-del">−{deletions}</span>
+          {checkpointId && onUndoRun && (
+            <button
+              className="secondary"
+              disabled={Boolean(undoing)}
+              onClick={() => onUndoRun(checkpointId)}
+              title="Undo latest run — restore pre-run files and roll back Nexus-only session commits"
+            >
+              <Undo2 size={13} /> {undoing ? "Undoing…" : "Undo"}
+            </button>
+          )}
           {diff.length > 0 && (
             <button className="secondary danger-btn" onClick={onRevertAll} title="Discard all workspace changes">
               <RotateCcw size={13} /> Discard all

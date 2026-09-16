@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import {
-  ArrowLeft, ArrowUp, BookOpen, Check, Download, FileText, Loader2, Pencil, Plus,
-  RefreshCw, Square, Trash2, Upload,
+  ArrowLeft, ArrowUp, BookOpen, Check, Clapperboard, Download, FileText, Globe, Loader2, Pencil, Plus,
+  RefreshCw, Square, Trash2, Upload, X,
 } from "lucide-react";
 import { ModelSelect } from "./AgentView.js";
+import { CopyTextButton } from "../components/chat/ChatMessageItem.js";
 import { renderMarkdown } from "../markdown.js";
 import { timeLabel } from "../utils/format.js";
 import { SourcePassageModal, type PassageAction } from "../components/notebook/SourcePassageModal.js";
@@ -44,6 +45,8 @@ export function NotebookView({
   onCreateNotebook,
   onDeleteNotebook,
   onPickFiles,
+  onImportYouTube,
+  onImportWebsite,
   onBrowserFiles,
   onRefresh,
   onDeleteSource,
@@ -89,6 +92,8 @@ export function NotebookView({
   onCreateNotebook: (name: string) => void;
   onDeleteNotebook: (id: string) => void;
   onPickFiles: () => void;
+  onImportYouTube: (url: string) => void;
+  onImportWebsite: (url: string) => void;
   onBrowserFiles: (files: FileList | File[]) => void;
   onRefresh: () => void;
   onDeleteSource: (sourceId: string) => void;
@@ -126,6 +131,23 @@ export function NotebookView({
 
   const [editingName, setEditingName] = useState<string | null>(null);
   const [instructionDraft, setInstructionDraft] = useState(settings.instructions);
+  // Link import form, shared by YouTube transcripts and website crawls.
+  const [linkKind, setLinkKind] = useState<"youtube" | "website" | null>(null);
+  const [linkUrl, setLinkUrl] = useState("");
+
+  function submitLink() {
+    const link = linkUrl.trim();
+    if (!link || !linkKind) return;
+    if (linkKind === "youtube") onImportYouTube(link);
+    else onImportWebsite(link);
+    setLinkUrl("");
+    setLinkKind(null);
+  }
+
+  function toggleLinkForm(kind: "youtube" | "website") {
+    setLinkKind((prev) => (prev === kind ? null : kind));
+    setLinkUrl("");
+  }
 
   useEffect(() => setInstructionDraft(settings.instructions), [settings.instructions]);
 
@@ -278,7 +300,58 @@ export function NotebookView({
           <div className="notebook-upload-row">
             <button className="new-session-btn" onClick={onPickFiles}><FileText size={13} /> Add files</button>
             <button className="pane-action" onClick={() => fileInputRef.current?.click()} title="Upload from this window"><Upload size={13} /></button>
+            <button
+              className={`pane-action${linkKind === "youtube" ? " active" : ""}`}
+              onClick={() => toggleLinkForm("youtube")}
+              title="Add a YouTube video — its transcript becomes a source"
+            >
+              <Clapperboard size={13} />
+            </button>
+            <button
+              className={`pane-action${linkKind === "website" ? " active" : ""}`}
+              onClick={() => toggleLinkForm("website")}
+              title="Add a website — the page plus linked pages become a source"
+            >
+              <Globe size={13} />
+            </button>
           </div>
+          {linkKind && (
+            <form
+              className="youtube-add-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                submitLink();
+              }}
+            >
+              <input
+                type="text"
+                value={linkUrl}
+                onChange={(e) => setLinkUrl(e.target.value)}
+                placeholder={linkKind === "youtube" ? "Paste a YouTube link…" : "Paste a website link…"}
+                spellCheck={false}
+                autoFocus
+              />
+              <button
+                type="submit"
+                className="primary-sm"
+                disabled={!linkUrl.trim()}
+                title={linkKind === "youtube" ? "Fetch the transcript and add it as a source" : "Read the site and add it as a source"}
+              >
+                Add
+              </button>
+              <button
+                type="button"
+                className="pane-action"
+                onClick={() => {
+                  setLinkKind(null);
+                  setLinkUrl("");
+                }}
+                title="Cancel"
+              >
+                <X size={12} />
+              </button>
+            </form>
+          )}
           <input
             type="file"
             ref={fileInputRef}
@@ -362,6 +435,11 @@ export function NotebookView({
                   <div className="chat-message-text md" dangerouslySetInnerHTML={{ __html: renderMarkdown(message.text) }} />
                 ) : (
                   <div className="chat-text">{message.text}</div>
+                )}
+                {message.role === "assistant" && Boolean(message.text?.trim()) && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
+                    <CopyTextButton text={message.text} />
+                  </div>
                 )}
                 {message.role === "assistant" && message.metadata?.refused && (
                   <span className="eval-pill" style={{ borderColor: verdictColor("ungrounded") }} title="The groundedness gate refused rather than guessing">

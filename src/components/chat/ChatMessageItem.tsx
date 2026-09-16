@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Bot, Coins, Terminal, Activity, X, Brain, Check, Loader2, ChevronDown, ChevronRight, FileText } from "lucide-react";
+import React, { useRef, useState } from "react";
+import { Bot, Coins, Terminal, Activity, X, Brain, Check, Copy, Loader2, ChevronDown, ChevronRight, FileText } from "lucide-react";
 import { renderMarkdown } from "../../markdown.js";
 import { timeLabel } from "../../utils/format.js";
 import { isImageAttachment, formatAttachmentSize } from "../../utils/attachments.js";
@@ -7,6 +7,53 @@ import { PlanCard } from "./PlanCard.js";
 import { SubagentCardView } from "./SubagentCard.js";
 import { ArtifactCard } from "./ArtifactCard.js";
 import type { ChatAttachment, ChatItem, ArtifactItem } from "../../types.js";
+
+export async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Clipboard API unavailable (permissions / non-secure context) — fallback.
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+export function CopyTextButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<number | null>(null);
+  if (!text) return null;
+  return (
+    <button
+      className="pane-action"
+      style={{ display: "inline-flex", alignItems: "center" }}
+      onClick={() => {
+        void copyTextToClipboard(text).then((ok) => {
+          if (!ok) return;
+          setCopied(true);
+          if (timerRef.current) window.clearTimeout(timerRef.current);
+          timerRef.current = window.setTimeout(() => setCopied(false), 1600);
+        });
+      }}
+      title={copied ? "Copied!" : "Copy response to clipboard"}
+      aria-label={copied ? "Copied!" : "Copy response to clipboard"}
+    >
+      {copied ? <Check size={12} /> : <Copy size={12} />}
+    </button>
+  );
+}
+
 export function ChatItemView({
   message,
   onOpenArtifact,
@@ -97,6 +144,11 @@ export function ChatItemView({
         className="chat-message-text md"
         dangerouslySetInnerHTML={{ __html: renderMarkdown(message.text) }}
       />
+      {message.role === "assistant" && Boolean(message.text?.trim()) && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
+          <CopyTextButton text={message.text} />
+        </div>
+      )}
       {message.role === "assistant" && message.usage && message.usage.totalTokens > 0 && (
         <div
           className="message-usage-footer"

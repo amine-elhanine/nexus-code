@@ -8,7 +8,7 @@ The app has **three equal modes** in one window (topbar tabs `Home | Code | Note
 | --- | --- | --- |
 | **Home** | No — built-in folder `~/Documents/Nexus` | Everyday assistant: chat, web research, writes Word / Excel / PowerPoint / LaTeX / Markdown files with preview + download. |
 | **Code** | Yes — any local repository | Coding agent: Plan/Ask/Auto loop that edits code, runs typecheck + targeted tests, repairs failures, with diff review, worktrees and rollback. |
-| **Notebook** | No — its own notebook library | Grounded Q&A over your documents (PDF, DOCX, XLSX, PPTX, CSV, LaTeX): hybrid retrieval, citations, groundedness verdicts, saved notes. |
+| **Notebook** | No — its own notebook library | Grounded Q&A over your documents (PDF, DOCX, XLSX, PPTX, CSV, LaTeX) plus YouTube transcripts and website crawls: hybrid retrieval, citations, groundedness verdicts, saved notes. |
 
 All three share providers (15), streaming + token/cost display, attachments, voice dictation, browser, MCP/Skills and auto-updates. Code is the only mode with repo verification, diffs and worktrees; Home is the only mode with the Nexus folder; Notebook is the only mode with sources/chunks/citations.
 
@@ -32,7 +32,7 @@ No repository needed. The Home area is a built-in project rooted at `~/Documents
 - **Preview + download**: `FilePreviewModal` reads via `home:readFile` (30 MB cap — larger files degrade to “download instead”); `downloadHomeFile` opens a save dialog and copies out. Path-escape checked (`Path escapes the Home folder`).
 - **Generator cleanup** (`cleanupHomeGeneratorScripts`): after a run that produced a fresh deliverable (docx/xlsx/pptx/pdf/…), throwaway generator scripts (`.py/.js/.ts/.sh/.ps1/.bat/…` created during the run) are deleted automatically — unless you explicitly asked for code/scripts (`CODE_REQUEST_PATTERN`).
 - **Agent loop**: same DeepAgents loop with `taskKind: "general"` — document-oriented system prompt, **no code-project verification** (no typecheck/test gate), doom-loop breaker and rate-limit resume still apply.
-- **Composer**: textarea (Enter to send), paperclip attach (images, PDF, Word, Excel, PowerPoint, TeX, text — `ATTACHMENT_ACCEPT`), image chips with preview + remove, `VoiceDictationButton` (hidden when SpeechRecognition unavailable), model picker, per-session token/cost pill (`Session: 12.4k tokens ~$0.0231`, `—` when pricing unknown).
+- **Composer**: textarea (Enter to send), paperclip attach (images, PDF, Word, Excel, PowerPoint, TeX, text — `ATTACHMENT_ACCEPT`), image chips with preview + remove, model picker, per-session token/cost pill (`Session: 12.4k tokens ~$0.0231`, `—` when pricing unknown).
 - **Transcript**: user/assistant bubbles + collapsed `ActivityGroupView` tool steps, sticky-to-bottom unless you're reading history, `RichMarkdown` (KaTeX + Mermaid).
 
 ### Home files in code
@@ -81,13 +81,13 @@ Fast path for single-lookup/single-edit tasks: 50 supersteps. Switch via the `Pl
 ### Code files in code
 
 - Backend: `agent-service.ts`, `command-service.ts`, `permissions.ts`, `approval-service.ts`, `context-service.ts`, `rate-limit.ts`, `subagent-service.ts`, `code-tools.ts`, `project-tools.ts`, `edit-tools.ts`, `repo-map-service.ts`, `rules-service.ts`, `custom-commands-service.ts`, `diff-service.ts`, `worktree-service.ts`, `artifacts-service.ts`, `trajectory-service.ts`, `terminal-service.ts` + `pty-host.cjs`, `daemon-service.ts`, `browser-service.ts` + `browser-tool.ts`.
-- Frontend: `src/views/AgentView.tsx` (+ `ModelSelect`), `DiffView.tsx`, `MemoryView.tsx`, `components/editor/MonacoEditorView.tsx`, `terminal/XTermView.tsx`, `browser/SidebarBrowser.tsx` + `IntegratedBrowserView.tsx` + `AgentBrowserHost.tsx`, `diff/MonacoDiffModal.tsx`, `worktree/WorktreeBar.tsx`, `chat/` (`ChatMessageItem`, `PlanCard`, `SubagentCard`, `ArtifactCard`, `SlashCommandPopup`, `VoiceDictationButton`), `rules/ProjectRulesModal.tsx`, `artifacts/ArtifactViewer.tsx`, `daemons/DaemonsModal.tsx`.
+- Frontend: `src/views/AgentView.tsx` (+ `ModelSelect`), `DiffView.tsx`, `MemoryView.tsx`, `components/editor/MonacoEditorView.tsx`, `terminal/XTermView.tsx`, `browser/SidebarBrowser.tsx` + `IntegratedBrowserView.tsx` + `AgentBrowserHost.tsx`, `diff/MonacoDiffModal.tsx`, `worktree/WorktreeBar.tsx`, `chat/` (`ChatMessageItem`, `PlanCard`, `SubagentCard`, `ArtifactCard`, `SlashCommandPopup`), `rules/ProjectRulesModal.tsx`, `artifacts/ArtifactViewer.tsx`, `daemons/DaemonsModal.tsx`.
 
 ---
 
 ## Mode 3 — Notebook (grounded Q&A over your documents)
 
-NotebookLM-style research desk with its own 3-pane layout **inside the view** (sources | chat | studio-notes); the app-level context pane stays hidden (`src/views/NotebookView.tsx`, 522 lines; state in `src/state/useNotebookController.ts`).
+NotebookLM-style research desk with its own 3-pane layout **inside the view** (sources | chat | studio-notes); the app-level context pane stays hidden (`src/views/NotebookView.tsx`; state in `src/state/useNotebookController.ts`).
 
 ### Library model
 
@@ -100,7 +100,10 @@ NotebookLM-style research desk with its own 3-pane layout **inside the view** (s
 
 Status per source (`NotebookSourceStatus`): `uploaded → parsing → chunking → indexing → ready`, or `failed` with error text. UI badges: `queued / parsing… / chunking… / indexing… / ready / failed` with spinner; auto-poll every 3 s while anything is pending; manual refresh, per-source delete / re-index, global re-index-all (`notebook:reindexSource`, `notebook:reindexAll`).
 
-- **Parsers** (`electron/notebook-parse.ts` → `parseToMarkdown`, lazy `jszip`/`pdf-parse`, optional LlamaParse via `cloudParser` flag): PDF, DOCX, XLSX, PPTX (slides), CSV, TeX (+ plain text/markdown). Reports `parser`, `pageCount`, `chars`, `chunks`, `fingerprint`.
+- **File upload** (`notebook:pickFiles` / drag-and-drop): PDF, DOCX, XLSX, PPTX (slides), CSV, TeX (+ plain text/markdown). Reports `parser`, `pageCount`, `chars`, `chunks`, `fingerprint`.
+- **Link imports** (no API key, same ingest pipeline after fetch):
+  - **YouTube** (`notebook:importYouTube`, `electron/notebook-youtube.ts`): paste a watch / youtu.be / embed / shorts / live URL (or bare 11-char id) — the public caption track is fetched as WebVTT and stored as timestamped (`[mm:ss]`) Markdown. Videos without captions (private / region-blocked / caption-less) fail with a friendly error.
+  - **Website** (`notebook:importWebsite`, `electron/notebook-web.ts`): paste one `http(s)` URL — the start page plus a bounded same-origin BFS crawl (page/depth caps) is combined into a single source document. Plain HTTP fetch only, so heavily JS-rendered pages may come back thin (flagged per page instead of silently stored).
 - **Chunking** (`electron/notebook-text.ts`, pure core): `cleanMarkdown`, section-aware `chunkSections`, `sha256Hex`/`uuid5` ids, upload validation, groundedness gate. Covered by `test/notebook-text.test.mjs` + `notebook-parse.test.mjs`.
 - **Library store** (`electron/notebook-library.ts`): relational JSON (`LibraryDocument/Section/Chunk`) + vector partition, neighbor expansion (prev/next chunk), `sessionOutline`, session summary/digest (`topics + updatedAt`).
 - **Jobs** (`electron/notebook-jobs.ts`): `enqueueIngest → parse → chunk → embed → index`, with `retrySource`, `reindexSessionFromLibrary`, `recoverInterruptedJobs` after restart. Covered by `notebook-pipeline.test.mjs` + `notebook-library.test.mjs`.
@@ -118,7 +121,7 @@ Status per source (`NotebookSourceStatus`): `uploaded → parsing → chunking �
 
 ### Notebook files in code
 
-- Backend: `electron/notebook-store.ts` (CRUD + `importSourceBuffer`/`pickAndImportSourceFiles`), `notebook-parse.ts`, `notebook-text.ts`, `notebook-library.ts`, `notebook-embeddings.ts`, `notebook-jobs.ts`, `notebook-rag.ts`, `notebook-flags.ts`.
+- Backend: `electron/notebook-store.ts` (CRUD + `importSourceBuffer`/`pickAndImportSourceFiles`), `notebook-parse.ts`, `notebook-text.ts`, `notebook-library.ts`, `notebook-embeddings.ts`, `notebook-jobs.ts`, `notebook-rag.ts`, `notebook-flags.ts`, `notebook-youtube.ts` (keyless transcript fetch), `notebook-web.ts` (same-origin crawl).
 - Frontend: `src/views/NotebookView.tsx`, `src/components/notebook/SourcePassageModal.tsx`, `src/state/useNotebookController.ts` (`notebooks/activeNotebook/sources/chats/activeChat/stats/draft/asking/notice/embedding/excludedIds/streamByChat/stepsByChat/passage/settings/notes` + `create/remove/renameNotebook`, `create/removeChat`, `uploadFromPicker/uploadBrowserFiles`, `ask`, `toggleScope/resetScope`, `openPassage/closePassage`, `saveInstructions/saveNote/removeNote`, `reindexAll`).
 - Tests: `npm run test:notebook` (text, parse, library, pipeline).
 
@@ -141,6 +144,7 @@ Commands run **directly on your machine with your user privileges**. No containe
 - **MCP** (`mcp-service.ts`): `stdio | http | sse`, cached client per config fingerprint, save/test UI. Runs with your privileges.
 - **Skills** (`skills-service.ts`): global (`userData/skills`) + project (`.nexus/skills`, legacy `.deepagents/skills` read-only), path-confined list/read/import/create/delete, per-run recommendation, global on/off toggle.
 - **Web search for all**: Home research + Code/Notebook context via the same DuckDuckGo Lite tools.
+- **Themes** (`src/state/theme.ts`): 8 themes (Nexus Emerald default, Midnight Ocean, Grape Nebula, Ember Sunset, Crimson Rose, Lagoon Teal, Moss Citrus, Daylight Paper light), persisted as `nexus-theme`.
 
 ---
 
@@ -228,8 +232,8 @@ Notes: only NSIS Setup self-updates (Portable re-downloads); dev runs just repor
   - `terminal-service.ts` + `pty-host.cjs` — out-of-process PTY + piped fallback.
   - `daemon-service.ts` / `browser-service.ts` / `browser-tool.ts` / `websearch-tool.ts` / `mcp-service.ts` — dev servers, hidden webviews + act/inspect/fetch, DDG search, cached MCP.
   - `home-service.ts` — `home` project: `getHomeRoot/ensureHomeDir/listHomeFiles/listHomeSessionFiles/downloadHomeFile/openHomeFolder/cleanupHomeGeneratorScripts/readHomeFile`.
-  - `notebook-store.ts` / `notebook-parse.ts` / `notebook-text.ts` / `notebook-library.ts` / `notebook-embeddings.ts` / `notebook-jobs.ts` / `notebook-rag.ts` / `notebook-flags.ts` — full RAG stack (see Mode 3).
-  - `providers.ts` (15 defs + endpoint resolution + Zen headers), `store.ts` (`nexus-state.json` + `forgepilot-state.json` fallback, `safeStorage`), `updater-service.ts` (`idle|checking|up-to-date|available|downloading|downloaded|error`), `preload.cts` (`window.nexus` + legacy `window.forgepilot`).
+  - `notebook-store.ts` / `notebook-parse.ts` / `notebook-text.ts` / `notebook-library.ts` / `notebook-embeddings.ts` / `notebook-jobs.ts` / `notebook-rag.ts` / `notebook-flags.ts` / `notebook-youtube.ts` / `notebook-web.ts` — full RAG stack (see Mode 3).
+  - `providers.ts` (15 defs + endpoint resolution + Zen headers), `repo-service.ts` (git detect/init), `store.ts` (`nexus-state.json` + `forgepilot-state.json` fallback, `safeStorage`), `updater-service.ts` (`idle|checking|up-to-date|available|downloading|downloaded|error`), `preload.cts` (`window.nexus` + legacy `window.forgepilot`).
 - `src/` — React frontend.
   - `App.tsx` — shell: `Home|Code|Notebook` tabs, session pane, workspace, resizable context pane (220–600 px, `nexus-context-width`), modals, hidden `AgentBrowserHost`.
   - `state/useAppController.ts` — projects/sessions/providers/runs, per-area drafts + attachments, files/diff/terminals/daemons IPC, `enterHome/enterCode/enterNotebook`.
@@ -238,7 +242,7 @@ Notes: only NSIS Setup self-updates (Portable re-downloads); dev runs just repor
   - `components/` — `chat/` (message/activity/plan/subagent/artifact/slash/voice), `browser/`, `terminal/` (xterm), `editor/` (Monaco), `diff/`, `daemons/`, `worktree/`, `rules/`, `artifacts/`, `home/` (preview + attachment modals), `notebook/` (passage modal), `settings/` (providers/MCP/skills), `common/` (logo, window controls, KaTeX/Mermaid markdown).
   - `modals/` — `ProviderModal`, `McpModal`, `SkillsModal`, `SettingsModal` (incl. Updates), `ProjectPickerModal`, `ConfirmModal`.
   - `types.ts` — contracts: sessions, providers, MCP, skills, `Notebook*` RAG (sources, citations, evaluations, passages, embeddings), updater, …
-- `landingPage/` — static site with always-latest Releases wiring (`app.js` → `L7A9/nexus`).
+- `landingPage/` — static site with always-latest Releases wiring (`app.js` → `L7A9/nexus`, exact Setup/Portable asset URLs, releases-page fallback) and screenshots for Home / Code / Notebook.
 - `test/` — `sandbox-and-agent.test.mjs` (integration), `rate-limit` + `checkpoint-resume` (unit), `notebook-text/parse/library/pipeline` (RAG).
 - `docs/` — `fix-plan.md` (historical implementation record), findings notes for execution model + UI.
 
@@ -251,3 +255,5 @@ Notes: only NSIS Setup self-updates (Portable re-downloads); dev runs just repor
 - [LangChain JS](https://docs.langchain.com/oss/javascript/langchain/overview)
 - [LangGraph JS](https://docs.langchain.com/oss/javascript/langgraph/quickstart)
 - [DeepAgents JS](https://docs.langchain.com/oss/javascript/deepagents/overview)
+
+Built with Electron + LangChain + LangGraph + DeepAgents.

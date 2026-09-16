@@ -63,7 +63,10 @@ export function classifyCommand(command: string, policy: CommandPolicy = {}): Co
   if (matchesPolicy(cmd, policy.allow)) return "allow";
   if (matchesPolicy(cmd, policy.ask)) return "ask";
   if (/\bgit\s+(push|reset|clean|rebase)\b/i.test(cmd) ||
-      /\b(?:npm|pnpm|yarn|pip|pip3|cargo)\s+(?:install|add|remove|uninstall)\b/i.test(cmd) ||
+      /\b(?:npm|pnpm|yarn|pip|pip3|cargo|poetry|uv)\s+(?:install|add|remove|uninstall)\b/i.test(cmd) ||
+      /\bgo\s+get\b/i.test(cmd) ||
+      /\bmvn\s+(?:dependency|install)\b/i.test(cmd) ||
+      /\bdotnet\s+(?:add|remove|restore)\b/i.test(cmd) ||
       /\bcurl\b[^\n|]*\|\s*(?:sh|bash)\b/i.test(cmd) ||
       /\b(?:Invoke-WebRequest|iwr|irm)\b/i.test(cmd)) return "ask";
   return "allow";

@@ -28,7 +28,10 @@ async function readCommandPolicy(projectRoot: string): Promise<CommandPolicy> {
 function approvalKey(command: string): string {
   if (/\bgit\s+push\b/i.test(command)) return "git-push";
   if (/\bgit\s+(reset|clean|rebase)\b/i.test(command)) return "git-history";
-  if (/\b(?:npm|pnpm|yarn|pip|pip3|cargo)\s+(?:install|add|remove|uninstall)\b/i.test(command)) return "dependency-change";
+  if (/\b(?:npm|pnpm|yarn|pip|pip3|cargo|poetry|uv)\s+(?:install|add|remove|uninstall)\b/i.test(command)) return "dependency-change";
+  if (/\bgo\s+get\b/i.test(command)) return "dependency-change";
+  if (/\bmvn\s+(?:dependency|install)\b/i.test(command)) return "dependency-change";
+  if (/\bdotnet\s+(?:add|remove|restore)\b/i.test(command)) return "dependency-change";
   if (/\bcurl\b[^\n|]*\|\s*(?:sh|bash)\b|\b(?:Invoke-WebRequest|iwr|irm)\b/i.test(command)) return "download-execute";
   return "command-change";
 }

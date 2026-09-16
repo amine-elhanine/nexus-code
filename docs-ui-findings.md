@@ -29,7 +29,7 @@ The app is a **per-session workspace**, not a dashboard. Three top-level areas s
 | Local context | Topbar: project menu, branch, session title, model picker, `Skills / MCP / Services / Providers / Settings`, updater pill, command-approval modal when the Ask gate fires. |
 | Multi-agent | Parallel sessions each with own run state; subagent activity streams inline as cards with real `usage_metadata`. |
 | Notebook grounding | Sources list with `queued/parsing/chunking/indexing/ready/failed` badges, per-source scope toggles, citations with excerpts + scores, `grounded/partial/ungrounded` verdict, passage modal (`explain/simplify/compare/quiz/save-note`). |
-| Attachments | Paperclip menu (image, PDF, Word, Excel, …), image preview, `nexus-attachment://` storage (no base64 in state JSON), voice dictation button (hidden when SpeechRecognition is unavailable). |
+| Attachments | Paperclip menu (image, PDF, Word, Excel, …), image preview, `nexus-attachment://` storage (no base64 in state JSON). |
 
 ## Modals
 

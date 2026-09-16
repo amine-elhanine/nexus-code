@@ -26,6 +26,7 @@ import {
   createSessionWorktree, getSessionWorktree, mergeWorktreeToMain, discardSessionWorktree,
   getSessionWorktreeDiff, isGitRepo
 } from "./worktree-service.js";
+import { commitSessionWork, ensureGitRepo, getHeadCommit } from "./repo-service.js";
 import { listArtifacts, getArtifact, updateArtifactStatus, type ArtifactStatus } from "./artifacts-service.js";
 import { readSessionTrajectory } from "./trajectory-service.js";
 import { discoverProjectRules } from "./rules-service.js";
@@ -111,11 +112,46 @@ function emitFor(sessionId: string, event: Omit<AgentEvent, "sessionId" | "times
 function requireRoot() { if (!activeProjectRoot) throw new Error("Select or create a project first."); return activeProjectRoot; }
 
 // Checkpoints left over from deleted/kept runs would keep the Undo card
-// clickable forever; this clears one when a run's changes are accepted.
+// clickable forever; this clears the whole stack when a run's changes are
+// accepted (Keep) or when rotating history.
+const MAX_UNDO_LEVELS = 20;
 async function clearCheckpoint(projectId: string, sessionId: string, root: string, checkpointId?: string) {
-  if (!checkpointId) return;
-  try { await deleteWorkspaceCheckpoint(root, checkpointId); } catch { /* best effort */ }
-  await updateSession(projectId, sessionId, { checkpointId: undefined });
+  const session = await getSession(projectId, sessionId).catch(() => null);
+  const stack: string[] = (session as unknown as { checkpointIds?: string[] } | null)?.checkpointIds || [];
+  const ids = new Set([...stack, ...(checkpointId ? [checkpointId] : [])]);
+  for (const id of ids) {
+    try { await deleteWorkspaceCheckpoint(root, id); } catch { /* best effort */ }
+  }
+  await updateSession(projectId, sessionId, { checkpointId: undefined, checkpointIds: [] });
+}
+
+async function pushCheckpoint(projectId: string, sessionId: string, root: string, checkpointId: string) {
+  const session = await getSession(projectId, sessionId).catch(() => null);
+  const prev: string[] = (session as unknown as { checkpointIds?: string[] } | null)?.checkpointIds
+    || (session?.checkpointId ? [session.checkpointId] : []);
+  const next = [...prev, checkpointId].slice(-MAX_UNDO_LEVELS);
+  const pruned = prev.filter((id) => !next.includes(id));
+  for (const id of pruned) {
+    try { await deleteWorkspaceCheckpoint(root, id); } catch { /* best effort */ }
+  }
+  await updateSession(projectId, sessionId, { checkpointId, checkpointIds: next });
+}
+
+async function popCheckpoint(projectId: string, sessionId: string, root: string, checkpointId: string) {
+  // Restore pops the id (or the top when the id is stale) so Undo is
+  // multi-level: each click steps one run further back.
+  const session = await getSession(projectId, sessionId).catch(() => null);
+  const stack: string[] = (session as unknown as { checkpointIds?: string[] } | null)?.checkpointIds
+    || (session?.checkpointId ? [session.checkpointId] : []);
+  const idx = stack.lastIndexOf(checkpointId);
+  const target = idx >= 0 ? checkpointId : stack[stack.length - 1];
+  if (!target) return;
+  const next = stack.filter((id, i) => (idx >= 0 ? i !== idx : i !== stack.length - 1));
+  try { await deleteWorkspaceCheckpoint(root, target); } catch { /* best effort */ }
+  await updateSession(projectId, sessionId, {
+    checkpointId: next.length ? next[next.length - 1] : undefined,
+    checkpointIds: next,
+  });
 }
 
 // Attachment URLs are host-style (nexus-attachment://<hash>.png), so the file
@@ -210,7 +246,7 @@ async function resolveImageForModel(imageUrl: string): Promise<string> {
 // agent import non-image files into the project.
 async function resolveAttachmentBytes(attachmentUrl: string): Promise<{ buffer: Buffer; fileName: string; mimeType: string }> {
   if (attachmentUrl.startsWith("data:")) {
-    const match = attachmentUrl.match(/^data:([^;,]+)?(?:;charset=[^;,]+)?;base64,([\s\S]+)$/);
+    const match = attachmentUrl.match(/^data:([^;,]+)?(?:;[^;,=]+=[^;,]+)*;base64,([\s\S]+)$/);
     if (!match) throw new Error("Unsupported attachment encoding.");
     const mimeType = (match[1] || "application/octet-stream").toLowerCase();
     const buffer = Buffer.from(match[2].replace(/\s/g, ""), "base64");
@@ -341,6 +377,24 @@ app.whenReady().then(async () => {
     enqueueIngest(notebookId, record.id);
     return listNotebookSources(notebookId);
   });
+  ipcMain.handle("notebook:importYouTube", async (_event, notebookId: string, url: string) => {
+    const { fetchYouTubeTranscript, youTubeSourceFilename, youTubeTranscriptDocument } = await import("./notebook-youtube.js");
+    const transcript = await fetchYouTubeTranscript(url);
+    const record = await importSourceBuffer(notebookId, youTubeSourceFilename(transcript.title), Buffer.from(youTubeTranscriptDocument(transcript), "utf8"));
+    enqueueIngest(notebookId, record.id);
+    return listNotebookSources(notebookId);
+  });
+  ipcMain.handle("notebook:importWebsite", async (_event, notebookId: string, url: string) => {
+    const { crawlWebsite, websiteCrawlDocument, websiteSourceFilename } = await import("./notebook-web.js");
+    const crawl = await crawlWebsite(url);
+    if (!crawl.pages.some((p) => !p.thin && p.text.trim())) {
+      throw new Error("No readable content found — the site may render in JavaScript or block automated fetching.");
+    }
+    const firstTitle = crawl.pages.find((p) => !p.thin && p.text.trim())?.title || crawl.host;
+    const record = await importSourceBuffer(notebookId, websiteSourceFilename(crawl.host, firstTitle), Buffer.from(websiteCrawlDocument(crawl), "utf8"));
+    enqueueIngest(notebookId, record.id);
+    return listNotebookSources(notebookId);
+  });
   ipcMain.handle("notebook:deleteSource", async (_event, notebookId: string, sourceId: string) => deleteNotebookSource(notebookId, sourceId));
   ipcMain.handle("notebook:reindexSource", async (_event, notebookId: string, sourceId: string) => {
     // Retry: wipe the file's derived data and re-enqueue from raw bytes.
@@ -432,6 +486,8 @@ app.whenReady().then(async () => {
     const root = result.filePaths[0];
     const project = await upsertProject({ name: path.basename(root), root });
     activeProjectId = project.id; activeProjectRoot = project.root;
+    // Every project must be undo-capable: init git when missing (best-effort).
+    try { await ensureGitRepo(root); } catch { /* non-git projects simply lose Undo */ }
     const sessions = await listSessions(project.id);
     const session = sessions[0] || await createSession(project.id);
     activeSessionId = session.id;
@@ -439,12 +495,15 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("project:create", async (_event, input: { name: string; root: string }) => {
     const project = await upsertProject(input); activeProjectId = project.id; activeProjectRoot = project.root;
+    try { await ensureGitRepo(input.root); } catch { /* best effort */ }
     const session = (await listSessions(project.id))[0] || await createSession(project.id);
     activeSessionId = session.id; return { project, session };
   });
   ipcMain.handle("project:activate", async (_event, projectId: string) => {
     const project = await getProject(projectId); if (!project) throw new Error("Project not found.");
-    activeProjectId = project.id; activeProjectRoot = project.root; const session = project.sessions[0] || await createSession(project.id); activeSessionId = session.id; return { project, session };
+    activeProjectId = project.id; activeProjectRoot = project.root; const session = project.sessions[0] || await createSession(project.id); activeSessionId = session.id;
+    try { await ensureGitRepo(project.root); } catch { /* best effort */ }
+    return { project, session };
   });
   ipcMain.handle("project:get-active", async () => activeProjectId ? { project: await getProject(activeProjectId), session: activeSessionId ? await getSession(activeProjectId, activeSessionId) : null } : null);
   ipcMain.handle("project:delete", async (_event, projectId: string) => {
@@ -569,7 +628,7 @@ app.whenReady().then(async () => {
     // dedupe to one file.
     let base64Data = payload.data;
     let mimeType = "application/octet-stream";
-    const match = payload.data.match(/^data:([^;,]+)?(?:;charset=[^;,]+)?;base64,([\s\S]+)$/);
+    const match = payload.data.match(/^data:([^;,]+)?(?:;[^;,=]+=[^;,]+)*;base64,([\s\S]+)$/);
     if (match) {
       mimeType = (match[1] || "application/octet-stream").toLowerCase();
       base64Data = match[2].replace(/\s/g, "");
@@ -591,6 +650,13 @@ app.whenReady().then(async () => {
     const filePath = path.join(attachmentsDir, normalizedName);
     await fs.writeFile(filePath, buffer);
     return { fileName: normalizedName, filePath, url: `nexus-attachment://${normalizedName}`, mimeType };
+  });
+  // Raw bytes for previewing an attachment in-app (same IPC pattern as
+  // home:readFile for generated artifacts — never depends on custom-scheme
+  // fetch from the renderer, which images don't need but documents do).
+  ipcMain.handle("attachments:read", async (_event, attachmentUrl: string) => {
+    const { buffer, fileName, mimeType } = await resolveAttachmentBytes(String(attachmentUrl || ""));
+    return { base64: buffer.toString("base64"), fileName, mimeType, size: buffer.length };
   });
   ipcMain.handle("workspace:write", (_event, file: string, content: string) => writeWorkspaceFile(requireRoot(), file, content));
   ipcMain.handle("workspace:diff", async () => {
@@ -619,7 +685,25 @@ app.whenReady().then(async () => {
   ipcMain.handle("checkpoint:restore", async (_event, checkpointId: string) => {
     const root = requireRoot();
     const wt = activeSessionId ? await getSessionWorktree(root, activeSessionId) : null;
-    return restoreWorkspaceCheckpoint(wt?.worktreePath || root, checkpointId);
+    const ok = await restoreWorkspaceCheckpoint(wt?.worktreePath || root, checkpointId);
+    // Multi-level Undo: popping here keeps checkpointId/checkpointIds in sync
+    // so each click steps one run further back without renderer bookkeeping.
+    try {
+      if (activeProjectId && activeSessionId) await popCheckpoint(activeProjectId, activeSessionId, wt?.worktreePath || root, checkpointId);
+    } catch { /* restore already succeeded */ }
+    return ok;
+  });
+  ipcMain.handle("checkpoint:clear", async () => {
+    const root = requireRoot();
+    if (!activeProjectId || !activeSessionId) return false;
+    const wt = activeSessionId ? await getSessionWorktree(root, activeSessionId) : null;
+    const session = await getSession(activeProjectId, activeSessionId);
+    await clearCheckpoint(activeProjectId, activeSessionId, wt?.worktreePath || root, session?.checkpointId);
+    return true;
+  });
+  ipcMain.handle("project:ensure-repo", async () => {
+    const root = requireRoot();
+    return ensureGitRepo(root);
   });
 
   // Worktree IPC handlers
@@ -874,8 +958,12 @@ app.whenReady().then(async () => {
       const backendRecord = { ...project, root: executionRoot };
       emitFor(sessionId, { type: "status", text: "Preparing workspace…" });
       const { backend } = await getAgentBackend(backendRecord, { readOnly: mode === "plan", runId: sessionId });
+      // Undo-ready baseline: HEAD before the run + file snapshot. Best-effort
+      // so non-git projects still run (their Undo simply no-ops).
+      let preRunHead: string | null = null;
+      try { preRunHead = await getHeadCommit(executionRoot); } catch { preRunHead = null; }
       const checkpointId = `cp_${Date.now().toString(36)}`;
-      await createWorkspaceCheckpoint(executionRoot, checkpointId);
+      await createWorkspaceCheckpoint(executionRoot, checkpointId, { headCommit: preRunHead });
       await appendSessionMessages(projectId, sessionId, [{ role: "user", text: payload.request, images: payload.images, attachments: payload.attachments, createdAt: new Date().toISOString() }]);
 
       // Renderer-only attachment URLs become inline data URLs for the model.
@@ -1010,14 +1098,35 @@ app.whenReady().then(async () => {
           }
         } catch { /* best effort — deliverable already exists */ }
       }
-      await clearCheckpoint(projectId, sessionId, root, session.checkpointId);
+      // Worktree-scoped auto-commit: isolated session branches get a durable
+      // per-task commit (undo resets it); the user's main branch is never
+      // auto-committed. Best-effort — a commit failure never fails the run.
+      if (!isHomeRun && mode !== "plan") {
+        try {
+          const wt = await getSessionWorktree(root, sessionId).catch(() => null);
+          if (wt && path.resolve(executionRoot) === path.resolve(wt.worktreePath)) {
+            const shortRequest = (payload.request || "agent task").replace(/\s+/g, " ").slice(0, 80);
+            const newHead = await commitSessionWork(executionRoot, `nexus(session-${sessionId}): ${shortRequest}`);
+            if (newHead && newHead !== preRunHead) {
+              transcript.items.push({
+                role: "event",
+                text: `Auto-committed session work (${newHead.slice(0, 7)}) — Undo restores files and rolls back Nexus-only commits.`,
+                kind: "tool",
+                createdAt: new Date().toISOString(),
+              });
+            }
+          }
+        } catch { /* best effort */ }
+      }
+      // Multi-level Undo: push (never clear) so each click steps one run back.
+      await pushCheckpoint(projectId, sessionId, executionRoot, checkpointId);
       // Memories are rolling windows, not append-only logs: entries are
       // individually capped upstream, and the totals are capped here so
       // hundreds of runs cannot bloat every future prompt.
       const nextSessionMemory = [session.memory, result.memoryEntry].filter(Boolean).join("\n\n");
       const nextProjectMemory = [project.memory, result.projectMemoryLogEntry].filter(Boolean).join("\n");
+      // pushCheckpoint already updated the stack; only memory remains here.
       await updateSession(projectId, sessionId, {
-        checkpointId,
         memory: nextSessionMemory.slice(-4000),
       });
       // Keep the memory log bounded; agent-service returns a capped entry.

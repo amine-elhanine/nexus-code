@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Server, Settings2, Trash2, Plus, RefreshCw, Loader2, Check } from "lucide-react";
 import { ConfirmModal } from "../../modals/ConfirmModal.js";
+import { Toggle } from "../common/Toggle.js";
 import type { McpServerConfig, McpTransport, McpTestResult } from "../../types.js";
 
 type McpFormState = {
@@ -154,9 +155,11 @@ export function McpManager() {
                 </div>
               </div>
               <div className="provider-card-actions">
-                <label className="toggle-label compact" title={server.enabled ? "Disable this server" : "Enable this server"}>
-                  <input type="checkbox" checked={server.enabled} onChange={() => void toggleEnabled(server)} />
-                </label>
+                <Toggle
+                  checked={server.enabled}
+                  onChange={() => void toggleEnabled(server)}
+                  title={server.enabled ? "Disable this server" : "Enable this server"}
+                />
                 <button onClick={() => refreshForm(formFromServer(server))} title="Edit server"><Settings2 size={13} /></button>
                 <button className="danger" onClick={() => setDeleteServer(server)} title="Remove server"><Trash2 size={13} /></button>
               </div>
@@ -230,10 +233,14 @@ export function McpManager() {
                 )}
                 {testResult && !testResult.ok && <small className="fetch-error">{testResult.error}</small>}
               </div>
-              <label className="toggle-label">
-                <input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />
+              <div className="toggle-label">
+                <Toggle
+                  checked={form.enabled}
+                  onChange={(next) => setForm({ ...form, enabled: next })}
+                  title={form.enabled ? "Disable this server" : "Enable this server"}
+                />
                 <span>Enabled — include this server in agent runs</span>
-              </label>
+              </div>
               <div className="modal-actions">
                 <button className="secondary" onClick={() => { setForm(null); setError(""); setNote(""); }}>Cancel</button>
                 <button className="primary" disabled={!form.name.trim()} onClick={() => void save()}><Check size={14} /> Save server</button>

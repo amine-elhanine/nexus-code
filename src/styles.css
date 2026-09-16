@@ -1203,28 +1203,6 @@
   box-shadow: 0 24px 90px rgba(0, 0, 0, 0.85);
 }
 
-/* Voice Dictation Button */
-.voice-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  background: transparent;
-  border: none;
-  color: #8a82a8;
-  cursor: pointer;
-}
-.voice-btn:hover {
-  background: #1f1b3d;
-  color: #d1caec;
-}
-.voice-btn.listening {
-  background: #3b1424;
-  color: #fb7185;
-}
-
 /* Slash Command Badges */
 .slash-command-title-row {
   display: flex;
@@ -1757,6 +1735,9 @@ backgrounded webview throttles loads/timers). Same session as visible tabs. */
 .switch .knob{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--muted);transition:left .15s ease,background .15s ease}
 .switch.on{background:var(--nexus-glow);border-color:var(--nexus-green)}
 .switch.on .knob{left:18px;background:var(--nexus-bright)}
+.switch:disabled{opacity:.45;cursor:not-allowed}
+.toggle-row{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--text)}
+.toggle-row>span:last-child{flex:1}
 .settings-note{display:flex;gap:8px;align-items:flex-start;margin-top:10px;color:var(--muted);font-size:10.5px;line-height:1.5}
 .settings-note svg{flex:none;margin-top:1px}
 /* Update pill in the top bar (only rendered when an update exists) */
@@ -1969,6 +1950,30 @@ button.update-pill.error{background:#2a1215;border-color:#7f2d35;color:#fda4af}
 .notebook-upload-row .new-session-btn {
   flex: 1;
 }
+.youtube-add-form {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.youtube-add-form input {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 11px;
+  padding: 6px 9px;
+  outline: none;
+}
+.youtube-add-form input:focus {
+  border-color: var(--nexus-green);
+}
+.youtube-add-form .primary-sm:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .ingestion-badge {
   display: inline-flex;
   align-items: center;
@@ -2095,3 +2100,10 @@ button.update-pill.error{background:#2a1215;border-color:#7f2d35;color:#fda4af}
    dropdown across the whole row and squeeze the model name input. */
 .model-row-item select.model-endpoint-select{flex:0 0 auto;width:78px;max-width:78px;background:var(--panel);border:1px solid #232f42;border-radius:5px;color:var(--muted);padding:7px 4px;font-size:10.5px;cursor:pointer}
 .model-row-item select.model-endpoint-select.overridden{color:var(--nexus-bright);border-color:#2a5a40}
+
+/* --- Session rename (Home + Code lists) --- */
+.row-edit{display:grid;place-items:center;width:20px;height:20px;opacity:0;color:var(--muted);font-style:normal;border-radius:4px}
+.session-row:hover .row-edit{opacity:1}
+.row-edit:hover{color:var(--nexus-bright);background:var(--accent-soft)}
+.session-row.editing{cursor:default}
+.session-rename-input{flex:1;min-width:0;background:var(--bg);border:1px solid var(--nexus-green);border-radius:4px;color:var(--text);font-size:11px;padding:2px 6px;outline:none}

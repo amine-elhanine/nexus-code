@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import {
   Brain, BookOpen, Check, ChevronDown, ChevronRight, Code2, Coins, Download, FileCode2, FileText,
   FolderOpen, GitBranch, Globe, Home, Info, KeyRound, Loader2, Menu,
-  MessageSquare, PanelRight, Plus, RefreshCw,
+  MessageSquare, PanelRight, Pencil, Plus, RefreshCw, Undo2,
   Server, Settings2, Sparkles, Terminal, Trash2, TriangleAlert
 } from "lucide-react";
 import { WindowControls } from "./components/common/WindowControls.js";
@@ -11,7 +11,6 @@ import { ProviderModal } from "./modals/ProviderModal.js";
 import { McpModal } from "./modals/McpModal.js";
 import { SkillsModal } from "./modals/SkillsModal.js";
 import { SettingsModal } from "./modals/SettingsModal.js";
-import { ProjectPickerModal } from "./modals/ProjectPickerModal.js";
 import { DaemonsModal } from "./components/daemons/DaemonsModal.js";
 import { MonacoDiffModal } from "./components/diff/MonacoDiffModal.js";
 import { ProjectRulesModal } from "./components/rules/ProjectRulesModal.js";
@@ -65,6 +64,85 @@ function FileRow({
   );
 }
 
+function SessionRow({
+  session,
+  active,
+  editing,
+  draftTitle,
+  onActivate,
+  onStartEdit,
+  onDraftChange,
+  onCommit,
+  onCancel,
+  onDelete,
+}: {
+  session: { id: string; title: string; messages: unknown[] };
+  active: boolean;
+  editing: boolean;
+  draftTitle: string;
+  onActivate: () => void;
+  onStartEdit: () => void;
+  onDraftChange: (value: string) => void;
+  onCommit: () => void;
+  onCancel: () => void;
+  onDelete: () => void;
+}) {
+  const userCount = session.messages.filter((m) => (m as { role?: string }).role === "user").length;
+  if (editing) {
+    return (
+      <div className={`session-row ${active ? "active" : ""} editing`}>
+        <MessageSquare size={13} />
+        <input
+          className="session-rename-input"
+          value={draftTitle}
+          autoFocus
+          maxLength={80}
+          onChange={(event) => onDraftChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") onCommit();
+            else if (event.key === "Escape") onCancel();
+          }}
+          onBlur={onCommit}
+          onClick={(event) => event.stopPropagation()}
+          onFocus={(event) => event.target.select()}
+        />
+      </div>
+    );
+  }
+  return (
+    <button
+      className={`session-row ${active ? "active" : ""}`}
+      onClick={onActivate}
+      onDoubleClick={onStartEdit}
+      title="Double-click to rename"
+    >
+      <MessageSquare size={13} />
+      <span>{session.title}</span>
+      <small title={`${userCount} message${userCount === 1 ? "" : "s"} from you`}>{userCount}</small>
+      <i
+        className="row-edit"
+        title="Rename session"
+        onClick={(event) => {
+          event.stopPropagation();
+          onStartEdit();
+        }}
+      >
+        <Pencil size={12} />
+      </i>
+      <i
+        className="row-delete"
+        title="Delete session"
+        onClick={(event) => {
+          event.stopPropagation();
+          onDelete();
+        }}
+      >
+        <Trash2 size={12} />
+      </i>
+    </button>
+  );
+}
+
 function App() {
   const {
     projects,
@@ -103,12 +181,6 @@ function App() {
     setShowMcp,
     showSkills,
     setShowSkills,
-    showCreateProject,
-    setShowCreateProject,
-    newProjectName,
-    setNewProjectName,
-    newProjectRoot,
-    setNewProjectRoot,
     skillsEnabled,
     setSkillsEnabled,
     confirmDialog,
@@ -145,10 +217,10 @@ function App() {
     activateProject,
     deleteProjectById,
     openProjectFromDialog,
-    createProject,
     createSession,
     activateSession,
     deleteActiveSession,
+    renameSession,
     openFile,
     saveFile,
     toggleFolder,
@@ -157,6 +229,10 @@ function App() {
     revertSingleFile,
     revertAllChanges,
     undoRun,
+    undoLatest,
+    undoLevels,
+    canUndo,
+    undoing,
     keepChanges,
     switchModel,
     handleProvidersChange,
@@ -175,6 +251,23 @@ function App() {
   const currentSessionUsage = getSessionUsage(activeSession);
   const [homePreviewPath, setHomePreviewPath] = useState<string | null>(null);
   const [attachmentPreview, setAttachmentPreview] = useState<ChatAttachment | null>(null);
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingSessionTitle, setEditingSessionTitle] = useState("");
+  function startSessionRename(session: { id: string; title: string }) {
+    setEditingSessionId(session.id);
+    setEditingSessionTitle(session.title);
+  }
+  function commitSessionRename() {
+    if (editingSessionId && editingSessionTitle.trim()) {
+      void renameSession(editingSessionId, editingSessionTitle);
+    }
+    setEditingSessionId(null);
+    setEditingSessionTitle("");
+  }
+  function cancelSessionRename() {
+    setEditingSessionId(null);
+    setEditingSessionTitle("");
+  }
   function openImagePreview(src: string) {
     const match = attachments.find((a) => a.url === src);
     if (match) setAttachmentPreview(match);
@@ -343,34 +436,26 @@ function App() {
           <aside className="session-pane">
             <div className="pane-top">
               <span>HOME</span>
-              <button className="pane-action" onClick={() => void createHomeSession()}><Plus size={15} /></button>
+              <button className="pane-action" onClick={() => void createHomeSession()} title="New chat"><Plus size={15} /></button>
             </div>
-            <button className="new-session-btn" onClick={() => void createHomeSession()}>
-              <MessageSquare size={13} /> New chat
-            </button>
             <div className="pane-top sessions-label">
               <span>CHATS</span>
             </div>
             <div className="session-list">
               {sessions.map((session) => (
-                <button
+                <SessionRow
                   key={session.id}
-                  className={`session-row ${session.id === activeSession?.id ? "active" : ""}`}
-                  onClick={() => void activateSession(session.id)}
-                >
-                  <MessageSquare size={13} />
-                  <span>{session.title}</span>
-                  <small>{session.messages.length}</small>
-                  <i
-                    className="row-delete"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void deleteActiveSession(session.id);
-                    }}
-                  >
-                    <Trash2 size={12} />
-                  </i>
-                </button>
+                  session={session}
+                  active={session.id === activeSession?.id}
+                  editing={session.id === editingSessionId}
+                  draftTitle={editingSessionTitle}
+                  onActivate={() => void activateSession(session.id)}
+                  onStartEdit={() => startSessionRename(session)}
+                  onDraftChange={setEditingSessionTitle}
+                  onCommit={commitSessionRename}
+                  onCancel={cancelSessionRename}
+                  onDelete={() => void deleteActiveSession(session.id)}
+                />
               ))}
               {!sessions.length && <div className="empty-pane">Start a new chat to begin.</div>}
             </div>
@@ -380,11 +465,8 @@ function App() {
           <aside className="session-pane">
             <div className="pane-top">
               <span>PROJECTS</span>
-              <button className="pane-action" onClick={() => setShowCreateProject(true)}><Plus size={15} /></button>
+              <button className="pane-action" onClick={() => void openProjectFromDialog()} title="New project"><Plus size={15} /></button>
             </div>
-            <button className="create-project-btn" onClick={() => setShowCreateProject(true)}>
-              <Plus size={14} /> New project
-            </button>
             <div className="project-list">
               {projects.filter((project) => project.id !== "home").map((project) => (
                 <button
@@ -412,31 +494,23 @@ function App() {
               <>
                 <div className="pane-top sessions-label">
                   <span>SESSIONS</span>
-                  <button className="pane-action" onClick={() => void createSession()}><Plus size={15} /></button>
+                  <button className="pane-action" onClick={() => void createSession()} title="New coding session (⌘ N)"><Plus size={15} /></button>
                 </div>
-                <button className="new-session-btn" onClick={() => void createSession()}>
-                  <MessageSquare size={13} /> New coding session <kbd>⌘ N</kbd>
-                </button>
                 <div className="session-list">
                   {sessions.map((session) => (
-                    <button
+                    <SessionRow
                       key={session.id}
-                      className={`session-row ${session.id === activeSession?.id ? "active" : ""}`}
-                      onClick={() => void activateSession(session.id)}
-                    >
-                      <MessageSquare size={13} />
-                      <span>{session.title}</span>
-                      <small>{session.messages.length}</small>
-                      <i
-                        className="row-delete"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void deleteActiveSession(session.id);
-                        }}
-                      >
-                        <Trash2 size={12} />
-                      </i>
-                    </button>
+                      session={session}
+                      active={session.id === activeSession?.id}
+                      editing={session.id === editingSessionId}
+                      draftTitle={editingSessionTitle}
+                      onActivate={() => void activateSession(session.id)}
+                      onStartEdit={() => startSessionRename(session)}
+                      onDraftChange={setEditingSessionTitle}
+                      onCommit={commitSessionRename}
+                      onCancel={cancelSessionRename}
+                      onDelete={() => void deleteActiveSession(session.id)}
+                    />
                   ))}
                 </div>
               </>
@@ -453,6 +527,20 @@ function App() {
               <strong>{view === "chat" ? "Agent session" : activeFile || "Editor"}</strong>
             </div>
             <div className="workspace-actions">
+              <button
+                onClick={() => void undoLatest()}
+                disabled={!canUndo || running || undoing}
+                title={
+                  undoLevels > 0
+                    ? `Undo latest run — ${undoLevels} undo level${undoLevels === 1 ? "" : "s"} (files + session-branch commits)`
+                    : diff.length
+                      ? "Undo latest changes — discard current uncommitted changes"
+                      : "Nothing to undo — working tree is clean"
+                }
+              >
+                <Undo2 size={13} /> {undoing ? "Undoing…" : undoLevels > 1 ? `Undo (${undoLevels})` : "Undo"}
+                {undoLevels <= 1 && diff.length > 0 ? ` (${diff.length})` : ""}
+              </button>
               <button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}>
                 <MessageSquare size={13} /> Agent
               </button>
@@ -487,6 +575,8 @@ function App() {
                   onCreateNotebook={(name) => void notebook.createNotebook(name)}
                   onDeleteNotebook={(id) => void notebook.removeNotebook(id)}
                   onPickFiles={() => void notebook.uploadFromPicker()}
+                  onImportYouTube={(url) => void notebook.importYouTube(url)}
+                  onImportWebsite={(url) => void notebook.importWebsite(url)}
                   onBrowserFiles={(files) => void notebook.uploadBrowserFiles(files)}
                   onRefresh={() => {
                     if (notebook.activeNotebook) void notebook.refreshNotebookDetail(notebook.activeNotebook.id);
@@ -612,6 +702,7 @@ function App() {
                   files={files}
                   checkpointId={activeSession?.checkpointId}
                   diffCount={diff.length}
+                  undoLevels={undoLevels}
                   onUndoRun={(id) => void undoRun(id)}
                   onKeepChanges={() => void keepChanges()}
                   switchModel={(providerId, model) => void switchModel(providerId, model)}
@@ -790,11 +881,14 @@ function App() {
               />
             </div>
             <div className={`context-tab-panel${codeSideTab === "terminal" ? "" : " hidden"}`}>
-              <XTermView projectRoot={activeProject?.root} />
+              <XTermView projectRoot={activeProject?.root} files={files} />
             </div>
             <div className={`context-tab-panel${codeSideTab === "diff" ? "" : " hidden"}`}>
               <DiffView
                 diff={diff}
+                checkpointId={activeSession?.checkpointId}
+                undoing={undoing}
+                onUndoRun={(id) => void undoRun(id)}
                 onRefresh={() => void refreshDiff()}
                 onRevertFile={(f) => void revertSingleFile(f)}
                 onRevertAll={() => void revertAllChanges()}
@@ -958,17 +1052,6 @@ function App() {
         ) : null}
       </div>
 
-      {showCreateProject && (
-        <ProjectPickerModal
-          name={newProjectName}
-          setName={setNewProjectName}
-          root={newProjectRoot}
-          setRoot={setNewProjectRoot}
-          onChooseFolder={() => void openProjectFromDialog()}
-          onCreate={() => void createProject()}
-          onClose={() => setShowCreateProject(false)}
-        />
-      )}
       {showProviders && (
         <ProviderModal
           providers={providers}

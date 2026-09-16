@@ -4,7 +4,6 @@ import {
   Paperclip, FileText, Search, Presentation, Table2, Mic,
 } from "lucide-react";
 import { ModelSelect } from "./AgentView.js";
-import { VoiceDictationButton } from "../components/chat/VoiceDictationButton.js";
 import { ChatItemView, ActivityGroupView } from "../components/chat/ChatMessageItem.js";
 import { formatCost } from "../types.js";
 import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
@@ -304,10 +303,6 @@ export function HomeView({
               >
                 <Paperclip size={14} />
               </button>
-              <VoiceDictationButton
-                onTranscript={(text) => setDraft(draft ? `${draft} ${text}` : text)}
-                disabled={running}
-              />
               <ModelSelect
                 selectedProviderId={selectedProviderId}
                 selectedModel={selectedModel}
