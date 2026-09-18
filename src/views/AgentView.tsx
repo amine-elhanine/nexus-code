@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   Coins, Sparkles, GitBranch, RotateCcw, Check, FileCode2,
-  Paperclip, FileText, Plus, Square, ArrowUp, ShieldCheck, ChevronDown, X
+  Paperclip, FileText, Plus, Square, ArrowUp, ShieldCheck, ChevronDown, X,
+  Bug, Code2, CheckCircle2,
 } from "lucide-react";
 import { WorktreeBar } from "../components/worktree/WorktreeBar.js";
 import { SlashCommandPopup, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
@@ -10,6 +11,13 @@ import { fileIcon } from "../utils/format.js";
 import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
 import { formatCost } from "../types.js";
 import type { ChatItem, FileEntry, ProviderConfig, ProviderDefinition, AgentUsage, ArtifactItem, ChatAttachment } from "../types.js";
+
+const AGENT_STARTERS = [
+  { icon: <Sparkles size={13} className="file-icon-text" />, label: "Add feature", prompt: "Add a feature to " },
+  { icon: <Bug size={13} className="file-icon-video" />, label: "Fix bug", prompt: "Debug and fix the issue where " },
+  { icon: <Code2 size={13} className="file-icon-doc" />, label: "Refactor", prompt: "Refactor and clean up " },
+  { icon: <CheckCircle2 size={13} className="file-icon-ppt" />, label: "Write tests", prompt: "Write comprehensive unit tests for " },
+];
 
 export function ModelSelect({
   selectedProviderId,
@@ -463,6 +471,21 @@ export function AgentView({
               Ask for a feature, a bug fix, a refactor, or a code review. Type @ to reference files,
               or / for slash shortcuts.
             </p>
+            <div className="starter-prompts">
+              {AGENT_STARTERS.map((starter) => (
+                <button
+                  key={starter.label}
+                  type="button"
+                  onClick={() => {
+                    setDraft(starter.prompt);
+                    textareaRef.current?.focus();
+                  }}
+                >
+                  {starter.icon}
+                  <span>{starter.label}</span>
+                </button>
+              ))}
+            </div>
           </div>
         )}
         {transcriptNodes}

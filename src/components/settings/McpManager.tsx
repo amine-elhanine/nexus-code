@@ -146,29 +146,47 @@ export function McpManager() {
       <div className="provider-layout">
         <div className="provider-list">
           {servers.map((server) => (
-            <div className="provider-card" key={server.id}>
-              <div className="provider-card-main">
-                <span className="provider-logo"><Server size={13} /></span>
-                <div>
-                  <strong>{server.name}</strong>
-                  <small>{server.transport === "stdio" ? server.command : server.url} · {server.enabled ? "enabled" : "disabled"}</small>
+            <div className={`mcp-card${server.enabled ? " enabled" : " disabled"}`} key={server.id}>
+              <div className="mcp-card-main">
+                <span className={`mcp-card-icon${server.enabled ? " enabled" : ""}`}>
+                  <Server size={14} />
+                </span>
+                <div className="mcp-card-info">
+                  <div className="mcp-card-head-row">
+                    <strong className="mcp-card-name">{server.name}</strong>
+                    <span className={`mcp-status-badge ${server.enabled ? "enabled" : "disabled"}`}>
+                      {server.enabled ? "ACTIVE" : "OFF"}
+                    </span>
+                  </div>
+                  <div className="mcp-card-detail">
+                    <span className="mcp-transport-chip">{server.transport}</span>
+                    <span className="mcp-command-line" title={server.transport === "stdio" ? `${server.command} ${(server.args || []).join(" ")}` : server.url}>
+                      {server.transport === "stdio" ? server.command : server.url}
+                    </span>
+                  </div>
                 </div>
               </div>
-              <div className="provider-card-actions">
-                <Toggle
-                  checked={server.enabled}
-                  onChange={() => void toggleEnabled(server)}
-                  title={server.enabled ? "Disable this server" : "Enable this server"}
-                />
-                <button onClick={() => refreshForm(formFromServer(server))} title="Edit server"><Settings2 size={13} /></button>
-                <button className="danger" onClick={() => setDeleteServer(server)} title="Remove server"><Trash2 size={13} /></button>
+              <div className="mcp-card-actions">
+                <div className="mcp-toggle-wrap" title={server.enabled ? "Disable this server" : "Enable this server"}>
+                  <Toggle
+                    checked={server.enabled}
+                    onChange={() => void toggleEnabled(server)}
+                  />
+                </div>
+                <button className="mcp-icon-btn" onClick={() => refreshForm(formFromServer(server))} title="Edit server settings">
+                  <Settings2 size={13} />
+                </button>
+                <button className="mcp-icon-btn danger" onClick={() => setDeleteServer(server)} title="Remove server">
+                  <Trash2 size={13} />
+                </button>
               </div>
             </div>
           ))}
           {!servers.length && !loading && (
             <div className="empty-provider">
-              <Server size={18} />
-              <p>No MCP servers configured.</p>
+              <Server size={22} />
+              <p>No MCP servers configured yet.</p>
+              <small style={{ color: "var(--muted)", fontSize: "10px" }}>Click "Add a server" to connect GitHub, filesystem, database, or API tools.</small>
             </div>
           )}
         </div>
@@ -233,13 +251,16 @@ export function McpManager() {
                 )}
                 {testResult && !testResult.ok && <small className="fetch-error">{testResult.error}</small>}
               </div>
-              <div className="toggle-label">
+              <div className="mcp-form-toggle-row">
                 <Toggle
                   checked={form.enabled}
                   onChange={(next) => setForm({ ...form, enabled: next })}
                   title={form.enabled ? "Disable this server" : "Enable this server"}
                 />
-                <span>Enabled — include this server in agent runs</span>
+                <div className="mcp-form-toggle-text">
+                  <strong>Enabled for agent runs</strong>
+                  <small>When enabled, all tools from this MCP server are automatically available in chat sessions.</small>
+                </div>
               </div>
               <div className="modal-actions">
                 <button className="secondary" onClick={() => { setForm(null); setError(""); setNote(""); }}>Cancel</button>

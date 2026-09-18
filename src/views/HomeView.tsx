@@ -12,10 +12,34 @@ import type { ChatItem, ProviderConfig, ProviderDefinition, AgentUsage, ChatAtta
 export type HomeFile = { path: string; name: string; size: number; modified: string };
 
 const SUGGESTIONS = [
-  { icon: <FileText size={13} />, label: "Write a Word report", prompt: "Create a Word document (.docx) about " },
-  { icon: <Presentation size={13} />, label: "Build a presentation", prompt: "Create a PowerPoint presentation (.pptx) about " },
-  { icon: <Table2 size={13} />, label: "Make a spreadsheet", prompt: "Create an Excel spreadsheet (.xlsx) for " },
-  { icon: <Search size={13} />, label: "Research the web", prompt: "Search the web for " },
+  {
+    icon: <FileText size={16} className="file-icon-doc" />,
+    label: "Write a Word report",
+    desc: "Generate a formatted DOCX document with sections & tables",
+    prompt: "Create a Word document (.docx) about ",
+    tone: "doc",
+  },
+  {
+    icon: <Presentation size={16} className="file-icon-ppt" />,
+    label: "Build a presentation",
+    desc: "Create a professional PowerPoint (.pptx) slide deck",
+    prompt: "Create a PowerPoint presentation (.pptx) about ",
+    tone: "ppt",
+  },
+  {
+    icon: <Table2 size={16} className="file-icon-text" />,
+    label: "Make a spreadsheet",
+    desc: "Build calculation models and data sheets (.xlsx)",
+    prompt: "Create an Excel spreadsheet (.xlsx) for ",
+    tone: "table",
+  },
+  {
+    icon: <Search size={16} className="file-icon-web" />,
+    label: "Research the web",
+    desc: "Find live sources, papers, summaries and facts",
+    prompt: "Search the web for ",
+    tone: "web",
+  },
 ];
 
 export function HomeView({
@@ -225,11 +249,14 @@ export function HomeView({
                 {SUGGESTIONS.map((s) => (
                   <button
                     key={s.label}
-                    className="home-suggestion"
+                    className={`home-suggestion suggestion-${s.tone}`}
                     onClick={() => setDraft(s.prompt)}
                   >
-                    {s.icon}
-                    <span>{s.label}</span>
+                    <div className="home-suggestion-icon">{s.icon}</div>
+                    <div className="home-suggestion-text">
+                      <strong className="home-suggestion-title">{s.label}</strong>
+                      <span className="home-suggestion-desc">{s.desc}</span>
+                    </div>
                   </button>
                 ))}
               </div>
