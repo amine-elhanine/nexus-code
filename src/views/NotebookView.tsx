@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 
 import {
   ArrowLeft, ArrowUp, BookOpen, Check, ChevronRight, Clapperboard, Download, FileText, Globe, HelpCircle,
   Layers, Loader2, Network, PanelLeft, PanelRight, Pencil, Plus, Presentation, RefreshCw, Sparkles, Square, Trash2, Upload, X,
+  FolderArchive, Workflow, Compass,
 } from "lucide-react";
 import { ModelSelect } from "./AgentView.js";
 import { ActivityGroupView, CopyTextButton } from "../components/chat/ChatMessageItem.js";
@@ -27,6 +28,16 @@ function ingestionBadge(status: NotebookSource["status"]) {
   if (status === "failed") return <span className="ingestion-badge error">failed</span>;
   const label = status === "uploaded" ? "queued" : status === "parsing" ? "parsing…" : status === "chunking" ? "chunking…" : "indexing…";
   return <span className="ingestion-badge indexing"><Loader2 size={11} className="spin" /> {label}</span>;
+}
+
+function getSourceIcon(filename: string) {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith(".pdf")) return <FileText size={14} className="file-icon-pdf" />;
+  if (lower.endsWith(".docx") || lower.endsWith(".doc")) return <FileText size={14} className="file-icon-doc" />;
+  if (lower.endsWith(".pptx") || lower.endsWith(".ppt")) return <Presentation size={14} className="file-icon-ppt" />;
+  if (lower.includes("youtube.com") || lower.includes("youtu.be")) return <Clapperboard size={14} className="file-icon-video" />;
+  if (lower.startsWith("http://") || lower.startsWith("https://") || lower.endsWith(".html") || lower.endsWith(".htm")) return <Globe size={14} className="file-icon-web" />;
+  return <FileText size={14} className="file-icon-text" />;
 }
 
 type StudioKind = NotebookDocument["kind"] | "quiz" | "fiches" | "mindmap" | "summary";
@@ -672,79 +683,97 @@ export function NotebookView({
         {/* Left sidebar: upload + ingestion pipeline + file scope */}
         {showSources ? (
           <aside className="notebook-side notebook-side-sources" style={{ width: sourcesWidth }}>
-            <div className="context-head notebook-side-head">
-              <div>
-                <span className="context-kicker">SOURCES</span>
-                <strong className="notebook-side-title">Session Sources</strong>
-                <small>{scopedCount} of {sources.length} in scope</small>
+            <div className="notebook-side-head">
+              <div className="notebook-side-head-left">
+                <span className="notebook-side-head-badge">
+                  <FolderArchive size={13} />
+                </span>
+                <div className="notebook-side-head-text">
+                  <div className="notebook-side-head-top">
+                    <span className="context-kicker">SOURCES</span>
+                    <span className="notebook-head-count-pill">{scopedCount}/{sources.length}</span>
+                  </div>
+                  <strong className="notebook-side-title">Session Library</strong>
+                </div>
               </div>
               <div className="notebook-side-head-actions">
                 {excludedIds.length > 0 && (
-                  <button className="pane-action" onClick={onResetScope} title="Ask all files again">
+                  <button className="pane-action" onClick={onResetScope} title="Include all sources in questions">
                     <RefreshCw size={11} />
                   </button>
                 )}
                 <button className="context-panel-icon" onClick={() => setShowSources(false)} title="Collapse sources sidebar">
-                  <PanelLeft size={15} />
+                  <PanelLeft size={14} />
                 </button>
               </div>
             </div>
             <div className="notebook-side-body">
-              <div className="notebook-upload-row">
-                <button className="new-session-btn" onClick={onPickFiles}><FileText size={13} /> Add files</button>
-                <button className="pane-action" onClick={() => fileInputRef.current?.click()} title="Upload from this window"><Upload size={13} /></button>
-                <button
-                  className={`pane-action${linkKind === "youtube" ? " active" : ""}`}
-                  onClick={() => toggleLinkForm("youtube")}
-                  title="Add a YouTube video — its transcript becomes a source"
-                >
-                  <Clapperboard size={13} />
+              <div className="notebook-sources-toolbar">
+                <button className="notebook-add-btn primary-add" onClick={onPickFiles} title="Upload documents, PDFs, PPTX, or notes">
+                  <Plus size={13} /> Add files
                 </button>
-                <button
-                  className={`pane-action${linkKind === "website" ? " active" : ""}`}
-                  onClick={() => toggleLinkForm("website")}
-                  title="Add a website — the page plus linked pages become a source"
-                >
-                  <Globe size={13} />
-                </button>
+                <div className="notebook-quick-add-group">
+                  <button
+                    className={`notebook-quick-btn${linkKind === "youtube" ? " active" : ""}`}
+                    onClick={() => toggleLinkForm("youtube")}
+                    title="Add a YouTube video transcript as a source"
+                  >
+                    <Clapperboard size={13} />
+                    <span>YouTube</span>
+                  </button>
+                  <button
+                    className={`notebook-quick-btn${linkKind === "website" ? " active" : ""}`}
+                    onClick={() => toggleLinkForm("website")}
+                    title="Add a website or online article as a source"
+                  >
+                    <Globe size={13} />
+                    <span>Web URL</span>
+                  </button>
+                </div>
               </div>
+
               {linkKind && (
                 <form
-                  className="youtube-add-form"
+                  className="notebook-link-form"
                   onSubmit={(e) => {
                     e.preventDefault();
                     submitLink();
                   }}
                 >
-                  <input
-                    type="text"
-                    value={linkUrl}
-                    onChange={(e) => setLinkUrl(e.target.value)}
-                    placeholder={linkKind === "youtube" ? "Paste a YouTube link…" : "Paste a website link…"}
-                    spellCheck={false}
-                    autoFocus
-                  />
+                  <div className="notebook-link-input-row">
+                    <span className="notebook-link-kind-icon">
+                      {linkKind === "youtube" ? <Clapperboard size={13} /> : <Globe size={13} />}
+                    </span>
+                    <input
+                      type="text"
+                      value={linkUrl}
+                      onChange={(e) => setLinkUrl(e.target.value)}
+                      placeholder={linkKind === "youtube" ? "Paste a YouTube link…" : "Paste a website link…"}
+                      spellCheck={false}
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      className="notebook-link-cancel"
+                      onClick={() => {
+                        setLinkKind(null);
+                        setLinkUrl("");
+                      }}
+                      title="Cancel"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
                   <button
                     type="submit"
-                    className="primary-sm"
+                    className="notebook-link-submit"
                     disabled={!linkUrl.trim()}
-                    title={linkKind === "youtube" ? "Fetch the transcript and add it as a source" : "Read the site and add it as a source"}
                   >
-                    Add
-                  </button>
-                  <button
-                    type="button"
-                    className="pane-action"
-                    onClick={() => {
-                      setLinkKind(null);
-                      setLinkUrl("");
-                    }}
-                    title="Cancel"
-                  >
-                    <X size={12} />
+                    {linkKind === "youtube" ? "Ingest Video Transcript" : "Fetch Web Page"}
                   </button>
                 </form>
               )}
+
               <input
                 type="file"
                 ref={fileInputRef}
@@ -756,48 +785,104 @@ export function NotebookView({
                   e.target.value = "";
                 }}
               />
+
               {!!pendingCount && (
-                <div className="settings-note" style={{ margin: "8px 0" }}>
+                <div className="settings-note" style={{ margin: "6px 0 10px" }}>
                   <Loader2 size={12} className="spin" />
-                  <span>Processing {pendingCount} file{pendingCount === 1 ? "" : "s"} — uploaded → parsing → chunking → indexing…</span>
+                  <span>Processing {pendingCount} file{pendingCount === 1 ? "" : "s"} — parsing → chunking → indexing…</span>
                 </div>
               )}
-              <div className="home-files-list">
+
+              <div className="notebook-sources-list">
                 {sources.map((source) => {
                   const inScope = !excludedIds.includes(source.id);
                   return (
-                    <div className="home-file-row" key={source.id} title={source.error || `${source.chunks} chunks · ${source.chars} chars`}>
-                      <input
-                        type="checkbox"
-                        checked={inScope}
-                        onChange={() => onToggleScope(source.id)}
-                        title={inScope ? "Included in questions — click to exclude" : "Excluded from questions — click to include"}
-                        className="scope-checkbox"
-                      />
-                      <FileText size={13} />
-                      <div className="home-file-info">
-                        <span className="home-file-name">{source.filename}</span>
-                        <small>
-                          {ingestionBadge(source.status)}
-                          {source.status === "ready" ? ` · ${source.chunks} chunks` : ""}
-                          {source.status === "failed" && source.error ? ` · ${source.error}` : ""}
-                        </small>
+                    <div className={`notebook-source-card${inScope ? " in-scope" : " excluded"}`} key={source.id} title={source.error || `${source.chunks} chunks · ${source.chars} chars`}>
+                      <div className="notebook-source-row">
+                        <input
+                          type="checkbox"
+                          checked={inScope}
+                          onChange={() => onToggleScope(source.id)}
+                          title={inScope ? "In scope for search (click to exclude)" : "Excluded from search (click to include)"}
+                          className="scope-checkbox"
+                        />
+                        <span className="notebook-source-icon">
+                          {getSourceIcon(source.filename)}
+                        </span>
+                        <div className="notebook-source-info">
+                          <span className="notebook-source-name" title={source.filename}>
+                            {source.filename}
+                          </span>
+                          <div className="notebook-source-submeta">
+                            {ingestionBadge(source.status)}
+                            {source.status === "ready" && (
+                              <span className="notebook-source-chunks">{source.chunks} chunks</span>
+                            )}
+                            {source.status === "failed" && source.error && (
+                              <span className="notebook-source-error" title={source.error}>{source.error}</span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="notebook-source-actions">
+                          <button
+                            className="pane-action"
+                            onClick={() => onReindexSource(source.id)}
+                            title={source.status === "failed" ? "Retry ingestion from raw bytes" : "Re-parse and re-index this source"}
+                          >
+                            <RefreshCw size={11} />
+                          </button>
+                          <button
+                            className="pane-action danger"
+                            onClick={() => onDeleteSource(source.id)}
+                            title="Delete source and all its derived data"
+                          >
+                            <Trash2 size={11} />
+                          </button>
+                        </div>
                       </div>
-                      <button className="pane-action" onClick={() => onReindexSource(source.id)} title={source.status === "failed" ? "Retry ingestion from raw bytes" : "Re-parse and re-index this source"}><RefreshCw size={12} /></button>
-                      <button className="pane-action" onClick={() => onDeleteSource(source.id)} title="Delete source and all its derived data"><Trash2 size={12} /></button>
                     </div>
                   );
                 })}
-                {!sources.length && <div className="empty-pane">Upload documents to ground answers. This session is isolated.</div>}
+                {!sources.length && (
+                  <div className="notebook-empty-box">
+                    <FolderArchive size={20} />
+                    <p>No sources in this session</p>
+                    <small>Upload documents, slides, videos, or web links to ground the agentic RAG.</small>
+                  </div>
+                )}
               </div>
-              <div className="context-section-title" style={{ marginTop: 12 }}><span>PIPELINE</span></div>
-              <div className="empty-pane" style={{ textAlign: "left" }}>
-                parse → clean → structure → chunk → embed ({stats?.embeddingModel || "pending"}) → hybrid retrieve.
-                Failures show a retry button; deleting a file wipes its derived data.
+
+              <div className="notebook-pipeline-card">
+                <div className="notebook-pipeline-head">
+                  <div className="notebook-pipeline-title">
+                    <Workflow size={12} />
+                    <span>RAG Pipeline</span>
+                  </div>
+                  <button
+                    className="notebook-pipeline-reindex-btn"
+                    onClick={onReindexAll}
+                    title="Re-embed every file from stored chunks (e.g. after changing embedding model)"
+                  >
+                    <RefreshCw size={10} />
+                    <span>Re-index all</span>
+                  </button>
+                </div>
+                <div className="notebook-pipeline-model-row">
+                  <span>Embedding</span>
+                  <span className="notebook-pipeline-model-tag" title={stats?.embeddingModel || "pending"}>
+                    {stats?.embeddingModel || "built-in"}
+                  </span>
+                </div>
+                <div className="notebook-pipeline-flow">
+                  <span>OCR</span>
+                  <span className="notebook-flow-arrow">›</span>
+                  <span>Chunk</span>
+                  <span className="notebook-flow-arrow">›</span>
+                  <span>Hybrid</span>
+                  <span className="notebook-flow-arrow">›</span>
+                  <span>Rerank</span>
+                </div>
               </div>
-              <button className="new-session-btn" onClick={onReindexAll} title="Re-embed every file from stored chunks (use after changing the embedding model)">
-                <RefreshCw size={12} /> Re-index all
-              </button>
             </div>
             <div className="context-resize notebook-resize-right" onPointerDown={startSourcesResize} title="Drag to resize sources sidebar" />
           </aside>
@@ -894,15 +979,18 @@ export function NotebookView({
                   </span>
                 )}
                 {message.role === "assistant" && !!message.citations?.length && (
-                  <div className="citation-list">
-                    {message.citations.map((cite) => (
-                      <button key={cite.chunkId} className="citation-row clickable" title={`${cite.snippet}\n\nClick to open the passage`} onClick={() => onOpenPassage(cite.chunkId)}>
-                        <span className="citation-tag">[S{cite.index}]</span>
-                        <span className="citation-name">{cite.sourceName} — {cite.heading}</span>
-                        <span className="citation-score">{cite.score.toFixed(2)}</span>
-                      </button>
-                    ))}
-                  </div>
+                  <details className="retrieval-trace citation-trace" style={{ marginTop: 8 }}>
+                    <summary>citations ({message.citations.length} passage{message.citations.length === 1 ? "" : "s"})</summary>
+                    <div className="citation-list" style={{ marginTop: 6 }}>
+                      {message.citations.map((cite) => (
+                        <button key={cite.chunkId} className="citation-row clickable" title={`${cite.snippet}\n\nClick to open the passage`} onClick={() => onOpenPassage(cite.chunkId)}>
+                          <span className="citation-tag">[S{cite.index}]</span>
+                          <span className="citation-name">{cite.sourceName} — {cite.heading}</span>
+                          <span className="citation-score">{cite.score.toFixed(2)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </details>
                 )}
                 {message.role === "assistant" && !!message.retrieval?.length && (
                   <details className="retrieval-trace">
@@ -971,18 +1059,30 @@ export function NotebookView({
         </div>
 
         {/* Right sidebar: Studio (output types on top, generated outputs below) */}
+        {/* Right sidebar: Studio (output types on top, generated outputs below) */}
         {showStudio ? (
           <aside className="notebook-side notebook-side-studio" style={{ width: studioWidth }}>
             <div className="context-resize" onPointerDown={startStudioResize} title="Drag to resize studio sidebar" />
-            <div className="context-head notebook-side-head">
-              <div>
-                <span className="context-kicker">STUDIO</span>
-                <strong className="notebook-side-title">Outputs & Tools</strong>
-                <small>{documents.length + notes.length + quizzes.length + flashcards.length + mindmaps.length + summaries.length} saved</small>
+            <div className="notebook-side-head">
+              <div className="notebook-side-head-left">
+                <span className="notebook-side-head-badge studio-badge">
+                  <Sparkles size={13} />
+                </span>
+                <div className="notebook-side-head-text">
+                  <div className="notebook-side-head-top">
+                    <span className="context-kicker">STUDIO</span>
+                    <span className="notebook-head-count-pill">
+                      {documents.length + notes.length + quizzes.length + flashcards.length + mindmaps.length + summaries.length}
+                    </span>
+                  </div>
+                  <strong className="notebook-side-title">Creation Studio</strong>
+                </div>
               </div>
-              <button className="context-panel-icon" onClick={() => setShowStudio(false)} title="Collapse studio sidebar">
-                <PanelRight size={15} />
-              </button>
+              <div className="notebook-side-head-actions">
+                <button className="context-panel-icon" onClick={() => setShowStudio(false)} title="Collapse studio sidebar">
+                  <PanelRight size={14} />
+                </button>
+              </div>
             </div>
             <div className="notebook-side-body">
               <StudioPanel
@@ -1009,101 +1109,125 @@ export function NotebookView({
               </div>
               <div className="artifact-list">
                 {summaries.map((summary) => (
-                  <div className="artifact-card clickable" key={summary.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewQuizId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(summary.id); }} title="Read this summary" style={{ cursor: "pointer" }}>
-                    <div className="artifact-card-head">
-                      <Sparkles size={12} /><span className="artifact-card-name">{summary.title}</span>
+                  <div className="notebook-artifact-card clickable" key={summary.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewQuizId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(summary.id); }} title="Read this summary">
+                    <div className="notebook-artifact-top">
+                      <span className="notebook-artifact-type-pill tone-summary"><Sparkles size={10} /> Summary</span>
                       <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteSummary(summary.id); }} title="Delete summary"><Trash2 size={11} /></button>
                     </div>
-                    <div className="artifact-card-excerpt">Summary · {summary.sections.length} sections · {summary.length} · {summary.citations.length} cited passages</div>
-                    {summary.topic && <small>“{summary.topic.slice(0, 120)}”</small>}
+                    <strong className="notebook-artifact-title">{summary.title}</strong>
+                    <div className="notebook-artifact-excerpt">{summary.sections.length} sections · {summary.length} · {summary.citations.length} cited passages</div>
+                    {summary.topic && <small style={{ color: 'var(--muted)', fontSize: '9.5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>“{summary.topic}”</small>}
                   </div>
                 ))}
                 {mindmaps.map((map) => (
-                  <div className="artifact-card clickable" key={map.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewQuizId(null); setViewFichesId(null); setViewSummaryId(null); setViewMapId(map.id); }} title="Open this mind map" style={{ cursor: "pointer" }}>
-                    <div className="artifact-card-head">
-                      <Network size={12} /><span className="artifact-card-name">{map.title}</span>
+                  <div className="notebook-artifact-card clickable" key={map.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewQuizId(null); setViewFichesId(null); setViewSummaryId(null); setViewMapId(map.id); }} title="Open this mind map">
+                    <div className="notebook-artifact-top">
+                      <span className="notebook-artifact-type-pill tone-mindmap"><Network size={10} /> Mind map</span>
                       <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteMindmap(map.id); }} title="Delete mind map"><Trash2 size={11} /></button>
                     </div>
-                    <div className="artifact-card-excerpt">Mind map · {map.nodeCount} nodes · {map.citations.length} cited passages</div>
-                    {map.topic && <small>“{map.topic.slice(0, 120)}”</small>}
+                    <strong className="notebook-artifact-title">{map.title}</strong>
+                    <div className="notebook-artifact-excerpt">{map.nodeCount} nodes · {map.citations.length} cited passages</div>
+                    {map.topic && <small style={{ color: 'var(--muted)', fontSize: '9.5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>“{map.topic}”</small>}
                   </div>
                 ))}
                 {flashcards.map((set) => (
-                  <div className="artifact-card clickable" key={set.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewQuizId(null); setViewMapId(null); setViewSummaryId(null); setViewFichesId(set.id); }} title="Study these flashcards" style={{ cursor: "pointer" }}>
-                    <div className="artifact-card-head">
-                      <Layers size={12} /><span className="artifact-card-name">{set.title}</span>
+                  <div className="notebook-artifact-card clickable" key={set.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewQuizId(null); setViewMapId(null); setViewSummaryId(null); setViewFichesId(set.id); }} title="Study these flashcards">
+                    <div className="notebook-artifact-top">
+                      <span className="notebook-artifact-type-pill tone-flashcards"><Layers size={10} /> Flashcards</span>
                       <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteFlashcards(set.id); }} title="Delete flashcards"><Trash2 size={11} /></button>
                     </div>
-                    <div className="artifact-card-excerpt">Flashcards · {set.cards.length} cards · {set.citations.length} cited passages</div>
-                    {set.topic && <small>“{set.topic.slice(0, 120)}”</small>}
+                    <strong className="notebook-artifact-title">{set.title}</strong>
+                    <div className="notebook-artifact-excerpt">{set.cards.length} cards · {set.citations.length} cited passages</div>
+                    {set.topic && <small style={{ color: 'var(--muted)', fontSize: '9.5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>“{set.topic}”</small>}
                   </div>
                 ))}
                 {quizzes.map((quiz) => (
-                  <div className="artifact-card clickable" key={quiz.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(null); setViewQuizId(quiz.id); }} title="Take this quiz" style={{ cursor: "pointer" }}>
-                    <div className="artifact-card-head">
-                      <HelpCircle size={12} /><span className="artifact-card-name">{quiz.title}</span>
+                  <div className="notebook-artifact-card clickable" key={quiz.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(null); setViewQuizId(quiz.id); }} title="Take this quiz">
+                    <div className="notebook-artifact-top">
+                      <span className="notebook-artifact-type-pill tone-quiz"><HelpCircle size={10} /> Quiz</span>
                       <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteQuiz(quiz.id); }} title="Delete quiz"><Trash2 size={11} /></button>
                     </div>
-                    <div className="artifact-card-excerpt">Quiz · {quiz.questions.length} questions · {quiz.quizType === "mcq" ? "MCQ" : quiz.quizType === "truefalse" ? "True/False" : "Mixed"} · {quiz.citations.length} cited passages</div>
-                    {quiz.topic && <small>“{quiz.topic.slice(0, 120)}”</small>}
+                    <strong className="notebook-artifact-title">{quiz.title}</strong>
+                    <div className="notebook-artifact-excerpt">{quiz.questions.length} questions · {quiz.quizType === "mcq" ? "MCQ" : quiz.quizType === "truefalse" ? "True/False" : "Mixed"} · {quiz.citations.length} cited passages</div>
+                    {quiz.topic && <small style={{ color: 'var(--muted)', fontSize: '9.5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>“{quiz.topic}”</small>}
                   </div>
                 ))}
                 {documents.map((doc) => (
-                  <div className="artifact-card clickable" key={doc.id} onClick={() => { setViewNoteId(null); setViewQuizId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(null); setViewDocId(doc.id); }} title="Open in window" style={{ cursor: "pointer" }}>
-                    <div className="artifact-card-head">
-                      <FileText size={12} /><span className="artifact-card-name">{doc.title}</span>
-                      <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDownloadDocument(doc.id); }} title={`Download ${doc.filename}`}><Download size={11} /></button>
-                      <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteDocument(doc.id); }} title="Delete document"><Trash2 size={11} /></button>
+                  <div className="notebook-artifact-card clickable" key={doc.id} onClick={() => { setViewNoteId(null); setViewQuizId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(null); setViewDocId(doc.id); }} title="Open in window">
+                    <div className="notebook-artifact-top">
+                      <span className="notebook-artifact-type-pill tone-doc"><FileText size={10} /> {doc.kind === "slides" ? "Slides" : "Report"} ({doc.format.toUpperCase()})</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                        <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDownloadDocument(doc.id); }} title={`Download ${doc.filename}`}><Download size={11} /></button>
+                        <button className="pane-action danger" onClick={(e) => { e.stopPropagation(); onDeleteDocument(doc.id); }} title="Delete document"><Trash2 size={11} /></button>
+                      </div>
                     </div>
-                    <div className="artifact-card-excerpt">{doc.kind === "slides" ? `${doc.slideCount} slides` : `${doc.sectionCount} sections`} · {doc.format.toUpperCase()} · {Math.round(doc.size / 1024)} KB · {doc.citations.length} cited passages{doc.engine === "skill-agent" ? " · skill-designed" : ""}</div>
-                    {doc.prompt && <small>“{doc.prompt.slice(0, 120)}”</small>}
+                    <strong className="notebook-artifact-title">{doc.title}</strong>
+                    <div className="notebook-artifact-excerpt">{doc.kind === "slides" ? `${doc.slideCount} slides` : `${doc.sectionCount} sections`} · {Math.round(doc.size / 1024)} KB · {doc.citations.length} cited passages{doc.engine === "skill-agent" ? " · skill" : ""}</div>
+                    {doc.prompt && <small style={{ color: 'var(--muted)', fontSize: '9.5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>“{doc.prompt}”</small>}
                   </div>
                 ))}
                 {notes.map((note) => (
-                  <div className="artifact-card clickable" key={note.id} onClick={() => { setViewDocId(null); setViewQuizId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(null); setViewNoteId(note.id); }} title="Open in window" style={{ cursor: "pointer" }}>
-                    <div className="artifact-card-head">
-                      <FileText size={12} /><span className="artifact-card-name">{note.title}</span>
-                      <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteNote(note.id); }} title="Delete note"><Trash2 size={11} /></button>
+                  <div className="notebook-artifact-card clickable" key={note.id} onClick={() => { setViewDocId(null); setViewQuizId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(null); setViewNoteId(note.id); }} title="Open in window">
+                    <div className="notebook-artifact-top">
+                      <span className="notebook-artifact-type-pill tone-note"><FileText size={10} /> Note</span>
+                      <button className="pane-action danger" onClick={(e) => { e.stopPropagation(); onDeleteNote(note.id); }} title="Delete note"><Trash2 size={11} /></button>
                     </div>
-                    <div className="artifact-card-excerpt">{note.content.slice(0, 240)}</div>
-                    {note.citations.length > 0 && <small>{note.citations.length} cited passage{note.citations.length === 1 ? "" : "s"}</small>}
+                    <strong className="notebook-artifact-title">{note.title}</strong>
+                    <div className="notebook-artifact-excerpt">{note.content.slice(0, 160)}</div>
+                    {note.citations.length > 0 && <small style={{ color: 'var(--muted)', fontSize: '9.5px' }}>{note.citations.length} cited passage{note.citations.length === 1 ? "" : "s"}</small>}
                   </div>
                 ))}
-                {!documents.length && !notes.length && !quizzes.length && !flashcards.length && !mindmaps.length && !summaries.length && <div className="empty-pane">Reports (DOCX/PDF), slides (PPTX), quizzes, flashcards, mind maps, and summaries you generate appear here, with citations. Saved notes too.</div>}
+                {!documents.length && !notes.length && !quizzes.length && !flashcards.length && !mindmaps.length && !summaries.length && (
+                  <div className="notebook-empty-box" style={{ padding: '16px 12px' }}>
+                    <Sparkles size={20} />
+                    <p>No outputs yet</p>
+                    <small>Generate summaries, mind maps, quizzes, flashcards, or reports from the studio tiles above.</small>
+                  </div>
+                )}
               </div>
               {latestAnswer && (
                 <button
                   className="new-session-btn"
                   onClick={() => onSaveNote({ title: latestAnswer.text.slice(0, 60), content: latestAnswer.text, citations: latestAnswer.citations || [] })}
                   title="Save the latest grounded answer as a cited note"
+                  style={{ marginTop: 8 }}
                 >
                   <Plus size={12} /> Save latest answer as note
                 </button>
               )}
 
-              <details className="retrieval-trace" style={{ marginTop: 12 }}>
-                <summary>Notebook goal</summary>
+              <div className="notebook-goal-card">
+                <div className="notebook-goal-head">
+                  <div className="notebook-goal-title">
+                    <Compass size={12} />
+                    <span>Notebook Goal & Persona</span>
+                  </div>
+                </div>
                 <textarea
                   className="text-field notebook-instructions"
                   value={instructionDraft}
                   onChange={(event) => setInstructionDraft(event.target.value)}
                   placeholder="Tell the notebook how to help: e.g. teach me like a professor, compare evidence, use concise bullet points…"
-                  rows={4}
-                  style={{ marginTop: 8 }}
+                  rows={3}
+                  style={{ margin: 0 }}
                 />
-                <button className="new-session-btn" onClick={() => onSaveInstructions(instructionDraft)} disabled={instructionDraft === settings.instructions} style={{ marginTop: 6 }}>
+                <button
+                  className="notebook-goal-save-btn"
+                  onClick={() => onSaveInstructions(instructionDraft)}
+                  disabled={instructionDraft === settings.instructions}
+                >
                   <Check size={12} /> Save goal
                 </button>
-              </details>
+              </div>
 
               {stats?.digest && !!stats.digest.topics.length && (
                 <>
-                  <div className="context-section-title"><span>SESSION DIGEST</span></div>
+                  <div className="context-section-title" style={{ marginTop: 12 }}><span>SESSION DIGEST</span></div>
                   <div className="digest-topics">{stats.digest.topics.join(" · ")}</div>
                 </>
               )}
               {!!evalSummary && (
-                <div className="settings-note" style={{ marginBottom: 8 }}>
+                <div className="settings-note" style={{ margin: "8px 0" }}>
                   <span>⌀ groundedness {evalSummary.avg}/10 across {evalSummary.count} answer{evalSummary.count === 1 ? "" : "s"}</span>
                 </div>
               )}

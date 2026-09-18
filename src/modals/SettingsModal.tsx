@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Eye, EyeOff, KeyRound, FolderOpen, ChevronRight, Globe, Puzzle, Server, Terminal, Download, RefreshCw, Loader2, Check, BookOpen, Plus, Settings2, Trash2, X, Palette } from "lucide-react";
+import { Eye, EyeOff, KeyRound, FolderOpen, ChevronRight, Globe, Puzzle, Server, Terminal, Download, RefreshCw, Loader2, Check, BookOpen, Plus, Settings2, Trash2, X, Palette, FileText } from "lucide-react";
 import { Modal } from "../components/common/Modal.js";
 import { Toggle } from "../components/common/Toggle.js";
 import { ProviderManager } from "../components/settings/ProviderManager.js";
@@ -61,6 +61,7 @@ export function SettingsModal({
   const [parserVersion, setParserVersion] = useState("latest");
   const [parserTimeout, setParserTimeout] = useState("600");
   const [parserNote, setParserNote] = useState("");
+  const [notebookSubTab, setNotebookSubTab] = useState<"pipeline" | "parser" | "vision" | "custom">("pipeline");
 
   useEffect(() => {
     const typed = api as unknown as { getBrowserHeadless?: () => Promise<boolean> };
@@ -320,37 +321,158 @@ export function SettingsModal({
 
   const activeEmbProvider = embProviders.find((p) => p.id === embeddingProviderId);
 
-  const items: Array<{ id: SettingsSection; label: string; icon: React.ReactNode; hidden?: boolean }> = [
-    { id: "appearance", label: "Appearance", icon: <Palette size={13} /> },
-    { id: "browser", label: "Browser", icon: <Globe size={13} /> },
-    { id: "providers", label: "Providers", icon: <KeyRound size={13} /> },
-    { id: "notebook", label: "Notebook", icon: <BookOpen size={13} /> },
-    { id: "mcp", label: "MCP servers", icon: <Server size={13} /> },
-    { id: "skills", label: "Skills", icon: <Puzzle size={13} /> },
-    { id: "services", label: "Services", icon: <Terminal size={13} /> },
-    { id: "updates", label: "Updates", icon: <Download size={13} /> },
-    { id: "workspace", label: "Workspace", icon: <FolderOpen size={13} />, hidden: area !== "home" },
+  type NavItem = {
+    id: SettingsSection;
+    label: string;
+    icon: React.ReactNode;
+    badge?: string | number | null;
+    badgeType?: "active" | "alert" | "neutral";
+    hidden?: boolean;
+  };
+
+  const navGroups: Array<{ title: string; items: NavItem[] }> = [
+    {
+      title: "Preferences",
+      items: [
+        { id: "appearance", label: "Appearance", icon: <Palette size={13} /> },
+        {
+          id: "browser",
+          label: "Agent Browser",
+          icon: <Globe size={13} />,
+          badge: headless ? "Headless" : "Live",
+          badgeType: headless ? "neutral" : "active",
+        },
+      ],
+    },
+    {
+      title: "AI & Agents",
+      items: [
+        {
+          id: "providers",
+          label: "AI Providers",
+          icon: <KeyRound size={13} />,
+          badge: providers.length > 0 ? providers.length : null,
+          badgeType: "neutral",
+        },
+        { id: "notebook", label: "Notebook RAG", icon: <BookOpen size={13} /> },
+        { id: "mcp", label: "MCP Servers", icon: <Server size={13} /> },
+        {
+          id: "skills",
+          label: "Skills",
+          icon: <Puzzle size={13} />,
+          badge: skillsEnabled ? "ON" : "OFF",
+          badgeType: skillsEnabled ? "active" : "neutral",
+        },
+      ],
+    },
+    {
+      title: "System",
+      items: [
+        { id: "services", label: "Services", icon: <Terminal size={13} /> },
+        {
+          id: "updates",
+          label: "Updates",
+          icon: <Download size={13} />,
+          badge: updater.status === "available" || updater.status === "downloaded" ? "Update" : null,
+          badgeType: updater.status === "available" || updater.status === "downloaded" ? "alert" : "neutral",
+        },
+        { id: "workspace", label: "Nexus Folder", icon: <FolderOpen size={13} />, hidden: area !== "home" },
+      ],
+    },
   ];
 
+  const SECTION_METAS: Record<SettingsSection, { kicker: string; title: string; subtitle: string }> = {
+    appearance: {
+      kicker: "Preferences",
+      title: "Appearance & Theme",
+      subtitle: "Customize the interface color scheme and visual palette across the entire application.",
+    },
+    browser: {
+      kicker: "Preferences",
+      title: "Agent Browser Visibility",
+      subtitle: "Control whether browser automation tools operate in headless background mode or mirror live in the interactive browser tab.",
+    },
+    providers: {
+      kicker: "AI & Agents",
+      title: "AI Providers & Endpoints",
+      subtitle: "Configure API credentials, endpoints, and model catalogs for OpenAI, Anthropic, Gemini, Ollama, and custom servers.",
+    },
+    notebook: {
+      kicker: "AI & Agents",
+      title: "Notebook Knowledge & RAG",
+      subtitle: "Configure dense vector embeddings, document OCR parsing, visual extraction, and evidence reranking for grounded answers.",
+    },
+    mcp: {
+      kicker: "AI & Agents",
+      title: "Model Context Protocol (MCP)",
+      subtitle: "Connect external tools, databases, and services to the agent via standard MCP transports.",
+    },
+    skills: {
+      kicker: "AI & Agents",
+      title: "Agent Skills Middleware",
+      subtitle: "Enable and inspect specialized SKILL.md instruction sets available to the agent across workspace modes.",
+    },
+    services: {
+      kicker: "System",
+      title: "Background Services & Daemons",
+      subtitle: "Monitor and manage long-running daemon processes, dev servers, and live terminal logs.",
+    },
+    updates: {
+      kicker: "System",
+      title: "Application Updates",
+      subtitle: "Manage software updates, view current version information, and trigger upgrades.",
+    },
+    workspace: {
+      kicker: "System",
+      title: "Project Workspace",
+      subtitle: "Quickly access the root document and artifact storage folder in your operating system's file manager.",
+    },
+  };
+
   return (
-    <Modal title="Settings" subtitle="Application preferences. Changes apply immediately." onClose={onClose}>
+    <Modal
+      title="Settings"
+      subtitle="Application preferences and configurations."
+      onClose={onClose}
+      className="settings-modal-card"
+    >
       <div className="settings-layout">
         <aside className="settings-side">
-          {items
-            .filter((item) => !item.hidden)
-            .map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={section === item.id ? "active" : ""}
-                onClick={() => setSection(item.id)}
-              >
-                {item.icon}
-                <span>{item.label}</span>
-              </button>
-            ))}
+          {navGroups.map((group) => {
+            const visibleItems = group.items.filter((item) => !item.hidden);
+            if (!visibleItems.length) return null;
+            return (
+              <div key={group.title} className="settings-side-group">
+                <span className="settings-side-title">{group.title}</span>
+                {visibleItems.map((item) => {
+                  const isActive = section === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`settings-side-btn${isActive ? " active" : ""}`}
+                      onClick={() => setSection(item.id)}
+                    >
+                      <span className="settings-side-btn-icon">{item.icon}</span>
+                      <span className="settings-side-btn-label">{item.label}</span>
+                      {item.badge != null && (
+                        <span className={`settings-side-badge ${item.badgeType === "active" ? "active-badge" : item.badgeType === "alert" ? "alert-badge" : ""}`}>
+                          {item.badge}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
         </aside>
         <section className="settings-body">
+          <div className="settings-hero">
+            <span className="settings-hero-kicker">{SECTION_METAS[section]?.kicker || "Settings"}</span>
+            <h3 className="settings-hero-title">{SECTION_METAS[section]?.title || section}</h3>
+            <p className="settings-hero-subtitle">{SECTION_METAS[section]?.subtitle || ""}</p>
+          </div>
           {section === "appearance" && (
             <div className="setting-card">
               <div className="setting-row">
@@ -448,293 +570,338 @@ export function SettingsModal({
 
           {section === "notebook" && (
             <>
-            <div className="setting-card">
-              <div className="setting-row">
-                <span className="setting-icon"><BookOpen size={14} /></span>
-                <div className="setting-text">
-                  <strong>Active notebook embeddings</strong>
-                  <small>Vector space for Notebook RAG. Changing it requires re-indexing sources (Notebook → source → re-index).</small>
-                </div>
-              </div>
-              <label className="field-label" style={{ marginTop: 10 }}>Embedding provider</label>
-              <select value={embeddingProviderId} onChange={(e) => setEmbeddingProviderId(e.target.value)} className="select-field">
-                <option value="">Local built-in (offline, no key)</option>
-                {embProviders.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
-              <label className="field-label" style={{ marginTop: 10 }}>Embedding model</label>
-              <input
-                value={embeddingModel}
-                onChange={(e) => setEmbeddingModel(e.target.value)}
-                placeholder="text-embedding-3-small"
-                className="text-field"
-                list="emb-active-models"
-              />
-              {!!activeEmbProvider?.models.length && (
-                <datalist id="emb-active-models">
-                  {activeEmbProvider.models.map((m: string) => (
-                    <option key={m} value={m} />
-                  ))}
-                </datalist>
-              )}
-              <div className="modal-actions" style={{ marginTop: 12 }}>
-                <button
-                  className="secondary"
-                  disabled={testingEmb || !embeddingProviderId || !embeddingModel.trim()}
-                  onClick={() => {
-                    const p = embProviders.find((x) => x.id === embeddingProviderId);
-                    if (p) void testEndpoint(p.id, p.kind, p.baseUrl || "", p.apiKey, embeddingModel);
-                  }}
-                  title="Embed one short text with the selected provider + model"
-                >
-                  {testingEmb ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} Test
-                </button>
-                <button className="primary full" onClick={() => void saveEmbeddingConfig()}>
-                  <Check size={14} /> Save embedding config
-                </button>
-              </div>
-              {!!embeddingNote && <div className="settings-note" style={{ marginTop: 8 }}><Check size={12} /><span>{embeddingNote}</span></div>}
-            </div>
-
-            <div className="setting-card" style={{ marginTop: 12 }}>
-              <div className="setting-row">
-                <span className="setting-icon"><BookOpen size={14} /></span>
-                <div className="setting-text">
-                  <strong>Document parser</strong>
-                  <small>LlamaParse handles OCR, layouts, tables, figures, slides, and scanned pages before the notebook indexes the result. The local parser remains available as an offline fallback.</small>
-                </div>
-              </div>
-              <div className="toggle-row" style={{ marginTop: 10 }}>
-                <Toggle checked={parserEnabled} onChange={setParserEnabled} title={parserEnabled ? "Disable configured parser" : "Use configured parser for new and re-indexed files"} />
-                <span>Use configured parser for new and re-indexed files</span>
-              </div>
-              <label className="field-label" style={{ marginTop: 10 }}>Parser</label>
-              <select className="select-field" value={parserProvider} onChange={(e) => setParserProvider(e.target.value as "local" | "llamaparse")}>
-                <option value="llamaparse">LlamaParse (Llama Cloud)</option>
-                <option value="local">Local/offline parser</option>
-              </select>
-              {parserProvider === "llamaparse" && <>
-                <label className="field-label" style={{ marginTop: 10 }}>Llama Cloud API key</label>
-                <input className="text-field" type="password" value={parserApiKey} onChange={(e) => setParserApiKey(e.target.value)} placeholder="Paste your Llama Cloud API key" />
-                <label className="field-label" style={{ marginTop: 10 }}>Base URL</label>
-                <input className="text-field" value={parserBaseUrl} onChange={(e) => setParserBaseUrl(e.target.value)} placeholder="https://api.cloud.llamaindex.ai" />
-                <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <label>Tier<select className="select-field" value={parserTier} onChange={(e) => setParserTier(e.target.value)}><option value="cost_effective">Cost effective</option><option value="agentic">Agentic</option><option value="agentic_plus">Agentic plus</option><option value="fast">Fast</option></select></label>
-                  <label>Version<input className="text-field" value={parserVersion} onChange={(e) => setParserVersion(e.target.value)} placeholder="latest" /></label>
-                </div>
-                <label className="field-label" style={{ marginTop: 10 }}>Timeout (seconds)</label>
-                <input className="text-field" type="number" min={30} max={3600} value={parserTimeout} onChange={(e) => setParserTimeout(e.target.value)} />
-              </>}
-              <div className="modal-actions" style={{ marginTop: 12 }}><button className="primary full" onClick={() => void saveParserConfig()}><Check size={14} /> Save parser config</button></div>
-              {!!parserNote && <div className="settings-note" style={{ marginTop: 8 }}><Check size={12} /><span>{parserNote}</span></div>}
-            </div>
-
-            <div className="setting-card" style={{ marginTop: 12 }}>
-              <div className="setting-row">
-                <span className="setting-icon"><Eye size={14} /></span>
-                <div className="setting-text">
-                  <strong>Vision model</strong>
-                  <small>Used for standalone images, embedded Office images, PDF figures, and scanned PDF pages. Leave the model blank to use the provider default.</small>
-                </div>
-              </div>
-              <div className="toggle-row" style={{ marginTop: 10 }}>
-                <Toggle checked={visionEnabled} onChange={setVisionEnabled} title={visionEnabled ? "Disable visual analysis" : "Enable visual analysis during ingestion"} />
-                <span>Enable visual analysis during ingestion</span>
-              </div>
-              <label className="field-label" style={{ marginTop: 10 }}>Vision provider</label>
-              <select className="select-field" value={visionProviderId} onChange={(e) => { setVisionProviderId(e.target.value); setVisionModel(""); }} disabled={!visionEnabled}>
-                <option value="">Use first configured provider</option>
-                {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}
-              </select>
-              <label className="field-label" style={{ marginTop: 10 }}>Vision model</label>
-              <input className="text-field" value={visionModel} onChange={(e) => setVisionModel(e.target.value)} placeholder="Use provider default vision model" disabled={!visionEnabled} list="vision-models" />
-              <datalist id="vision-models">
-                {(providers.find((provider) => provider.id === visionProviderId)?.models || []).map((model) => <option key={model} value={model} />)}
-              </datalist>
-              <div className="modal-actions" style={{ marginTop: 12 }}>
-                <button className="primary full" onClick={() => void saveVisionConfig()}><Check size={14} /> Save vision config</button>
-              </div>
-              {!!visionNote && <div className="settings-note" style={{ marginTop: 8 }}><Check size={12} /><span>{visionNote}</span></div>}
-            </div>
-
-            <div className="setting-card" style={{ marginTop: 12 }}>
-              <div className="setting-row">
-                <span className="setting-icon"><Settings2 size={14} /></span>
-                <div className="setting-text">
-                  <strong>Evidence reranking</strong>
-                  <small>Optionally ask a configured chat model to judge which retrieved passages best answer each question. This adds latency and model cost.</small>
-                </div>
-              </div>
-              <div className="toggle-row" style={{ marginTop: 10 }}>
-                <Toggle checked={rerankEnabled} onChange={setRerankEnabled} title={rerankEnabled ? "Disable model-based reranking" : "Enable model-based reranking"} />
-                <span>Enable model-based reranking</span>
-              </div>
-              <label className="field-label" style={{ marginTop: 10 }}>Reranker provider</label>
-              <select className="select-field" value={rerankProviderId} onChange={(e) => { setRerankProviderId(e.target.value); setRerankModel(""); }} disabled={!rerankEnabled}>
-                <option value="">Use first configured provider</option>
-                {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}
-              </select>
-              <label className="field-label" style={{ marginTop: 10 }}>Reranker model</label>
-              <input
-                className="text-field"
-                value={rerankModel}
-                onChange={(e) => setRerankModel(e.target.value)}
-                list="reranker-models"
-                placeholder="Use provider default model"
-                disabled={!rerankEnabled}
-              />
-              <datalist id="reranker-models">
-                {(providers.find((provider) => provider.id === rerankProviderId)?.models || []).map((model) => <option key={model} value={model} />)}
-              </datalist>
-              <div className="modal-actions" style={{ marginTop: 12 }}>
-                <button className="primary full" onClick={() => void saveRerankConfig()}><Check size={14} /> Save reranking config</button>
-              </div>
-              {!!rerankNote && <div className="settings-note" style={{ marginTop: 8 }}><Check size={12} /><span>{rerankNote}</span></div>}
-            </div>
-
-            <div className="setting-card" style={{ marginTop: 12 }}>
-              <div className="pane-top" style={{ padding: "0 0 8px 0" }}>
-                <span>CUSTOM EMBEDDING PROVIDERS</span>
-                <div style={{ display: "flex", gap: 4 }}>
-                  <button className="secondary" style={{ padding: "4px 7px", fontSize: 9 }} onClick={useOpenRouterEmbeddingPreset} title="Use the OpenRouter embedding preset">OpenRouter preset</button>
-                  <button className="secondary" style={{ padding: "4px 7px", fontSize: 9 }} onClick={useMistralEmbeddingPreset} title="Use the Mistral embedding preset">Mistral preset</button>
-                  <button className="pane-action" onClick={resetEmbForm} title="Add new embedding provider"><Plus size={14} /></button>
-                </div>
-              </div>
-              {embProviders.map((provider) => (
-                <div className={`provider-card ${embForm.id === provider.id ? "active" : ""}`} key={provider.id}>
-                  <div className="provider-card-main" onClick={() => handleEditEmb(provider)} style={{ cursor: "pointer" }}>
-                    <span className="provider-logo">{provider.name.slice(0, 1).toUpperCase()}</span>
-                    <div>
-                      <strong>{provider.name}</strong>
-                      <small>{EMB_KINDS.find((k) => k.id === provider.kind)?.label || provider.kind} · {provider.models.length} models · {provider.apiKey ? "key configured" : "no key"}</small>
-                    </div>
-                  </div>
-                  <div className="provider-card-actions">
-                    <button onClick={() => handleEditEmb(provider)} title="Edit"><Settings2 size={13} /></button>
-                    <button className="danger" onClick={() => void handleDeleteEmb(provider.id)} title="Delete"><Trash2 size={13} /></button>
-                  </div>
-                </div>
-              ))}
-              {!embProviders.length && (
-                <div className="empty-provider">
-                  <BookOpen size={18} />
-                  <p>No custom embedding providers. Add one below — e.g. a local TEI/vLLM/LM Studio server.</p>
-                </div>
-              )}
-
-              <div className="form-title" style={{ marginTop: 12 }}>
-                <span>{isEditingEmb ? `Edit ${embForm.name || "provider"}` : "Add embedding provider"}</span>
-                <small>{isEditingEmb ? "Editing endpoint" : "Own base URL, key and models"}</small>
-              </div>
-              <label>
-                Display name
-                <input value={embForm.name} onChange={(e) => setEmbForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="My embedding server" />
-              </label>
-              <label>
-                Endpoint type
-                <select value={embForm.kind} onChange={(e) => setEmbForm((prev) => ({ ...prev, kind: e.target.value as EmbeddingEndpointKind }))}>
-                  {EMB_KINDS.map((k) => (
-                    <option key={k.id} value={k.id}>{k.label}</option>
-                  ))}
-                </select>
-              </label>
-              {embKindMeta.showBase && (
-                <label>
-                  Base URL {embForm.kind === "openai" ? <small>blank = api.openai.com</small> : null}
-                  <input value={embForm.baseUrl} onChange={(e) => setEmbForm((prev) => ({ ...prev, baseUrl: e.target.value }))} placeholder={embKindMeta.basePlaceholder} />
-                </label>
-              )}
-              <label>
-                API key
-                <input
-                  type="password"
-                  value={embForm.apiKey}
-                  onChange={(e) => setEmbForm((prev) => ({ ...prev, apiKey: e.target.value }))}
-                  placeholder={embKindMeta.keyHint}
-                />
-              </label>
-              <label style={{ marginBottom: "4px" }}>
-                Models ({embForm.models.length}) <small>each embedding model separately</small>
-              </label>
-              <div className="model-list-editor">
-                {embForm.models.map((model, idx) => (
-                  <div className="model-row-item" key={idx}>
-                    <input
-                      value={model}
-                      onChange={(e) => setEmbForm((prev) => {
-                        const next = [...prev.models];
-                        next[idx] = e.target.value;
-                        return { ...prev, models: next };
-                      })}
-                      placeholder={embKindMeta.modelPlaceholder}
-                    />
-                    <button type="button" onClick={() => setEmbForm((prev) => ({ ...prev, models: prev.models.filter((_, i) => i !== idx) }))} title="Remove model">
-                      <X size={13} />
-                    </button>
-                  </div>
-                ))}
-                {!embForm.models.length && (
-                  <div style={{ color: "#6e7c8e", fontSize: "10.5px", padding: "4px 0" }}>
-                    No models yet — add one below.
-                  </div>
-                )}
-              </div>
-              <div className="model-add-bar">
-                <input
-                  value={newEmbModel}
-                  onChange={(e) => setNewEmbModel(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      const raw = newEmbModel.trim();
-                      if (raw) setEmbForm((prev) => ({ ...prev, models: Array.from(new Set([...prev.models, ...raw.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean)])) }));
-                      setNewEmbModel("");
-                    }
-                  }}
-                  placeholder={embKindMeta.modelPlaceholder}
-                />
+              <div className="settings-subtabs">
                 <button
                   type="button"
-                  className="secondary"
-                  disabled={!newEmbModel.trim()}
-                  onClick={() => {
-                    const raw = newEmbModel.trim();
-                    if (raw) setEmbForm((prev) => ({ ...prev, models: Array.from(new Set([...prev.models, ...raw.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean)])) }));
-                    setNewEmbModel("");
-                  }}
+                  className={`settings-subtab-btn${notebookSubTab === "pipeline" ? " active" : ""}`}
+                  onClick={() => setNotebookSubTab("pipeline")}
                 >
-                  <Plus size={13} /> Add
+                  <BookOpen size={13} />
+                  <span>Embeddings & Reranker</span>
                 </button>
-              </div>
-              <div className="provider-fetch">
                 <button
-                  className="secondary"
-                  disabled={testingEmb || !newEmbModel.trim() && !embForm.models[0]}
-                  onClick={() => void testEndpoint(embForm.id, embForm.kind, embForm.baseUrl, embForm.apiKey, newEmbModel.trim() || embForm.models[0] || "")}
+                  type="button"
+                  className={`settings-subtab-btn${notebookSubTab === "parser" ? " active" : ""}`}
+                  onClick={() => setNotebookSubTab("parser")}
                 >
-                  {testingEmb ? <Loader2 size={12} className="spin" /> : <RefreshCw size={12} />} Test connection
+                  <FileText size={13} />
+                  <span>Document Parser (OCR)</span>
+                </button>
+                <button
+                  type="button"
+                  className={`settings-subtab-btn${notebookSubTab === "vision" ? " active" : ""}`}
+                  onClick={() => setNotebookSubTab("vision")}
+                >
+                  <Eye size={13} />
+                  <span>Vision Model</span>
+                </button>
+                <button
+                  type="button"
+                  className={`settings-subtab-btn${notebookSubTab === "custom" ? " active" : ""}`}
+                  onClick={() => setNotebookSubTab("custom")}
+                >
+                  <Server size={13} />
+                  <span>Custom Endpoints ({embProviders.length})</span>
                 </button>
               </div>
-              {embTestNote && <div style={{ margin: "6px 0", color: "var(--green)", fontSize: "11px" }}>{embTestNote}</div>}
-              {embTestError && <div style={{ margin: "6px 0", color: "var(--red)", fontSize: "11px" }}>{embTestError}</div>}
-              <div className="modal-actions" style={{ marginTop: "16px" }}>
-                {isEditingEmb && <button className="secondary" onClick={resetEmbForm}>Cancel edit</button>}
-                <button className="primary full" disabled={!embForm.name.trim()} onClick={() => void handleSaveEmb()}>
-                  <Check size={14} /> {isEditingEmb ? "Save changes" : "Add embedding provider"}
-                </button>
-              </div>
-            </div>
 
-            <div className="setting-card" style={{ marginTop: 12 }}>
-              <div className="setting-row">
-                <div className="setting-text">
-                  <strong>Pipeline</strong>
-                  <small>semantic (vector) + lexical (BM25) + graph (entity expansion) → RRF fusion → rerank → grounded answer with citations → LLM self-evaluation with one retry.</small>
+              {notebookSubTab === "pipeline" && (
+                <>
+                  <div className="setting-card">
+                    <div className="setting-row">
+                      <span className="setting-icon"><BookOpen size={14} /></span>
+                      <div className="setting-text">
+                        <strong>Active notebook embeddings</strong>
+                        <small>Vector space for Notebook RAG. Changing it requires re-indexing sources (Notebook → source → re-index).</small>
+                      </div>
+                    </div>
+                    <label className="field-label" style={{ marginTop: 10 }}>Embedding provider</label>
+                    <select value={embeddingProviderId} onChange={(e) => setEmbeddingProviderId(e.target.value)} className="select-field">
+                      <option value="">Local built-in (offline, no key)</option>
+                      {embProviders.map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                    <label className="field-label" style={{ marginTop: 10 }}>Embedding model</label>
+                    <input
+                      value={embeddingModel}
+                      onChange={(e) => setEmbeddingModel(e.target.value)}
+                      placeholder="text-embedding-3-small"
+                      className="text-field"
+                      list="emb-active-models"
+                    />
+                    {!!activeEmbProvider?.models.length && (
+                      <datalist id="emb-active-models">
+                        {activeEmbProvider.models.map((m: string) => (
+                          <option key={m} value={m} />
+                        ))}
+                      </datalist>
+                    )}
+                    <div className="modal-actions" style={{ marginTop: 12 }}>
+                      <button
+                        className="secondary"
+                        disabled={testingEmb || !embeddingProviderId || !embeddingModel.trim()}
+                        onClick={() => {
+                          const p = embProviders.find((x) => x.id === embeddingProviderId);
+                          if (p) void testEndpoint(p.id, p.kind, p.baseUrl || "", p.apiKey, embeddingModel);
+                        }}
+                        title="Embed one short text with the selected provider + model"
+                      >
+                        {testingEmb ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} Test
+                      </button>
+                      <button className="primary full" onClick={() => void saveEmbeddingConfig()}>
+                        <Check size={14} /> Save embedding config
+                      </button>
+                    </div>
+                    {!!embeddingNote && <div className="settings-note" style={{ marginTop: 8 }}><Check size={12} /><span>{embeddingNote}</span></div>}
+                  </div>
+
+                  <div className="setting-card">
+                    <div className="setting-row">
+                      <span className="setting-icon"><Settings2 size={14} /></span>
+                      <div className="setting-text">
+                        <strong>Evidence reranking</strong>
+                        <small>Optionally ask a configured chat model to judge which retrieved passages best answer each question. This adds latency and model cost.</small>
+                      </div>
+                    </div>
+                    <div className="toggle-row" style={{ marginTop: 10 }}>
+                      <Toggle checked={rerankEnabled} onChange={setRerankEnabled} title={rerankEnabled ? "Disable model-based reranking" : "Enable model-based reranking"} />
+                      <span>Enable model-based reranking</span>
+                    </div>
+                    <label className="field-label" style={{ marginTop: 10 }}>Reranker provider</label>
+                    <select className="select-field" value={rerankProviderId} onChange={(e) => { setRerankProviderId(e.target.value); setRerankModel(""); }} disabled={!rerankEnabled}>
+                      <option value="">Use first configured provider</option>
+                      {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}
+                    </select>
+                    <label className="field-label" style={{ marginTop: 10 }}>Reranker model</label>
+                    <input
+                      className="text-field"
+                      value={rerankModel}
+                      onChange={(e) => setRerankModel(e.target.value)}
+                      list="reranker-models"
+                      placeholder="Use provider default model"
+                      disabled={!rerankEnabled}
+                    />
+                    <datalist id="reranker-models">
+                      {(providers.find((provider) => provider.id === rerankProviderId)?.models || []).map((model) => <option key={model} value={model} />)}
+                    </datalist>
+                    <div className="modal-actions" style={{ marginTop: 12 }}>
+                      <button className="primary full" onClick={() => void saveRerankConfig()}><Check size={14} /> Save reranking config</button>
+                    </div>
+                    {!!rerankNote && <div className="settings-note" style={{ marginTop: 8 }}><Check size={12} /><span>{rerankNote}</span></div>}
+                  </div>
+
+                  <div className="setting-card">
+                    <div className="setting-row">
+                      <div className="setting-text">
+                        <strong>Pipeline architecture</strong>
+                        <small>semantic (vector) + lexical (BM25) + graph (entity expansion) → RRF fusion → rerank → grounded answer with citations → LLM self-evaluation with one retry.</small>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {notebookSubTab === "parser" && (
+                <div className="setting-card">
+                  <div className="setting-row">
+                    <span className="setting-icon"><BookOpen size={14} /></span>
+                    <div className="setting-text">
+                      <strong>Document parser</strong>
+                      <small>LlamaParse handles OCR, layouts, tables, figures, slides, and scanned pages before the notebook indexes the result. The local parser remains available as an offline fallback.</small>
+                    </div>
+                  </div>
+                  <div className="toggle-row" style={{ marginTop: 10 }}>
+                    <Toggle checked={parserEnabled} onChange={setParserEnabled} title={parserEnabled ? "Disable configured parser" : "Use configured parser for new and re-indexed files"} />
+                    <span>Use configured parser for new and re-indexed files</span>
+                  </div>
+                  <label className="field-label" style={{ marginTop: 10 }}>Parser</label>
+                  <select className="select-field" value={parserProvider} onChange={(e) => setParserProvider(e.target.value as "local" | "llamaparse")}>
+                    <option value="llamaparse">LlamaParse (Llama Cloud)</option>
+                    <option value="local">Local/offline parser</option>
+                  </select>
+                  {parserProvider === "llamaparse" && <>
+                    <label className="field-label" style={{ marginTop: 10 }}>Llama Cloud API key</label>
+                    <input className="text-field" type="password" value={parserApiKey} onChange={(e) => setParserApiKey(e.target.value)} placeholder="Paste your Llama Cloud API key" />
+                    <label className="field-label" style={{ marginTop: 10 }}>Base URL</label>
+                    <input className="text-field" value={parserBaseUrl} onChange={(e) => setParserBaseUrl(e.target.value)} placeholder="https://api.cloud.llamaindex.ai" />
+                    <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                      <label>Tier<select className="select-field" value={parserTier} onChange={(e) => setParserTier(e.target.value)}><option value="cost_effective">Cost effective</option><option value="agentic">Agentic</option><option value="agentic_plus">Agentic plus</option><option value="fast">Fast</option></select></label>
+                      <label>Version<input className="text-field" value={parserVersion} onChange={(e) => setParserVersion(e.target.value)} placeholder="latest" /></label>
+                    </div>
+                    <label className="field-label" style={{ marginTop: 10 }}>Timeout (seconds)</label>
+                    <input className="text-field" type="number" min={30} max={3600} value={parserTimeout} onChange={(e) => setParserTimeout(e.target.value)} />
+                  </>}
+                  <div className="modal-actions" style={{ marginTop: 12 }}><button className="primary full" onClick={() => void saveParserConfig()}><Check size={14} /> Save parser config</button></div>
+                  {!!parserNote && <div className="settings-note" style={{ marginTop: 8 }}><Check size={12} /><span>{parserNote}</span></div>}
                 </div>
-              </div>
-            </div>
+              )}
+
+              {notebookSubTab === "vision" && (
+                <div className="setting-card">
+                  <div className="setting-row">
+                    <span className="setting-icon"><Eye size={14} /></span>
+                    <div className="setting-text">
+                      <strong>Vision model</strong>
+                      <small>Used for standalone images, embedded Office images, PDF figures, and scanned PDF pages. Leave the model blank to use the provider default.</small>
+                    </div>
+                  </div>
+                  <div className="toggle-row" style={{ marginTop: 10 }}>
+                    <Toggle checked={visionEnabled} onChange={setVisionEnabled} title={visionEnabled ? "Disable visual analysis" : "Enable visual analysis during ingestion"} />
+                    <span>Enable visual analysis during ingestion</span>
+                  </div>
+                  <label className="field-label" style={{ marginTop: 10 }}>Vision provider</label>
+                  <select className="select-field" value={visionProviderId} onChange={(e) => { setVisionProviderId(e.target.value); setVisionModel(""); }} disabled={!visionEnabled}>
+                    <option value="">Use first configured provider</option>
+                    {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}
+                  </select>
+                  <label className="field-label" style={{ marginTop: 10 }}>Vision model</label>
+                  <input className="text-field" value={visionModel} onChange={(e) => setVisionModel(e.target.value)} placeholder="Use provider default vision model" disabled={!visionEnabled} list="vision-models" />
+                  <datalist id="vision-models">
+                    {(providers.find((provider) => provider.id === visionProviderId)?.models || []).map((model) => <option key={model} value={model} />)}
+                  </datalist>
+                  <div className="modal-actions" style={{ marginTop: 12 }}>
+                    <button className="primary full" onClick={() => void saveVisionConfig()}><Check size={14} /> Save vision config</button>
+                  </div>
+                  {!!visionNote && <div className="settings-note" style={{ marginTop: 8 }}><Check size={12} /><span>{visionNote}</span></div>}
+                </div>
+              )}
+
+              {notebookSubTab === "custom" && (
+                <div className="setting-card">
+                  <div className="pane-top" style={{ padding: "0 0 8px 0" }}>
+                    <span>CUSTOM EMBEDDING PROVIDERS</span>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button className="secondary" style={{ padding: "4px 7px", fontSize: 9 }} onClick={useOpenRouterEmbeddingPreset} title="Use the OpenRouter embedding preset">OpenRouter preset</button>
+                      <button className="secondary" style={{ padding: "4px 7px", fontSize: 9 }} onClick={useMistralEmbeddingPreset} title="Use the Mistral embedding preset">Mistral preset</button>
+                      <button className="pane-action" onClick={resetEmbForm} title="Add new embedding provider"><Plus size={14} /></button>
+                    </div>
+                  </div>
+                  {embProviders.map((provider) => (
+                    <div className={`provider-card ${embForm.id === provider.id ? "active" : ""}`} key={provider.id}>
+                      <div className="provider-card-main" onClick={() => handleEditEmb(provider)} style={{ cursor: "pointer" }}>
+                        <span className="provider-logo">{provider.name.slice(0, 1).toUpperCase()}</span>
+                        <div>
+                          <strong>{provider.name}</strong>
+                          <small>{EMB_KINDS.find((k) => k.id === provider.kind)?.label || provider.kind} · {provider.models.length} models · {provider.apiKey ? "key configured" : "no key"}</small>
+                        </div>
+                      </div>
+                      <div className="provider-card-actions">
+                        <button onClick={() => handleEditEmb(provider)} title="Edit"><Settings2 size={13} /></button>
+                        <button className="danger" onClick={() => void handleDeleteEmb(provider.id)} title="Delete"><Trash2 size={13} /></button>
+                      </div>
+                    </div>
+                  ))}
+                  {!embProviders.length && (
+                    <div className="empty-provider">
+                      <BookOpen size={18} />
+                      <p>No custom embedding providers. Add one below — e.g. a local TEI/vLLM/LM Studio server.</p>
+                    </div>
+                  )}
+
+                  <div className="form-title" style={{ marginTop: 12 }}>
+                    <span>{isEditingEmb ? `Edit ${embForm.name || "provider"}` : "Add embedding provider"}</span>
+                    <small>{isEditingEmb ? "Editing endpoint" : "Own base URL, key and models"}</small>
+                  </div>
+                  <label>
+                    Display name
+                    <input value={embForm.name} onChange={(e) => setEmbForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="My embedding server" />
+                  </label>
+                  <label>
+                    Endpoint type
+                    <select value={embForm.kind} onChange={(e) => setEmbForm((prev) => ({ ...prev, kind: e.target.value as EmbeddingEndpointKind }))}>
+                      {EMB_KINDS.map((k) => (
+                        <option key={k.id} value={k.id}>{k.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {embKindMeta.showBase && (
+                    <label>
+                      Base URL {embForm.kind === "openai" ? <small>blank = api.openai.com</small> : null}
+                      <input value={embForm.baseUrl} onChange={(e) => setEmbForm((prev) => ({ ...prev, baseUrl: e.target.value }))} placeholder={embKindMeta.basePlaceholder} />
+                    </label>
+                  )}
+                  <label>
+                    API key
+                    <input
+                      type="password"
+                      value={embForm.apiKey}
+                      onChange={(e) => setEmbForm((prev) => ({ ...prev, apiKey: e.target.value }))}
+                      placeholder={embKindMeta.keyHint}
+                    />
+                  </label>
+                  <label style={{ marginBottom: "4px" }}>
+                    Models ({embForm.models.length}) <small>each embedding model separately</small>
+                  </label>
+                  <div className="model-list-editor">
+                    {embForm.models.map((model, idx) => (
+                      <div className="model-row-item" key={idx}>
+                        <input
+                          value={model}
+                          onChange={(e) => setEmbForm((prev) => {
+                            const next = [...prev.models];
+                            next[idx] = e.target.value;
+                            return { ...prev, models: next };
+                          })}
+                          placeholder={embKindMeta.modelPlaceholder}
+                        />
+                        <button type="button" onClick={() => setEmbForm((prev) => ({ ...prev, models: prev.models.filter((_, i) => i !== idx) }))} title="Remove model">
+                          <X size={13} />
+                        </button>
+                      </div>
+                    ))}
+                    {!embForm.models.length && (
+                      <div style={{ color: "#6e7c8e", fontSize: "10.5px", padding: "4px 0" }}>
+                        No models yet — add one below.
+                      </div>
+                    )}
+                  </div>
+                  <div className="model-add-bar">
+                    <input
+                      value={newEmbModel}
+                      onChange={(e) => setNewEmbModel(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          const raw = newEmbModel.trim();
+                          if (raw) setEmbForm((prev) => ({ ...prev, models: Array.from(new Set([...prev.models, ...raw.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean)])) }));
+                          setNewEmbModel("");
+                        }
+                      }}
+                      placeholder={embKindMeta.modelPlaceholder}
+                    />
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={!newEmbModel.trim()}
+                      onClick={() => {
+                        const raw = newEmbModel.trim();
+                        if (raw) setEmbForm((prev) => ({ ...prev, models: Array.from(new Set([...prev.models, ...raw.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean)])) }));
+                        setNewEmbModel("");
+                      }}
+                    >
+                      <Plus size={13} /> Add
+                    </button>
+                  </div>
+                  <div className="provider-fetch">
+                    <button
+                      className="secondary"
+                      disabled={testingEmb || !newEmbModel.trim() && !embForm.models[0]}
+                      onClick={() => void testEndpoint(embForm.id, embForm.kind, embForm.baseUrl, embForm.apiKey, newEmbModel.trim() || embForm.models[0] || "")}
+                    >
+                      {testingEmb ? <Loader2 size={12} className="spin" /> : <RefreshCw size={12} />} Test connection
+                    </button>
+                  </div>
+                  {embTestNote && <div style={{ margin: "6px 0", color: "var(--green)", fontSize: "11px" }}>{embTestNote}</div>}
+                  {embTestError && <div style={{ margin: "6px 0", color: "var(--red)", fontSize: "11px" }}>{embTestError}</div>}
+                  <div className="modal-actions" style={{ marginTop: "16px" }}>
+                    {isEditingEmb && <button className="secondary" onClick={resetEmbForm}>Cancel edit</button>}
+                    <button className="primary full" disabled={!embForm.name.trim()} onClick={() => void handleSaveEmb()}>
+                      <Check size={14} /> {isEditingEmb ? "Save changes" : "Add embedding provider"}
+                    </button>
+                  </div>
+                </div>
+              )}
             </>
           )}
 
