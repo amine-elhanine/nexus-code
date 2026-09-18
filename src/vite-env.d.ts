@@ -19,7 +19,7 @@ type WorkspaceDiffFile = { path: string; directory: string; name: string; additi
 type McpTransport = "stdio" | "http" | "sse";
 type McpServerConfig = { id: string; name: string; enabled: boolean; transport: McpTransport; command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string> };
 type McpTestResult = { ok: boolean; tools: string[]; error?: string };
-type SkillInfo = { name: string; description: string; path: string; source: "global" | "project" };
+type SkillInfo = { name: string; description: string; path: string; source: "global" | "project" | "system"; modes: string[] };
 type TrajectoryStep = { step_index: number; timestamp: string; source: string; type: string; content: string; thinking?: string; tool_calls?: Array<{ name: string; args: any }>; usage?: AgentUsage };
 
 type UpdaterState =
@@ -41,7 +41,7 @@ export interface NexusApi {
   listSessions: (projectId: string) => Promise<SessionRecord[]>;
   createSession: (projectId: string, title?: string) => Promise<SessionRecord>;
   activateSession: (projectId: string, sessionId: string) => Promise<SessionRecord>;
-  deleteSession: (projectId: string, sessionId: string) => Promise<ProjectRecord>;
+  deleteSession: (projectId: string, sessionId: string, options?: { deleteFiles?: boolean }) => Promise<ProjectRecord>;
   updateSession: (projectId: string, sessionId: string, patch: unknown) => Promise<SessionRecord>;
   updateProjectMemory: (projectId: string, memory: string) => Promise<ProjectRecord>;
   updateSessionMemory: (projectId: string, sessionId: string, memory: string) => Promise<SessionRecord>;
@@ -61,8 +61,9 @@ export interface NexusApi {
   saveSkillsConfig: (config: { enabled: boolean }) => Promise<{ enabled: boolean }>;
   listSkills: () => Promise<SkillInfo[]>;
   readSkillContent: (skillPath: string) => Promise<string>;
-  createSkill: (input: { name: string; description?: string; scope: "global" | "project"; content?: string }) => Promise<SkillInfo>;
+  createSkill: (input: { name: string; description?: string; scope: "global" | "project"; content?: string; modes?: string[] }) => Promise<SkillInfo>;
   deleteSkill: (skillPath: string) => Promise<void>;
+  setSkillModes: (skillPath: string, modes: string[]) => Promise<SkillInfo>;
   openSkillsFolder: (scope: "global" | "project") => Promise<boolean>;
   getSettings: () => Promise<Record<string, unknown>>;
   saveSettings: (settings: unknown) => Promise<unknown>;
@@ -183,6 +184,11 @@ export interface NexusApi {
   saveNotebookNote: (input: { id?: string; notebookId: string; title: string; content: string; citations: NotebookCitation[] }) => Promise<{ id: string; notebookId: string; title: string; content: string; citations: NotebookCitation[]; createdAt: string; updatedAt: string }>;
   deleteNotebookNote: (notebookId: string, noteId: string) => Promise<Array<{ id: string; notebookId: string; title: string; content: string; citations: NotebookCitation[]; createdAt: string; updatedAt: string }>>;
   notebookPassage: (notebookId: string, chunkId: string) => Promise<{ chunkId: string; sourceId: string; sourceName: string; headingPath: string[]; text: string; prevText: string | null; nextText: string | null; sectionSummary: string | null } | null>;
+  notebookDocuments: (notebookId: string) => Promise<Array<{ id: string; notebookId: string; kind: "report" | "slides"; format: "docx" | "pdf" | "pptx" | "md"; title: string; filename: string; size: number; prompt: string; preview: string; citations: NotebookCitation[]; sectionCount: number; slideCount: number; engine?: "skill-agent" | "builtin"; createdAt: string; updatedAt: string }>>;
+  notebookGenerateDocument: (payload: { notebookId: string; kind: "report" | "slides"; format: "docx" | "pdf" | "pptx"; prompt?: string; fileIds?: string[]; providerId?: string; model?: string }) => Promise<{ doc: { id: string; notebookId: string; kind: "report" | "slides"; format: "docx" | "pdf" | "pptx" | "md"; title: string; filename: string; size: number; prompt: string; preview: string; citations: NotebookCitation[]; sectionCount: number; slideCount: number; engine?: "skill-agent" | "builtin"; createdAt: string; updatedAt: string }; fallbackReason: string | null }>;
+  notebookDeleteDocument: (notebookId: string, docId: string) => Promise<Array<{ id: string; notebookId: string; kind: "report" | "slides"; format: "docx" | "pdf" | "pptx" | "md"; title: string; filename: string; size: number; prompt: string; preview: string; citations: NotebookCitation[]; sectionCount: number; slideCount: number; engine?: "skill-agent" | "builtin"; createdAt: string; updatedAt: string }>>;
+  notebookDownloadDocument: (notebookId: string, docId: string) => Promise<string | null>;
+  notebookReadDocument: (notebookId: string, docId: string) => Promise<{ name: string; path: string; size: number; base64: string }>;
   getNotebookEmbedding: () => Promise<{ providerId: string; model: string }>;
   saveNotebookEmbedding: (config: { providerId: string; model: string }) => Promise<{ providerId: string; model: string }>;
   listEmbeddingProviders: () => Promise<Array<{ id: string; name: string; kind: string; baseUrl?: string; apiKey: string; models: string[] }>>;

@@ -134,8 +134,7 @@ export async function listArtifacts(projectRoot: string, sessionId: string): Pro
   }
 }
 
-export async function updateArtifactStatus(
-  projectRoot: string,
+export async function updateArtifactStatus(  projectRoot: string,
   sessionId: string,
   filename: string,
   status: ArtifactStatus
@@ -149,4 +148,25 @@ export async function updateArtifactStatus(
     userFacing: artifact.userFacing,
     requestFeedback: status === "pending_approval",
   });
+}
+
+/**
+ * Removes a session's whole on-disk telemetry footprint: walkthrough/plan
+ * artifacts, run checkpoints ("continue" state) and trajectory transcripts.
+ * Safe to call for any session kind — these are app-internal derived data,
+ * never user deliverables. Best-effort: missing paths are skipped.
+ */
+export async function deleteSessionTelemetry(projectRoot: string, sessionId: string): Promise<void> {
+  const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const targets = [
+    getArtifactsDir(projectRoot, sessionId),
+    path.join(projectRoot, ".nexus", "run-checkpoints", `${safe}.json`),
+    path.join(projectRoot, ".nexus", "trajectories", safe),
+    path.join(projectRoot, ".forgepilot", "trajectories", safe),
+  ];
+  for (const target of targets) {
+    try {
+      await fs.rm(target, { recursive: true, force: true });
+    } catch { /* best effort */ }
+  }
 }

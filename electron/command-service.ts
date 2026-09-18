@@ -135,7 +135,10 @@ export async function executeCommand(projectRoot: string, command: string, optio
 
   const shell = process.platform === "win32" ? (process.env.ComSpec || "cmd.exe") : "/bin/sh";
   const args = process.platform === "win32" ? ["/d", "/s", "/c", trimmed] : ["-c", trimmed];
-  const env = { ...process.env, CI: "true" };
+  const appNodeModules = path.resolve(process.cwd(), "node_modules");
+  const existingNodePath = process.env.NODE_PATH || "";
+  const nodePath = [existingNodePath, appNodeModules].filter(Boolean).join(path.delimiter);
+  const env = { ...process.env, CI: "true", NODE_PATH: nodePath };
 
   try {
     const result = await runProcess(shell, args, {

@@ -1,14 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import {
-  ArrowLeft, ArrowUp, BookOpen, Check, Clapperboard, Download, FileText, Globe, Loader2, Pencil, Plus,
-  RefreshCw, Square, Trash2, Upload, X,
+  ArrowLeft, ArrowUp, BookOpen, Check, ChevronRight, Clapperboard, Download, FileText, Globe, HelpCircle,
+  Layers, Loader2, Network, Pencil, Plus, Presentation, RefreshCw, Sparkles, Square, Trash2, Upload, X,
 } from "lucide-react";
 import { ModelSelect } from "./AgentView.js";
-import { CopyTextButton } from "../components/chat/ChatMessageItem.js";
+import { ActivityGroupView, CopyTextButton } from "../components/chat/ChatMessageItem.js";
 import { renderMarkdown } from "../markdown.js";
 import { timeLabel } from "../utils/format.js";
 import { SourcePassageModal, type PassageAction } from "../components/notebook/SourcePassageModal.js";
-import type { NotebookChat, NotebookMeta, NotebookNote, NotebookPassage, NotebookSettings, NotebookSource, NotebookStats, ProviderConfig, ProviderDefinition } from "../types.js";
+import { DocumentViewerModal } from "../components/notebook/DocumentViewerModal.js";
+import { FilePreviewModal } from "../components/home/FilePreviewModal.js";
+import type { ChatItem, NotebookChat, NotebookDocument, NotebookMeta, NotebookNote, NotebookPassage, NotebookSettings, NotebookSource, NotebookStats, ProviderConfig, ProviderDefinition } from "../types.js";
 
 function verdictColor(verdict?: string) {
   if (verdict === "grounded") return "#3fb950";
@@ -22,6 +24,108 @@ function ingestionBadge(status: NotebookSource["status"]) {
   if (status === "failed") return <span className="ingestion-badge error">failed</span>;
   const label = status === "uploaded" ? "queued" : status === "parsing" ? "parsing…" : status === "chunking" ? "chunking…" : "indexing…";
   return <span className="ingestion-badge indexing"><Loader2 size={11} className="spin" /> {label}</span>;
+}
+
+const STUDIO_QUICK_PROMPTS: Record<string, string> = {
+  quiz: "Create a short quiz from my in-scope sources. Ask me one question at a time and wait for my answer.",
+  fiches: "Create concise Q/A flashcards covering the key concepts in my in-scope sources.",
+  mindmap: "Build a text mind map (nested Markdown list) of the main topics and subtopics in my in-scope sources.",
+  resume: "Write a concise summary of the main ideas across my in-scope sources, with citations.",
+};
+
+/** Right-panel Studio: output-type tiles on top, generation composer, outputs below. */
+function StudioPanel({ generating, hasSources, docSteps, onGenerate, onQuickPrompt }: {
+  generating: boolean;
+  hasSources: boolean;
+  docSteps: string[];
+  onGenerate: (kind: NotebookDocument["kind"], format: NotebookDocument["format"], prompt: string) => void;
+  onQuickPrompt: (key: keyof typeof STUDIO_QUICK_PROMPTS) => void;
+}) {
+  const [kind, setKind] = useState<NotebookDocument["kind"]>("report");
+  const [format, setFormat] = useState<NotebookDocument["format"]>("docx");
+  const [prompt, setPrompt] = useState("");
+
+  useEffect(() => {
+    setFormat(kind === "slides" ? "pptx" : "docx");
+  }, [kind]);
+
+  const tiles = [
+    { key: "report", icon: <FileText size={15} />, label: "Rapports", tone: "green" },
+    { key: "slides", icon: <Presentation size={15} />, label: "Présentation", tone: "yellow" },
+    { key: "quiz", icon: <HelpCircle size={15} />, label: "Quiz", tone: "blue" },
+    { key: "fiches", icon: <Layers size={15} />, label: "Fiches", tone: "purple" },
+    { key: "mindmap", icon: <Network size={15} />, label: "Carte mentale", tone: "pink" },
+    { key: "resume", icon: <Sparkles size={15} />, label: "Résumé", tone: "gray" },
+  ] as const;
+
+  return (
+    <div>
+      <div className="studio-grid">
+        {tiles.map((tile) => {
+          const selectable = tile.key === "report" || tile.key === "slides";
+          const active = selectable && kind === tile.key;
+          return (
+            <button
+              key={tile.key}
+              className={`studio-card tone-${tile.tone}${active ? " active" : ""}`}
+              onClick={() => {
+                if (tile.key === "report" || tile.key === "slides") setKind(tile.key);
+                else onQuickPrompt(tile.key);
+              }}
+              title={selectable ? (tile.key === "report" ? "Generate a grounded report (DOCX/PDF)" : "Generate grounded slides (PPTX)") : "Fill the discussion box with this prompt"}
+            >
+              <span className="studio-card-icon">{tile.icon}</span>
+              <span className="studio-card-label">{tile.label}</span>
+              <ChevronRight size={13} className="studio-card-chevron" />
+            </button>
+          );
+        })}
+      </div>
+      <div className="studio-composer">
+        <input
+          type="text"
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder={kind === "slides" ? "Slide deck topic… (empty = full overview)" : "Report topic… (empty = full overview)"}
+          spellCheck={false}
+          className="text-field"
+        />
+        {kind === "report" && (
+          <div className="doc-toggle-group studio-format" role="group" aria-label="Report format">
+            <button className={`doc-toggle${format === "docx" ? " active" : ""}`} onClick={() => setFormat("docx")} title="Word document">DOCX</button>
+            <button className={`doc-toggle${format === "pdf" ? " active" : ""}`} onClick={() => setFormat("pdf")} title="PDF document">PDF</button>
+          </div>
+        )}
+        <button
+          className="studio-generate"
+          disabled={generating || !hasSources}
+          onClick={() => onGenerate(kind, kind === "slides" ? "pptx" : format, prompt.trim())}
+          title={hasSources ? "Generate from in-scope sources with citations" : "Upload sources first"}
+        >
+          {generating ? <Loader2 size={13} className="spin" /> : <Plus size={13} />}
+          {generating ? " Generating…" : kind === "slides" ? " Generate PPTX" : ` Generate ${format.toUpperCase()}`}
+        </button>
+      </div>
+      {(generating || docSteps.length > 0) && (
+        <div style={{ marginTop: 8 }}>
+          <ActivityGroupView
+            events={(docSteps.length ? docSteps : ["Starting the document agent…"]).map((step, index) => ({
+              role: "event",
+              text: step,
+              kind: step.startsWith("Working:") || step.includes("·") ? "tool" : "status",
+              createdAt: new Date(Date.now() - (docSteps.length - index) * 1000).toISOString(),
+            }))}
+            running={generating}
+            currentText={
+              generating
+                ? docSteps[docSteps.length - 1] || "Starting the document agent…"
+                : `${docSteps.length || 1} step${docSteps.length === 1 ? "" : "s"} completed`
+            }
+          />
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function NotebookView({
@@ -42,6 +146,12 @@ export function NotebookView({
   passage,
   settings,
   notes,
+  documents,
+  generatingDoc,
+  docSteps,
+  onGenerateDocument,
+  onDownloadDocument,
+  onDeleteDocument,
   onCreateNotebook,
   onDeleteNotebook,
   onPickFiles,
@@ -89,6 +199,12 @@ export function NotebookView({
   passage: NotebookPassage | null;
   settings: NotebookSettings;
   notes: NotebookNote[];
+  documents: NotebookDocument[];
+  generatingDoc: boolean;
+  docSteps: string[];
+  onGenerateDocument: (kind: NotebookDocument["kind"], format: NotebookDocument["format"], prompt: string) => void;
+  onDownloadDocument: (docId: string) => void;
+  onDeleteDocument: (docId: string) => void;
   onCreateNotebook: (name: string) => void;
   onDeleteNotebook: (id: string) => void;
   onPickFiles: () => void;
@@ -131,6 +247,10 @@ export function NotebookView({
 
   const [editingName, setEditingName] = useState<string | null>(null);
   const [instructionDraft, setInstructionDraft] = useState(settings.instructions);
+  const [viewDocId, setViewDocId] = useState<string | null>(null);
+  const [viewNoteId, setViewNoteId] = useState<string | null>(null);
+  const viewDoc = viewDocId ? documents.find((d) => d.id === viewDocId) || null : null;
+  const viewNote = viewNoteId ? notes.find((n) => n.id === viewNoteId) || null : null;
   // Link import form, shared by YouTube transcripts and website crawls.
   const [linkKind, setLinkKind] = useState<"youtube" | "website" | null>(null);
   const [linkUrl, setLinkUrl] = useState("");
@@ -251,7 +371,7 @@ export function NotebookView({
             <ArrowLeft size={12} /> Sessions
           </button>
           <div>
-            <span className="view-kicker">NOTEBOOK · AGENTIC RAG</span>
+            <span className="view-kicker">NOTEBOOK · DISCUSSION</span>
             {editingName !== null ? (
               <input
                 autoFocus
@@ -294,7 +414,7 @@ export function NotebookView({
         {/* Left sidebar: upload + ingestion pipeline + file scope */}
         <div className="notebook-side">
           <div className="context-section-title">
-            <span>SOURCES · SCOPE {scopedCount}/{sources.length}</span>
+            <span>SOURCES {scopedCount}/{sources.length}</span>
             {excludedIds.length > 0 && <button className="pane-action" onClick={onResetScope} title="Ask all files again"><RefreshCw size={11} /></button>}
           </div>
           <div className="notebook-upload-row">
@@ -436,6 +556,21 @@ export function NotebookView({
                 ) : (
                   <div className="chat-text">{message.text}</div>
                 )}
+                {message.role === "assistant" && !!message.steps?.length && (
+                  <div style={{ margin: "6px 0" }}>
+                    <ActivityGroupView
+                      events={message.steps.map((st) => ({
+                        role: "event",
+                        text: st.title,
+                        kind: (st.status === "failed" ? "error" : "tool") as any,
+                        detail: st.detail,
+                        createdAt: message.createdAt,
+                      }))}
+                      running={false}
+                      currentText={`${message.steps.length} research step${message.steps.length === 1 ? "" : "s"} completed`}
+                    />
+                  </div>
+                )}
                 {message.role === "assistant" && Boolean(message.text?.trim()) && (
                   <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
                     <CopyTextButton text={message.text} />
@@ -476,6 +611,22 @@ export function NotebookView({
                 )}
               </div>
             ))}
+            {asking && (
+              <ActivityGroupView
+                events={(workingSteps.length ? workingSteps : ["Starting the notebook agent…"]).map((step, index) => ({
+                  role: "event",
+                  text: step,
+                  kind: step.startsWith("Working:") || step.includes("·") ? "tool" : "status",
+                  createdAt: new Date(Date.now() - (workingSteps.length - index) * 1000).toISOString(),
+                }))}
+                running={true}
+                currentText={
+                  streaming
+                    ? "Synthesizing grounded answer…"
+                    : workingSteps[workingSteps.length - 1] || "Agentic research in progress…"
+                }
+              />
+            )}
             {!!streaming && (
               <div className="chat-item assistant streaming">
                 <div className="chat-author">
@@ -486,22 +637,6 @@ export function NotebookView({
                 </div>
                 <div className="chat-message-text md" dangerouslySetInnerHTML={{ __html: renderMarkdown(streaming) }} />
                 <span className="stream-caret">▍</span>
-              </div>
-            )}
-            {asking && !streaming && (
-              <div className="notebook-working" aria-live="polite">
-                <div className="notebook-working-title"><Loader2 size={14} className="spin" /> Working through your notebook</div>
-                <div className="notebook-working-steps">
-                  {(workingSteps.length ? workingSteps : ["Starting the notebook agent…"]).map((step, index) => {
-                    const activeStep = index === (workingSteps.length || 1) - 1;
-                    return (
-                    <div className={`notebook-working-step ${activeStep ? "active" : "done"}`} key={`${step}-${index}`}>
-                      <span className="notebook-step-mark">{activeStep ? "·" : "✓"}</span>
-                      <span>{step}</span>
-                    </div>
-                    );
-                  })}
-                </div>
               </div>
             )}
           </div>
@@ -528,22 +663,43 @@ export function NotebookView({
           </div>
         </div>
 
-        {/* Right sidebar: notes and digest */}
+        {/* Right sidebar: Studio (output types on top, generated outputs below) */}
         <div className="notebook-side">
-          <div className="context-section-title"><span>NOTEBOOK GOAL</span></div>
-          <textarea
-            className="text-field notebook-instructions"
-            value={instructionDraft}
-            onChange={(event) => setInstructionDraft(event.target.value)}
-            placeholder="Tell the notebook how to help: e.g. teach me like a professor, compare evidence, use concise bullet points…"
-            rows={4}
+          <div className="context-section-title"><span>STUDIO</span></div>
+          <StudioPanel
+            generating={generatingDoc}
+            hasSources={sources.length > 0}
+            docSteps={docSteps}
+            onGenerate={onGenerateDocument}
+            onQuickPrompt={(key) => setDraft(STUDIO_QUICK_PROMPTS[key])}
           />
-          <button className="new-session-btn" onClick={() => onSaveInstructions(instructionDraft)} disabled={instructionDraft === settings.instructions}>
-            <Check size={12} /> Save goal
-          </button>
 
           <div className="context-section-title" style={{ marginTop: 12 }}>
-            <span>NOTES</span><small>{notes.length}</small>
+            <span>OUTPUTS</span><small>{documents.length + notes.length}</small>
+          </div>
+          <div className="artifact-list">
+            {documents.map((doc) => (
+              <div className="artifact-card clickable" key={doc.id} onClick={() => { setViewNoteId(null); setViewDocId(doc.id); }} title="Open in window" style={{ cursor: "pointer" }}>
+                <div className="artifact-card-head">
+                  <FileText size={12} /><span className="artifact-card-name">{doc.title}</span>
+                  <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDownloadDocument(doc.id); }} title={`Download ${doc.filename}`}><Download size={11} /></button>
+                  <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteDocument(doc.id); }} title="Delete document"><Trash2 size={11} /></button>
+                </div>
+                <div className="artifact-card-excerpt">{doc.kind === "slides" ? `${doc.slideCount} slides` : `${doc.sectionCount} sections`} · {doc.format.toUpperCase()} · {Math.round(doc.size / 1024)} KB · {doc.citations.length} cited passages{doc.engine === "skill-agent" ? " · skill-designed" : ""}</div>
+                {doc.prompt && <small>“{doc.prompt.slice(0, 120)}”</small>}
+              </div>
+            ))}
+            {notes.map((note) => (
+              <div className="artifact-card clickable" key={note.id} onClick={() => { setViewDocId(null); setViewNoteId(note.id); }} title="Open in window" style={{ cursor: "pointer" }}>
+                <div className="artifact-card-head">
+                  <FileText size={12} /><span className="artifact-card-name">{note.title}</span>
+                  <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteNote(note.id); }} title="Delete note"><Trash2 size={11} /></button>
+                </div>
+                <div className="artifact-card-excerpt">{note.content.slice(0, 240)}</div>
+                {note.citations.length > 0 && <small>{note.citations.length} cited passage{note.citations.length === 1 ? "" : "s"}</small>}
+              </div>
+            ))}
+            {!documents.length && !notes.length && <div className="empty-pane">Reports (DOCX/PDF) and slides (PPTX) you generate appear here, with citations. Saved notes too.</div>}
           </div>
           {latestAnswer && (
             <button
@@ -551,22 +707,24 @@ export function NotebookView({
               onClick={() => onSaveNote({ title: latestAnswer.text.slice(0, 60), content: latestAnswer.text, citations: latestAnswer.citations || [] })}
               title="Save the latest grounded answer as a cited note"
             >
-              <Plus size={12} /> Save latest answer
+              <Plus size={12} /> Save latest answer as note
             </button>
           )}
-          <div className="artifact-list">
-            {notes.map((note) => (
-              <div className="artifact-card" key={note.id}>
-                <div className="artifact-card-head">
-                  <FileText size={12} /><span className="artifact-card-name">{note.title}</span>
-                  <button className="pane-action" onClick={() => onDeleteNote(note.id)} title="Delete note"><Trash2 size={11} /></button>
-                </div>
-                <div className="artifact-card-excerpt">{note.content.slice(0, 240)}</div>
-                {note.citations.length > 0 && <small>{note.citations.length} cited passage{note.citations.length === 1 ? "" : "s"}</small>}
-              </div>
-            ))}
-            {!notes.length && <div className="empty-pane">Save important answers here. Notes keep their source citations.</div>}
-          </div>
+
+          <details className="retrieval-trace" style={{ marginTop: 12 }}>
+            <summary>Notebook goal</summary>
+            <textarea
+              className="text-field notebook-instructions"
+              value={instructionDraft}
+              onChange={(event) => setInstructionDraft(event.target.value)}
+              placeholder="Tell the notebook how to help: e.g. teach me like a professor, compare evidence, use concise bullet points…"
+              rows={4}
+              style={{ marginTop: 8 }}
+            />
+            <button className="new-session-btn" onClick={() => onSaveInstructions(instructionDraft)} disabled={instructionDraft === settings.instructions} style={{ marginTop: 6 }}>
+              <Check size={12} /> Save goal
+            </button>
+          </details>
 
           {stats?.digest && !!stats.digest.topics.length && (
             <>
@@ -587,6 +745,24 @@ export function NotebookView({
         </div>
       </div>
       {passage && <SourcePassageModal passage={passage} onClose={onClosePassage} onAction={(action) => onPassageAction(action, passage)} />}
+      {viewDoc && activeNotebook && (
+        <FilePreviewModal
+          filePath={viewDoc.filename}
+          load={() => window.nexus.notebookReadDocument(activeNotebook.id, viewDoc.id)}
+          onClose={() => setViewDocId(null)}
+          onDownload={() => onDownloadDocument(viewDoc.id)}
+        />
+      )}
+      {viewNote && (
+        <DocumentViewerModal
+          title={viewNote.title}
+          subtitle={`Saved note · created ${new Date(viewNote.createdAt).toLocaleString()}`}
+          meta={`${viewNote.citations.length} cited passage${viewNote.citations.length === 1 ? "" : "s"}`}
+          markdown={viewNote.content}
+          citations={viewNote.citations}
+          onClose={() => setViewNoteId(null)}
+        />
+      )}
     </div>
   );
 }

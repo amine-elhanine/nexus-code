@@ -109,9 +109,12 @@ Status per source (`NotebookSourceStatus`): `uploaded → parsing → chunking �
 - **Jobs** (`electron/notebook-jobs.ts`): `enqueueIngest → parse → chunk → embed → index`, with `retrySource`, `reindexSessionFromLibrary`, `recoverInterruptedJobs` after restart. Covered by `notebook-pipeline.test.mjs` + `notebook-library.test.mjs`.
 - **Stats** (`notebook:stats`): sources, ready sources, chunks, sections, embedding model + dims, entities, conversations, digest.
 
-### Retrieval + answering (grounded, cited)
+### Agentic RAG Loop + Grounding (cited, self-reflective)
 
-- **Hybrid retrieve** (`electron/notebook-rag.ts` → `hybridRetrieve`): vector + keyword fusion, local rerank (opt-in LLM cross-encoder via `NEXUS_NOTEBOOK_LLM_RERANK=1`), neighbor expansion, per-source scope respected. `notebook:retrieve` for inspection; `notebook:ask` streams tokens.
+- **Agentic Multi-Hop Retrieval** (`electron/notebook-rag.ts` → `runNotebookAgent`): Driven by a LangGraph + DeepAgent loop. Rather than a naive single-shot lookup, the agent plans queries, breaks complex or comparative questions into focused sub-queries, iteratively calls `search_notebook_sources`, inspects table of contents via `inspect_notebook_outline`, and reads context windows with `read_notebook_passage`.
+- **Self-RAG Reflection** (`evaluate_evidence`): The agent evaluates whether retrieved evidence is sufficient to answer faithfully without hallucinating. If gaps remain, it reformulates the query and retrieves again before generating the final response.
+- **Studio Note Integration** (`save_note_to_studio`): The agent can save key takeaways, study guides, and flashcards directly into Studio notes upon user request.
+- **Interactive Research Trail in UI**: Real-time feedback during search and a persistent, collapsible **Agentic Research Trail** accordion in the chat item showing each query executed, passages retrieved, and evidence checks.
 - **Citations on every answer** (`NotebookCitation`): `[S1]` numbered refs with `sourceId`, `sourceName`, `chunkId`, `heading`, `excerpt` (400 chars), `snippet`, `score`. Clicking a citation opens the passage modal at that exact chunk.
 - **Groundedness verdict** (`NotebookEvaluation`): `grounded / partial / ungrounded` + score + `issues[]`; chat-level average shown in the header (`evals: n, avg: x/10`). Refusals and fallback-model usage flagged in `metadata` (`routing`, `topScore`, `refused`, `fallbackModel`).
 - **Source scoping**: per-source include/exclude toggles (`excludedIds`; empty = all files), `resetScope`, scoped ids sent with every query. Scope chips + counts in the sources pane.
@@ -123,7 +126,7 @@ Status per source (`NotebookSourceStatus`): `uploaded → parsing → chunking �
 
 - Backend: `electron/notebook-store.ts` (CRUD + `importSourceBuffer`/`pickAndImportSourceFiles`), `notebook-parse.ts`, `notebook-text.ts`, `notebook-library.ts`, `notebook-embeddings.ts`, `notebook-jobs.ts`, `notebook-rag.ts`, `notebook-flags.ts`, `notebook-youtube.ts` (keyless transcript fetch), `notebook-web.ts` (same-origin crawl).
 - Frontend: `src/views/NotebookView.tsx`, `src/components/notebook/SourcePassageModal.tsx`, `src/state/useNotebookController.ts` (`notebooks/activeNotebook/sources/chats/activeChat/stats/draft/asking/notice/embedding/excludedIds/streamByChat/stepsByChat/passage/settings/notes` + `create/remove/renameNotebook`, `create/removeChat`, `uploadFromPicker/uploadBrowserFiles`, `ask`, `toggleScope/resetScope`, `openPassage/closePassage`, `saveInstructions/saveNote/removeNote`, `reindexAll`).
-- Tests: `npm run test:notebook` (text, parse, library, pipeline).
+- Tests: `npm run test:notebook` (text, parse, library, pipeline, agentic RAG).
 
 ---
 

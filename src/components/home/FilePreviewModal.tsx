@@ -39,10 +39,12 @@ export function FilePreviewModal({
   filePath,
   onClose,
   onDownload,
+  load,
 }: {
   filePath: string;
   onClose: () => void;
   onDownload: (path: string) => void;
+  load?: () => Promise<{ name: string; path: string; size: number; base64: string }>;
 }) {
   const api = window.nexus || window.forgepilot;
   const fileName = filePath.split("/").pop() || filePath;
@@ -68,7 +70,7 @@ export function FilePreviewModal({
     };
     (async () => {
       try {
-        const file = await api.readHomeFile(filePath);
+        const file = load ? await load() : await api.readHomeFile(filePath);
         if (cancelled) return;
         const bytes = base64ToBytes(file.base64);
         if (kind === "markdown" || kind === "text") {

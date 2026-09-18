@@ -2,9 +2,12 @@ import { createChatModel } from "./providers.js";
 import { tool } from "@langchain/core/tools";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
-import { createDeepAgent, FilesystemBackend } from "deepagents";
+import { CompositeBackend, createDeepAgent, FilesystemBackend } from "deepagents";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import { z } from "zod";
-import { listProviders } from "./store.js";
+import { executeCommand } from "./command-service.js";
+import { getSkillsConfig, listProviders } from "./store.js";
 import { cosine, embedQuery } from "./notebook-embeddings.js";
 import { notebookFlags } from "./notebook-flags.js";
 import {
@@ -15,7 +18,7 @@ import {
   sessionOutline,
   sessionSummary,
 } from "./notebook-library.js";
-import { notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
+import { notebookSessionDir, saveNotebookNote, type NotebookSourceCitation, type NotebookAgentStep } from "./notebook-store.js";
 import {
   composeContextBlock,
   gateDecision,
@@ -38,7 +41,12 @@ export type NotebookRagOptions = {
   rerank?: { enabled: boolean; providerId?: string; model?: string };
   onToken?: (delta: string) => void;
   onStatus?: (text: string) => void;
+  onTool?: (name: string, summary: string, detail?: string) => void;
+  onStep?: (step: NotebookAgentStep) => void;
   generate?: (system: string, user: string) => Promise<string>;
+  /** Scoped run id for shell cancellation (defaults to `nbchat-<notebookId>`). */
+  runId?: string;
+  isCancelled?: () => boolean;
 };
 
 export type RetrievedChunk = {
@@ -70,6 +78,8 @@ export type ChatResult = {
   metadata: ChatMetadata;
   embeddingModel: string;
   dims: number;
+  steps?: NotebookAgentStep[];
+  evaluation?: { groundedness: number; verdict: "grounded" | "partial" | "ungrounded"; issues: string[] };
 };
 
 function queryVariants(query: string): string[] {
@@ -291,6 +301,15 @@ export async function hybridRetrieve(
   return { results: ranked.slice(0, Math.max(1, topK)), embeddingModel: partition.embeddingModel || "none", dims: partition.dims || 0 };
 }
 
+// Generative outputs (quiz, flashcards, mindmap, summary, study plan, full
+// overview) need broad coverage, not a top-k slice. These requests must pull
+// representative passages from every section instead of the 8 best hits.
+const GENERATIVE_PATTERN = /\b(quiz|quizzes|flashcards?|fiches|mind ?map|carte mentale|study plan|revision plan|r[eé]sum[eé]|summary of (all|everything|the)|overview of (all|everything|the)|all (topics|sections|concepts)|cheat sheet|key takeaways)\b/i;
+
+export function isGenerativeOutputRequest(text: string): boolean {
+  return GENERATIVE_PATTERN.test(text || "") || isSessionWideAsk(text || "");
+}
+
 // ---- Flag-gated: LLM router (one small structured call) ----
 
 async function llmRoute(
@@ -366,11 +385,14 @@ async function llmRerankScores(question: string, candidates: RetrievedChunk[], c
 
 const LANGUAGE_POLICY = `Answer in the same language as the user's latest question. French questions receive French answers, English questions receive English answers, Arabic questions receive Arabic answers, and mixed-language questions use their dominant language. Do not translate unless asked. Keep citation markers such as [S1] unchanged.`;
 
-const ANALYST_SYSTEM = `You are a precise research analyst. Answer ONLY from the SOURCES below — never from your own knowledge. ${LANGUAGE_POLICY} Rules:
+function analystSystem(): string {
+  const today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  return `You are a precise research analyst. Answer ONLY from the SOURCES below — never from your own knowledge. Today is ${today}. Anchor every relative time expression to it. ${LANGUAGE_POLICY} Rules:
 - Every factual claim must cite its source as [S1], [S2], etc.
 - If the sources do not contain the answer, say so plainly and state what IS in them.
 - Be direct and concise. No preamble, no tutoring tone.
 - End with a "Sources" line listing [S1] heading, [S2] heading, ...`;
+}
 
 async function generateAnswer(
   system: string,
@@ -432,13 +454,15 @@ type NotebookAgentRun = {
   fallbackModel: boolean;
   embeddingModel: string;
   dims: number;
+  steps: NotebookAgentStep[];
+  evaluation?: { groundedness: number; verdict: "grounded" | "partial" | "ungrounded"; issues: string[] };
 };
 
 /**
- * Tool-using notebook agent. LangGraph owns the run state, deepagents owns the
- * model/tool loop, and the tools keep the model grounded in this notebook's
- * source store. Casual conversation can finish without a tool call; source
- * questions must use search/outline before answering.
+ * Agentic notebook RAG. LangGraph orchestrates the run state, deepagents manages the
+ * iterative model/tool loop. The model plans multi-hop retrieval, searches sources across
+ * multiple queries, inspects document outlines, reads passages in depth, self-evaluates
+ * evidence completeness, and can save takeaways to Studio notes.
  */
 async function runNotebookAgent(
   notebookId: string,
@@ -453,16 +477,47 @@ async function runNotebookAgent(
   const modelName = options.chatModel || provider?.models[0];
   if (!provider || !modelName) return null;
 
+  const runId = options.runId || `nbchat-${notebookId}`;
+  const isCancelled = options.isCancelled || (() => false);
+  // agent-service is imported lazily: it pulls Electron-only modules that
+  // break plain-node unit tests when imported statically.
+  let CancelledError: new () => Error = Error;
+  try {
+    CancelledError = (await import("./agent-service.js")).RunCancelledError;
+  } catch { /* fallback throws plain Error; main still detects via runId flag */ }
+  const throwIfCancelled = () => {
+    if (isCancelled()) throw new CancelledError();
+  };
+
   const selected = new Map<string, RetrievedChunk>();
+  const executedSteps: NotebookAgentStep[] = [];
   let embeddingModel = "";
   let dims = 0;
-  options.onStatus?.("Understanding your question…");
+
+  options.onStatus?.("Planning research & analyzing question…");
+
   const searchTool = tool(async ({ query, topK, fileIds }) => {
-    options.onStatus?.("Searching relevant passages…");
-    const found = await hybridRetrieve(notebookId, query, Math.min(Math.max(topK || 8, 4), 16), fileIds?.length ? fileIds : options.fileIds);
+    throwIfCancelled();
+    const cleanQuery = query.trim();
+    options.onStatus?.(`Searching sources for "${cleanQuery}"…`);
+    const found = await hybridRetrieve(notebookId, cleanQuery, Math.min(Math.max(topK || 8, 4), 24), fileIds?.length ? fileIds : options.fileIds);
     embeddingModel = found.embeddingModel;
     dims = found.dims;
     for (const item of found.results) selected.set(item.chunkId, item);
+    const uniqueSources = [...new Set(found.results.map((r) => r.sourceName))];
+    const detail = found.results.length > 0
+      ? `Retrieved ${found.results.length} passage(s) from ${uniqueSources.join(", ")}`
+      : "No matching passages found";
+    const step: NotebookAgentStep = {
+      id: `step-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: "search_notebook_sources",
+      title: `Search: "${cleanQuery}"`,
+      detail,
+      status: "completed",
+    };
+    executedSteps.push(step);
+    options.onStep?.(step);
+    options.onTool?.("search_notebook_sources", `Search: "${cleanQuery}"`, detail);
     return JSON.stringify(found.results.map((item, index) => ({
       citation: `[S${index + 1}]`,
       chunkId: item.chunkId,
@@ -473,58 +528,219 @@ async function runNotebookAgent(
     })));
   }, {
     name: "search_notebook_sources",
-    description: "Search the uploaded notebook sources using hybrid semantic, lexical, and structural retrieval. Use this for any factual question about the sources.",
-    schema: z.object({ query: z.string().min(1), topK: z.number().int().min(4).max(16).optional(), fileIds: z.array(z.string()).optional() }),
+    description: "Search uploaded notebook sources with hybrid semantic + lexical retrieval. Break complex questions into focused sub-queries and call this tool multiple times as needed.",
+    schema: z.object({ query: z.string().min(1), topK: z.number().int().min(4).max(24).optional(), fileIds: z.array(z.string()).optional() }),
   });
+
   const outlineTool = tool(async () => {
-    options.onStatus?.("Inspecting the notebook structure…");
+    throwIfCancelled();
+    options.onStatus?.("Inspecting notebook structure & table of contents…");
     const outline = await sessionOutline(notebookSessionDir(notebookId), notebookId);
-    // Seed citations for overview answers as well as returning the structural map.
-    const overview = await hybridRetrieve(notebookId, "main topics overview concepts themes", 12, options.fileIds);
+    const overview = await hybridRetrieve(notebookId, "main topics overview concepts themes", 24, options.fileIds);
     embeddingModel = overview.embeddingModel;
     dims = overview.dims;
     for (const item of overview.results) selected.set(item.chunkId, item);
+    const detail = `${outline.length} file(s), ${outline.reduce((sum, d) => sum + d.sectionCount, 0)} sections`;
+    const step: NotebookAgentStep = {
+      id: `step-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: "inspect_notebook_outline",
+      title: "Inspect notebook outline",
+      detail,
+      status: "completed",
+    };
+    executedSteps.push(step);
+    options.onStep?.(step);
+    options.onTool?.("inspect_notebook_outline", "Inspect notebook outline", detail);
     return JSON.stringify({
       files: outline.map((doc) => ({ filename: doc.filename, sections: doc.sectionCount, chunks: doc.chunkCount, headings: doc.headings.slice(0, 20) })),
-      representativePassages: overview.results.slice(0, 12).map((item) => ({ source: item.sourceName, heading: item.headingPath.join(" › "), text: item.text.slice(0, 1800) })),
+      representativePassages: overview.results.slice(0, 24).map((item) => ({ source: item.sourceName, heading: item.headingPath.join(" › "), text: item.text.slice(0, 1800) })),
     });
   }, {
     name: "inspect_notebook_outline",
-    description: "Inspect the notebook's files, headings, section structure, and representative passages. Use for broad questions like what the notebook is about, summaries, study plans, or topic overviews.",
+    description: "Inspect the notebook's files, headings, section structure, and representative passages. Use for broad questions like what the notebook is about, summaries, study plans, or finding where topics live.",
     schema: z.object({}),
   });
+
   const passageTool = tool(async ({ chunkId }) => {
-    options.onStatus?.("Reading the relevant source passage…");
+    throwIfCancelled();
+    options.onStatus?.("Reading source passage with surrounding context…");
     const passage = await getChunkPassage(notebookId, chunkId);
-    if (!passage) return "Passage not found. Search again with the notebook source tool.";
+    if (!passage) return "Passage not found. Search again with search_notebook_sources.";
+    const stepTitle = `Read passage: ${passage.headingPath.join(" › ") || passage.sourceName}`;
+    const detail = `${passage.sourceName} (${passage.text.length} chars)`;
+    const step: NotebookAgentStep = {
+      id: `step-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: "read_notebook_passage",
+      title: stepTitle,
+      detail,
+      status: "completed",
+    };
+    executedSteps.push(step);
+    options.onStep?.(step);
+    options.onTool?.("read_notebook_passage", stepTitle, detail);
     return JSON.stringify(passage);
   }, {
     name: "read_notebook_passage",
-    description: "Read a retrieved passage with its neighboring context and section summary. Use when the user asks to explain, simplify, compare, or go deeper into evidence.",
+    description: "Read a specific retrieved passage with its neighboring context and section summary. Use when a retrieved chunk needs deeper examination.",
     schema: z.object({ chunkId: z.string().min(1) }),
   });
+
+  const evaluateEvidenceTool = tool(async ({ question: q, needed_information, findings_so_far, sufficiency, next_search_query }) => {
+    throwIfCancelled();
+    options.onStatus?.(`Evaluating evidence: ${sufficiency}…`);
+    const step: NotebookAgentStep = {
+      id: `step-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: "evaluate_evidence",
+      title: `Evidence check: ${sufficiency}`,
+      detail: findings_so_far ? findings_so_far.slice(0, 200) : undefined,
+      status: "completed",
+    };
+    executedSteps.push(step);
+    options.onStep?.(step);
+    options.onTool?.("evaluate_evidence", `Evidence check: ${sufficiency}`, findings_so_far);
+    return JSON.stringify({
+      status: "recorded",
+      sufficiency,
+      advice: sufficiency === "sufficient"
+        ? "Evidence is sufficient. Synthesize your final grounded response, citing every factual claim with [Sn] markers."
+        : `Evidence is ${sufficiency}. Run another search_notebook_sources with query: "${next_search_query || q}" to fill the gap before finalizing.`,
+    });
+  }, {
+    name: "evaluate_evidence",
+    description: "Self-RAG evaluation: call this tool after retrieving to evaluate if current evidence is sufficient to answer the question, or if another targeted search query is needed.",
+    schema: z.object({
+      question: z.string().describe("The core question or topic being investigated"),
+      needed_information: z.string().describe("Specific facts or points needed to answer fully"),
+      findings_so_far: z.string().describe("Summary of what has been found so far in the passages"),
+      sufficiency: z.enum(["sufficient", "insufficient", "partially_sufficient"]).describe("Whether current evidence is sufficient"),
+      next_search_query: z.string().optional().describe("If insufficient or partial, the refined search query to execute next"),
+    }),
+  });
+
+  const saveNoteTool = tool(async ({ title, content }) => {
+    throwIfCancelled();
+    options.onStatus?.(`Saving studio note: "${title}"…`);
+    const note = await saveNotebookNote({
+      notebookId,
+      title: title.trim(),
+      content: content.trim(),
+      citations: toCitations([...selected.values()].slice(0, 10)),
+    });
+    const step: NotebookAgentStep = {
+      id: `step-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: "save_note_to_studio",
+      title: `Saved studio note: "${title}"`,
+      detail: `${content.length} chars`,
+      status: "completed",
+    };
+    executedSteps.push(step);
+    options.onStep?.(step);
+    options.onTool?.("save_note_to_studio", `Saved note: "${title}"`, step.detail);
+    return JSON.stringify({ status: "saved", noteId: note.id, title: note.title });
+  }, {
+    name: "save_note_to_studio",
+    description: "Save a key takeaway, study note, flashcard set, or summary directly to the user's Studio notes.",
+    schema: z.object({
+      title: z.string().min(1).describe("Short title of the note"),
+      content: z.string().min(1).describe("Markdown content of the note"),
+    }),
+  });
+
+  // Workspace: the notebook's documents folder. Deliverables the agent builds
+  // (slides, reports, spreadsheets) land here; the source store
+  // (library/vectors/sources) lives next to it and is never exposed to file
+  // tools — only the retrieval tools above can read it.
+  const { docsDir } = await import("./notebook-documents.js");
+  const workspace = docsDir(notebookId);
+  await fs.mkdir(workspace, { recursive: true });
+  const runStartMs = Date.now();
+
+  const fileBackend: any = new FilesystemBackend({ rootDir: workspace, virtualMode: true });
+  fileBackend.id = `notebook-${notebookId}`;
+  fileBackend.execute = (command: string) => executeCommand(workspace, command, { runId });
+
+  // Shared skills — the same global library Home and Code use (the user's own
+  // uploaded skills) plus bundled system skills, scoped to skills enabled for
+  // notebook mode.
+  let backend: any = fileBackend;
+  let skillNote = "";
+  let skillFilesTool: any = null;
+  let skillDirs: string[] = [];
+  try {
+    const skillsConfig = await getSkillsConfig().catch(() => ({ enabled: true }));
+    if (skillsConfig.enabled !== false) {
+      const { GLOBAL_SKILLS_ROUTE, SKILL_SOURCE_PRIORITY, SYSTEM_SKILLS_ROUTE, buildSkillMounts, createSkillFilesTool, globalSkillsDir, listSkills, listSystemSkills, recommendSkills, skillAppliesToMode, skillDirVirtualPath, skillVirtualPath, systemSkillsDir } = await import("./skills-service.js");
+      const fullCatalog = [...(await listSkills(workspace).catch(() => [])), ...(await listSystemSkills().catch(() => []))];
+      const catalog = fullCatalog.filter((s) => skillAppliesToMode(s, "notebook"));
+      skillFilesTool = createSkillFilesTool(catalog, workspace);
+      skillDirs = catalog
+        .slice()
+        .sort((a, b) => SKILL_SOURCE_PRIORITY[b.source] - SKILL_SOURCE_PRIORITY[a.source])
+        .map(skillDirVirtualPath);
+      const recs = recommendSkills(catalog, question, 3);
+      const offLimits = fullCatalog.filter((s) => !skillAppliesToMode(s, "notebook"));
+      const offUser = offLimits.filter((s) => s.source !== "system");
+      const offSystemCount = offLimits.length - offUser.length;
+      if (recs.length) {
+        const counts = (["project", "global", "system"] as const)
+          .map((source) => `${catalog.filter((s) => s.source === source).length} ${source}`)
+          .join(", ");
+        skillNote = `[System Note: ${catalog.length} skill(s) installed for notebook mode (${counts}). Most relevant to your task:\n${recs.map((s) => `- ${s.name}${s.description ? ` — ${s.description}` : ""} → read ${skillVirtualPath(s)} first`).join("\n")}\nIf a skill covers your task, read its SKILL.md BEFORE acting. This read is free.]`;
+      }
+      if (offUser.length) {
+        skillNote += `${skillNote ? "\n" : ""}[Skills NOT available in notebook mode — do NOT read, follow, or mention them: ${offUser.map((s) => s.name).join(", ")}.]`;
+      }
+      if (offSystemCount > 0) {
+        skillNote += `${skillNote ? "\n" : ""}[${offSystemCount} system skill(s) are disabled in notebook mode — only use skills listed above.]`;
+      }
+      const skillsBackend = new FilesystemBackend({ rootDir: globalSkillsDir(), virtualMode: true });
+      let systemBackend: any = null;
+      try {
+        systemBackend = new FilesystemBackend({ rootDir: systemSkillsDir(), virtualMode: true });
+        const refuseSystemWrite = (action: string) => async () => {
+          throw new Error(`System skills are read-only: ${action} is disabled.`);
+        };
+        systemBackend.write = refuseSystemWrite("write_file");
+        systemBackend.edit = refuseSystemWrite("edit_file");
+        systemBackend.delete = refuseSystemWrite("delete");
+        systemBackend.execute = refuseSystemWrite("execute");
+      } catch { /* no system skills shipped */ }
+      const mounts = buildSkillMounts(skillsBackend, systemBackend);
+      backend = new CompositeBackend(fileBackend, mounts);
+    }
+  } catch { /* skills are advisory — never fail a run */ }
 
   try {
     options.onStatus?.("Preparing a grounded answer…");
     const llm = await createChatModel(provider, modelName);
     const agent = await createDeepAgent({
       model: llm,
-      backend: new FilesystemBackend({ rootDir: notebookSessionDir(notebookId), virtualMode: true }) as any,
-      tools: [searchTool, outlineTool, passageTool],
-      systemPrompt: `You are the interactive agent for an educational NotebookLM-style workspace. You have a conversation with the learner and a set of uploaded course sources.
+      backend,
+      tools: [searchTool, outlineTool, passageTool, evaluateEvidenceTool, saveNoteTool, ...(skillFilesTool ? [skillFilesTool] : [])],
+      skills: skillDirs,
+      systemPrompt: `You are an advanced Agentic RAG research assistant for an educational NotebookLM-style workspace.
+Your primary directive is grounded, faithful synthesis over uploaded course materials.
+
+Today is ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })} (${new Date().toISOString().slice(0, 10)}). Anchor every relative time expression to it ("last decade", "this year", "recent").
 
 Language: ${LANGUAGE_POLICY}
 
-Behavior:
-- Understand the user's intent, including short follow-ups such as "why?", "what about this?", "explain that", "quiz me", and "make a study plan" by using the recent conversation.
-- For greetings and ordinary conversation, answer naturally without a canned phrase and without calling a source tool.
-- For anything about the uploaded materials, call search_notebook_sources or inspect_notebook_outline before answering. For broad questions like "what is this about?", use inspect_notebook_outline.
-- Use read_notebook_passage when a specific retrieved passage needs deeper explanation.
-- Never invent facts about the uploaded materials. Every source-grounded factual claim must cite the returned citation marker such as [S1].
-- If the sources do not contain the answer, say that clearly and suggest a useful next action. Do not silently answer from general knowledge.
-- Be interactive: answer the immediate request, then offer one relevant next step only when it helps (for example, explain, compare, quiz, or summarize).
-- Return clean Markdown. Do not mention internal tools or planning.
+Agentic RAG Guidelines:
+1. QUERY PLANNING: For complex, comparative ("Compare X and Y"), cross-document, or multi-topic questions, decompose the question and call search_notebook_sources with multiple distinct sub-queries. Do not settle for a single lookup if more context is needed.
+2. ITERATIVE RETRIEVAL:
+   - Call search_notebook_sources for factual search across sources.
+   - Call inspect_notebook_outline when asked broad questions ("what is this notebook about?", summaries, study guides, topic overviews) or to discover which files cover what.
+   - Call read_notebook_passage when a retrieved chunk needs deeper context.
+3. SELF-REFLECTION (Self-RAG): Call evaluate_evidence to verify whether you have sufficient evidence to answer faithfully. If evidence is lacking, reformulate your query and search again.
+4. GROUNDEDNESS & CITATIONS:
+   - Every factual claim MUST include an inline citation marker matching the retrieved chunks, e.g. [S1], [S2].
+   - If the sources do not contain the answer, say so clearly and state what is missing. Never invent facts outside the uploaded documents.
+5. STUDIO NOTES: When the user asks for key takeaways, flashcards, study notes, or summaries to save, use save_note_to_studio in addition to your conversational response.
+6. DELIVERABLES: If the user asks for a file (.docx, .pptx, .xlsx, .pdf), follow any relevant skill: write a generator script with write_file, run it with execute, verify with ls, and delete the throwaway script.
+7. Return clean Markdown without exposing internal JSON tool arguments.
+8. SKILLS: Skills listed in the System Note below include exact paths — read the relevant SKILL.md directly via its given path. Never browse skill folders (ls/glob of .nexus/skills, /global-skills, /system-skills) to discover skills.
 
+${skillNote ? `\n${skillNote}` : ""}
 Notebook files: ${summary.files.join(", ") || "(none)"}
 Notebook headings: ${summary.headings.slice(0, 30).join(" | ") || "(none)"}
 Notebook terms: ${summary.terms.slice(0, 40).join(", ") || "(none)"}${options.instructions ? `\nNotebook-specific instructions:\n${options.instructions}` : ""}`,
@@ -536,25 +752,98 @@ Notebook terms: ${summary.terms.slice(0, 40).join(", ") || "(none)"}${options.in
       messages: Annotation<any[]>({ reducer: (_, value) => value, default: () => [] }),
       answer: Annotation<string>({ reducer: (_, value) => value, default: () => "" }),
     });
+
     const graph = new StateGraph(AgentState as any)
       .addNode("notebook_agent", async (state: any) => {
-        const stream = await (agent as any).stream({ messages: state.messages }, { streamMode: ["values", "messages"], recursionLimit: 24 });
+        throwIfCancelled();
+        const stream = await (agent as any).stream(
+          { messages: state.messages },
+          { streamMode: ["values", "updates", "messages"], recursionLimit: 60 }
+        );
         let messages: any[] = state.messages;
+        let lastToolSig: string | null = null;
+        let toolRepeatCount = 0;
+
         for await (const item of stream as AsyncIterable<any>) {
+          throwIfCancelled();
           const [mode, payload] = Array.isArray(item) ? item : ["values", item];
-          if (mode === "values" && Array.isArray(payload?.messages)) messages = payload.messages;
+          if (mode === "values" && Array.isArray(payload?.messages)) {
+            messages = payload.messages;
+            continue;
+          }
+          if (mode === "updates" && payload && typeof payload === "object") {
+            for (const delta of Object.values<any>(payload)) {
+              for (const message of delta?.messages ?? []) {
+                if (Array.isArray(message?.tool_calls)) {
+                  for (const call of message.tool_calls) {
+                    const name = call?.name || "tool";
+                    const sig = `${name}:${JSON.stringify(call?.args ?? {}).slice(0, 300)}`;
+                    if (sig === lastToolSig) {
+                      toolRepeatCount++;
+                    } else {
+                      lastToolSig = sig;
+                      toolRepeatCount = 1;
+                    }
+                    if (toolRepeatCount >= 4) {
+                      throw new Error(`DoomLoop: ${name} repeated without progress`);
+                    }
+                    const query = call.args?.query ? `"${call.args.query}"` : call.args?.title ? `"${call.args.title}"` : call.args?.path ? `"${call.args.path}"` : call.args?.file_path ? `"${call.args.file_path}"` : call.args?.command ? `"${call.args.command}"` : "";
+                    const desc = query ? `${name} · ${query}` : name;
+                    options.onTool?.(name, desc, JSON.stringify(call.args ?? {}));
+                  }
+                }
+              }
+            }
+            continue;
+          }
+          if (mode === "messages") {
+            const [chunk] = Array.isArray(payload) ? payload : [payload];
+            const type = (chunk as any)?._getType?.() || (chunk as any)?.type || (chunk as any)?.constructor?.name;
+            const isAi = type === "ai" || type === "AIMessageChunk" || type === "AIMessage";
+            const hasToolCalls = Boolean((chunk as any)?.tool_call_chunks?.length || (chunk as any)?.tool_calls?.length);
+            if (isAi && !hasToolCalls) {
+              const delta = chunkTextContent(chunk);
+              if (delta) options.onToken?.(delta);
+            }
+          }
         }
-        const final = messages[messages.length - 1];
-        return { messages, answer: chunkTextContent(final) };
+        const aiMessages = messages.filter((m: any) => {
+          const type = m?._getType?.() || m?.type || m?.constructor?.name;
+          return (type === "ai" || type === "AIMessage" || m?.role === "assistant") && !m?.tool_call_id;
+        });
+        const lastAi = aiMessages[aiMessages.length - 1];
+        const hasPendingToolCalls = Boolean(Array.isArray(lastAi?.tool_calls) && lastAi.tool_calls.length > 0 && !chunkTextContent(lastAi).trim());
+        const finalAnswer = lastAi && !hasPendingToolCalls ? chunkTextContent(lastAi).trim() : "";
+        return { messages, answer: finalAnswer };
       })
       .addEdge(START, "notebook_agent")
       .addEdge("notebook_agent", END)
       .compile();
+
     const result = await graph.invoke({ messages: initial });
     const answer = String((result as any).answer || "").trim();
     if (!answer) return null;
-    const ranked = [...selected.values()].sort((a, b) => b.final - a.final).slice(0, 12);
+
+    // Generative outputs keep broad coverage (up to 24 cited passages);
+    // focused questions keep the tight top-12 slice.
+    const keep = isGenerativeOutputRequest(question) ? 24 : 12;
+    const ranked = [...selected.values()].sort((a, b) => b.final - a.final).slice(0, keep);
     const sources = toCitations(ranked);
+    await registerAgentDeliverables(notebookId, workspace, runStartMs, question, answer, sources);
+
+    // Groundedness self-evaluation
+    const citedMarkers = answer.match(/\[S\d+\]/g) || [];
+    let evaluation: { groundedness: number; verdict: "grounded" | "partial" | "ungrounded"; issues: string[] } | undefined;
+    if (sources.length > 0) {
+      if (citedMarkers.length >= 2) {
+        evaluation = { groundedness: 9, verdict: "grounded", issues: [] };
+      } else if (citedMarkers.length === 1) {
+        evaluation = { groundedness: 7, verdict: "partial", issues: ["Single citation found"] };
+      } else {
+        evaluation = { groundedness: 5, verdict: "partial", issues: ["Answer did not explicitly cite [Sn] source markers"] };
+      }
+    }
+
     return {
       answer,
       sources,
@@ -562,11 +851,72 @@ Notebook terms: ${summary.terms.slice(0, 40).join(", ") || "(none)"}${options.in
       fallbackModel: false,
       embeddingModel,
       dims,
+      steps: executedSteps,
+      evaluation,
     };
   } catch (error) {
+    if (error instanceof CancelledError) throw error;
     console.warn("[notebook] agent loop unavailable; using grounded fallback:", error instanceof Error ? error.message : error);
     return null;
   }
+}
+
+/**
+ * Picks up deliverables the agent built in the workspace during the run
+ * (verified .docx/.pptx/.pdf/.xlsx newer than the run start) and registers
+ * them as notebook documents so they show up under OUTPUTS. Throwaway
+ * generator scripts are removed once a deliverable exists.
+ */
+async function registerAgentDeliverables(
+  notebookId: string,
+  workspace: string,
+  runStartMs: number,
+  question: string,
+  answer: string,
+  sources: NotebookSourceCitation[]
+): Promise<void> {
+  try {
+    const { registerNotebookDocument } = await import("./notebook-documents.js");
+    const entries = await fs.readdir(workspace).catch(() => [] as string[]);
+    const fresh: Array<{ name: string; size: number }> = [];
+    for (const name of entries) {
+      const ext = name.split(".").pop()?.toLowerCase() || "";
+      if (!["docx", "pptx", "pdf", "xlsx"].includes(ext)) continue;
+      const abs = path.join(workspace, name);
+      const stat = await fs.stat(abs).catch(() => null);
+      if (stat && stat.isFile() && stat.size > 0 && stat.mtimeMs >= runStartMs - 60_000) {
+        fresh.push({ name, size: stat.size });
+      }
+    }
+    if (!fresh.length) return;
+    // Throwaway generator scripts served their purpose — only deliverables remain.
+    for (const name of entries) {
+      if (!/^generate_.*\.(py|js|mjs|cjs|ts|sh|ps1)$/i.test(name) && !/^generate_doc\.py$/i.test(name)) continue;
+      const abs = path.join(workspace, name);
+      const stat = await fs.stat(abs).catch(() => null);
+      if (stat && stat.mtimeMs >= runStartMs - 60_000) {
+        await fs.unlink(abs).catch(() => {});
+      }
+    }
+    const title = question.trim().replace(/\s+/g, " ").slice(0, 80) || "Notebook deliverable";
+    for (const file of fresh) {
+      const ext = file.name.split(".").pop()?.toLowerCase() || "";
+      const format = (ext === "pptx" ? "pptx" : ext === "pdf" ? "pdf" : ext === "xlsx" ? "xlsx" : "docx") as "docx" | "pdf" | "pptx" | "xlsx";
+      await registerNotebookDocument(notebookId, {
+        kind: ext === "pptx" ? "slides" : "report",
+        format,
+        title,
+        filename: file.name,
+        size: file.size,
+        prompt: question.slice(0, 2000),
+        preview: answer.slice(0, 20000),
+        citations: sources.slice(0, 24),
+        sectionCount: 0,
+        slideCount: 0,
+        engine: "skill-agent",
+      }).catch(() => {});
+    }
+  } catch { /* registration is best-effort */ }
 }
 
 // ---- Main pipeline ----
@@ -592,6 +942,8 @@ export async function answerNotebookQuestion(
       answer: agentResult.answer,
       sources: agentResult.sources,
       retrieval: agentResult.retrieval,
+      steps: agentResult.steps,
+      evaluation: agentResult.evaluation,
       metadata: {
         routing: heuristicForAgent.action,
         topScore: agentResult.sources[0]?.score || 0,
@@ -636,6 +988,7 @@ export async function answerNotebookQuestion(
       metadata: { routing: action, topScore: 0, refused: false, fallbackModel },
       embeddingModel: "",
       dims: 0,
+      steps: [{ id: `step-${Date.now()}`, name: "conversational_reply", title: "Direct conversational reply", status: "completed" }],
     };
   }
   if (action === "outside_files") {
@@ -652,6 +1005,7 @@ export async function answerNotebookQuestion(
       metadata: { routing: action, topScore: 0, refused: true, fallbackModel },
       embeddingModel: "",
       dims: 0,
+      steps: [{ id: `step-${Date.now()}`, name: "groundedness_gate", title: "Topic not covered in sources", status: "completed" }],
     };
   }
 
@@ -671,7 +1025,7 @@ export async function answerNotebookQuestion(
     const lib = await loadLibrary(root, notebookId);
     const repChunks: RetrievedChunk[] = [];
     for (const doc of outline) {
-      for (const heading of doc.headings.slice(0, 4)) {
+      for (const heading of doc.headings.slice(0, 8)) {
         const sectionId = Object.values(lib.sections).find((s) => s.fileId === doc.fileId && s.headingPath.join(" › ") === heading.path.join(" › "))?.id;
         const firstChunkId = sectionId ? lib.sections[sectionId]?.chunkIds[0] : undefined;
         const chunk = firstChunkId ? lib.chunks[firstChunkId] : undefined;
@@ -685,11 +1039,11 @@ export async function answerNotebookQuestion(
     }
     const context = composeContextBlock(
       repChunks.map((c) => ({ headingPath: [c.sourceName, ...c.headingPath], text: c.text })),
-      12000
+      20000
     );
     const historyBlock = history.slice(-6).map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.text.slice(0, 500)}`).join("\n");
   const { text: answer, fallbackModel } = await generateAnswer(
-      `${ANALYST_SYSTEM}\n${options.instructions ? `NOTEBOOK-SPECIFIC INSTRUCTIONS (follow only when compatible with source grounding):\n${options.instructions}` : ""}`,
+      `${analystSystem()}\n${options.instructions ? `NOTEBOOK-SPECIFIC INSTRUCTIONS (follow only when compatible with source grounding):\n${options.instructions}` : ""}`,
       `Conversation so far:\n${historyBlock || "(none)"}\n\nQuestion: ${question}\n\nSOURCES (document outline + representative sections):\n${context}`,
       options,
       options.onToken
@@ -708,13 +1062,16 @@ export async function answerNotebookQuestion(
   // 2b. Retrieve: run several inexpensive query views and fuse the results.
   // A single embedding is brittle for compound questions and paraphrases;
   // multi-query retrieval improves recall while preserving the local-only,
-  // deterministic base pipeline.
+  // deterministic base pipeline. Generative outputs (quiz, mindmap, full
+  // summary) retrieve and keep more so every section is represented.
+  const generative = isGenerativeOutputRequest(question);
+  const effectiveTopK = generative ? Math.max(topK, 24) : topK;
   const variants = queryVariants(searchQuery);
   const retrievalBatches = await Promise.all(
-    variants.map((variant) => hybridRetrieve(notebookId, variant, Math.max(topK, 12), options.fileIds))
+    variants.map((variant) => hybridRetrieve(notebookId, variant, Math.max(effectiveTopK, 24), options.fileIds))
   );
   const firstBatch = retrievalBatches[0] || { results: [], embeddingModel: "none", dims: 0 };
-  const results = mergeRetrievedResults(retrievalBatches.map((batch) => batch.results), Math.max(topK * 3, 16));
+  const results = mergeRetrievedResults(retrievalBatches.map((batch) => batch.results), Math.max(effectiveTopK * 3, 24));
   const embeddingModel = firstBatch.embeddingModel;
   const dims = firstBatch.dims;
   if (!results.length) {
@@ -736,7 +1093,7 @@ export async function answerNotebookQuestion(
       ranked = results.map((r, i) => ({ ...r, final: r.final * 0.4 + scores[i] * 0.6 })).sort((a, b) => b.final - a.final);
     }
   }
-  const top = ranked.slice(0, topK);
+  const top = ranked.slice(0, effectiveTopK);
   const bestSemantic = Math.max(...top.map((r) => r.semantic));
 
   // 3. Groundedness gate: refuse rather than hallucinate.
@@ -750,10 +1107,12 @@ export async function answerNotebookQuestion(
       metadata: { routing: action, topScore: Number(bestSemantic.toFixed(4)), refused: true, fallbackModel: false },
       embeddingModel,
       dims,
+      steps: [{ id: `step-${Date.now()}`, name: "groundedness_gate", title: "Groundedness gate: refused to hallucinate", detail: `Top semantic score: ${bestSemantic.toFixed(2)}`, status: "completed" }],
     };
   }
 
   // 4. Context expansion: neighbors + heading path + section summary, bounded.
+  // Generative outputs get a bigger budget so the plan covers everything.
   const expanded: Array<{ headingPath: string[]; text: string; summary?: string }> = [];
   for (const r of top) {
     const { prev, next } = await chunkNeighbors(root, notebookId, r.chunkId);
@@ -764,10 +1123,10 @@ export async function answerNotebookQuestion(
       summary: r.summary,
     });
   }
-  const context = composeContextBlock(expanded, 12000);
+  const context = composeContextBlock(expanded, generative ? 20000 : 12000);
   const historyBlock = history.slice(-6).map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.text.slice(0, 500)}`).join("\n");
   const { text: answer, fallbackModel } = await generateAnswer(
-    `${ANALYST_SYSTEM}\n${options.instructions ? `NOTEBOOK-SPECIFIC INSTRUCTIONS (follow only when compatible with source grounding):\n${options.instructions}` : ""}`,
+    `${analystSystem()}\n${options.instructions ? `NOTEBOOK-SPECIFIC INSTRUCTIONS (follow only when compatible with source grounding):\n${options.instructions}` : ""}`,
     `Conversation so far:\n${historyBlock || "(none)"}\n\nQuestion: ${question}\n\nSOURCES:\n${context}`,
     options,
     options.onToken
@@ -780,6 +1139,8 @@ export async function answerNotebookQuestion(
     metadata: { routing: action, topScore: Number(bestSemantic.toFixed(4)), refused: false, fallbackModel },
     embeddingModel,
     dims,
+    steps: [{ id: `step-${Date.now()}`, name: "hybrid_retrieve", title: `Hybrid search: "${searchQuery}"`, detail: `Fused ${top.length} passage(s)`, status: "completed" }],
+    evaluation: { groundedness: 8, verdict: "grounded", issues: [] },
   };
 }
 

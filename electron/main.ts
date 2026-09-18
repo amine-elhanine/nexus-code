@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-import { runProjectAgent, RunCancelledError, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint, summarizeCompletedSteps, type AgentMode, type AgentSettings, type AgentEvent, type HistoryInput } from "./agent-service.js";
+import { runProjectAgent, RunCancelledError, clearLastRunCheckpoint, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint, summarizeCompletedSteps, type AgentMode, type AgentSettings, type AgentEvent, type HistoryInput } from "./agent-service.js";
 import { PROVIDERS, fetchRemoteModels } from "./providers.js";
 import {
   appendSessionMessages, createSession, deleteProject, deleteSession, ensureHomeProject, getProject, getSession,
@@ -18,7 +18,7 @@ import {
 } from "./store.js";
 import { HOME_PROJECT_ID, cleanupHomeGeneratorScripts, downloadHomeFile, ensureHomeDir, listHomeFiles, listHomeSessionFiles, openHomeFolder, readHomeFile } from "./home-service.js";
 import { testMcpServer } from "./mcp-service.js";
-import { createSkill, deleteSkill, ensureSkillSourceDirs, importSkill, listSkills, openSkillsFolder, readSkillContent } from "./skills-service.js";
+import { createSkill, deleteSkill, ensureSkillSourceDirs, importSkill, listSkills, openSkillsFolder, readSkillContent, setSkillModes } from "./skills-service.js";
 import { beginCommandRun, cancelCommandRun, endCommandRun, isCommandRunCancelled, runProjectCommand, getAgentBackend } from "./command-service.js";
 import { createWorkspaceCheckpoint, deleteWorkspaceCheckpoint, getWorkspaceDiffFiles, restoreWorkspaceCheckpoint, revertAllWorkspaceChanges, revertWorkspaceFile } from "./diff-service.js";
 import { getWorkspaceGit, listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./project-tools.js";
@@ -27,7 +27,7 @@ import {
   getSessionWorktreeDiff, isGitRepo
 } from "./worktree-service.js";
 import { commitSessionWork, ensureGitRepo, getHeadCommit } from "./repo-service.js";
-import { listArtifacts, getArtifact, updateArtifactStatus, type ArtifactStatus } from "./artifacts-service.js";
+import { listArtifacts, getArtifact, updateArtifactStatus, deleteSessionTelemetry, type ArtifactStatus } from "./artifacts-service.js";
 import { readSessionTrajectory } from "./trajectory-service.js";
 import { discoverProjectRules } from "./rules-service.js";
 import { terminalService } from "./terminal-service.js";
@@ -413,6 +413,40 @@ app.whenReady().then(async () => {
   ipcMain.handle("notebook:notes:list", (_event, notebookId: string) => listNotebookNotes(notebookId));
   ipcMain.handle("notebook:notes:save", (_event, input: Parameters<typeof saveNotebookNote>[0]) => saveNotebookNote(input));
   ipcMain.handle("notebook:notes:delete", (_event, notebookId: string, noteId: string) => deleteNotebookNote(notebookId, noteId));
+  ipcMain.handle("notebook:documents:list", async (_event, notebookId: string) => {
+    const { listNotebookDocuments } = await import("./notebook-documents.js");
+    return listNotebookDocuments(notebookId);
+  });
+  ipcMain.handle("notebook:document:generate", async (_event, payload: { notebookId: string; kind: "report" | "slides"; format: "docx" | "pdf" | "pptx"; prompt?: string; fileIds?: string[]; providerId?: string; model?: string }) => {
+    const { generateNotebookDocument } = await import("./notebook-documents.js");
+    const notebookSettings = await getNotebookSettings(payload.notebookId);
+    const statusKey = `nbdoc:${payload.notebookId}`;
+    emitFor(statusKey, { type: "status", text: "Generating document…" });
+    const { doc, fallbackReason } = await generateNotebookDocument(payload.notebookId, {
+      kind: payload.kind,
+      format: payload.format,
+      prompt: payload.prompt,
+      fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
+      providerId: payload.providerId,
+      model: payload.model,
+      instructions: notebookSettings.instructions,
+      onStatus: (text) => emitFor(statusKey, { type: "status", text }),
+    });
+    emitFor(statusKey, { type: "status", text: `Saved ${doc.filename}` });
+    return { doc, fallbackReason };
+  });
+  ipcMain.handle("notebook:document:delete", async (_event, notebookId: string, docId: string) => {
+    const { deleteNotebookDocument } = await import("./notebook-documents.js");
+    return deleteNotebookDocument(notebookId, docId);
+  });
+  ipcMain.handle("notebook:document:download", async (_event, notebookId: string, docId: string) => {
+    const { downloadNotebookDocument } = await import("./notebook-documents.js");
+    return downloadNotebookDocument(notebookId, docId);
+  });
+  ipcMain.handle("notebook:document:read", async (_event, notebookId: string, docId: string) => {
+    const { readNotebookDocument } = await import("./notebook-documents.js");
+    return readNotebookDocument(notebookId, docId);
+  });
   ipcMain.handle("notebook:passage", (_event, notebookId: string, chunkId: string) => getChunkPassage(notebookId, chunkId));
   ipcMain.handle("notebook:chats", (_event, notebookId: string) => listNotebookChats(notebookId));
   ipcMain.handle("notebook:createChat", (_event, notebookId: string, title?: string) => createNotebookChat(notebookId, title));
@@ -432,33 +466,64 @@ app.whenReady().then(async () => {
       .map((m) => ({ role: m.role as "user" | "assistant", text: m.text }));
     const notebookSettings = await getNotebookSettings(payload.notebookId);
     const appSettings = await getAppSettings();
-    const result = await answerNotebookQuestion(payload.notebookId, payload.question, history, {
-      fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
-      chatProviderId: payload.providerId,
-      chatModel: payload.model,
-      topK: payload.topK || 8,
-      instructions: notebookSettings.instructions,
-      rerank: appSettings.notebookRerankEnabled ? {
-        enabled: true,
-        providerId: appSettings.notebookRerankProviderId,
-        model: appSettings.notebookRerankModel,
-      } : undefined,
-      onStatus: (text) => emitFor(payload.chatId, { type: "status", text }),
-      onToken: (delta) => emitFor(payload.chatId, { type: "token", text: delta }),
-    });
-    const chat = await appendNotebookMessage(payload.notebookId, payload.chatId, {
-      role: "assistant",
-      text: result.answer,
-      createdAt: new Date().toISOString(),
-      citations: result.sources,
-      retrieval: result.retrieval,
-      metadata: result.metadata,
-    });
-    const summary = result.metadata.refused
-      ? "not covered in your files — refused rather than guessed"
-      : `answered from ${result.sources.length} passages in ${((Date.now() - started) / 1000).toFixed(1)}s`;
-    emitFor(payload.chatId, { type: "status", text: summary });
-    return { result, chat };
+    beginCommandRun(payload.chatId);
+    try {
+      const result = await answerNotebookQuestion(payload.notebookId, payload.question, history, {
+        fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
+        chatProviderId: payload.providerId,
+        chatModel: payload.model,
+        topK: payload.topK || 8,
+        instructions: notebookSettings.instructions,
+        rerank: appSettings.notebookRerankEnabled ? {
+          enabled: true,
+          providerId: appSettings.notebookRerankProviderId,
+          model: appSettings.notebookRerankModel,
+        } : undefined,
+        runId: payload.chatId,
+        isCancelled: () => isCommandRunCancelled(payload.chatId),
+        onStatus: (text) => emitFor(payload.chatId, { type: "status", text }),
+        onToken: (delta) => emitFor(payload.chatId, { type: "token", text: delta }),
+        onTool: (name, summary, detail) => emitFor(payload.chatId, { type: "tool", text: summary || name, detail }),
+      });
+      const chat = await appendNotebookMessage(payload.notebookId, payload.chatId, {
+        role: "assistant",
+        text: result.answer,
+        createdAt: new Date().toISOString(),
+        citations: result.sources,
+        retrieval: result.retrieval,
+        metadata: result.metadata,
+        steps: result.steps,
+        evaluation: result.evaluation,
+      });
+      const summary = result.metadata.refused
+        ? "not covered in your files — refused rather than guessed"
+        : `answered from ${result.sources.length} passage${result.sources.length === 1 ? "" : "s"} in ${((Date.now() - started) / 1000).toFixed(1)}s`;
+      emitFor(payload.chatId, { type: "status", text: summary });
+      return { result, chat };
+    } catch (error) {
+      if (error instanceof RunCancelledError || isCommandRunCancelled(payload.chatId)) {
+        const chat = await appendNotebookMessage(payload.notebookId, payload.chatId, {
+          role: "assistant",
+          text: "Run cancelled by user.",
+          createdAt: new Date().toISOString(),
+        });
+        emitFor(payload.chatId, { type: "status", text: "Run cancelled." });
+        return {
+          result: {
+            answer: "Run cancelled by user.",
+            sources: [],
+            retrieval: [],
+            metadata: { routing: "retrieve", topScore: 0, refused: false, fallbackModel: false },
+            embeddingModel: "",
+            dims: 0,
+          },
+          chat,
+        };
+      }
+      throw error;
+    } finally {
+      endCommandRun(payload.chatId);
+    }
   });
   ipcMain.handle("notebook:embedding:get", () => getNotebookEmbeddingConfig());
   ipcMain.handle("notebook:embedding:save", (_event, config: { providerId: string; model: string }) => saveNotebookEmbeddingConfig(config));
@@ -527,15 +592,41 @@ app.whenReady().then(async () => {
     return session;
   });
   ipcMain.handle("session:update", (_event, projectId: string, sessionId: string, patch: Parameters<typeof updateSession>[2]) => updateSession(projectId, sessionId, patch));
-  ipcMain.handle("session:delete", async (_event, projectId: string, sessionId: string) => {
-    const project = await deleteSession(projectId, sessionId);
-    const root = project.root || activeProjectRoot;
-    if (root) await discardSessionWorktree(root, sessionId);
+  ipcMain.handle("session:delete", async (_event, projectId: string, sessionId: string, options?: { deleteFiles?: boolean }) => {
+    const project = await getProject(projectId);
+    const root = project?.root || activeProjectRoot;
+    // Home deliverables live in the Nexus folder and are only attributed to a
+    // session by timestamp heuristic — remove them only with explicit consent,
+    // and only files actually created after the session started (pre-existing
+    // files that merely surfaced under it are kept).
+    if (projectId === HOME_PROJECT_ID && options?.deleteFiles && root) {
+      try {
+        const sessions = await listSessions(projectId);
+        const target = sessions.find((s) => s.id === sessionId);
+        const created = target ? new Date(target.createdAt).getTime() : NaN;
+        const owned = await listHomeSessionFiles(sessionId, sessions.map((s) => ({ id: s.id, createdAt: s.createdAt })));
+        for (const file of owned) {
+          const mtime = new Date(file.modified).getTime();
+          if (!Number.isNaN(created) && (!Number.isNaN(mtime) && mtime < created - 60_000)) continue;
+          const abs = path.resolve(root, file.path);
+          if (abs === root || !abs.startsWith(`${root}${path.sep}`)) continue;
+          try {
+            await fs.rm(abs, { force: true });
+          } catch { /* one bad file never fails the delete */ }
+        }
+      } catch { /* file cleanup is best-effort */ }
+    }
+    const updated = await deleteSession(projectId, sessionId);
+    if (root) {
+      await discardSessionWorktree(root, sessionId);
+      await deleteSessionTelemetry(root, sessionId);
+    }
+    clearLastRunCheckpoint(sessionId);
     if (sessionId === activeSessionId) {
-      const next = project.sessions[0] || await createSession(projectId);
+      const next = updated.sessions[0] || await createSession(projectId);
       activeSessionId = next.id;
     }
-    return project;
+    return updated;
   });
 
   ipcMain.handle("memory:project:update", (_event, projectId: string, memory: string) => updateProjectMemory(projectId, memory));
@@ -564,7 +655,7 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("skills:read", async (_event, skillPath: string) => readSkillContent(skillPath, activeProjectRoot));
   ipcMain.handle("skills:pick-file", async () => {
-    const result = await dialog.showOpenDialog({ properties: ["openFile", "multiSelections"], filters: [{ name: "Skill definition", extensions: ["md"] }] });
+    const result = await dialog.showOpenDialog({ properties: ["openFile", "multiSelections"], filters: [{ name: "Skill file", extensions: ["md", "zip"] }] });
     return result.canceled ? [] : result.filePaths;
   });
   ipcMain.handle("skills:pick-folder", async () => {
@@ -575,11 +666,12 @@ app.whenReady().then(async () => {
     const root = input.scope === "project" ? requireRoot() : (activeProjectRoot || "");
     return importSkill(root, input.sourcePath, input.scope);
   });
-  ipcMain.handle("skills:create", async (_event, input: { name: string; description?: string; scope: "global" | "project"; content?: string }) => {
+  ipcMain.handle("skills:create", async (_event, input: { name: string; description?: string; scope: "global" | "project"; content?: string; modes?: string[] }) => {
     const root = input.scope === "project" ? requireRoot() : (activeProjectRoot || "");
     return createSkill(root, input);
   });
   ipcMain.handle("skills:delete", async (_event, skillPath: string) => deleteSkill(skillPath, activeProjectRoot));
+  ipcMain.handle("skills:set-modes", async (_event, input: { skillPath: string; modes: string[] }) => setSkillModes(input.skillPath, input.modes, activeProjectRoot));
   ipcMain.handle("skills:open-folder", async (_event, scope: "global" | "project") => {
     const root = scope === "project" ? requireRoot() : (activeProjectRoot || "");
     return openSkillsFolder(scope, root);
@@ -1034,6 +1126,7 @@ app.whenReady().then(async () => {
           projectRoot: executionRoot,
           telemetryRoot: root,
           taskKind: isHomeRun ? "general" : "code",
+          skillsMode: isHomeRun ? "home" : "code",
           sessionId,
           request: payload.request,
           images: modelImages,
