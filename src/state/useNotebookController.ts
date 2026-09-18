@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { NotebookChat, NotebookDocument, NotebookEmbeddingConfig, NotebookMeta, NotebookNote, NotebookPassage, NotebookRagAnswer, NotebookSettings, NotebookSource, NotebookStats } from "../types.js";
+import type { NotebookChat, NotebookDocument, NotebookEmbeddingConfig, NotebookFlashcardSet, NotebookMeta, NotebookMindmap, NotebookNote, NotebookPassage, NotebookQuiz, NotebookQuizType, NotebookRagAnswer, NotebookSettings, NotebookSource, NotebookStats, NotebookSummary, NotebookSummaryLength } from "../types.js";
 
 const INTERMEDIATE_STATUSES = new Set(["uploaded", "parsing", "chunking", "indexing"]);
 
@@ -24,7 +24,15 @@ export function useNotebookController(enabled: boolean) {
   const [settings, setSettings] = useState<NotebookSettings>({ instructions: "", updatedAt: "" });
   const [notes, setNotes] = useState<NotebookNote[]>([]);
   const [documents, setDocuments] = useState<NotebookDocument[]>([]);
+  const [quizzes, setQuizzes] = useState<NotebookQuiz[]>([]);
+  const [flashcards, setFlashcards] = useState<NotebookFlashcardSet[]>([]);
+  const [mindmaps, setMindmaps] = useState<NotebookMindmap[]>([]);
+  const [generatingMindmap, setGeneratingMindmap] = useState(false);
+  const [summaries, setSummaries] = useState<NotebookSummary[]>([]);
+  const [generatingSummary, setGeneratingSummary] = useState(false);
   const [generatingDoc, setGeneratingDoc] = useState(false);
+  const [generatingQuiz, setGeneratingQuiz] = useState(false);
+  const [generatingFlashcards, setGeneratingFlashcards] = useState(false);
   const activeChatRef = useRef<NotebookChat | null>(null);
   activeChatRef.current = activeChat;
   // Guards the one-chat-per-session ensure below against parallel creates
@@ -88,12 +96,22 @@ export function useNotebookController(enabled: boolean) {
         notebookNotes: (id: string) => Promise<NotebookNote[]>;
       };
       try {
-        const [s, c, st, config, savedNotes, savedDocs] = await Promise.all([typed.notebookSources(notebookId), typed.notebookChats(notebookId), typed.notebookStats(notebookId), typed.notebookSettings(notebookId), typed.notebookNotes(notebookId), (typed as unknown as { notebookDocuments?: (id: string) => Promise<NotebookDocument[]> }).notebookDocuments ? (typed as unknown as { notebookDocuments: (id: string) => Promise<NotebookDocument[]> }).notebookDocuments(notebookId).catch(() => [] as NotebookDocument[]) : Promise.resolve([] as NotebookDocument[])]);
+        const [s, c, st, config, savedNotes, savedDocs, savedQuizzes, savedFlashcards] = await Promise.all([typed.notebookSources(notebookId), typed.notebookChats(notebookId), typed.notebookStats(notebookId), typed.notebookSettings(notebookId), typed.notebookNotes(notebookId), (typed as unknown as { notebookDocuments?: (id: string) => Promise<NotebookDocument[]> }).notebookDocuments ? (typed as unknown as { notebookDocuments: (id: string) => Promise<NotebookDocument[]> }).notebookDocuments(notebookId).catch(() => [] as NotebookDocument[]) : Promise.resolve([] as NotebookDocument[]), (typed as unknown as { notebookQuizzes?: (id: string) => Promise<NotebookQuiz[]> }).notebookQuizzes ? (typed as unknown as { notebookQuizzes: (id: string) => Promise<NotebookQuiz[]> }).notebookQuizzes(notebookId).catch(() => [] as NotebookQuiz[]) : Promise.resolve([] as NotebookQuiz[]), (typed as unknown as { notebookFlashcards?: (id: string) => Promise<NotebookFlashcardSet[]> }).notebookFlashcards ? (typed as unknown as { notebookFlashcards: (id: string) => Promise<NotebookFlashcardSet[]> }).notebookFlashcards(notebookId).catch(() => [] as NotebookFlashcardSet[]) : Promise.resolve([] as NotebookFlashcardSet[])]);
         setSources(s);
         setStats(st);
         setSettings(config);
         setNotes(savedNotes);
         setDocuments(savedDocs);
+        setQuizzes(savedQuizzes);
+        setFlashcards(savedFlashcards);
+        try {
+          const typedMaps = api as unknown as { notebookMindmaps?: (id: string) => Promise<NotebookMindmap[]> };
+          if (typeof typedMaps.notebookMindmaps === "function") setMindmaps(await typedMaps.notebookMindmaps(notebookId).catch(() => [] as NotebookMindmap[]));
+        } catch { /* mindmaps unavailable */ }
+        try {
+          const typedSums = api as unknown as { notebookSummaries?: (id: string) => Promise<NotebookSummary[]> };
+          if (typeof typedSums.notebookSummaries === "function") setSummaries(await typedSums.notebookSummaries(notebookId).catch(() => [] as NotebookSummary[]));
+        } catch { /* summaries unavailable */ }
         if (c.length) {
           setChats(c);
           setActiveChat((prev) => {
@@ -172,6 +190,10 @@ export function useNotebookController(enabled: boolean) {
     setSettings({ instructions: "", updatedAt: "" });
     setNotes([]);
     setDocuments([]);
+    setQuizzes([]);
+    setFlashcards([]);
+    setMindmaps([]);
+    setSummaries([]);
     void refreshNotebookDetail(nb.id);
   }
 
@@ -188,6 +210,10 @@ export function useNotebookController(enabled: boolean) {
     setSettings({ instructions: "", updatedAt: "" });
     setNotes([]);
     setDocuments([]);
+    setQuizzes([]);
+    setFlashcards([]);
+    setMindmaps([]);
+    setSummaries([]);
   }
 
   async function renameCurrentNotebook(name: string) {
@@ -283,6 +309,158 @@ export function useNotebookController(enabled: boolean) {
       return null;
     } finally {
       setGeneratingDoc(false);
+    }
+  }
+
+  async function generateQuiz(topic: string, count: number, quizType: NotebookQuizType, providerId?: string, model?: string) {
+    if (!activeNotebook || generatingQuiz) return null;
+    const statusKey = `nbquiz:${activeNotebook.id}`;
+    setGeneratingQuiz(true);
+    setStepsByChat((prev) => ({ ...prev, [statusKey]: ["Starting the quiz agent…"] }));
+    setNotice("Generating a grounded quiz from your sources…");
+    try {
+      const typed = api as unknown as {
+        notebookGenerateQuiz: (p: { notebookId: string; topic?: string; count?: number; quizType?: NotebookQuizType; fileIds?: string[]; providerId?: string; model?: string }) => Promise<{ quiz: NotebookQuiz }>;
+        notebookQuizzes: (id: string) => Promise<NotebookQuiz[]>;
+      };
+      const scope = scopedIds.length === sources.length ? undefined : scopedIds;
+      const { quiz } = await typed.notebookGenerateQuiz({ notebookId: activeNotebook.id, topic, count, quizType, fileIds: scope, providerId, model });
+      try {
+        setQuizzes(await typed.notebookQuizzes(activeNotebook.id));
+      } catch {
+        setQuizzes((prev) => [quiz, ...prev]);
+      }
+      setNotice(`Saved quiz “${quiz.title}” (${quiz.questions.length} questions from ${quiz.citations.length} cited passages).`);
+      return quiz;
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Quiz generation failed.");
+      return null;
+    } finally {
+      setGeneratingQuiz(false);
+    }
+  }
+
+  async function removeQuiz(quizId: string) {
+    if (!activeNotebook) return;
+    try {
+      const typed = api as unknown as { notebookDeleteQuiz: (id: string, quiz: string) => Promise<NotebookQuiz[]> };
+      setQuizzes(await typed.notebookDeleteQuiz(activeNotebook.id, quizId));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Delete failed.");
+    }
+  }
+
+  async function generateFlashcards(topic: string, count: number, providerId?: string, model?: string) {
+    if (!activeNotebook || generatingFlashcards) return null;
+    const statusKey = `nbfiches:${activeNotebook.id}`;
+    setGeneratingFlashcards(true);
+    setStepsByChat((prev) => ({ ...prev, [statusKey]: ["Starting the flashcard agent…"] }));
+    setNotice("Generating grounded flashcards from your sources…");
+    try {
+      const typed = api as unknown as {
+        notebookGenerateFlashcards: (p: { notebookId: string; topic?: string; count?: number; fileIds?: string[]; providerId?: string; model?: string }) => Promise<{ set: NotebookFlashcardSet }>;
+        notebookFlashcards: (id: string) => Promise<NotebookFlashcardSet[]>;
+      };
+      const scope = scopedIds.length === sources.length ? undefined : scopedIds;
+      const { set } = await typed.notebookGenerateFlashcards({ notebookId: activeNotebook.id, topic, count, fileIds: scope, providerId, model });
+      try {
+        setFlashcards(await typed.notebookFlashcards(activeNotebook.id));
+      } catch {
+        setFlashcards((prev) => [set, ...prev]);
+      }
+      setNotice(`Saved flashcards “${set.title}” (${set.cards.length} cards from ${set.citations.length} cited passages).`);
+      return set;
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Flashcard generation failed.");
+      return null;
+    } finally {
+      setGeneratingFlashcards(false);
+    }
+  }
+
+  async function removeFlashcards(setId: string) {
+    if (!activeNotebook) return;
+    try {
+      const typed = api as unknown as { notebookDeleteFlashcards: (id: string, set: string) => Promise<NotebookFlashcardSet[]> };
+      setFlashcards(await typed.notebookDeleteFlashcards(activeNotebook.id, setId));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Delete failed.");
+    }
+  }
+
+  async function generateMindmap(topic: string, providerId?: string, model?: string) {
+    if (!activeNotebook || generatingMindmap) return null;
+    const statusKey = `nbmap:${activeNotebook.id}`;
+    setGeneratingMindmap(true);
+    setStepsByChat((prev) => ({ ...prev, [statusKey]: ["Starting the mind-map agent…"] }));
+    setNotice("Generating a grounded mind map from your sources…");
+    try {
+      const typed = api as unknown as {
+        notebookGenerateMindmap: (p: { notebookId: string; topic?: string; fileIds?: string[]; providerId?: string; model?: string }) => Promise<{ map: NotebookMindmap }>;
+        notebookMindmaps: (id: string) => Promise<NotebookMindmap[]>;
+      };
+      const scope = scopedIds.length === sources.length ? undefined : scopedIds;
+      const { map } = await typed.notebookGenerateMindmap({ notebookId: activeNotebook.id, topic, fileIds: scope, providerId, model });
+      try {
+        setMindmaps(await typed.notebookMindmaps(activeNotebook.id));
+      } catch {
+        setMindmaps((prev) => [map, ...prev]);
+      }
+      setNotice(`Saved mind map “${map.title}” (${map.nodeCount} nodes from ${map.citations.length} cited passages).`);
+      return map;
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Mind-map generation failed.");
+      return null;
+    } finally {
+      setGeneratingMindmap(false);
+    }
+  }
+
+  async function removeMindmap(mapId: string) {
+    if (!activeNotebook) return;
+    try {
+      const typed = api as unknown as { notebookDeleteMindmap: (id: string, map: string) => Promise<NotebookMindmap[]> };
+      setMindmaps(await typed.notebookDeleteMindmap(activeNotebook.id, mapId));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Delete failed.");
+    }
+  }
+
+  async function generateSummary(topic: string, length: NotebookSummaryLength, providerId?: string, model?: string) {
+    if (!activeNotebook || generatingSummary) return null;
+    const statusKey = `nbsum:${activeNotebook.id}`;
+    setGeneratingSummary(true);
+    setStepsByChat((prev) => ({ ...prev, [statusKey]: ["Starting the summary agent…"] }));
+    setNotice("Generating a rich grounded summary from your sources…");
+    try {
+      const typed = api as unknown as {
+        notebookGenerateSummary: (p: { notebookId: string; topic?: string; length?: NotebookSummaryLength; fileIds?: string[]; providerId?: string; model?: string }) => Promise<{ summary: NotebookSummary }>;
+        notebookSummaries: (id: string) => Promise<NotebookSummary[]>;
+      };
+      const scope = scopedIds.length === sources.length ? undefined : scopedIds;
+      const { summary } = await typed.notebookGenerateSummary({ notebookId: activeNotebook.id, topic, length, fileIds: scope, providerId, model });
+      try {
+        setSummaries(await typed.notebookSummaries(activeNotebook.id));
+      } catch {
+        setSummaries((prev) => [summary, ...prev]);
+      }
+      setNotice(`Saved summary “${summary.title}” (${summary.sections.length} sections from ${summary.citations.length} cited passages).`);
+      return summary;
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Summary generation failed.");
+      return null;
+    } finally {
+      setGeneratingSummary(false);
+    }
+  }
+
+  async function removeSummary(summaryId: string) {
+    if (!activeNotebook) return;
+    try {
+      const typed = api as unknown as { notebookDeleteSummary: (id: string, summary: string) => Promise<NotebookSummary[]> };
+      setSummaries(await typed.notebookDeleteSummary(activeNotebook.id, summaryId));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Delete failed.");
     }
   }
 
@@ -555,8 +733,24 @@ export function useNotebookController(enabled: boolean) {
     settings,
     notes,
     documents,
+    quizzes,
+    flashcards,
     generatingDoc,
+    generatingQuiz,
+    generatingFlashcards,
     generateDocument,
+    generateQuiz,
+    removeQuiz,
+    generateFlashcards,
+    removeFlashcards,
+    mindmaps,
+    generatingMindmap,
+    generateMindmap,
+    removeMindmap,
+    summaries,
+    generatingSummary,
+    generateSummary,
+    removeSummary,
     downloadDocument,
     removeDocument,
     openPassage,

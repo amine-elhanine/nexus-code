@@ -264,11 +264,11 @@
 .doc-toggle:hover{color:var(--text);background:var(--panel2)}
 .doc-toggle.active{background:var(--accent-soft);color:var(--nexus-bright)}
 .studio-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
-.studio-card{display:flex;align-items:center;gap:8px;border:1px solid var(--line2);border-radius:10px;background:var(--panel2);color:var(--text);padding:10px;font-size:11px;font-weight:600;text-align:left;min-height:52px}
+.studio-card{display:flex;align-items:center;gap:8px;border:1px solid var(--line2);border-radius:10px;background:var(--panel2);color:var(--text);padding:10px;font-size:11px;font-weight:600;text-align:left;min-height:52px;min-width:0}
 .studio-card:hover{border-color:var(--nexus-green)}
 .studio-card.active{border-color:var(--nexus-green);background:var(--accent-soft)}
 .studio-card-icon{display:grid;place-items:center;flex:none}
-.studio-card-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.studio-card-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .studio-card-chevron{color:var(--faint);flex:none}
 .studio-card.tone-green .studio-card-icon{color:#3ee695}
 .studio-card.tone-yellow .studio-card-icon{color:#e5c564}
