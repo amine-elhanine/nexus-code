@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Brain, BookOpen, Check, ChevronDown, ChevronRight, Code2, Coins, Download, FileCode2, FileText,
   FolderOpen, GitBranch, Globe, Home, Info, KeyRound, Loader2, Menu,
   MessageSquare, PanelRight, Pencil, Plus, RefreshCw, Undo2,
-  Server, Settings2, Sparkles, Terminal, Trash2, TriangleAlert
+  Server, Settings2, Sparkles, Terminal, Trash2, TriangleAlert, Activity
 } from "lucide-react";
 import { WindowControls } from "./components/common/WindowControls.js";
 import { ConfirmModal } from "./modals/ConfirmModal.js";
@@ -274,6 +274,27 @@ function App() {
     else setAttachmentPreview({ url: src, name: src.split("/").pop() || "image", mimeType: "image/png", size: 0 });
   }
   const [showSettings, setShowSettings] = useState(false);
+  const [showProjectDropdown, setShowProjectDropdown] = useState(false);
+  const projectDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showProjectDropdown) return;
+    function handleClickOutside(event: MouseEvent) {
+      if (projectDropdownRef.current && !projectDropdownRef.current.contains(event.target as Node)) {
+        setShowProjectDropdown(false);
+      }
+    }
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") setShowProjectDropdown(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [showProjectDropdown]);
+
   const [homeSideTab, setHomeSideTab] = useState<"session" | "artifacts" | "browser">("session");
   const [codeSideTab, setCodeSideTab] = useState<"session" | "files" | "browser" | "terminal" | "diff" | "memory">("session");
   const [updater, setUpdater] = useState<UpdaterState>({ status: "idle" });
@@ -364,17 +385,83 @@ function App() {
               <BookOpen size={13} /> Notebook
             </button>
           </div>
-          <div className="top-separator" />
           {area === "code" && (
-            <button className="project-menu" onClick={() => setShowSessions((v) => !v)}>
-              <FolderOpen size={13} />
-              <strong>{activeProject?.name || "Projects"}</strong>
-              <ChevronDown size={12} />
-            </button>
+            <>
+              <div className="top-separator" />
+              <div className="project-selector-wrap" ref={projectDropdownRef}>
+                <button
+                  className={`project-menu${showProjectDropdown ? " active" : ""}`}
+                  onClick={() => setShowProjectDropdown((v) => !v)}
+                  title="Select or switch project"
+                >
+                  <FolderOpen size={13} />
+                  <strong>{activeProject?.name || "Projects"}</strong>
+                  <ChevronDown
+                    size={12}
+                    style={{
+                      transition: "transform 0.15s ease",
+                      transform: showProjectDropdown ? "rotate(180deg)" : "none",
+                    }}
+                  />
+                </button>
+                {showProjectDropdown && (
+                  <div className="project-dropdown-menu">
+                    <div className="project-dropdown-head">
+                      <span>PROJECTS</span>
+                      <span className="notebook-head-count-pill">
+                        {projects.filter((p) => p.id !== "home").length}
+                      </span>
+                    </div>
+                    {projects
+                      .filter((p) => p.id !== "home")
+                      .map((p) => (
+                        <button
+                          key={p.id}
+                          className={`project-dropdown-item${p.id === activeProject?.id ? " active" : ""}`}
+                          onClick={() => {
+                            setShowProjectDropdown(false);
+                            void activateProject(p.id);
+                          }}
+                        >
+                          <span
+                            className="project-dot"
+                            style={
+                              p.id === activeProject?.id
+                                ? { background: "var(--nexus-green)", boxShadow: "0 0 8px var(--nexus-green)" }
+                                : undefined
+                            }
+                          />
+                          <span className="project-dropdown-name">{p.name}</span>
+                          <span className="project-dropdown-count">{p.sessions.length}</span>
+                          {p.id === activeProject?.id && (
+                            <Check size={12} style={{ color: "var(--nexus-bright)", flex: "none", marginLeft: "auto" }} />
+                          )}
+                        </button>
+                      ))}
+                    {!projects.filter((p) => p.id !== "home").length && (
+                      <div className="empty-pane" style={{ padding: "8px 6px" }}>
+                        No projects yet.
+                      </div>
+                    )}
+                    <div className="project-dropdown-divider" />
+                    <button
+                      className="project-dropdown-add"
+                      onClick={() => {
+                        setShowProjectDropdown(false);
+                        void openProjectFromDialog();
+                      }}
+                    >
+                      <Plus size={12} />
+                      <span>Open project folder…</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+              <span className="branch">
+                <GitBranch size={11} /> {gitBranch}
+              </span>
+            </>
           )}
-          <span className="branch">
-            <GitBranch size={11} /> {gitBranch}
-          </span>
         </div>
 
         <div className="session-top-title">
@@ -435,11 +522,11 @@ function App() {
         {showSessions && area === "home" && (
           <aside className="session-pane">
             <div className="pane-top">
-              <span>HOME</span>
-              <button className="pane-action" onClick={() => void createHomeSession()} title="New chat"><Plus size={15} /></button>
-            </div>
-            <div className="pane-top sessions-label">
-              <span>CHATS</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span className="context-kicker">CHATS</span>
+                <span className="notebook-head-count-pill">{sessions.length}</span>
+              </div>
+              <button className="pane-action" onClick={() => void createHomeSession()} title="New chat"><Plus size={14} /></button>
             </div>
             <div className="session-list">
               {sessions.map((session) => (
@@ -464,8 +551,11 @@ function App() {
         {showSessions && area === "code" && (
           <aside className="session-pane">
             <div className="pane-top">
-              <span>PROJECTS</span>
-              <button className="pane-action" onClick={() => void openProjectFromDialog()} title="New project"><Plus size={15} /></button>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span className="context-kicker">PROJECTS</span>
+                <span className="notebook-head-count-pill">{projects.filter((project) => project.id !== "home").length}</span>
+              </div>
+              <button className="pane-action" onClick={() => void openProjectFromDialog()} title="New project"><Plus size={14} /></button>
             </div>
             <div className="project-list">
               {projects.filter((project) => project.id !== "home").map((project) => (
@@ -492,9 +582,12 @@ function App() {
             </div>
             {activeProject && (
               <>
-                <div className="pane-top sessions-label">
-                  <span>SESSIONS</span>
-                  <button className="pane-action" onClick={() => void createSession()} title="New coding session (⌘ N)"><Plus size={15} /></button>
+                <div className="pane-top sessions-label" style={{ marginTop: 4 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span className="context-kicker">SESSIONS</span>
+                    <span className="notebook-head-count-pill">{sessions.length}</span>
+                  </div>
+                  <button className="pane-action" onClick={() => void createSession()} title="New coding session (⌘ N)"><Plus size={14} /></button>
                 </div>
                 <div className="session-list">
                   {sessions.map((session) => (
@@ -785,15 +878,24 @@ function App() {
           area === "code" ? (
           <aside key="code-context" className="context-pane" style={{ width: contextWidth }}>
             <div className="context-resize" onPointerDown={startContextResize} title="Drag to resize the sidebar" />
-            <div className="context-head">
-              <div>
-                <span className="context-kicker">CURRENT SESSION</span>
-                <strong>{headerTitle}</strong>
-                <small>{activeProject?.name || "No project"}</small>
+            <div className="notebook-side-head">
+              <div className="notebook-side-head-left">
+                <span className="notebook-side-head-badge">
+                  <Activity size={13} />
+                </span>
+                <div className="notebook-side-head-text">
+                  <div className="notebook-side-head-top">
+                    <span className="context-kicker">SESSION CONTEXT</span>
+                    <span className="notebook-head-count-pill">{activeProject?.name || "No project"}</span>
+                  </div>
+                  <strong className="notebook-side-title">{headerTitle}</strong>
+                </div>
               </div>
-              <button className="context-panel-icon" onClick={() => setShowContext(false)} title="Close context panel">
-                <PanelRight size={15} />
-              </button>
+              <div className="notebook-side-head-actions">
+                <button className="context-panel-icon" onClick={() => setShowContext(false)} title="Close context panel">
+                  <PanelRight size={14} />
+                </button>
+              </div>
             </div>
             <div className="context-tabs" role="tablist" aria-label="Code sidebar">
               <button type="button" role="tab" aria-selected={codeSideTab === "session"} className={codeSideTab === "session" ? "active" : ""} onClick={() => setCodeSideTab("session")} title="Session status and tools">
@@ -930,15 +1032,24 @@ function App() {
             // inside NotebookView, so the app-level context pane stays hidden.
           <aside key="home-context" className="context-pane" style={{ width: contextWidth }}>
             <div className="context-resize" onPointerDown={startContextResize} title="Drag to resize the sidebar" />
-            <div className="context-head">
-              <div>
-                <span className="context-kicker">CURRENT CHAT</span>
-                <strong>{headerTitle}</strong>
-                <small>Nexus Home</small>
+            <div className="notebook-side-head">
+              <div className="notebook-side-head-left">
+                <span className="notebook-side-head-badge">
+                  <Home size={13} />
+                </span>
+                <div className="notebook-side-head-text">
+                  <div className="notebook-side-head-top">
+                    <span className="context-kicker">CURRENT CHAT</span>
+                    <span className="notebook-head-count-pill">Nexus Home</span>
+                  </div>
+                  <strong className="notebook-side-title">{headerTitle}</strong>
+                </div>
               </div>
-              <button className="context-panel-icon" onClick={() => setShowContext(false)} title="Close context panel">
-                <PanelRight size={15} />
-              </button>
+              <div className="notebook-side-head-actions">
+                <button className="context-panel-icon" onClick={() => setShowContext(false)} title="Close context panel">
+                  <PanelRight size={14} />
+                </button>
+              </div>
             </div>
             <div className="context-tabs" role="tablist" aria-label="Home sidebar">
               <button
