@@ -447,6 +447,107 @@ app.whenReady().then(async () => {
     const { readNotebookDocument } = await import("./notebook-documents.js");
     return readNotebookDocument(notebookId, docId);
   });
+  ipcMain.handle("notebook:quizzes:list", async (_event, notebookId: string) => {
+    const { listNotebookQuizzes } = await import("./notebook-quiz.js");
+    return listNotebookQuizzes(notebookId);
+  });
+  ipcMain.handle("notebook:quiz:generate", async (_event, payload: { notebookId: string; topic?: string; count?: number; quizType?: "mcq" | "truefalse" | "mixed"; fileIds?: string[]; providerId?: string; model?: string }) => {
+    const { generateNotebookQuiz } = await import("./notebook-quiz.js");
+    const notebookSettings = await getNotebookSettings(payload.notebookId);
+    const statusKey = `nbquiz:${payload.notebookId}`;
+    emitFor(statusKey, { type: "status", text: "Generating quiz…" });
+    const quiz = await generateNotebookQuiz(payload.notebookId, {
+      topic: payload.topic,
+      count: payload.count,
+      quizType: payload.quizType,
+      fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
+      providerId: payload.providerId,
+      model: payload.model,
+      instructions: notebookSettings.instructions,
+      onStatus: (text) => emitFor(statusKey, { type: "status", text }),
+    });
+    emitFor(statusKey, { type: "status", text: `Saved ${quiz.title}` });
+    return { quiz };
+  });
+  ipcMain.handle("notebook:quiz:delete", async (_event, notebookId: string, quizId: string) => {
+    const { deleteNotebookQuiz } = await import("./notebook-quiz.js");
+    return deleteNotebookQuiz(notebookId, quizId);
+  });
+  ipcMain.handle("notebook:flashcards:list", async (_event, notebookId: string) => {
+    const { listNotebookFlashcardSets } = await import("./notebook-flashcards.js");
+    return listNotebookFlashcardSets(notebookId);
+  });
+  ipcMain.handle("notebook:flashcards:generate", async (_event, payload: { notebookId: string; topic?: string; count?: number; fileIds?: string[]; providerId?: string; model?: string }) => {
+    const { generateNotebookFlashcards } = await import("./notebook-flashcards.js");
+    const notebookSettings = await getNotebookSettings(payload.notebookId);
+    const statusKey = `nbfiches:${payload.notebookId}`;
+    emitFor(statusKey, { type: "status", text: "Generating flashcards…" });
+    const set = await generateNotebookFlashcards(payload.notebookId, {
+      topic: payload.topic,
+      count: payload.count,
+      fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
+      providerId: payload.providerId,
+      model: payload.model,
+      instructions: notebookSettings.instructions,
+      onStatus: (text) => emitFor(statusKey, { type: "status", text }),
+    });
+    emitFor(statusKey, { type: "status", text: `Saved ${set.title}` });
+    return { set };
+  });
+  ipcMain.handle("notebook:flashcards:delete", async (_event, notebookId: string, setId: string) => {
+    const { deleteNotebookFlashcardSet } = await import("./notebook-flashcards.js");
+    return deleteNotebookFlashcardSet(notebookId, setId);
+  });
+  ipcMain.handle("notebook:mindmaps:list", async (_event, notebookId: string) => {
+    const { listNotebookMindmaps } = await import("./notebook-mindmaps.js");
+    return listNotebookMindmaps(notebookId);
+  });
+  ipcMain.handle("notebook:mindmaps:generate", async (_event, payload: { notebookId: string; topic?: string; maxNodes?: number; fileIds?: string[]; providerId?: string; model?: string }) => {
+    const { generateNotebookMindmap } = await import("./notebook-mindmaps.js");
+    const notebookSettings = await getNotebookSettings(payload.notebookId);
+    const statusKey = `nbmap:${payload.notebookId}`;
+    emitFor(statusKey, { type: "status", text: "Generating mind map…" });
+    const map = await generateNotebookMindmap(payload.notebookId, {
+      topic: payload.topic,
+      maxNodes: payload.maxNodes,
+      fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
+      providerId: payload.providerId,
+      model: payload.model,
+      instructions: notebookSettings.instructions,
+      onStatus: (text) => emitFor(statusKey, { type: "status", text }),
+    });
+    emitFor(statusKey, { type: "status", text: `Saved ${map.title}` });
+    return { map };
+  });
+  ipcMain.handle("notebook:mindmaps:delete", async (_event, notebookId: string, mapId: string) => {
+    const { deleteNotebookMindmap } = await import("./notebook-mindmaps.js");
+    return deleteNotebookMindmap(notebookId, mapId);
+  });
+  ipcMain.handle("notebook:summaries:list", async (_event, notebookId: string) => {
+    const { listNotebookSummaries } = await import("./notebook-summaries.js");
+    return listNotebookSummaries(notebookId);
+  });
+  ipcMain.handle("notebook:summaries:generate", async (_event, payload: { notebookId: string; topic?: string; length?: "brief" | "standard" | "detailed"; fileIds?: string[]; providerId?: string; model?: string }) => {
+    const { generateNotebookSummary } = await import("./notebook-summaries.js");
+    const notebookSettings = await getNotebookSettings(payload.notebookId);
+    const statusKey = `nbsum:${payload.notebookId}`;
+    emitFor(statusKey, { type: "status", text: "Generating summary…" });
+    const summary = await generateNotebookSummary(payload.notebookId, {
+      topic: payload.topic,
+      length: payload.length,
+      fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
+      providerId: payload.providerId,
+      model: payload.model,
+      instructions: notebookSettings.instructions,
+      onStatus: (text) => emitFor(statusKey, { type: "status", text }),
+    });
+    emitFor(statusKey, { type: "status", text: `Saved ${summary.title}` });
+    return { summary };
+  });
+  ipcMain.handle("notebook:summaries:delete", async (_event, notebookId: string, summaryId: string) => {
+    const { deleteNotebookSummary } = await import("./notebook-summaries.js");
+    return deleteNotebookSummary(notebookId, summaryId);
+  });
   ipcMain.handle("notebook:passage", (_event, notebookId: string, chunkId: string) => getChunkPassage(notebookId, chunkId));
   ipcMain.handle("notebook:chats", (_event, notebookId: string) => listNotebookChats(notebookId));
   ipcMain.handle("notebook:createChat", (_event, notebookId: string, title?: string) => createNotebookChat(notebookId, title));

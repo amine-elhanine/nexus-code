@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { sha256Hex, uuid5 } from "./notebook-text.js";
+import * as sqliteStore from "./notebook-vectors-sqlite.js";
 
 // Relational store for Notebook Mode: documents, sections and chunks as JSON
 // (the vector partition holds similarity vectors only). All functions take an
@@ -190,6 +191,7 @@ export async function deleteSessionLibrary(root: string): Promise<void> {
       await fs.unlink(file);
     } catch { /* already gone */ }
   }
+  await sqliteStore.deleteSqliteVectors(root);
 }
 
 // ---- Reads ----
@@ -256,7 +258,21 @@ export async function sessionSummary(root: string, sessionId: string, capTerms =
 
 // ---- Vector partition (per-session collection) ----
 
+/**
+ * Backend routing: SQLite when the runtime supports node:sqlite, JSON
+ * otherwise. A one-time migration imports vectors.json on first use; any
+ * sqlite failure must leave the JSON path untouched so it stays live.
+ */
+async function useSqliteVectors(root: string, sessionId: string): Promise<boolean> {
+  if (!(await sqliteStore.sqliteVectorsAvailable())) return false;
+  try {
+    await sqliteStore.migrateJsonVectors(root, sessionId);
+  } catch { /* migration failure keeps JSON live */ }
+  return true;
+}
+
 export async function loadVectors(root: string, sessionId: string): Promise<VectorPartition> {
+  if (await useSqliteVectors(root, sessionId)) return sqliteStore.loadVectorsSqlite(root, sessionId);
   const stored = await readJson<VectorPartition | null>(vectorsPath(root), null);
   if (!stored || stored.sessionId !== sessionId) {
     return { sessionId, embeddingModel: "", dims: 0, updatedAt: new Date().toISOString(), vectors: {} };
@@ -266,12 +282,16 @@ export async function loadVectors(root: string, sessionId: string): Promise<Vect
 }
 
 export async function saveVectors(root: string, partition: VectorPartition): Promise<void> {
+  if (await useSqliteVectors(root, partition.sessionId)) return sqliteStore.saveVectorsSqlite(root, partition);
   partition.updatedAt = new Date().toISOString();
   await writeJson(vectorsPath(root), partition);
 }
 
 /** Delete-then-upsert for one file's points (never append-only). */
 export async function upsertFileVectors(root: string, sessionId: string, embeddingModel: string, dims: number, entries: Array<{ chunkId: string; vector: number[] }>): Promise<void> {
+  if (await useSqliteVectors(root, sessionId)) {
+    return sqliteStore.upsertFileVectorsSqlite(root, sessionId, embeddingModel, dims, entries);
+  }
   await withMutationLock(vectorsPath(root), async () => {
     const partition = await loadVectors(root, sessionId);
     if (partition.embeddingModel && (partition.embeddingModel !== embeddingModel || partition.dims !== dims)) {
@@ -288,6 +308,7 @@ export async function upsertFileVectors(root: string, sessionId: string, embeddi
 
 export async function removeFileVectors(root: string, sessionId: string, chunkIds: string[]): Promise<void> {
   if (!chunkIds.length) return;
+  if (await useSqliteVectors(root, sessionId)) return sqliteStore.removeFileVectorsSqlite(root, sessionId, chunkIds);
   await withMutationLock(vectorsPath(root), async () => {
     const partition = await loadVectors(root, sessionId);
     for (const id of chunkIds) delete partition.vectors[id];
@@ -296,6 +317,7 @@ export async function removeFileVectors(root: string, sessionId: string, chunkId
 }
 
 export async function clearVectors(root: string, sessionId: string): Promise<void> {
+  if (await useSqliteVectors(root, sessionId)) return sqliteStore.clearVectorsSqlite(root, sessionId);
   await withMutationLock(vectorsPath(root), () => saveVectors(root, { sessionId, embeddingModel: "", dims: 0, updatedAt: new Date().toISOString(), vectors: {} }));
 }
 

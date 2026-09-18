@@ -13,7 +13,7 @@
 //     still terminates.
 const RATE_LIMIT_PATTERN = /\b(429|rate.?limit|too many requests|quota exceeded|overloaded)\b/i;
 const TRANSIENT_PATTERN =
-  /\b(econnreset|econnaborted|econnrefused|etimedout|esockettimedout|epipe|enotfound|ehostunreach|enetunreach|socket hang up|network error|network timeout|fetch failed|connection error|connection reset|connection terminated|connection closed|connection dropped|connection refused|connection timeout|request timeout|request timed out|timed out|timeout|service unavailable|temporarily unavailable|please try again|please retry|other side closed|bad gateway|gateway timeout|internal server error|apiconnectionerror|apiconnectiontimeouterror|502|503|504|529)\b/i;
+  /\b(econnreset|econnaborted|econnrefused|etimedout|esockettimedout|epipe|enotfound|ehostunreach|enetunreach|socket hang up|network error|network timeout|fetch failed|connection error|connection reset|connection terminated|terminated|connection closed|connection dropped|connection refused|connection timeout|request timeout|request timed out|timed out|timeout|service unavailable|temporarily unavailable|please try again|please retry|other side closed|bad gateway|gateway timeout|internal server error|apiconnectionerror|apiconnectiontimeouterror|502|503|504|529)\b/i;
 // Tool-level timeouts look transient to the pattern above but must fail the
 // run like before — retrying them would just re-run the same slow command.
 const TOOL_TIMEOUT_PATTERN = /\b(command|process|execution|script)\s+(timed?\s?out|timeout)\b/i;

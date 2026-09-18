@@ -573,9 +573,29 @@ function App() {
                   settings={notebook.settings}
                   notes={notebook.notes}
                   documents={notebook.documents}
+                  quizzes={notebook.quizzes}
+                  flashcards={notebook.flashcards}
+                  mindmaps={notebook.mindmaps}
                   generatingDoc={notebook.generatingDoc}
+                  generatingQuiz={notebook.generatingQuiz}
+                  generatingFlashcards={notebook.generatingFlashcards}
+                  generatingMindmap={notebook.generatingMindmap}
                   docSteps={notebook.activeNotebook ? notebook.stepsByChat[`nbdoc:${notebook.activeNotebook.id}`] || [] : []}
+                  quizSteps={notebook.activeNotebook ? notebook.stepsByChat[`nbquiz:${notebook.activeNotebook.id}`] || [] : []}
+                  fichesSteps={notebook.activeNotebook ? notebook.stepsByChat[`nbfiches:${notebook.activeNotebook.id}`] || [] : []}
+                  mapSteps={notebook.activeNotebook ? notebook.stepsByChat[`nbmap:${notebook.activeNotebook.id}`] || [] : []}
                   onGenerateDocument={(kind, format, prompt) => void notebook.generateDocument(kind, format, prompt, selectedProviderId, selectedModel)}
+                  onGenerateQuiz={(topic, count, quizType) => void notebook.generateQuiz(topic, count, quizType, selectedProviderId, selectedModel)}
+                  onDeleteQuiz={(id) => void notebook.removeQuiz(id)}
+                  onGenerateFlashcards={(topic, count) => void notebook.generateFlashcards(topic, count, selectedProviderId, selectedModel)}
+                  onDeleteFlashcards={(id) => void notebook.removeFlashcards(id)}
+                  onGenerateMindmap={(topic) => void notebook.generateMindmap(topic, selectedProviderId, selectedModel)}
+                  onDeleteMindmap={(id) => void notebook.removeMindmap(id)}
+                  summaries={notebook.summaries}
+                  generatingSummary={notebook.generatingSummary}
+                  summarySteps={notebook.activeNotebook ? notebook.stepsByChat[`nbsum:${notebook.activeNotebook.id}`] || [] : []}
+                  onGenerateSummary={(topic, length) => void notebook.generateSummary(topic, length, selectedProviderId, selectedModel)}
+                  onDeleteSummary={(id) => void notebook.removeSummary(id)}
                   onDownloadDocument={(id) => void notebook.downloadDocument(id)}
                   onDeleteDocument={(id) => void notebook.removeDocument(id)}
                   onCreateNotebook={(name) => void notebook.createNotebook(name)}
