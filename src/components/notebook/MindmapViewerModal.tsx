@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronsDownUp, ChevronsUpDown, Maximize, RotateCcw, X, ZoomIn, ZoomOut } from "lucide-react";
+import { ChevronsDownUp, ChevronsUpDown, Maximize, Maximize2, Minimize2, PanelRight, RotateCcw, X, ZoomIn, ZoomOut } from "lucide-react";
 import { Modal } from "../common/Modal.js";
 import type { NotebookMindmap, NotebookMindmapNode } from "../../types.js";
 
@@ -99,6 +99,8 @@ function layoutMap(roots: NotebookMindmapNode[], title: string, collapsed: Set<s
 export function MindmapViewerModal({ map, onClose }: { map: NotebookMindmap; onClose: () => void }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string>("__root__");
+  const [showDetails, setShowDetails] = useState(true);
+  const [isMaximized, setIsMaximized] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 12, y: 12 });
   const [grabbing, setGrabbing] = useState(false);
@@ -142,17 +144,22 @@ export function MindmapViewerModal({ map, onClose }: { map: NotebookMindmap; onC
     return trail;
   }, [selectedNode, parentOf]);
 
-  // Auto-fit the board when the map opens.
+  // Auto-fit the board when the map opens or layout changes.
   useEffect(() => {
     const el = boxRef.current;
     if (!el) return;
     const { width: w, height: h } = layoutRef.current;
     if (!w || !h) return;
-    const fit = Math.min(1, (el.clientWidth - 40) / w);
-    const z = +Math.max(0.3, fit).toFixed(2);
+    const fitX = (el.clientWidth - 60) / w;
+    const fitY = (el.clientHeight - 60) / h;
+    const fit = Math.min(fitX, fitY, 1.15);
+    const z = +Math.max(0.35, fit).toFixed(2);
     setZoom(z);
-    setPan({ x: 12, y: Math.max(12, (el.clientHeight - h * z) / 2) });
-  }, [map.id]);
+    setPan({
+      x: Math.max(20, (el.clientWidth - w * z) / 2),
+      y: Math.max(20, (el.clientHeight - h * z) / 2),
+    });
+  }, [map.id, isMaximized, showDetails]);
 
   // Scroll-to-zoom around the cursor (native listener: React wheel is passive).
   useEffect(() => {
@@ -186,6 +193,7 @@ export function MindmapViewerModal({ map, onClose }: { map: NotebookMindmap; onC
   function handleNodeClick(p: PlacedNode) {
     if (drag.current.moved) return;
     setSelectedId(p.id);
+    setShowDetails(true);
     if (p.hasChildren && p.node) toggle(p.node.id);
   }
 
@@ -208,10 +216,15 @@ export function MindmapViewerModal({ map, onClose }: { map: NotebookMindmap; onC
     if (!el) return;
     const { width: w, height: h } = layoutRef.current;
     if (!w || !h) return;
-    const f = Math.min((el.clientWidth - 40) / w, (el.clientHeight - 40) / h, 1.2);
+    const fitX = (el.clientWidth - 60) / w;
+    const fitY = (el.clientHeight - 60) / h;
+    const f = Math.min(fitX, fitY, 1.25);
     const z = +Math.max(0.3, f).toFixed(2);
     setZoom(z);
-    setPan({ x: Math.max(12, (el.clientWidth - w * z) / 2), y: Math.max(12, (el.clientHeight - h * z) / 2) });
+    setPan({
+      x: Math.max(20, (el.clientWidth - w * z) / 2),
+      y: Math.max(20, (el.clientHeight - h * z) / 2),
+    });
   }
 
   function resetView() {
@@ -246,163 +259,229 @@ export function MindmapViewerModal({ map, onClose }: { map: NotebookMindmap; onC
   }
 
   return (
-    <Modal wide title={map.title} subtitle={`Mind map · ${map.nodeCount} nodes · topic: ${map.topic}`} onClose={onClose}>
-      <div className="passage-body">
-        <div className="passage-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
-          <button onClick={() => setCollapsed(new Set())} title="Expand every branch">
-            <ChevronsUpDown size={12} /> Expand all
-          </button>
-          <button onClick={() => setCollapsed(new Set(collectIds(map.roots)))} title="Collapse every branch">
-            <ChevronsDownUp size={12} /> Collapse all
-          </button>
-          <button onClick={() => zoomCenter(1.2)} title="Zoom in">
-            <ZoomIn size={12} />
-          </button>
-          <button onClick={() => zoomCenter(1 / 1.2)} title="Zoom out">
-            <ZoomOut size={12} />
-          </button>
-          <button onClick={fitView} title="Fit the whole map in view">
-            <Maximize size={12} /> Fit
-          </button>
-          <button onClick={resetView} title="Reset zoom and position">
-            <RotateCcw size={12} /> Reset
-          </button>
-          <button onClick={onClose} title="Close the mind map">
-            <X size={12} /> Close
-          </button>
-        </div>
-        <div style={{ fontSize: 11, opacity: 0.65, marginBottom: 6 }}>
-          Drag the board to move · scroll to zoom · click a node to fold/unfold it and see its summary.
-        </div>
-
-        <div
-          ref={boxRef}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={endDrag}
-          onPointerLeave={endDrag}
-          style={{
-            overflow: "hidden",
-            height: "58vh",
-            border: "1px solid var(--border, #30363d)",
-            borderRadius: 8,
-            background: "#0d1117",
-            cursor: grabbing ? "grabbing" : "grab",
-            touchAction: "none",
-            userSelect: "none",
-          }}
+    <Modal
+      title={map.title}
+      subtitle={`Mind map · ${map.nodeCount} nodes · topic: ${map.topic}`}
+      onClose={onClose}
+      className={`mindmap-modal-card${isMaximized ? " maximized" : ""}`}
+      extraHeadActions={
+        <button
+          className="icon-plain"
+          onClick={() => setIsMaximized((v) => !v)}
+          title={isMaximized ? "Restore window size" : "Maximize mind map"}
         >
-          <svg width="100%" height="100%" style={{ display: "block", overflow: "visible" }}>
-            <defs>
-              <pattern id="mm-dots" width="26" height="26" patternUnits="userSpaceOnUse">
-                <circle cx="1.5" cy="1.5" r="1.5" fill="#21262d" />
-              </pattern>
-            </defs>
-            <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
-              <rect x={-1600} y={-1600} width={width + 3200} height={height + 3200} fill="url(#mm-dots)" pointerEvents="none" />
-              {links.map((link) => (
-                <path
-                  key={`${link.from.id}->${link.to.id}`}
-                  d={curve(link.from.x, link.from.y, link.to.x, link.to.y)}
-                  fill="none"
-                  stroke={link.to.color}
-                  strokeWidth={link.to.depth <= 1 ? 2.5 : 1.5}
-                  opacity={0.85}
-                />
-              ))}
-              {placed.map((p) => {
-                const isSelected = p.id === selectedId;
-                const r = p.depth === 0 ? 9 : 5.5;
-                const isCentral = p.depth === 0;
-                const displayLabel = p.isCollapsed ? `${truncate(p.label)} (+${p.childCount})` : truncate(p.label);
-                return (
-                  <g key={p.id} transform={`translate(${p.x},${p.y})`} style={{ cursor: "pointer" }} onClick={() => handleNodeClick(p)}>
-                    <title>{p.isCollapsed ? `${p.label} — click to expand (${p.childCount} hidden)` : `${p.label} — click to ${p.hasChildren ? "fold" : "inspect"}`}</title>
-                    <circle
-                      r={r + (isSelected ? 3.5 : 0)}
-                      fill="none"
-                      stroke={isSelected ? "#ffffff" : "transparent"}
-                      strokeWidth={1.5}
-                      opacity={0.9}
-                    />
-                    <circle r={r} fill="#0d1117" stroke={p.color} strokeWidth={2.5} />
-                    <circle r={r - 2.5} fill={p.color} opacity={0.9} pointerEvents="none" />
-                    <text
-                      x={isCentral ? -(r + 10) : r + 9}
-                      y={isCentral ? 5 : 4}
-                      textAnchor={isCentral ? "end" : "start"}
-                      fontSize={isCentral ? 15 : p.depth === 1 ? 13.5 : 12.5}
-                      fontWeight={p.depth <= 1 ? 700 : 400}
-                      fill="#ffffff"
-                      stroke="#0d1117"
-                      strokeWidth={3}
-                      paintOrder="stroke"
-                      pointerEvents="none"
-                    >
-                      {displayLabel}
-                    </text>
-                  </g>
-                );
-              })}
-            </g>
-          </svg>
+          {isMaximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+        </button>
+      }
+    >
+      <div className="mindmap-toolbar">
+        <div className="mindmap-toolbar-actions">
+          <button className="top-link" onClick={() => setCollapsed(new Set())} title="Expand every branch">
+            <ChevronsUpDown size={13} /> Expand all
+          </button>
+          <button className="top-link" onClick={() => setCollapsed(new Set(collectIds(map.roots)))} title="Collapse every branch">
+            <ChevronsDownUp size={13} /> Collapse all
+          </button>
+          <div className="top-separator" style={{ height: 14, margin: "0 4px" }} />
+          <button className="icon-plain" onClick={() => zoomCenter(1.2)} title="Zoom in">
+            <ZoomIn size={14} />
+          </button>
+          <button className="icon-plain" onClick={() => zoomCenter(1 / 1.2)} title="Zoom out">
+            <ZoomOut size={14} />
+          </button>
+          <button className="icon-plain" onClick={fitView} title="Fit entire mind map in view">
+            <Maximize size={14} />
+          </button>
+          <button className="icon-plain" onClick={resetView} title="Reset zoom and position">
+            <RotateCcw size={14} />
+          </button>
+          <div className="top-separator" style={{ height: 14, margin: "0 4px" }} />
+          <button
+            className={`top-link${showDetails ? " active" : ""}`}
+            onClick={() => setShowDetails((v) => !v)}
+            title={showDetails ? "Hide node inspector" : "Show node inspector"}
+          >
+            <PanelRight size={13} /> {showDetails ? "Hide details" : "Show details"}
+          </button>
+        </div>
+        <span className="mindmap-toolbar-hint">
+          Drag to pan · Scroll to zoom · Click node to inspect/fold
+        </span>
+      </div>
+
+      <div className="mindmap-body">
+        <div className="mindmap-canvas-wrap">
+          <div
+            ref={boxRef}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={endDrag}
+            onPointerLeave={endDrag}
+            style={{
+              width: "100%",
+              height: "100%",
+              overflow: "hidden",
+              position: "relative",
+              cursor: grabbing ? "grabbing" : "grab",
+              touchAction: "none",
+              userSelect: "none",
+            }}
+          >
+            <svg width="100%" height="100%" style={{ display: "block", overflow: "visible" }}>
+              <defs>
+                <pattern id="mm-dots" width="26" height="26" patternUnits="userSpaceOnUse">
+                  <circle cx="1.5" cy="1.5" r="1.5" fill="#21262d" />
+                </pattern>
+              </defs>
+              <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
+                <rect x={-1600} y={-1600} width={width + 3200} height={height + 3200} fill="url(#mm-dots)" pointerEvents="none" />
+                {links.map((link) => (
+                  <path
+                    key={`${link.from.id}->${link.to.id}`}
+                    d={curve(link.from.x, link.from.y, link.to.x, link.to.y)}
+                    fill="none"
+                    stroke={link.to.color}
+                    strokeWidth={link.to.depth <= 1 ? 2.5 : 1.5}
+                    opacity={0.85}
+                  />
+                ))}
+                {placed.map((p) => {
+                  const isSelected = p.id === selectedId;
+                  const r = p.depth === 0 ? 9 : 5.5;
+                  const isCentral = p.depth === 0;
+                  const displayLabel = p.isCollapsed ? `${truncate(p.label)} (+${p.childCount})` : truncate(p.label);
+                  return (
+                    <g key={p.id} transform={`translate(${p.x},${p.y})`} style={{ cursor: "pointer" }} onClick={() => handleNodeClick(p)}>
+                      <title>{p.isCollapsed ? `${p.label} — click to expand (${p.childCount} hidden)` : `${p.label} — click to ${p.hasChildren ? "fold" : "inspect"}`}</title>
+                      <circle
+                        r={r + (isSelected ? 3.5 : 0)}
+                        fill="none"
+                        stroke={isSelected ? "#ffffff" : "transparent"}
+                        strokeWidth={1.5}
+                        opacity={0.9}
+                      />
+                      <circle r={r} fill="#0d1117" stroke={p.color} strokeWidth={2.5} />
+                      <circle r={r - 2.5} fill={p.color} opacity={0.9} pointerEvents="none" />
+                      <text
+                        x={isCentral ? -(r + 10) : r + 9}
+                        y={isCentral ? 5 : 4}
+                        textAnchor={isCentral ? "end" : "start"}
+                        fontSize={isCentral ? 15 : p.depth === 1 ? 13.5 : 12.5}
+                        fontWeight={p.depth <= 1 ? 700 : 400}
+                        fill="#ffffff"
+                        stroke="#0d1117"
+                        strokeWidth={3}
+                        paintOrder="stroke"
+                        pointerEvents="none"
+                      >
+                        {displayLabel}
+                      </text>
+                    </g>
+                  );
+                })}
+              </g>
+            </svg>
+          </div>
         </div>
 
-        {selected && (
-          <div className="passage-main" style={{ borderLeft: `3px solid ${selected.color}`, paddingLeft: 10, marginTop: 8 }}>
-            {breadcrumb.length > 0 && (
-              <small style={{ opacity: 0.6, display: "block" }}>{breadcrumb.join(" › ")}</small>
-            )}
-            <span className="passage-label">SUMMARY</span>
-            <div style={{ fontWeight: 700, fontSize: 14, margin: "4px 0" }}>{selected.label}</div>
-            {!!selectedNode?.detail && <div style={{ fontSize: 13 }}>{selectedNode.detail}</div>}
-            {selected.id === "__root__" && (
-              <div style={{ fontSize: 13, opacity: 0.85 }}>
-                Central topic with {map.roots.length} main branch{map.roots.length === 1 ? "" : "es"} and {map.nodeCount} nodes in total — click any node to fold/unfold it.
+        {showDetails && (
+          <aside className="mindmap-inspector">
+            <div className="mindmap-inspector-head">
+              <div>
+                <span className="context-kicker">NODE INSPECTOR</span>
+                <strong>{selected ? selected.label : "Select a node"}</strong>
               </div>
-            )}
-            {!!selectedNode && selectedNode.children.length > 0 && (
-              <div style={{ marginTop: 8 }}>
-                <span className="passage-label">SUBTOPICS ({selectedNode.children.length})</span>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
-                  {selectedNode.children.map((child) => (
-                    <button
-                      key={child.id}
-                      onClick={() => {
-                        if (selected.isCollapsed && selectedNode) toggle(selectedNode.id);
-                        setSelectedId(child.id);
-                      }}
-                      title={child.detail || child.label}
-                      className="home-suggestion"
-                      style={{ borderColor: selected.color }}
-                    >
-                      {truncate(child.label, 32)}
-                    </button>
+              <button
+                className="context-panel-icon"
+                onClick={() => setShowDetails(false)}
+                title="Hide inspector"
+              >
+                <PanelRight size={14} />
+              </button>
+            </div>
+
+            <div className="mindmap-inspector-body">
+              {breadcrumb.length > 1 && (
+                <div className="mindmap-breadcrumb">
+                  {breadcrumb.map((crumb, idx) => (
+                    <span key={idx} className="mindmap-crumb">
+                      {idx > 0 && <span className="mindmap-crumb-sep">›</span>}
+                      <span>{crumb}</span>
+                    </span>
                   ))}
                 </div>
-              </div>
-            )}
-            {!!selectedNode && !!selectedNode.citations.length && (
-              <small style={{ opacity: 0.8, display: "block", marginTop: 6 }}>
-                Sources: {selectedNode.citations.map((c) => `[S${c.index}] ${c.sourceName} — ${c.heading}`).join("; ")}
-              </small>
-            )}
-          </div>
-        )}
+              )}
 
-        {!!map.citations.length && (
-          <details className="passage-neighbor" style={{ marginTop: 12 }}>
-            <summary>All cited passages ({map.citations.length})</summary>
-            <div className="citation-list">
-              {map.citations.map((cite) => (
-                <div key={cite.chunkId} className="citation-row" title={cite.snippet}>
-                  <span className="citation-tag">[S{cite.index}]</span>
-                  <span className="citation-name">{cite.sourceName} — {cite.heading}</span>
-                  <span className="citation-score">{cite.score.toFixed(2)}</span>
+              {selected && (
+                <div className="mindmap-selected-card" style={{ borderLeftColor: selected.color }}>
+                  <div className="mindmap-selected-header">
+                    <span className="mindmap-selected-title">{selected.label}</span>
+                    <span className="eval-pill" style={{ borderColor: selected.color, color: selected.color }}>
+                      {selected.id === "__root__" ? "Central Topic" : selected.hasChildren ? `${selected.childCount} subtopics` : "Leaf topic"}
+                    </span>
+                  </div>
+                  {selected.id === "__root__" && (
+                    <p className="mindmap-selected-detail">
+                      Central topic with {map.roots.length} main branch{map.roots.length === 1 ? "" : "es"} and {map.nodeCount} nodes in total.
+                      Click any branch or node to explore subtopics.
+                    </p>
+                  )}
+                  {!!selectedNode?.detail && (
+                    <p className="mindmap-selected-detail">{selectedNode.detail}</p>
+                  )}
+                  {!!selectedNode && selectedNode.children.length > 0 && (
+                    <div className="mindmap-subtopics-section">
+                      <span className="passage-label">SUBTOPICS ({selectedNode.children.length})</span>
+                      <div className="mindmap-subtopics-grid">
+                        {selectedNode.children.map((child) => (
+                          <button
+                            key={child.id}
+                            onClick={() => {
+                              if (selected.isCollapsed && selectedNode) toggle(selectedNode.id);
+                              setSelectedId(child.id);
+                            }}
+                            title={child.detail || child.label}
+                            className="mindmap-subtopic-chip"
+                            style={{ borderColor: selected.color }}
+                          >
+                            <span>{truncate(child.label, 32)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {!!selectedNode && !!selectedNode.citations.length && (
+                    <div className="mindmap-sources-section">
+                      <span className="passage-label">SOURCES ({selectedNode.citations.length})</span>
+                      <div className="mindmap-sources-list">
+                        {selectedNode.citations.map((c, i) => (
+                          <div key={i} className="mindmap-source-item" title={`${c.sourceName} — ${c.heading}`}>
+                            <span className="citation-tag">[S{c.index}]</span>
+                            <span className="mindmap-source-text">{c.sourceName} — {c.heading}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              ))}
+              )}
+
+              {!!map.citations.length && (
+                <details className="passage-neighbor" style={{ marginTop: 8 }}>
+                  <summary>All cited passages ({map.citations.length})</summary>
+                  <div className="citation-list" style={{ marginTop: 8 }}>
+                    {map.citations.map((cite) => (
+                      <div key={cite.chunkId} className="citation-row" title={cite.snippet}>
+                        <span className="citation-tag">[S{cite.index}]</span>
+                        <span className="citation-name">{cite.sourceName} — {cite.heading}</span>
+                        <span className="citation-score">{cite.score.toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
-          </details>
+          </aside>
         )}
       </div>
     </Modal>
