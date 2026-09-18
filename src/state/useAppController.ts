@@ -339,19 +339,26 @@ export function useAppController() {
   function deleteActiveSession(sessionId: string) {
     if (!activeProject) return;
     const sess = sessions.find((s) => s.id === sessionId);
-    setConfirmDialog({
-      title: `Delete session "${sess?.title || "session"}"?`,
-      message: "This will permanently delete this coding session and its memory.",
-      confirmLabel: "Delete session",
-      danger: true,
-      onConfirm: async () => {
-        setConfirmDialog(null);
-        try {
-          const updatedProject = await api.deleteSession(activeProject.id, sessionId);
-          setProjects((current) => current.map((p) => (p.id === updatedProject.id ? updatedProject : p)));
-          setSessions(updatedProject.sessions);
-          const nextSession = updatedProject.sessions[0] || null;
-          setActiveSession(nextSession);
+    const isHomeProject = activeProject.id === "home";
+    // Home chats own files in the Nexus folder: count them first so the
+    // confirm dialog states exactly what will be removed from disk.
+    const showDialog = (ownedFiles: number) => {
+      const homeSuffix = ownedFiles > 0 ? ` Its ${ownedFiles} file${ownedFiles === 1 ? "" : "s"} in the Nexus folder will also be permanently deleted.` : "";
+      setConfirmDialog({
+        title: `Delete session "${sess?.title || "session"}"?`,
+        message: isHomeProject
+          ? `This will permanently delete this chat and its memory.${homeSuffix}`
+          : "This will permanently delete this coding session and its memory.",
+        confirmLabel: "Delete session",
+        danger: true,
+        onConfirm: async () => {
+          setConfirmDialog(null);
+          try {
+            const updatedProject = await api.deleteSession(activeProject.id, sessionId, isHomeProject ? { deleteFiles: true } : undefined);
+            setProjects((current) => current.map((p) => (p.id === updatedProject.id ? updatedProject : p)));
+            setSessions(updatedProject.sessions);
+            const nextSession = updatedProject.sessions[0] || null;
+            setActiveSession(nextSession);
           if (nextSession) {
             const m = nextSession.model;
             const p = m ? providers.find((x) => x.id === m.providerId) : undefined;
@@ -369,8 +376,18 @@ export function useAppController() {
         } catch (error) {
           console.error(error);
         }
+        // The file panel must not keep showing files that were just deleted.
+        if (isHomeProject) void refreshHomeFiles();
       },
     });
+    };
+    if (isHomeProject) {
+      void (api.listHomeSessionFiles(sessionId) as Promise<Array<unknown>>)
+        .then((files) => showDialog(files.length))
+        .catch(() => showDialog(0));
+    } else {
+      showDialog(0);
+    }
   }
 
   async function renameSession(sessionId: string, title: string) {

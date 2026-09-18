@@ -572,6 +572,12 @@ function App() {
                   passage={notebook.passage}
                   settings={notebook.settings}
                   notes={notebook.notes}
+                  documents={notebook.documents}
+                  generatingDoc={notebook.generatingDoc}
+                  docSteps={notebook.activeNotebook ? notebook.stepsByChat[`nbdoc:${notebook.activeNotebook.id}`] || [] : []}
+                  onGenerateDocument={(kind, format, prompt) => void notebook.generateDocument(kind, format, prompt, selectedProviderId, selectedModel)}
+                  onDownloadDocument={(id) => void notebook.downloadDocument(id)}
+                  onDeleteDocument={(id) => void notebook.removeDocument(id)}
                   onCreateNotebook={(name) => void notebook.createNotebook(name)}
                   onDeleteNotebook={(id) => void notebook.removeNotebook(id)}
                   onPickFiles={() => void notebook.uploadFromPicker()}
@@ -635,7 +641,7 @@ function App() {
                     }
                   }}
                   onAsk={() => void notebook.ask(selectedProviderId, selectedModel)}
-                  onStop={() => {}}
+                  onStop={() => void notebook.stopAsk()}
                   onExitToSessions={() => notebook.exitToSessions()}
                   selectedProviderId={selectedProviderId}
                   selectedModel={selectedModel}

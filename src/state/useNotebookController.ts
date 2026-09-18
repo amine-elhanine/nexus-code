@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { NotebookChat, NotebookEmbeddingConfig, NotebookMeta, NotebookNote, NotebookPassage, NotebookRagAnswer, NotebookSettings, NotebookSource, NotebookStats } from "../types.js";
+import type { NotebookChat, NotebookDocument, NotebookEmbeddingConfig, NotebookMeta, NotebookNote, NotebookPassage, NotebookRagAnswer, NotebookSettings, NotebookSource, NotebookStats } from "../types.js";
 
 const INTERMEDIATE_STATUSES = new Set(["uploaded", "parsing", "chunking", "indexing"]);
 
@@ -23,6 +23,8 @@ export function useNotebookController(enabled: boolean) {
   const [passage, setPassage] = useState<NotebookPassage | null>(null);
   const [settings, setSettings] = useState<NotebookSettings>({ instructions: "", updatedAt: "" });
   const [notes, setNotes] = useState<NotebookNote[]>([]);
+  const [documents, setDocuments] = useState<NotebookDocument[]>([]);
+  const [generatingDoc, setGeneratingDoc] = useState(false);
   const activeChatRef = useRef<NotebookChat | null>(null);
   activeChatRef.current = activeChat;
   // Guards the one-chat-per-session ensure below against parallel creates
@@ -86,11 +88,12 @@ export function useNotebookController(enabled: boolean) {
         notebookNotes: (id: string) => Promise<NotebookNote[]>;
       };
       try {
-        const [s, c, st, config, savedNotes] = await Promise.all([typed.notebookSources(notebookId), typed.notebookChats(notebookId), typed.notebookStats(notebookId), typed.notebookSettings(notebookId), typed.notebookNotes(notebookId)]);
+        const [s, c, st, config, savedNotes, savedDocs] = await Promise.all([typed.notebookSources(notebookId), typed.notebookChats(notebookId), typed.notebookStats(notebookId), typed.notebookSettings(notebookId), typed.notebookNotes(notebookId), (typed as unknown as { notebookDocuments?: (id: string) => Promise<NotebookDocument[]> }).notebookDocuments ? (typed as unknown as { notebookDocuments: (id: string) => Promise<NotebookDocument[]> }).notebookDocuments(notebookId).catch(() => [] as NotebookDocument[]) : Promise.resolve([] as NotebookDocument[])]);
         setSources(s);
         setStats(st);
         setSettings(config);
         setNotes(savedNotes);
+        setDocuments(savedDocs);
         if (c.length) {
           setChats(c);
           setActiveChat((prev) => {
@@ -139,16 +142,16 @@ export function useNotebookController(enabled: boolean) {
   // concurrent sessions never mix).
   useEffect(() => {
     if (!enabled) return;
-    const typed = api as unknown as { onAgentEvent?: (listener: (event: { type: string; sessionId: string; text: string }) => void) => () => void };
+    const typed = api as unknown as { onAgentEvent?: (listener: (event: { type: string; sessionId: string; text: string; detail?: string }) => void) => () => void };
     if (typeof typed.onAgentEvent !== "function") return;
     return typed.onAgentEvent((event) => {
       if (!event.sessionId) return;
       const id = event.sessionId;
-      if (event.type === "status") {
+      if (event.type === "status" || event.type === "tool") {
         setStepsByChat((prev) => {
           const current = prev[id] || [];
           if (!event.text || current[current.length - 1] === event.text) return prev;
-          return { ...prev, [id]: [...current, event.text].slice(-8) };
+          return { ...prev, [id]: [...current, event.text].slice(-16) };
         });
         return;
       }
@@ -168,6 +171,7 @@ export function useNotebookController(enabled: boolean) {
     setPassage(null);
     setSettings({ instructions: "", updatedAt: "" });
     setNotes([]);
+    setDocuments([]);
     void refreshNotebookDetail(nb.id);
   }
 
@@ -183,6 +187,7 @@ export function useNotebookController(enabled: boolean) {
     setPassage(null);
     setSettings({ instructions: "", updatedAt: "" });
     setNotes([]);
+    setDocuments([]);
   }
 
   async function renameCurrentNotebook(name: string) {
@@ -243,6 +248,63 @@ export function useNotebookController(enabled: boolean) {
     if (!activeNotebook) return;
     const typed = api as unknown as { deleteNotebookNote: (id: string, noteId: string) => Promise<NotebookNote[]> };
     setNotes(await typed.deleteNotebookNote(activeNotebook.id, noteId));
+  }
+
+  async function generateDocument(kind: NotebookDocument["kind"], format: NotebookDocument["format"], prompt: string, providerId?: string, model?: string) {
+    if (!activeNotebook || generatingDoc) return null;
+    const statusKey = `nbdoc:${activeNotebook.id}`;
+    setGeneratingDoc(true);
+    // Reset the agent activity feed for this run so live tool steps render.
+    setStepsByChat((prev) => ({ ...prev, [statusKey]: ["Starting the document agent…"] }));
+    setStreamByChat((prev) => {
+      const next = { ...prev };
+      delete next[statusKey];
+      return next;
+    });
+    setNotice(kind === "slides" ? "Agent is designing your presentation…" : `Agent is designing your ${format.toUpperCase()} report…`);
+    try {
+      const typed = api as unknown as {
+        notebookGenerateDocument: (p: { notebookId: string; kind: NotebookDocument["kind"]; format: NotebookDocument["format"]; prompt?: string; fileIds?: string[]; providerId?: string; model?: string }) => Promise<{ doc: NotebookDocument; fallbackReason: string | null }>;
+        notebookDocuments: (id: string) => Promise<NotebookDocument[]>;
+      };
+      const scope = scopedIds.length === sources.length ? undefined : scopedIds;
+      const { doc, fallbackReason } = await typed.notebookGenerateDocument({ notebookId: activeNotebook.id, kind, format, prompt, fileIds: scope, providerId, model });
+      try {
+        setDocuments(await typed.notebookDocuments(activeNotebook.id));
+      } catch {
+        setDocuments((prev) => [doc, ...prev]);
+      }
+      const engineLabel = doc.engine === "skill-agent" ? "designed with document skill" : `built-in renderer${fallbackReason ? ` — skill path failed: ${fallbackReason.slice(0, 220)}` : ""}`;
+      const fileCount = new Set(doc.citations.map((c) => c.sourceName)).size;
+      setNotice(`Saved ${doc.filename} (${Math.round(doc.size / 1024)} KB, ${doc.citations.length} cited passages from ${fileCount} file${fileCount === 1 ? "" : "s"} · ${engineLabel}).`);
+      return doc;
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Document generation failed.");
+      return null;
+    } finally {
+      setGeneratingDoc(false);
+    }
+  }
+
+  async function downloadDocument(docId: string) {
+    if (!activeNotebook) return;
+    try {
+      const typed = api as unknown as { notebookDownloadDocument: (id: string, doc: string) => Promise<string | null> };
+      const dest = await typed.notebookDownloadDocument(activeNotebook.id, docId);
+      setNotice(dest ? `Saved to ${dest}` : "Download cancelled.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Download failed.");
+    }
+  }
+
+  async function removeDocument(docId: string) {
+    if (!activeNotebook) return;
+    try {
+      const typed = api as unknown as { notebookDeleteDocument: (id: string, doc: string) => Promise<NotebookDocument[]> };
+      setDocuments(await typed.notebookDeleteDocument(activeNotebook.id, docId));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Delete failed.");
+    }
   }
 
   async function reindexAll() {
@@ -458,6 +520,15 @@ export function useNotebookController(enabled: boolean) {
     }
   }
 
+  async function stopAsk() {
+    try {
+      const typed = api as unknown as { cancelAgent?: (sessionId?: string) => Promise<unknown> };
+      if (typeof typed.cancelAgent === "function") {
+        await typed.cancelAgent(activeChatRef.current?.id);
+      }
+    } catch { /* already stopped */ }
+  }
+
   return {
     notebooks,
     activeNotebook,
@@ -483,6 +554,11 @@ export function useNotebookController(enabled: boolean) {
     passage,
     settings,
     notes,
+    documents,
+    generatingDoc,
+    generateDocument,
+    downloadDocument,
+    removeDocument,
     openPassage,
     closePassage,
     saveInstructions,
@@ -498,5 +574,6 @@ export function useNotebookController(enabled: boolean) {
     uploadFromPicker,
     uploadBrowserFiles,
     ask,
+    stopAsk,
   };
 }

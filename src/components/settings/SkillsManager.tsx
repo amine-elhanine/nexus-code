@@ -4,6 +4,64 @@ import { ConfirmModal } from "../../modals/ConfirmModal.js";
 import { Toggle } from "../common/Toggle.js";
 import type { SkillInfo } from "../../types.js";
 
+const MODE_ORDER = ["home", "code", "notebook"] as const;
+
+function isAllModes(modes: string[] | undefined): boolean {
+  return !modes || modes.length === 0;
+}
+
+function capMode(mode: string): string {
+  return mode ? mode[0].toUpperCase() + mode.slice(1) : mode;
+}
+
+/** Canonical select value for a modes array ([] = All). Unknown values fall back to All. */
+function modesKey(modes: string[] | undefined): string {
+  if (isAllModes(modes)) return "";
+  const known = modes!.filter((m) => (MODE_ORDER as readonly string[]).includes(m));
+  if (!known.length) return "";
+  return MODE_ORDER.filter((m) => known.includes(m)).join(",");
+}
+
+const MODE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "", label: "All modes" },
+  ...MODE_ORDER.map((m) => ({ value: m, label: `${capMode(m)} only` })),
+  { value: "home,code", label: "Home + Code" },
+  { value: "home,notebook", label: "Home + Notebook" },
+  { value: "code,notebook", label: "Code + Notebook" },
+];
+
+/** Per-skill mode selector: one dropdown (All, singles, or pairs). */
+function ModeSelector({
+  modes,
+  onChange,
+  disabled,
+}: {
+  modes: string[];
+  onChange: (next: string[]) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <select
+      value={modesKey(modes)}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value ? e.target.value.split(",") : [])}
+      title="Which modes can use this skill"
+      style={{ marginTop: 6, width: "100%" }}
+    >
+      {MODE_OPTIONS.map((o) => (
+        <option key={o.value || "all"} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function modesLabel(modes: string[] | undefined): string {
+  if (isAllModes(modes)) return "All modes";
+  return modes!.map(capMode).join(" · ");
+}
+
 export function SkillsManager({
   hasProject,
   enabled,
@@ -28,6 +86,8 @@ export function SkillsManager({
   const [newSkillName, setNewSkillName] = useState("");
   const [newSkillDesc, setNewSkillDesc] = useState("");
   const [newSkillContent, setNewSkillContent] = useState("");
+  const [newSkillModes, setNewSkillModes] = useState<string[]>([]);
+  const [savingModesPath, setSavingModesPath] = useState("");
 
   const api = window.nexus || window.forgepilot;
 
@@ -105,11 +165,13 @@ export function SkillsManager({
         description: newSkillDesc.trim(),
         scope,
         content: newSkillContent.trim() || undefined,
+        modes: newSkillModes,
       });
       setSuccessNote(`Created skill "${newSkillName}" in ${scope} library.`);
       setNewSkillName("");
       setNewSkillDesc("");
       setNewSkillContent("");
+      setNewSkillModes([]);
       await reload();
       setActiveTab("import");
     } catch (createError) {
@@ -145,6 +207,21 @@ export function SkillsManager({
     }
   }
 
+  async function handleSetModes(skill: SkillInfo, modes: string[]) {
+    setError("");
+    setSavingModesPath(skill.path);
+    try {
+      const updated = await api.setSkillModes(skill.path, modes);
+      setSkills((current) => current.map((s) => (s.path === skill.path ? { ...s, modes: updated?.modes || modes } : s)));
+      if (previewSkill?.path === skill.path) setPreviewSkill((current) => (current ? { ...current, modes: updated?.modes || modes } : current));
+    } catch (modesError) {
+      setError(modesError instanceof Error ? modesError.message : "Unable to save skill modes.");
+      await reload();
+    } finally {
+      setSavingModesPath("");
+    }
+  }
+
   const globalSkills = skills.filter((skill) => skill.source === "global");
   const projectSkills = skills.filter((skill) => skill.source === "project");
 
@@ -174,9 +251,12 @@ export function SkillsManager({
             <div className={`provider-card ${previewSkill?.path === skill.path ? "active" : ""}`} key={skill.path}>
               <div className="provider-card-main" onClick={() => void handleSelectPreview(skill)} style={{ cursor: "pointer" }}>
                 <span className="provider-logo"><Puzzle size={13} /></span>
-                <div>
+                <div style={{ minWidth: 0 }}>
                   <strong>{skill.name}</strong>
                   <small>{skill.description || "No description"}</small>
+                  <div onClick={(e) => e.stopPropagation()} title="Which modes can use this skill">
+                    <ModeSelector modes={skill.modes || []} disabled={savingModesPath === skill.path} onChange={(next) => void handleSetModes(skill, next)} />
+                  </div>
                 </div>
               </div>
               <div className="provider-card-actions">
@@ -196,9 +276,12 @@ export function SkillsManager({
                 <div className={`provider-card ${previewSkill?.path === skill.path ? "active" : ""}`} key={skill.path}>
                   <div className="provider-card-main" onClick={() => void handleSelectPreview(skill)} style={{ cursor: "pointer" }}>
                     <span className="provider-logo"><Puzzle size={13} /></span>
-                    <div>
+                    <div style={{ minWidth: 0 }}>
                       <strong>{skill.name}</strong>
                       <small>{skill.description || "No description"}</small>
+                      <div onClick={(e) => e.stopPropagation()} title="Which modes can use this skill">
+                        <ModeSelector modes={skill.modes || []} disabled={savingModesPath === skill.path} onChange={(next) => void handleSetModes(skill, next)} />
+                      </div>
                     </div>
                   </div>
                   <div className="provider-card-actions">
@@ -231,7 +314,7 @@ export function SkillsManager({
             <>
               <div className="form-title">
                 <span>Import Skill Files</span>
-                <small>Select SKILL.md or folder</small>
+                <small>SKILL.md, ZIP or folder</small>
               </div>
               <label>
                 Destination Library
@@ -244,7 +327,7 @@ export function SkillsManager({
               <label>Choose Skill Source Files</label>
               <div className="modal-actions" style={{ marginTop: "4px", marginBottom: "10px", justifyContent: "flex-start", gap: "8px" }}>
                 <button className="secondary" disabled={scope === "project" && !hasProject} onClick={() => void chooseFile()}>
-                  <FileCode2 size={13} /> Select SKILL.md file(s)
+                  <FileCode2 size={13} /> Select SKILL.md / ZIP file(s)
                 </button>
                 <button className="secondary" disabled={scope === "project" && !hasProject} onClick={() => void chooseFolder()}>
                   <FolderOpen size={13} /> Select Skill folder
@@ -277,7 +360,7 @@ export function SkillsManager({
               ) : (
                 <div style={{ padding: "14px", border: "1px dashed #283648", borderRadius: "6px", textAlign: "center", color: "#748296", fontSize: "11px", margin: "8px 0 14px" }}>
                   <Upload size={18} style={{ margin: "0 auto 6px", display: "block", color: "#54657c" }} />
-                  Click <strong>Select SKILL.md file(s)</strong> or <strong>Select Skill folder</strong> above to stage skills for addition.
+                  Click <strong>Select SKILL.md / ZIP file(s)</strong> or <strong>Select Skill folder</strong> above to stage skills for addition.
                 </div>
               )}
 
@@ -309,6 +392,10 @@ export function SkillsManager({
                 <input value={newSkillDesc} onChange={(e) => setNewSkillDesc(e.target.value)} placeholder="e.g. Use when writing, reviewing or refactoring React components" />
               </label>
               <label>
+                Usable in modes
+              </label>
+              <ModeSelector modes={newSkillModes} onChange={setNewSkillModes} />
+              <label>
                 SKILL.md Instructions (Markdown)
                 <textarea
                   value={newSkillContent}
@@ -338,6 +425,10 @@ export function SkillsManager({
                 <span className={`skill-scope-tag ${previewSkill.source}`}>{previewSkill.source}</span>
               </div>
               <small style={{ color: "#7f8d9f", fontSize: "10px", wordBreak: "break-all" }}>{previewSkill.path}</small>
+              <small style={{ color: "#7f8d9f", fontSize: "11px" }}>Modes: {modesLabel(previewSkill.modes)}</small>
+              <div onClick={(e) => e.stopPropagation()} title="Which modes can use this skill">
+                <ModeSelector modes={previewSkill.modes || []} disabled={savingModesPath === previewSkill.path} onChange={(next) => void handleSetModes(previewSkill, next)} />
+              </div>
               <pre className="skill-preview-box">{previewContent}</pre>
               <div className="modal-actions" style={{ justifyContent: "space-between", marginTop: "10px" }}>
                 <button className="secondary danger-btn" onClick={() => setDeleteTarget(previewSkill)}>

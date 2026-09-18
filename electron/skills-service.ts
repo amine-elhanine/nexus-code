@@ -1,11 +1,17 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { app, shell } from "electron";
+import { fileURLToPath } from "node:url";
+import { tool } from "@langchain/core/tools";
+import electronPkg from "electron";
+const app = (electronPkg as any)?.app || (electronPkg as any)?.default?.app;
+const shell = (electronPkg as any)?.shell || (electronPkg as any)?.default?.shell;
+import { z } from "zod";
 
 // Skills are plain folders containing a SKILL.md (name + description frontmatter,
 // instructions below). Per-project skills live inside the repository; the global
 // library lives in app data and is mounted into the agent's backend as
-// /global-skills (see agent-service.ts).
+// /global-skills (see agent-service.ts). Bundled system skills ship with the
+// app, mount as /system-skills, and are invisible + read-only in the UI.
 //
 // Project skills used to live in .deepagents/skills (a leftover from the
 // library's default layout that Nexus never otherwise used — hence the empty
@@ -15,10 +21,99 @@ import { app, shell } from "electron";
 export const PROJECT_SKILLS_DIR = ".nexus/skills";
 const LEGACY_PROJECT_SKILLS_DIR = ".deepagents/skills";
 export const GLOBAL_SKILLS_ROUTE = "/global-skills";
+export const SYSTEM_SKILLS_ROUTE = "/system-skills";
 
-export type SkillInfo = { name: string; description: string; path: string; source: "global" | "project" };
+export type SkillInfo = { name: string; description: string; path: string; source: "global" | "project" | "system"; modes: SkillMode[] };
 
-export function globalSkillsDir() { return path.join(app.getPath("userData"), "skills"); }
+/** Agent modes a skill may serve. Empty `modes` on a skill = all modes. */
+export type SkillMode = "home" | "code" | "notebook";
+export const ALL_SKILL_MODES: SkillMode[] = ["home", "code", "notebook"];
+
+/** Normalizes frontmatter/user input ("home,code", ["home"], "all", "") → modes. [] means all modes. */
+export function normalizeSkillModes(value: unknown): SkillMode[] {
+  const parts = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+  const cleaned = parts
+    .map((part) => String(part || "").trim().toLowerCase())
+    .filter((part): part is SkillMode => (ALL_SKILL_MODES as string[]).includes(part));
+  if (!cleaned.length) return [];
+  if (cleaned.length >= ALL_SKILL_MODES.length) return [];
+  return [...new Set(cleaned)];
+}
+
+/** True when the skill may be used in the given mode ([] = all modes). */
+export function skillAppliesToMode(skill: Pick<SkillInfo, "modes">, mode: SkillMode): boolean {
+  const modes = skill.modes || [];
+  return modes.length === 0 || modes.includes(mode);
+}
+
+export function globalSkillsDir() {
+  if (app?.getPath) return path.join(app.getPath("userData"), "skills");
+  return path.join(process.cwd(), ".nexus", "skills");
+}
+
+/**
+ * Bundled system skills shipped with the app (electron/system-skills/ copied
+ * next to the compiled backend). Read-only at runtime, invisible in the
+ * settings UI, and unreachable by the edit/delete/modes IPC (path validation
+ * only allows the global/project libraries).
+ */
+export function systemSkillsDir() {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), "system-skills");
+}
+
+/** System skills only — never listed in the UI, never user-editable. Layout:
+ *  system-skills/{all,home,code,notebook}/<skill-name>/SKILL.md. The folder
+ *  sets the scope (all/ = every mode); an explicit `modes:` frontmatter key
+ *  overrides the folder for subset combos (e.g. home+notebook). */
+export async function listSystemSkills(): Promise<SkillInfo[]> {
+  const skills: SkillInfo[] = [];
+  const modeFolders: Array<{ dir: string; modes: SkillMode[] }> = [
+    { dir: "all", modes: [] },
+    { dir: "home", modes: ["home"] },
+    { dir: "code", modes: ["code"] },
+    { dir: "notebook", modes: ["notebook"] },
+  ];
+  for (const { dir, modes: folderModes } of modeFolders) {
+    const modeRoot = path.join(systemSkillsDir(), dir);
+    let entries: string[];
+    try {
+      entries = (await fs.readdir(modeRoot, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      try {
+        const info = await readSkillInfo(path.join(modeRoot, entry), "system");
+        if (!info) continue;
+        const content = await fs.readFile(info.path, "utf8").catch(() => "");
+        const parsed = parseSkillModes(content);
+        info.modes = parsed.explicit ? parsed.modes : folderModes;
+        skills.push(info);
+      } catch { /* skip unreadable skill folders */ }
+    }
+  }
+  return skills;
+}
+
+/** Parses the `modes:` frontmatter key, reporting whether it was declared. */
+export function parseSkillModes(content: string): { modes: SkillMode[]; explicit: boolean } {
+  const frontmatter = parseFrontmatter(content);
+  if (!frontmatter || frontmatter.modes === undefined) return { modes: [], explicit: false };
+  return { modes: normalizeSkillModes(frontmatter.modes), explicit: true };
+}
+
+/**
+ * Direct skill-directory virtual path for framework skill loading. Unlike the
+ * mounted parent directories (which expose every skill), passing these lets
+ * the loader see exactly the eligible skills — this is what enforces
+ * per-skill mode scoping. Detected automatically (SKILL.md at the root).
+ */
+export function skillDirVirtualPath(skill: SkillInfo): string {
+  const file = skillVirtualPath(skill);
+  return file.endsWith("/SKILL.md") ? file.slice(0, -"SKILL.md".length) : `${file}/`;
+}
 export function projectSkillsDir(projectRoot: string) { return path.join(projectRoot, PROJECT_SKILLS_DIR); }
 function legacyProjectSkillsDir(projectRoot: string) { return path.join(projectRoot, LEGACY_PROJECT_SKILLS_DIR); }
 
@@ -39,7 +134,7 @@ function parseFrontmatter(content: string) {
   return result;
 }
 
-async function readSkillInfo(skillDir: string, source: "global" | "project"): Promise<SkillInfo | null> {
+async function readSkillInfo(skillDir: string, source: SkillInfo["source"]): Promise<SkillInfo | null> {
   const skillMdPath = path.join(skillDir, "SKILL.md");
   try {
     const stat = await fs.stat(skillMdPath);
@@ -54,6 +149,7 @@ async function readSkillInfo(skillDir: string, source: "global" | "project"): Pr
     description: frontmatter?.description || "",
     path: skillMdPath,
     source,
+    modes: parseSkillModes(content).modes,
   };
 }
 
@@ -91,7 +187,7 @@ export async function listSkills(projectRoot?: string | null): Promise<SkillInfo
   return skills;
 }
 
-export async function createSkill(projectRoot: string, input: { name: string; description?: string; scope: "global" | "project"; content?: string }): Promise<SkillInfo> {
+export async function createSkill(projectRoot: string, input: { name: string; description?: string; scope: "global" | "project"; content?: string; modes?: unknown }): Promise<SkillInfo> {
   const name = input.name.trim();
   if (!/^[a-z0-9][a-z0-9_-]{1,63}$/i.test(name)) throw new Error("Skill names must be 2-64 letters, numbers, dashes or underscores.");
   const skillDir = path.join(skillsRootFor(input.scope, projectRoot), name);
@@ -104,7 +200,8 @@ export async function createSkill(projectRoot: string, input: { name: string; de
   }
   await fs.mkdir(skillDir, { recursive: true });
   const description = input.description?.trim() || "Describe when the agent should use this skill — be specific so it triggers reliably.";
-  const body = input.content?.trim() || `---
+  const modes = normalizeSkillModes(input.modes);
+  const defaultBody = `---
 name: ${name}
 description: ${description}
 ---
@@ -114,8 +211,43 @@ description: ${description}
 Write step-by-step instructions for the agent here. Keep them concrete: which files
 to inspect, what commands to run, and what the finished result should look like.
 `;
+  const rawBody = input.content?.trim() || defaultBody;
+  const body = modes.length ? upsertFrontmatterKey(rawBody, "modes", modes.join(", ")) : rawBody;
   await fs.writeFile(skillMdPath, body, "utf8");
-  return { name, description, path: skillMdPath, source: input.scope };
+  return { name, description, path: skillMdPath, source: input.scope, modes };
+}
+
+/** Inserts or replaces a frontmatter key, preserving every other line. */
+export function upsertFrontmatterKey(content: string, key: string, value: string): string {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  const line = `${key}: ${value}`;
+  if (!match) return `---\n${line}\n---\n\n${content}`;
+  const lines = match[1].split(/\r?\n/);
+  const idx = lines.findIndex((l) => new RegExp(`^${key}\\s*:`, "i").test(l));
+  if (idx >= 0) lines[idx] = line;
+  else lines.push(line);
+  return `---\n${lines.join("\n")}\n---${content.slice(match[0].length)}`;
+}
+
+/**
+ * Sets which agent modes may use a skill. Stored in SKILL.md frontmatter as
+ * `modes: home, code` (or `modes: all`). Empty = all modes.
+ */
+export async function setSkillModes(skillPath: string, modes: unknown, projectRoot?: string | null): Promise<SkillInfo> {
+  const normalized = normalizeSkillModes(modes);
+  const validated = validateSkillPathAllowed(skillPath, projectRoot);
+  const stat = await fs.stat(validated);
+  const skillMd = stat.isDirectory() ? path.join(validated, "SKILL.md") : validated;
+  await fs.access(skillMd);
+  const content = await fs.readFile(skillMd, "utf8");
+  const next = upsertFrontmatterKey(content, "modes", normalized.length ? normalized.join(", ") : "all");
+  await fs.writeFile(skillMd, next, "utf8");
+  const dir = path.dirname(skillMd);
+  const globalRoot = path.resolve(globalSkillsDir());
+  const source: "global" | "project" = path.resolve(dir).startsWith(`${globalRoot}${path.sep}`) ? "global" : "project";
+  const info = await readSkillInfo(dir, source);
+  if (!info) throw new Error("Skill not found after saving modes.");
+  return info;
 }
 
 function sanitizeSkillName(raw: string): string {
@@ -141,6 +273,18 @@ export async function importSkill(projectRoot: string, sourcePath: string, scope
   await fs.mkdir(destinationRoot, { recursive: true });
 
   if (stat.isFile()) {
+    // Zipped skill packs (markdown + helper scripts + resources) extract to a
+    // temp dir first, then flow through the regular directory importer below.
+    if (/\.zip$/i.test(source)) {
+      const { extractSkillArchive } = await import("./skill-archive.js");
+      const buffer = await fs.readFile(source);
+      const { dir, cleanup } = await extractSkillArchive(buffer);
+      try {
+        return await importSkill(projectRoot, dir, scope);
+      } finally {
+        await cleanup();
+      }
+    }
     const content = await fs.readFile(source, "utf8");
     const metadata = parseFrontmatter(content);
     const baseWithoutExt = path.basename(source, path.extname(source));
@@ -163,6 +307,7 @@ export async function importSkill(projectRoot: string, sourcePath: string, scope
       description,
       path: targetSkillMd,
       source: scope,
+      modes: normalizeSkillModes(parseFrontmatter(finalBody)?.modes),
     };
   }
 
@@ -213,11 +358,13 @@ export async function importSkill(projectRoot: string, sourcePath: string, scope
       }
     }
 
+    const importedContent = await fs.readFile(targetSkillMd, "utf8").catch(() => "");
     return {
       name,
       description,
       path: targetSkillMd,
       source: scope,
+      modes: normalizeSkillModes(parseFrontmatter(importedContent)?.modes),
     };
   }
 
@@ -282,6 +429,11 @@ const SKILL_STOPWORDS = new Set(
 export function skillVirtualPath(skill: SkillInfo): string {
   const folder = path.basename(path.dirname(skill.path));
   if (skill.source === "global") return `${GLOBAL_SKILLS_ROUTE}/${folder}/SKILL.md`;
+  if (skill.source === "system") {
+    // System skills nest one level deeper (system-skills/<mode>/<skill>).
+    const rel = path.relative(systemSkillsDir(), skill.path).replace(/\\/g, "/");
+    return `${SYSTEM_SKILLS_ROUTE}/${rel}`;
+  }
   // Legacy skills still live under .deepagents/skills — the virtual path must
   // point at the real location or the backend read misses.
   const normalized = skill.path.replace(/\\/g, "/");
@@ -333,15 +485,16 @@ function skillTokens(text: string): string[] {
  * the agent gets a short, relevant shortlist instead of a 17-item catalog it
  * will ignore — and it works on weak models that skip catalogs entirely.
  */
-export function recommendSkills(skills: SkillInfo[], request: string, maxN = 3): SkillInfo[] {
+export function recommendSkills(skills: SkillInfo[], request: string, maxN = 3, mode?: SkillMode): SkillInfo[] {
+  const eligible = mode ? skills.filter((s) => skillAppliesToMode(s, mode)) : skills;
   const words = skillTokens(request).filter((w) => !SKILL_STOPWORDS.has(w));
-  if (!words.length || !skills.length) return [];
+  if (!words.length || !eligible.length) return [];
   const expanded = new Set<string>();
   for (const w of words) {
     expanded.add(w);
     for (const v of SKILL_SYNONYM_LOOKUP.get(w) ?? []) expanded.add(v);
   }
-  const scored = skills
+  const scored = eligible
     .map((skill) => {
       const nameTokens = skillTokens(skill.name);
       const descTokens = skillTokens(skill.description || "");
@@ -371,3 +524,134 @@ function partialHit(a: string, b: string): boolean {
   return a.includes(b) || b.includes(a);
 }
 
+// ---- Skill helper scripts ----
+
+export const SKILL_SOURCE_PRIORITY: Record<SkillInfo["source"], number> = { project: 0, global: 1, system: 2 };
+const SKILL_COPY_TOTAL_CAP = 8 * 1024 * 1024;
+
+async function copySkillDir(src: string, dest: string, budget: { remaining: number }, out: string[]): Promise<void> {
+  let entries;
+  try {
+    entries = await fs.readdir(src, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (entry.name === "node_modules" || entry.name === ".git") continue;
+    const from = path.join(src, entry.name);
+    const to = path.join(dest, entry.name);
+    try {
+      if (entry.isDirectory()) {
+        await fs.mkdir(to, { recursive: true });
+        await copySkillDir(from, to, budget, out);
+      } else if (entry.isFile()) {
+        const stat = await fs.stat(from);
+        if (stat.size > budget.remaining) continue;
+        await fs.copyFile(from, to);
+        budget.remaining -= stat.size;
+        out.push(to);
+      }
+    } catch { /* one bad file never fails the copy */ }
+  }
+}
+
+function sanitizeSkillDest(raw: unknown, skillName: string): string {
+  const fallback = path.join(".skills", sanitizeSkillName(skillName));
+  const cleaned = String(raw || "").trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  const parts = cleaned.split("/").filter((p) => p && p !== "." && p !== "..");
+  if (!parts.length) return fallback;
+  return path.join(...parts);
+}
+
+/**
+ * Agent tool: materializes a skill's bundled files (helper scripts, templates,
+ * resources) into the workspace so they can be executed. Skill folders are
+ * mounted read-only (global/system) or live outside the run cwd, and shell
+ * commands run in the workspace root — so scripts must be copied first, then
+ * run via the returned workspace-relative paths with execute. Only skills
+ * eligible for the current mode are visible here (pass the filtered catalog).
+ */
+export function createSkillFilesTool(eligibleSkills: SkillInfo[], workspaceRoot: string) {
+  const root = path.resolve(workspaceRoot);
+  return tool(async ({ skill: name, dest }: { skill: string; dest?: string }) => {
+    const query = String(name || "").trim().toLowerCase();
+    if (!query) return "Skill name is empty.";
+    const byPriority = (a: SkillInfo, b: SkillInfo) => SKILL_SOURCE_PRIORITY[a.source] - SKILL_SOURCE_PRIORITY[b.source];
+    const match =
+      eligibleSkills.filter((s) => s.name.toLowerCase() === query).sort(byPriority)[0] ||
+      eligibleSkills.filter((s) => s.name.toLowerCase().includes(query)).sort(byPriority)[0];
+    if (!match) return `Skill "${name}" not found among the skills available in this mode.`;
+    const rel = sanitizeSkillDest(dest, match.name);
+    const target = path.join(root, rel);
+    if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+      return "Destination escapes the workspace — pick a relative folder.";
+    }
+    await fs.rm(target, { recursive: true, force: true });
+    await fs.mkdir(target, { recursive: true });
+    const copied: string[] = [];
+    await copySkillDir(path.dirname(match.path), target, { remaining: SKILL_COPY_TOTAL_CAP }, copied);
+    const files = copied.map((p) => path.relative(root, p).replace(/\\/g, "/")).slice(0, 100);
+    return JSON.stringify({ dest: rel.replace(/\\/g, "/"), source: match.source, files });
+  }, {
+    name: "materialize_skill_files",
+    description: "Copy an installed skill's bundled files (helper scripts, templates, resources) into the workspace so you can run them. Use this when a SKILL.md instructs you to run its scripts: skill folders are read-only and shell commands run in the workspace root, so copy first, then execute via the returned workspace-relative paths.",
+    schema: z.object({ skill: z.string().min(1), dest: z.string().optional() }),
+  });
+}
+
+/**
+ * Builds the CompositeBackend routes mapping for global and system skills.
+ * Registers singular and plural, leading slash and non-leading slash, as well as
+ * trailing slash variants so that DeepAgents CompositeBackend path resolution
+ * never generates double slashes or misses virtual route prefixes on Windows or POSIX.
+ * Also sanitizes `resolvePath` on virtual backends so multi-slash paths (`//...`)
+ * never escape root directory.
+ */
+export function buildSkillMounts(globalBackend?: any, systemBackend?: any): Record<string, any> {
+  const mounts: Record<string, any> = {};
+  const sanitizeBackend = (b: any) => {
+    if (!b || typeof b !== "object") return;
+    const origResolve = b.resolvePath?.bind(b);
+    if (typeof origResolve === "function" && !b.__nexus_sanitized_resolve) {
+      b.resolvePath = (key: string) => {
+        const sanitized = "/" + String(key || "").replace(/^[/\\]+/, "");
+        return origResolve(sanitized);
+      };
+      b.__nexus_sanitized_resolve = true;
+    }
+  };
+
+  if (globalBackend) {
+    sanitizeBackend(globalBackend);
+    const globalPrefixes = [
+      "/global-skills",
+      "/global-skill",
+      "global-skills",
+      "global-skill",
+      "//global-skills",
+      "//global-skill",
+    ];
+    for (const prefix of globalPrefixes) {
+      mounts[prefix] = globalBackend;
+      mounts[`${prefix}/`] = globalBackend;
+    }
+  }
+
+  if (systemBackend) {
+    sanitizeBackend(systemBackend);
+    const systemPrefixes = [
+      "/system-skills",
+      "/system-skill",
+      "system-skills",
+      "system-skill",
+      "//system-skills",
+      "//system-skill",
+    ];
+    for (const prefix of systemPrefixes) {
+      mounts[prefix] = systemBackend;
+      mounts[`${prefix}/`] = systemBackend;
+    }
+  }
+
+  return mounts;
+}

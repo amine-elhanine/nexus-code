@@ -16,7 +16,7 @@ import { createSubagentDelegationTool, calculateAgentUsage, type SubagentItem } 
 import { getWorkspaceDiffFiles } from "./diff-service.js";
 import { getMcpTools } from "./mcp-service.js";
 import { getSkillsConfig } from "./store.js";
-import { GLOBAL_SKILLS_ROUTE, PROJECT_SKILLS_DIR, globalSkillsDir, listSkills, recommendSkills, skillVirtualPath } from "./skills-service.js";
+import { GLOBAL_SKILLS_ROUTE, PROJECT_SKILLS_DIR, SKILL_SOURCE_PRIORITY, SYSTEM_SKILLS_ROUTE, buildSkillMounts, createSkillFilesTool, globalSkillsDir, listSkills, listSystemSkills, recommendSkills, skillAppliesToMode, skillDirVirtualPath, skillVirtualPath, systemSkillsDir, type SkillInfo, type SkillMode } from "./skills-service.js";
 import { compactHistory, estimateTokens, StreamUsageTracker } from "./context-service.js";
 import { saveArtifact, type ArtifactItem } from "./artifacts-service.js";
 import { TrajectoryLogger } from "./trajectory-service.js";
@@ -846,9 +846,18 @@ function isRecursionLimitError(error: unknown): boolean {
   return /recursion\s*limit|GRAPH_RECURSION_LIMIT/i.test(text);
 }
 
+function todayLine(): string {
+  const now = new Date();
+  const long = now.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  return `Today is ${long} (${now.toISOString().slice(0, 10)}).`;
+}
+
 function buildSystemPrompt(mode: AgentMode, projectRoot: string, providerLabel: string, modelName: string, memory: AgentMemoryContext, projectRulesSection: string = "", complexity: TaskComplexity = "complex", isNewProject = false, taskKind: AgentTaskKind = "code", repoMapSection: string = "") {
+  const today = todayLine();
   if (taskKind === "general") {
     let general = `You are Nexus Home, a helpful general-purpose assistant. Your workspace folder is exposed at the virtual root / — use paths relative to it (for example report.docx). Files you create land in the user's Nexus folder, where they can download them.
+
+${today} Anchor every relative time expression to it ("last decade", "this year", "recent", "latest").
 
 Project root on host (metadata only): ${projectRoot}
 Provider: ${providerLabel} / ${modelName}
@@ -861,13 +870,14 @@ ${tail(memory.sessionMemory, 3000) || "(empty)"}
 
 Working rules:
 - Answer chit-chat and simple questions directly with zero tool calls.
-- For research: use web_search first, then read the most promising pages with browser_fetch_api or browser_inspect before stating facts. Never invent current prices, versions, or news.
+- For research: use web_search first, then read the most promising pages with browser_fetch_api or browser_inspect before stating facts. Never invent current prices, versions, or news. For latest/current-year rankings or "best of" lists, verify with web_search and include the current year — never clip ranges to your training cutoff.
 - If the task involves a library, API, or technology you are unsure about — especially anything recently released — research it first: web_search, then read the official docs with browser_inspect. Never invent APIs, import paths, or options; pin the exact version you verified.
-- For documents: check installed skills first — a skill may describe exactly how to build the requested file (Word, PowerPoint, Excel, LaTeX). Follow it: write a script (e.g. Python) with write_file and run it with execute, then verify the output file exists with ls. Once the deliverable is verified, delete the throwaway generator script with the delete tool so only the requested file(s) remain in the Nexus folder.
+- For documents: check the skills in your System Note first — a skill may describe exactly how to build the requested file (Word, PowerPoint, Excel, LaTeX). Follow it: write a script (e.g. Python) with write_file and run it with execute, then verify the output file exists with ls. Once the deliverable is verified, delete the throwaway generator script with the delete tool so only the requested file(s) remain in the Nexus folder.
 - If a command fails because a tool is missing (python, pip packages), install it or fall back to the closest format you CAN produce, and say so clearly.
 - Save finished deliverables with clear file names in the workspace root and end by naming the exact file(s) the user can download.
 - Be efficient: at most 3 exploration calls before acting. Keep answers concise.
-- Skills listed in your instructions are mandatory pre-reads: if a skill covers the task, read its SKILL.md first.
+- Skills listed in your instructions are mandatory pre-reads: if a skill covers the task, read its SKILL.md first via its exact given path. Never browse skill folders (ls/glob of .nexus/skills, /global-skills, /system-skills) to discover skills — the System Note already lists everything available to you.
+- If a skill ships helper scripts you must run, copy them into the workspace first with materialize_skill_files, then run them via the returned workspace-relative paths with execute (skill folders are read-only and outside the run directory).
 - Never expose secrets.`;
     if (complexity === "simple") {
       general += `\n\nEFFICIENCY MODE (simple task): answer in at most 3 tool calls. Do NOT create a todo list, do NOT delegate to subagents. If no file is needed, answer directly.`;
@@ -880,6 +890,8 @@ Working rules:
   }
 
   let common = `You are Nexus, an advanced autonomous coding agent working on a local repository. The repository is exposed at the virtual root / — use paths relative to the repository root (for example src/App.tsx).
+
+${today} Anchor every relative time expression to it.
 
 Project root on host (metadata only): ${projectRoot}
 Provider: ${providerLabel} / ${modelName}
@@ -904,7 +916,8 @@ Working rules:
 - Keep diffs minimal and focused; prefer editing existing files over rewriting them.
 - Only use the todo list for tasks with 3+ distinct steps. Skip it entirely for trivial tasks (single question, single-file fix, typo, rename).
 - Additional MCP tools (if listed in your tools) come from user-configured MCP servers; prefer them for the capabilities they expose (e.g. search, APIs, external systems).
-- Skills listed in your instructions are mandatory pre-reads, not options: before exploring or writing code, check whether any skill covers the task and read its SKILL.md first.
+- Skills listed in your instructions are mandatory pre-reads, not options: before exploring or writing code, check whether any skill covers the task and read its SKILL.md first via its exact given path. Never browse skill folders (ls/glob of .nexus/skills, /global-skills, /system-skills) to discover skills — the System Note already lists everything available to you.
+- If a skill ships helper scripts you must run, copy them into the workspace first with materialize_skill_files, then run them via the returned workspace-relative paths with execute (skill folders are read-only and outside the run directory).
 - Never expose secrets.
 - Finish by reporting files changed, commands run, and remaining risks.
 ${repoMapSection ? `\n${repoMapSection}` : ""}`;
@@ -965,9 +978,11 @@ export async function runProjectAgent(options: {
   resumePlanItems?: PlanItem[] | null;
   resumeNote?: string | null;
   taskKind?: AgentTaskKind;
+  /** Agent mode for skill scoping ("home" | "code" | "notebook"). Omit = all skills eligible. */
+  skillsMode?: SkillMode;
 }) {
   const { projectRoot, telemetryRoot, sessionId, request, images, attachments, attachmentDocs, importableAttachments, settings, memory, history, mode, agentBackend, onEvent, isCancelled } = options;
-  const { resumeMessages, resumePlanItems, resumeNote } = options;
+  const { resumeMessages, resumePlanItems, resumeNote, skillsMode } = options;
   const taskKind: AgentTaskKind = options.taskKind ?? "code";
   const isGeneral = taskKind === "general";
   const targetTelemetryRoot = telemetryRoot || projectRoot;
@@ -1051,8 +1066,9 @@ export async function runProjectAgent(options: {
     }
   };
 
-  const skills = skillsConfig.enabled ? [PROJECT_SKILLS_DIR, GLOBAL_SKILLS_ROUTE] : [];
+  const skills = skillsConfig.enabled ? [PROJECT_SKILLS_DIR, GLOBAL_SKILLS_ROUTE, SYSTEM_SKILLS_ROUTE] : [];
   let globalSkillsBackend: any = null;
+  let systemBackend: any = null;
   if (skills.length) {
     globalSkillsBackend = new FilesystemBackend({ rootDir: globalSkillsDir(), virtualMode: true });
     if (mode === "plan") {
@@ -1064,25 +1080,63 @@ export async function runProjectAgent(options: {
       globalSkillsBackend.delete = refuseSkillWrite("delete");
       globalSkillsBackend.execute = refuseSkillWrite("execute");
     }
+    // Bundled system skills: always read-only, in every mode including auto.
+    try {
+      systemBackend = new FilesystemBackend({ rootDir: systemSkillsDir(), virtualMode: true });
+      const refuseSystemWrite = (action: string) => async () => {
+        throw new Error(`System skills are read-only: ${action} is disabled.`);
+      };
+      systemBackend.write = refuseSystemWrite("write_file");
+      systemBackend.edit = refuseSystemWrite("edit_file");
+      systemBackend.delete = refuseSystemWrite("delete");
+      systemBackend.execute = refuseSystemWrite("execute");
+    } catch { /* no system skills shipped */ }
   }
   const compositeBackend = skills.length
-    ? new CompositeBackend(agentBackend as any, { [GLOBAL_SKILLS_ROUTE]: globalSkillsBackend })
+    ? new CompositeBackend(agentBackend as any, buildSkillMounts(globalSkillsBackend, systemBackend))
     : agentBackend;
 
   // Skill shortlist: the framework injects the full catalog, but models —
   // especially small ones — ignore catalogs. Match deterministically and
-  // tell the agent exactly which SKILL.md files to read first.
+  // tell the agent exactly which SKILL.md files to read first. Per-skill mode
+  // scoping applies here: only skills enabled for this run's mode are
+  // recommended, and skills scoped to other modes are explicitly off-limits.
   let skillNote: string | null = null;
+  let eligibleSkillCatalog: SkillInfo[] = [];
   if (skillsConfig.enabled) {
     try {
-      const catalog = await listSkills(projectRoot);
+      const fullCatalog = [...(await listSkills(projectRoot)), ...(await listSystemSkills().catch(() => []))];
+      const catalog = skillsMode ? fullCatalog.filter((s) => skillAppliesToMode(s, skillsMode)) : fullCatalog;
+      eligibleSkillCatalog = catalog;
       const recs = recommendSkills(catalog, request, 3);
-      if (recs.length) {
+      const offLimits = skillsMode ? fullCatalog.filter((s) => !skillAppliesToMode(s, skillsMode)) : [];
+      const offUser = offLimits.filter((s) => s.source !== "system");
+      const offSystemCount = offLimits.length - offUser.length;
+      if (recs.length || offLimits.length) {
         const lines = recs.map((s) => `- ${s.name}${s.description ? ` — ${s.description}` : ""} → read ${skillVirtualPath(s)} first`);
-        skillNote = `[System Note: ${catalog.length} skill(s) installed. Most relevant to your task:\n${lines.join("\n")}\nIf a skill covers your task, read its SKILL.md BEFORE exploring or writing code. This read is free and does not count against your exploration budget.]`;
+        const counts = (["project", "global", "system"] as const)
+          .map((source) => `${catalog.filter((s) => s.source === source).length} ${source}`)
+          .join(", ");
+        skillNote = `[System Note: ${catalog.length} skill(s) installed${skillsMode ? ` for ${skillsMode} mode` : ""} (${counts}). Most relevant to your task:\n${lines.join("\n")}\nIf a skill covers your task, read its SKILL.md BEFORE exploring or writing code. This read is free and does not count against your exploration budget.]`;
+        if (offUser.length) {
+          skillNote += `\n[Skills NOT available in ${skillsMode} mode — do NOT read, follow, or mention them: ${offUser.map((s) => s.name).join(", ")}.]`;
+        }
+        if (offSystemCount > 0) {
+          skillNote += `\n[${offSystemCount} system skill(s) are disabled in ${skillsMode} mode — only use skills listed above.]`;
+        }
       }
     } catch { /* skills are advisory — never fail a run */ }
   }
+  // Framework skill loading is scoped to eligible skills only: the mounted
+  // parent directories would expose every skill to the model regardless of
+  // mode, so pass direct per-skill paths instead. Later sources win on name
+  // clashes (system < global < project). skillDirVirtualPath is backend-safe:
+  // global/system resolve through the composite mounts, project through the
+  // workspace backend.
+  const skillDirs = eligibleSkillCatalog
+    .slice()
+    .sort((a, b) => SKILL_SOURCE_PRIORITY[b.source] - SKILL_SOURCE_PRIORITY[a.source])
+    .map(skillDirVirtualPath);
 
   const allCodeTools = createCodeIntelligenceTools(projectRoot);
   const wantsBrowser = isWebTask(request);
@@ -1131,6 +1185,8 @@ export async function runProjectAgent(options: {
   // importableAttachments covers every file type (images + docs); the legacy
   // attachedImages alias keeps image imports working for older callers.
   const editTools = mode === "plan" ? [] : createEditTools(projectRoot, { attachedImages: attachments, attachedFiles: importableAttachments ?? attachments });
+  // Skill helper scripts run through the workspace: plan mode stays read-only.
+  const skillFilesTools = mode === "plan" || !skillsConfig.enabled ? [] : [createSkillFilesTool(eligibleSkillCatalog, projectRoot)];
   const questionTool = createQuestionTool((questions) => {
     emit("status", `Clarifying questions: ${questions.map((q) => q.header).join(", ")}`);
     if (trajectory) {
@@ -1143,7 +1199,7 @@ export async function runProjectAgent(options: {
     modelName,
     projectRecord: { id: "current", name: "current", root: projectRoot },
     mcpTools,
-    skills,
+    skills: skillDirs,
     skillsBackend: compositeBackend,
     onEvent: (subEvent) => {
       usage.addSubagent(subEvent.subagent.usage);
@@ -1158,9 +1214,9 @@ export async function runProjectAgent(options: {
     backend: compositeBackend as any,
     middleware: isSimple ? [] : [todoListMiddleware()],
     tools: isSimple
-      ? [...codeTools, ...editTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...mcpTools]
-      : [...codeTools, ...editTools, questionTool, ...safeBrowserTools, ...webSearchTools, subagentTool, ...mcpTools],
-    skills,
+      ? [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...mcpTools]
+      : [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, subagentTool, ...mcpTools],
+    skills: skillDirs,
     systemPrompt: buildSystemPrompt(mode, projectRoot, provider.label, modelName, memory, rulesResult.combinedPromptSection, effectiveComplexity, isNewProject, taskKind, repoMapSection),
   });
 

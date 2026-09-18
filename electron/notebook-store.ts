@@ -73,6 +73,14 @@ export type NotebookSourceCitation = {
   score: number;
 };
 
+export type NotebookAgentStep = {
+  id: string;
+  name: string;
+  title: string;
+  detail?: string;
+  status: "running" | "completed" | "failed";
+};
+
 export type NotebookChatMessage = {
   id?: string;
   role: "user" | "assistant";
@@ -82,6 +90,7 @@ export type NotebookChatMessage = {
   evaluation?: { groundedness: number; verdict: "grounded" | "partial" | "ungrounded"; issues: string[] };
   retrieval?: Array<{ chunkId: string; sourceName: string; score: number; methods: string[] }>;
   metadata?: { routing?: string; topScore?: number; refused?: boolean; fallbackModel?: boolean };
+  steps?: NotebookAgentStep[];
 };
 
 export type NotebookChat = {
