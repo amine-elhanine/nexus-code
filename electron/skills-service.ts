@@ -385,11 +385,12 @@ export async function openSkillsFolder(scope: "global" | "project", projectRoot:
   if (errorMessage) throw new Error(errorMessage);
 }
 
-function validateSkillPathAllowed(skillPath: string, projectRoot?: string | null): string {
+function validateSkillPathAllowed(skillPath: string, projectRoot?: string | null, allowSystem = false): string {
   const resolved = path.resolve(skillPath);
   const globalRoot = path.resolve(globalSkillsDir());
   const projectRootResolved = projectRoot ? path.resolve(projectSkillsDir(projectRoot)) : null;
   const legacyRootResolved = projectRoot ? path.resolve(legacyProjectSkillsDir(projectRoot)) : null;
+  const sysRoot = path.resolve(systemSkillsDir());
 
   const isInsideGlobal = resolved === globalRoot || resolved.startsWith(`${globalRoot}${path.sep}`);
   const isInsideProject = projectRootResolved
@@ -399,8 +400,9 @@ function validateSkillPathAllowed(skillPath: string, projectRoot?: string | null
   const isInsideLegacy = legacyRootResolved
     ? (resolved === legacyRootResolved || resolved.startsWith(`${legacyRootResolved}${path.sep}`))
     : false;
+  const isInsideSystem = allowSystem && (resolved === sysRoot || resolved.startsWith(`${sysRoot}${path.sep}`));
 
-  if (!isInsideGlobal && !isInsideProject && !isInsideLegacy) {
+  if (!isInsideGlobal && !isInsideProject && !isInsideLegacy && !isInsideSystem) {
     throw new Error(`Security violation: skill path '${skillPath}' is outside the authorized skills directories.`);
   }
   return resolved;
@@ -417,8 +419,14 @@ export async function deleteSkill(skillPath: string, projectRoot?: string | null
 }
 
 export async function readSkillContent(skillPath: string, projectRoot?: string | null): Promise<string> {
-  const validated = validateSkillPathAllowed(skillPath, projectRoot);
+  const validated = validateSkillPathAllowed(skillPath, projectRoot, true);
   return fs.readFile(validated, "utf8");
+}
+
+export async function listAllSkills(projectRoot?: string | null): Promise<SkillInfo[]> {
+  const userSkills = await listSkills(projectRoot);
+  const sysSkills = await listSystemSkills().catch(() => []);
+  return [...userSkills, ...sysSkills];
 }
 
 const SKILL_STOPWORDS = new Set(

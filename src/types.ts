@@ -3,7 +3,7 @@ export type AgentUsage = { inputTokens: number; outputTokens: number; totalToken
 export function formatCost(cost: number | null | undefined): string {
   return cost == null ? "—" : `~$${cost.toFixed(4)}`;
 }
-export type SubagentRole = "researcher" | "tester" | "coder";
+export type SubagentRole = string;
 export type SubagentStep = { toolName: string; summary?: string; timestamp: string };
 export type SubagentItem = { id: string; role: SubagentRole; task: string; status: "running" | "completed" | "failed"; steps: SubagentStep[]; output?: string; usage?: AgentUsage };
 export type ArtifactStatus = "draft" | "pending_approval" | "approved" | "completed" | "rejected";

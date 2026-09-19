@@ -11,7 +11,7 @@ import { createBrowserTools } from "./browser-tool.js";
 import { agentBrowserService } from "./browser-service.js";
 import { getRepoMapSection } from "./repo-map-service.js";
 import { createWebSearchTools } from "./websearch-tool.js";
-import { discoverProjectRules } from "./rules-service.js";
+import { discoverAllRules, discoverProjectRules } from "./rules-service.js";
 import { createSubagentDelegationTool, calculateAgentUsage, type SubagentItem } from "./subagent-service.js";
 import { getWorkspaceDiffFiles } from "./diff-service.js";
 import { getMcpTools } from "./mcp-service.js";
@@ -461,6 +461,38 @@ function toolCallSummary(call: any) {
   return describeToolCall(call?.name || "", call?.args);
 }
 
+// Pulls the `login` out of a GitHub get_me result (JSON string, object, or
+// LangChain message content). Returns null when no login is recognizable.
+export function extractGithubLogin(raw: unknown): string | null {
+  const texts: string[] = [];
+  if (typeof raw === "string") texts.push(raw);
+  else if (Array.isArray(raw)) {
+    for (const block of raw) {
+      if (typeof block === "string") texts.push(block);
+      else if (block && typeof block === "object") {
+        const o = block as Record<string, unknown>;
+        if (typeof o.text === "string") texts.push(o.text);
+        if (typeof o.login === "string") return o.login;
+      }
+    }
+  } else if (raw && typeof raw === "object") {
+    const o = raw as Record<string, unknown>;
+    if (typeof o.login === "string") return o.login;
+    try { texts.push(JSON.stringify(o)); } catch { /* ignore */ }
+  }
+  for (const text of texts) {
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      if (parsed && typeof parsed === "object" && typeof (parsed as Record<string, unknown>).login === "string") {
+        return (parsed as Record<string, unknown>).login as string;
+      }
+    } catch { /* not JSON — fall through to regex */ }
+    const match = text.match(/"login"\s*:\s*"([^"]+)"/);
+    if (match) return match[1];
+  }
+  return null;
+}
+
 // Truncated plain-text excerpt of a LangChain ToolMessage payload for
 // transcript persistence. Caps size so one giant grep dump can't bloat every
 // future prompt in the session.
@@ -878,6 +910,7 @@ Working rules:
 - Be efficient: at most 3 exploration calls before acting. Keep answers concise.
 - Skills listed in your instructions are mandatory pre-reads: if a skill covers the task, read its SKILL.md first via its exact given path. Never browse skill folders (ls/glob of .nexus/skills, /global-skills, /system-skills) to discover skills — the System Note already lists everything available to you.
 - If a skill ships helper scripts you must run, copy them into the workspace first with materialize_skill_files, then run them via the returned workspace-relative paths with execute (skill folders are read-only and outside the run directory).
+- Additional MCP tools (if listed in your tools) come from user-configured MCP servers; prefer them for the capabilities they expose (e.g. GitHub issues and PRs, search, APIs, external systems) instead of reimplementing with shell commands. When GitHub MCP tools are available, never ask the user for their GitHub username — the token already identifies them (see the authenticated-user note, or call get_me). To list the user's own repositories: call get_me, then search_repositories with the query 'user:<login>'. Use the login verbatim — exact spelling, no spaces, never the display name. If GitHub rejects the query with 422 on the user: qualifier, call get_me again and retry once with that exact login before reporting failure.
 - Never expose secrets.`;
     if (complexity === "simple") {
       general += `\n\nEFFICIENCY MODE (simple task): answer in at most 3 tool calls. Do NOT create a todo list, do NOT delegate to subagents. If no file is needed, answer directly.`;
@@ -904,6 +937,7 @@ ${tail(memory.sessionMemory, 3000) || "(empty)"}
 
 Working rules:
 - Inspect the relevant code before proposing or making changes; never assume file contents.
+- Follow the engineering harness loop: Plan -> Test -> Implement -> Review -> Verify.
 - Be efficient: act in at most 3 exploration calls (grep_search/read_file_range) before editing or answering. Read files directly; do not chain outline -> definition -> references -> read for the same symbol. (SKILL.md reads don't count — always check skills first.)
 - Never list the repository root (ls /) or run unscoped globs (**/*): they return thousands of entries (node_modules/dist) and stall the run. Always scope to a subdirectory or a narrow pattern like src/**/*.tsx.
 - Prefer grep_search with a tight query over browsing; if a listing is truncated, narrow it instead of paging through it.
@@ -912,14 +946,17 @@ Working rules:
 - Use ask_user sparingly (at most once) when genuinely blocked by ambiguity; otherwise proceed with best guess.
 - Use browser_inspect or browser_fetch_api ONLY for web/dev-server/API-health tasks. Never use them for plain code edits or explanations. browser_inspect renders the page with JavaScript in the built-in browser session (the user can watch in the Browser tab when headless is off), so prefer it for checking what a running dev server actually renders. To interact with the page (click buttons, fill forms, submit, scroll), use browser_act — snapshot first for element refs, then act on refs.
 - If the task involves a library, API, or technology you are unsure about — especially anything recently released — research it first with web_search, then read the official docs with browser_inspect before writing code. Never invent APIs, import paths, or options; pin the exact version you verified.
-- delegate_task is a last resort for genuinely independent multi-file work. Never delegate simple lookups, single-file edits, or Q&A — doing so multiplies steps.
+- Immutability & clean design: prefer pure functions and immutable data transforms over mutation. Keep functions small (<50 lines) and files focused (<800 lines). Never silently swallow errors in empty catch blocks.
+- Security-first: zero tolerance for hardcoded API keys, secrets, or credentials. Always parameterize queries against SQL injection and sanitize user inputs against XSS.
+- Test-driven development (TDD): for bug fixes or features, write or update tests alongside changes. Verify that tests pass.
+- Specialist subagents: use delegate_task for complex isolated tasks (e.g. 'architect' for system design, 'code-reviewer' for quality audits, 'security-reviewer' for vulnerability checks, 'tdd-guide' for test workflows, 'build-error-resolver' for compiler errors, 'refactor-cleaner' for dead code removal). Never delegate simple single-file edits or Q&A.
 - Keep diffs minimal and focused; prefer editing existing files over rewriting them.
 - Only use the todo list for tasks with 3+ distinct steps. Skip it entirely for trivial tasks (single question, single-file fix, typo, rename).
-- Additional MCP tools (if listed in your tools) come from user-configured MCP servers; prefer them for the capabilities they expose (e.g. search, APIs, external systems).
+- Additional MCP tools (if listed in your tools) come from user-configured MCP servers; prefer them for the capabilities they expose (e.g. search, APIs, external systems). When GitHub MCP tools are available, never ask the user for their GitHub username — the token already identifies them (see the authenticated-user note, or call get_me). To list the user's own repositories: call get_me, then search_repositories with the query 'user:<login>'. Use the login verbatim — exact spelling, no spaces, never the display name. If GitHub rejects the query with 422 on the user: qualifier, call get_me again and retry once with that exact login before reporting failure.
 - Skills listed in your instructions are mandatory pre-reads, not options: before exploring or writing code, check whether any skill covers the task and read its SKILL.md first via its exact given path. Never browse skill folders (ls/glob of .nexus/skills, /global-skills, /system-skills) to discover skills — the System Note already lists everything available to you.
 - If a skill ships helper scripts you must run, copy them into the workspace first with materialize_skill_files, then run them via the returned workspace-relative paths with execute (skill folders are read-only and outside the run directory).
 - Never expose secrets.
-- Finish by reporting files changed, commands run, and remaining risks.
+- Self-review: before finishing, verify that modified code compiles, tests pass, and no unintended edits or secrets were introduced. Report files changed, commands run, and remaining risks.
 ${repoMapSection ? `\n${repoMapSection}` : ""}`;
 
   // New-project builds must come out production-ready (Claude-Code bar), not
@@ -1035,7 +1072,7 @@ export async function runProjectAgent(options: {
       (r) => ({ ok: true as const, tools: r.tools, serverNames: r.serverNames }),
       (error: unknown) => ({ ok: false as const, error }),
     ),
-    discoverProjectRules(projectRoot),
+    discoverAllRules(projectRoot),
     getSkillsConfig(),
     // Code runs get a symbol-outline map so the model orients without
     // re-listing the tree every task. Home/doc runs skip it (a documents
@@ -1046,7 +1083,15 @@ export async function runProjectAgent(options: {
   let mcpTools: any[] = [];
   if (mcpResult.ok) {
     mcpTools = mcpResult.tools;
-    if (mcpResult.tools.length) emit("status", `Connected to MCP · ${mcpResult.tools.length} tool${mcpResult.tools.length === 1 ? "" : "s"} from ${mcpResult.serverNames.join(", ")}`);
+    if (mcpResult.tools.length) {
+      // Name the bound tools so the model (and the user in the activity feed)
+      // can see exactly which MCP capabilities this run has. Capped: a server
+      // with dozens of tools must not bloat every future prompt via history.
+      const names = mcpResult.tools.map((t: any) => t?.name).filter((n: unknown): n is string => typeof n === "string" && Boolean(n));
+      const shown = names.slice(0, 15).join(", ");
+      const extra = names.length > shown.split(", ").length ? ` (+${names.length - 15} more)` : "";
+      emit("status", `Connected to MCP · ${mcpResult.tools.length} tool${mcpResult.tools.length === 1 ? "" : "s"} from ${mcpResult.serverNames.join(", ")}: ${shown}${extra}`);
+    }
   } else {
     emit("error", `MCP servers could not be reached, continuing without them: ${mcpResult.error instanceof Error ? mcpResult.error.message : String(mcpResult.error)}`);
   }
@@ -1054,6 +1099,27 @@ export async function runProjectAgent(options: {
   // may mutate files or external systems, so none can be safely exposed while
   // the agent is only supposed to investigate and plan.
   if (mode === "plan") mcpTools = [];
+  // GitHub identity pre-resolution: a token-backed GitHub MCP server already
+  // identifies the user, so the model must never ask for a username. Call the
+  // server's get_me tool once (read-only) and hand the login to the run as
+  // fact. Gated on GitHub-flavored requests so unrelated runs pay nothing.
+  // Advisory only — any failure degrades to the old behavior.
+  let identityNote: string | null = null;
+  // Note: "repositories" must match — repos?\b alone fails on it ("repos"
+  // is followed by "i", not a word boundary), hence the repositor alternative.
+  if (/github|repositor|\brepos?\b|pull request|\bprs?\b|issues?|gists?/i.test(request)) {
+    const meTool = mcpTools.find((t: any) => typeof t?.name === "string" && /^get_me$/i.test(t.name));
+    if (meTool && typeof meTool.invoke === "function") {
+      try {
+        const raw = await withSetupTimeout(Promise.resolve(meTool.invoke({})), 15000, "GitHub identity");
+        const login = extractGithubLogin(raw);
+        if (login) {
+          identityNote = `[Authenticated GitHub user (resolved via the GitHub MCP get_me tool — do NOT ask the user for their username): ${login}]`;
+          emit("status", `GitHub identity · ${login}`);
+        }
+      } catch { /* identity stays unknown; model falls back to tools */ }
+    }
+  }
   if (rulesResult.hasRules) {
     emit("status", `Loaded ${rulesResult.ruleFiles.length} project rule file${rulesResult.ruleFiles.length === 1 ? "" : "s"} (${rulesResult.ruleFiles.map((r) => r.filename).join(", ")})`);
   }
@@ -1242,7 +1308,7 @@ export async function runProjectAgent(options: {
   const importNote = (attachmentDocs?.length || attachments?.length)
     ? `[Attachment imports: ${(attachmentDocs?.length || 0) + (attachments?.length || 0)} file(s) available via import_attachment (index 0..${(attachmentDocs?.length || 0) + (attachments?.length || 0) - 1}: ${[...(attachmentDocs || []).map((d) => d.name), ...(attachments || []).map((_, i) => `image-${i}`)].join(", ")}). Only import when the deliverable needs the actual file in the project; reference content above is already in context.]`
     : null;
-  const requestText = [request, resumeNote, skillNote, imageNote, docNote, importNote].filter(Boolean).join("\n\n");
+  const requestText = [request, identityNote, resumeNote, skillNote, imageNote, docNote, importNote].filter(Boolean).join("\n\n");
   let initialHumanMessage: HumanMessage;
   if (images && images.length > 0) {
     const contentParts: any[] = [{ type: "text", text: requestText }];

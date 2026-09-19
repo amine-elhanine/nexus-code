@@ -46,6 +46,13 @@
 .subagent-role-pill.researcher{background:#182e45;color:#70b8ff;border:1px solid #234b73}
 .subagent-role-pill.tester{background:#382710;color:#ffbe6b;border:1px solid #63431b}
 .subagent-role-pill.coder{background:#231a42;color:#bca9ff;border:1px solid #4a3782}
+.subagent-role-pill.architect{background:#0f2b2b;color:#5eead4;border:1px solid #134e4a}
+.subagent-role-pill.code-reviewer{background:#102b1f;color:#6ee7b7;border:1px solid #14532d}
+.subagent-role-pill.security-reviewer{background:#33141e;color:#fca5a5;border:1px solid #7f1d1d}
+.subagent-role-pill.tdd-guide{background:#33200d;color:#fcd34d;border:1px solid #78350f}
+.subagent-role-pill.build-error-resolver{background:#2e1327;color:#f472b6;border:1px solid #701a75}
+.subagent-role-pill.refactor-cleaner{background:#241639;color:#c084fc;border:1px solid #581c87}
+.subagent-role-pill.database-reviewer{background:#131c38;color:#93c5fd;border:1px solid #1e3a8a}
 .subagent-task-title{font-size:11px;color:#d5ceee;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .subagent-card-right{display:flex;align-items:center;gap:8px;flex:none}
 .subagent-status-badge{display:flex;align-items:center;gap:4px;font-size:10px;color:#948db5}

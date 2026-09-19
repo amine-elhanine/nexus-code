@@ -1,10 +1,11 @@
-import React, { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
+import React, { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   Coins, Sparkles, FolderOpen, Plus, Square, ArrowUp,
   Paperclip, FileText, Search, Presentation, Table2, Mic,
 } from "lucide-react";
 import { ModelSelect } from "./AgentView.js";
 import { ChatItemView, ActivityGroupView } from "../components/chat/ChatMessageItem.js";
+import { SlashCommandPopup, filterSlashCommands, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
 import { formatCost } from "../types.js";
 import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
 import type { ChatItem, ProviderConfig, ProviderDefinition, AgentUsage, ChatAttachment } from "../types.js";
@@ -71,6 +72,7 @@ export function HomeView({
   hasProvider,
   onOpenImage,
   onOpenAttachment,
+  customCommands,
 }: {
   messages: ChatItem[];
   draft: string;
@@ -100,6 +102,7 @@ export function HomeView({
   hasProvider: boolean;
   onOpenImage?: (src: string) => void;
   onOpenAttachment?: (attachment: ChatAttachment) => void;
+  customCommands?: SlashCommand[];
 }) {
   const api = window.nexus || window.forgepilot;
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -141,7 +144,81 @@ export function HomeView({
   });
   flushActivity();
 
+  const [slashQuery, setSlashQuery] = useState<string | null>(null);
+  const [slashIndex, setSlashIndex] = useState(0);
+
+  const matchingCommands = useMemo(() => {
+    if (slashQuery === null) return [];
+    return filterSlashCommands(slashQuery, customCommands, []);
+  }, [slashQuery, customCommands]);
+
+  function updateCursorTriggers(value: string, cursorPosition: number) {
+    const beforeCursor = value.slice(0, cursorPosition);
+    const slashMatch = beforeCursor.match(/(?:^|\s)\/([a-zA-Z0-9_-]*)$/);
+    if (slashMatch) {
+      setSlashQuery(slashMatch[1]);
+      setSlashIndex(0);
+    } else {
+      setSlashQuery(null);
+    }
+  }
+
+  function handleDraftChange(value: string, cursorPosition: number) {
+    setDraft(value);
+    updateCursorTriggers(value, cursorPosition);
+  }
+
+  function handleSlashSelect(cmd: SlashCommand) {
+    if (!textareaRef.current) return;
+    const cursor = textareaRef.current.selectionStart || draft.length;
+    const beforeCursor = draft.slice(0, cursor);
+    const afterCursor = draft.slice(cursor);
+    const updatedBefore = beforeCursor.replace(/(?:^|\s)\/([a-zA-Z0-9_-]*)$/, (match) => {
+      const leadingWhitespace = match.match(/^\s/)?.[0] || "";
+      return `${leadingWhitespace}${cmd.command} `;
+    });
+    const nextDraft = `${updatedBefore}${afterCursor}`;
+    setDraft(nextDraft);
+    setSlashQuery(null);
+    setSlashIndex(0);
+
+    const newCursor = updatedBefore.length;
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        textareaRef.current.setSelectionRange(newCursor, newCursor);
+      }
+    }, 0);
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (slashQuery !== null && matchingCommands.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setSlashIndex((c) => (c + 1) % matchingCommands.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setSlashIndex((c) => (c - 1 + matchingCommands.length) % matchingCommands.length);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSlashQuery(null);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        if (!event.ctrlKey && !event.metaKey && !event.shiftKey) {
+          event.preventDefault();
+          const selected = matchingCommands[((slashIndex % matchingCommands.length) + matchingCommands.length) % matchingCommands.length];
+          if (selected) {
+            handleSlashSelect(selected);
+          }
+          return;
+        }
+      }
+    }
     if (event.key === "Enter") {
       if (event.ctrlKey || event.metaKey || event.shiftKey) return;
       event.preventDefault();
@@ -313,10 +390,29 @@ export function HomeView({
               ))}
             </div>
           )}
+          {slashQuery !== null && matchingCommands.length > 0 && (
+            <SlashCommandPopup
+              filter={slashQuery}
+              items={matchingCommands}
+              customCommands={customCommands}
+              defaults={[]}
+              onSelect={handleSlashSelect}
+              selectedIndex={slashIndex}
+            />
+          )}
           <textarea
             ref={textareaRef}
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) =>
+              handleDraftChange(
+                event.target.value,
+                event.target.selectionStart || event.target.value.length
+              )
+            }
+            onSelect={(event) => {
+              const target = event.currentTarget;
+              updateCursorTriggers(target.value, target.selectionStart || target.value.length);
+            }}
             onKeyDown={handleKeyDown}
             placeholder="Ask anything, or request a document… (Enter to send)"
             rows={3}

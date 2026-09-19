@@ -5,7 +5,7 @@ import {
   Bug, Code2, CheckCircle2,
 } from "lucide-react";
 import { WorktreeBar } from "../components/worktree/WorktreeBar.js";
-import { SlashCommandPopup, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
+import { SlashCommandPopup, filterSlashCommands, DEFAULT_SLASH_COMMANDS, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
 import { ChatItemView, ActivityGroupView } from "../components/chat/ChatMessageItem.js";
 import { fileIcon } from "../utils/format.js";
 import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
@@ -175,9 +175,13 @@ export function AgentView({
 
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
+  const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
 
-  const isSlash = draft.startsWith("/") && !draft.includes(" ");
+  const matchingCommands = useMemo(() => {
+    if (slashQuery === null) return [];
+    return filterSlashCommands(slashQuery, customCommands, DEFAULT_SLASH_COMMANDS);
+  }, [slashQuery, customCommands]);
 
   const transcriptNodes: ReactNode[] = [];
   let pendingActivity: ChatItem[] = [];
@@ -228,16 +232,30 @@ export function AgentView({
       .slice(0, 8);
   }, [mentionQuery, files]);
 
-  function handleDraftChange(value: string, cursorPosition: number) {
-    setDraft(value);
+  function updateCursorTriggers(value: string, cursorPosition: number) {
     const beforeCursor = value.slice(0, cursorPosition);
-    const match = beforeCursor.match(/@([a-zA-Z0-9_./-]*)$/);
-    if (match) {
-      setMentionQuery(match[1]);
+    const mentionMatch = beforeCursor.match(/@([a-zA-Z0-9_./-]*)$/);
+    if (mentionMatch) {
+      setMentionQuery(mentionMatch[1]);
       setMentionIndex(0);
+      setSlashQuery(null);
+      return;
     } else {
       setMentionQuery(null);
     }
+
+    const slashMatch = beforeCursor.match(/(?:^|\s)\/([a-zA-Z0-9_-]*)$/);
+    if (slashMatch) {
+      setSlashQuery(slashMatch[1]);
+      setSlashIndex(0);
+    } else {
+      setSlashQuery(null);
+    }
+  }
+
+  function handleDraftChange(value: string, cursorPosition: number) {
+    setDraft(value);
+    updateCursorTriggers(value, cursorPosition);
   }
 
   function insertMention(filePath: string) {
@@ -255,27 +273,51 @@ export function AgentView({
     if (cmd.mode) {
       setMode(cmd.mode === "plan" ? "Plan" : cmd.mode === "auto" ? "Auto" : "Ask");
     }
-    setDraft("");
-    if (cmd.promptTemplate) {
-      let template = cmd.promptTemplate;
-      template = template.replace(/\{\{input\}\}/gi, "");
-      template = template.replace(/\{\{activeFile\}\}/gi, activeFile || "workspace files");
-      template = template.replace(
-        /\{\{diffSummary\}\}/gi,
-        diffCount ? `${diffCount} changed files` : "clean working tree"
-      );
-      submit(template.trim());
+    if (!textareaRef.current) return;
+    const cursor = textareaRef.current.selectionStart || draft.length;
+    const beforeCursor = draft.slice(0, cursor);
+    const afterCursor = draft.slice(cursor);
+    const updatedBefore = beforeCursor.replace(/(?:^|\s)\/([a-zA-Z0-9_-]*)$/, (match) => {
+      const leadingWhitespace = match.match(/^\s/)?.[0] || "";
+      return `${leadingWhitespace}${cmd.command} `;
+    });
+    const nextDraft = `${updatedBefore}${afterCursor}`;
+    setDraft(nextDraft);
+    setSlashQuery(null);
+    setSlashIndex(0);
+
+    const newCursor = updatedBefore.length;
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        textareaRef.current.setSelectionRange(newCursor, newCursor);
+      }
+    }, 0);
+  }
+
+  function handleSendMessage(overrideText?: string) {
+    const text = (overrideText ?? draft).trim();
+    if (text === "/diff") {
+      setDraft("");
+      onOpenDiff?.();
       return;
     }
-    if (cmd.command === "/test") {
-      submit("Run project verification and tests");
-    } else if (cmd.command === "/diff") {
-      onOpenDiff?.();
-    } else if (cmd.command === "/checkpoint") {
-      submit("Create checkpoint and review workspace state");
-    } else if (cmd.command === "/help") {
+    if (text === "/help") {
+      setDraft("");
       submit("What tools, commands, and skills are available in this project?");
+      return;
     }
+    if (text === "/checkpoint") {
+      setDraft("");
+      submit("Create checkpoint and review workspace state");
+      return;
+    }
+    if (text === "/test") {
+      setDraft("");
+      submit("Run project verification and tests");
+      return;
+    }
+    submit(overrideText);
   }
 
   function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
@@ -362,16 +404,31 @@ export function AgentView({
       }
     }
 
-    if (isSlash) {
+    if (slashQuery !== null && matchingCommands.length > 0) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
-        setSlashIndex((c) => c + 1);
+        setSlashIndex((c) => (c + 1) % matchingCommands.length);
         return;
       }
       if (event.key === "ArrowUp") {
         event.preventDefault();
-        setSlashIndex((c) => Math.max(0, c - 1));
+        setSlashIndex((c) => (c - 1 + matchingCommands.length) % matchingCommands.length);
         return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSlashQuery(null);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        if (!event.ctrlKey && !event.metaKey && !event.shiftKey) {
+          event.preventDefault();
+          const selected = matchingCommands[((slashIndex % matchingCommands.length) + matchingCommands.length) % matchingCommands.length];
+          if (selected) {
+            handleSlashSelect(selected);
+          }
+          return;
+        }
       }
     }
 
@@ -394,7 +451,7 @@ export function AgentView({
         return;
       }
       event.preventDefault();
-      submit();
+      handleSendMessage();
     }
   }
 
@@ -551,9 +608,10 @@ export function AgentView({
               ))}
             </div>
           )}
-          {isSlash && (
+          {slashQuery !== null && matchingCommands.length > 0 && (
             <SlashCommandPopup
-              filter={draft}
+              filter={slashQuery}
+              items={matchingCommands}
               customCommands={customCommands}
               selectedIndex={slashIndex}
               onSelect={handleSlashSelect}
@@ -599,6 +657,10 @@ export function AgentView({
                 event.target.selectionStart || event.target.value.length
               )
             }
+            onSelect={(event) => {
+              const target = event.currentTarget;
+              updateCursorTriggers(target.value, target.selectionStart || target.value.length);
+            }}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder="Ask the agent to inspect, change, test, or review your project… (paste images with Ctrl+V, type @ for files, / for commands)"
@@ -656,7 +718,7 @@ export function AgentView({
             <button
               className={`send-button${running ? " stop" : ""}`}
               disabled={!running && !draft.trim() && attachments.length === 0}
-              onClick={running ? onStop : () => submit()}
+              onClick={running ? onStop : () => handleSendMessage()}
               title={running ? "Stop the agent" : "Send"}
             >
               {running ? <Square size={13} fill="currentColor" /> : <ArrowUp size={16} />}

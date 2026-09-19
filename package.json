@@ -12,12 +12,12 @@
   },
   "scripts": {
     "dev": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron . --dev\"",
-    "build:electron": "tsc -p tsconfig.electron.json && node -e \"require('node:fs').copyFileSync('electron/pty-host.cjs','dist-electron/pty-host.cjs')\" && node -e \"require('node:fs').cpSync('electron/system-skills','dist-electron/system-skills',{recursive:true,force:true})\"",
+    "build:electron": "tsc -p tsconfig.electron.json && node -e \"require('node:fs').copyFileSync('electron/pty-host.cjs','dist-electron/pty-host.cjs')\" && node -e \"const fs=require('node:fs');['system-skills','system-commands','system-agents','system-rules'].forEach(d=>{try{fs.rmSync('dist-electron/'+d,{recursive:true,force:true})}catch(e){} try{fs.cpSync('electron/'+d,'dist-electron/'+d,{recursive:true,force:true})}catch(e){}})\"",
     "build": "tsc -p tsconfig.json && vite build && npm run build:electron",
     "start": "electron .",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
     "test": "npm run build:electron && electron test/sandbox-and-agent.test.mjs",
-    "test:unit": "npm run build:electron && node test/rate-limit.test.mjs && node test/checkpoint-resume.test.mjs && node test/skill-archive.test.mjs",
+    "test:unit": "npm run build:electron && node test/rate-limit.test.mjs && node test/checkpoint-resume.test.mjs && node test/skill-archive.test.mjs && node test/ecc-integration.test.mjs",
     "test:notebook": "npm run build:electron && node test/notebook-text.test.mjs && node test/notebook-parse.test.mjs && node test/notebook-library.test.mjs && node test/notebook-pipeline.test.mjs && node test/notebook-agentic.test.mjs && node test/notebook-evidence.test.mjs && node test/notebook-vectors-sqlite.test.mjs",
     "dist": "npm run build && electron-builder",
     "dist:dir": "npm run build && electron-builder --dir"

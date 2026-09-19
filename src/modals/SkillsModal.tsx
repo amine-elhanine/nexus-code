@@ -13,7 +13,7 @@ export function SkillsModal({
   onClose: () => void;
 }) {
   return (
-    <Modal title="Skills" subtitle="Manage step-by-step instructions and guidelines for your coding agent." onClose={onClose}>
+    <Modal wide title="Skills" subtitle="Manage step-by-step instructions, specialized playbooks, and guidelines for your agent." onClose={onClose}>
       <SkillsManager hasProject={hasProject} enabled={enabled} onToggle={onToggle} />
     </Modal>
   );

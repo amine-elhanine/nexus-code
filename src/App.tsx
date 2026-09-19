@@ -763,6 +763,7 @@ function App() {
                   switchModel={(providerId, model) => void switchModel(providerId, model)}
                   onOpenProviders={() => setShowProviders(true)}
                   hasProvider={providers.length > 0}
+                  customCommands={customCommands.filter((c) => !c.scope || c.scope === "all" || c.scope === "notebook")}
                 />
               </section>
             ) : area === "home" ? (
@@ -796,6 +797,7 @@ function App() {
                 hasProvider={providers.length > 0}
                 onOpenImage={openImagePreview}
                 onOpenAttachment={setAttachmentPreview}
+                customCommands={customCommands.filter((c) => !c.scope || c.scope === "all" || c.scope === "home")}
               />
               </section>
             ) : (
@@ -855,7 +857,7 @@ function App() {
                   setAttachedImages={setAttachedImages}
                   attachments={attachments}
                   setAttachments={setAttachments}
-                  customCommands={customCommands}
+                  customCommands={customCommands.filter((c) => !c.scope || c.scope === "all" || c.scope === "code")}
                 />
               ) : (
                 <MonacoEditorView

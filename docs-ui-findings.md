@@ -29,10 +29,12 @@ The app is a **per-session workspace**, not a dashboard. Three top-level areas s
 | Local context | Topbar: project menu, branch, session title, model picker, `Skills / MCP / Services / Providers / Settings`, updater pill, command-approval modal when the Ask gate fires. |
 | Multi-agent | Parallel sessions each with own run state; subagent activity streams inline as cards with real `usage_metadata`. |
 | Notebook grounding | Sources list with `queued/parsing/chunking/indexing/ready/failed` badges, per-source scope toggles, citations with excerpts + scores, `grounded/partial/ungrounded` verdict, passage modal (`explain/simplify/compare/quiz/save-note`). |
+| Notebook Studio | Right panel generators: Reports (`.docx`), Slide decks (`.pptx`), Interactive Quizzes (MCQ / True-False), Flashcards, Mind maps (Mermaid interactive explorer), and Structured Summaries. |
+| System Agents & Commands | 68 built-in system agents in `electron/system-agents/` and scoped slash commands in `system-commands/{code,home,notebook}/` for specialized workflows. |
 | Attachments | Paperclip menu (image, PDF, Word, Excel, …), image preview, `nexus-attachment://` storage (no base64 in state JSON). |
 
 ## Modals
 
-`ProviderModal` (15 providers) · `McpModal` · `SkillsModal` · `SettingsModal` (incl. Updates) · `ProjectPickerModal` · `ConfirmModal` · `DaemonsModal` · `MonacoDiffModal` · `ProjectRulesModal` · `ArtifactViewer` (approve-and-execute) · `FilePreviewModal` / `AttachmentPreviewModal` · command-approval dialog.
+`ProviderModal` (15 providers) · `McpModal` · `SkillsModal` · `SettingsModal` (incl. Updates) · `ProjectPickerModal` · `ConfirmModal` · `DaemonsModal` · `MonacoDiffModal` · `ProjectRulesModal` · `ArtifactViewer` (approve-and-execute) · `FilePreviewModal` / `AttachmentPreviewModal` · `DocumentViewerModal` · `QuizPlayerModal` · `FlashcardPlayerModal` · `MindmapViewerModal` · command-approval dialog.
 
 Sources: `src/App.tsx`, `src/views/*`, `src/components/*`, `src/state/useAppController.ts`, `src/state/useNotebookController.ts`.

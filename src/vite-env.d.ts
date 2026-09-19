@@ -2,7 +2,7 @@
 
 type PlanItem = { content: string; status: "pending" | "in_progress" | "completed" };
 type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
-type SubagentRole = "researcher" | "tester" | "coder";
+type SubagentRole = string;
 type SubagentStep = { toolName: string; summary?: string; timestamp: string };
 type SubagentItem = { id: string; role: SubagentRole; task: string; status: "running" | "completed" | "failed"; steps: SubagentStep[]; output?: string; usage?: AgentUsage };
 type ArtifactStatus = "draft" | "pending_approval" | "approved" | "completed" | "rejected";
@@ -103,8 +103,8 @@ export interface NexusApi {
   // Project Rules
   getProjectRules: (projectId: string) => Promise<{ hasRules: boolean; ruleFiles: Array<{ filename: string; relativePath: string; content: string; source: string }>; combinedPromptSection: string }>;
 
-  // Custom Slash Commands
-  listCustomCommands: () => Promise<Array<{ command: string; name: string; description: string; mode?: "plan" | "auto" | "ask"; promptTemplate: string; source: "builtin" | "project"; filePath?: string }>>;
+  // Custom Slash Commands (optional area scope filter)
+  listCustomCommands: (scope?: "home" | "code" | "notebook") => Promise<Array<{ command: string; name: string; description: string; mode?: "plan" | "auto" | "ask"; promptTemplate: string; source: "builtin" | "project"; filePath?: string; scope?: "all" | "home" | "code" | "notebook" }>>;
 
   // Background Daemons & Services
   listDaemons: () => Promise<Array<{ id: string; name: string; command: string; cwd: string; status: "running" | "stopped" | "crashed"; pid?: number; port?: number; startTime: string; logsCount: number }>>;

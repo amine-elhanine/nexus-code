@@ -18,7 +18,7 @@ import {
 } from "./store.js";
 import { HOME_PROJECT_ID, cleanupHomeGeneratorScripts, downloadHomeFile, ensureHomeDir, listHomeFiles, listHomeSessionFiles, openHomeFolder, readHomeFile } from "./home-service.js";
 import { testMcpServer } from "./mcp-service.js";
-import { createSkill, deleteSkill, ensureSkillSourceDirs, importSkill, listSkills, openSkillsFolder, readSkillContent, setSkillModes } from "./skills-service.js";
+import { createSkill, deleteSkill, ensureSkillSourceDirs, importSkill, listAllSkills, listSkills, openSkillsFolder, readSkillContent, setSkillModes } from "./skills-service.js";
 import { beginCommandRun, cancelCommandRun, endCommandRun, isCommandRunCancelled, runProjectCommand, getAgentBackend } from "./command-service.js";
 import { createWorkspaceCheckpoint, deleteWorkspaceCheckpoint, getWorkspaceDiffFiles, restoreWorkspaceCheckpoint, revertAllWorkspaceChanges, revertWorkspaceFile } from "./diff-service.js";
 import { getWorkspaceGit, listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./project-tools.js";
@@ -752,7 +752,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("skills:config:save", (_event, config: { enabled: boolean }) => saveSkillsConfig(config));
   ipcMain.handle("skills:list", async () => {
     await ensureSkillSourceDirs(activeProjectRoot);
-    return listSkills(activeProjectRoot);
+    return listAllSkills(activeProjectRoot);
   });
   ipcMain.handle("skills:read", async (_event, skillPath: string) => readSkillContent(skillPath, activeProjectRoot));
   ipcMain.handle("skills:pick-file", async () => {
@@ -971,9 +971,9 @@ app.whenReady().then(async () => {
     return terminalService.resize(id, cols || 80, rows || 24);
   });
 
-  // Custom Slash Commands
-  ipcMain.handle("commands:listCustom", async () => {
-    return await discoverCustomCommands(activeProjectRoot || undefined);
+  // Custom Slash Commands (optional scope: "home" | "code" | "notebook" — omit for all)
+  ipcMain.handle("commands:listCustom", async (_event, scope?: "home" | "code" | "notebook") => {
+    return await discoverCustomCommands(activeProjectRoot || undefined, scope);
   });
 
   // Background Daemons & Services
