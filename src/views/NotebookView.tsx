@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { ModelSelect } from "./AgentView.js";
 import { ActivityGroupView, CopyTextButton } from "../components/chat/ChatMessageItem.js";
+import { SlashCommandPopup, filterSlashCommands, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
 import { renderMarkdown } from "../markdown.js";
 import { timeLabel } from "../utils/format.js";
 import { SourcePassageModal, type PassageAction } from "../components/notebook/SourcePassageModal.js";
@@ -326,6 +327,7 @@ export function NotebookView({
   switchModel,
   onOpenProviders,
   hasProvider,
+  customCommands,
 }: {
   notebooks: NotebookMeta[];
   activeNotebook: NotebookMeta | null;
@@ -399,11 +401,87 @@ export function NotebookView({
   switchModel: (providerId: string, model: string) => void;
   onOpenProviders: () => void;
   hasProvider: boolean;
+  customCommands?: SlashCommand[];
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const askTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const [slashQuery, setSlashQuery] = useState<string | null>(null);
+  const [slashIndex, setSlashIndex] = useState(0);
+
+  const matchingCommands = useMemo(() => {
+    if (slashQuery === null) return [];
+    return filterSlashCommands(slashQuery, customCommands, []);
+  }, [slashQuery, customCommands]);
+
+  function updateCursorTriggers(value: string, cursorPosition: number) {
+    const beforeCursor = value.slice(0, cursorPosition);
+    const slashMatch = beforeCursor.match(/(?:^|\s)\/([a-zA-Z0-9_-]*)$/);
+    if (slashMatch) {
+      setSlashQuery(slashMatch[1]);
+      setSlashIndex(0);
+    } else {
+      setSlashQuery(null);
+    }
+  }
+
+  function handleDraftChange(value: string, cursorPosition: number) {
+    setDraft(value);
+    updateCursorTriggers(value, cursorPosition);
+  }
+
+  function handleSlashSelect(cmd: SlashCommand) {
+    if (!askTextareaRef.current) return;
+    const cursor = askTextareaRef.current.selectionStart || draft.length;
+    const beforeCursor = draft.slice(0, cursor);
+    const afterCursor = draft.slice(cursor);
+    const updatedBefore = beforeCursor.replace(/(?:^|\s)\/([a-zA-Z0-9_-]*)$/, (match) => {
+      const leadingWhitespace = match.match(/^\s/)?.[0] || "";
+      return `${leadingWhitespace}${cmd.command} `;
+    });
+    const nextDraft = `${updatedBefore}${afterCursor}`;
+    setDraft(nextDraft);
+    setSlashQuery(null);
+    setSlashIndex(0);
+
+    const newCursor = updatedBefore.length;
+    setTimeout(() => {
+      if (askTextareaRef.current) {
+        askTextareaRef.current.focus();
+        askTextareaRef.current.setSelectionRange(newCursor, newCursor);
+      }
+    }, 0);
+  }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (slashQuery !== null && matchingCommands.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setSlashIndex((c) => (c + 1) % matchingCommands.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setSlashIndex((c) => (c - 1 + matchingCommands.length) % matchingCommands.length);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSlashQuery(null);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        if (!event.ctrlKey && !event.metaKey && !event.shiftKey) {
+          event.preventDefault();
+          const selected = matchingCommands[((slashIndex % matchingCommands.length) + matchingCommands.length) % matchingCommands.length];
+          if (selected) {
+            handleSlashSelect(selected);
+          }
+          return;
+        }
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
       event.preventDefault();
       onAsk();
@@ -1036,10 +1114,30 @@ export function NotebookView({
             )}
           </div>
           <div className="agent-input-area">
-            <div className="agent-input">
+            <div className="agent-input" style={{ position: "relative" }}>
+              {slashQuery !== null && matchingCommands.length > 0 && (
+                <SlashCommandPopup
+                  filter={slashQuery}
+                  items={matchingCommands}
+                  customCommands={customCommands}
+                  defaults={[]}
+                  onSelect={handleSlashSelect}
+                  selectedIndex={slashIndex}
+                />
+              )}
               <textarea
+                ref={askTextareaRef}
                 value={draft}
-                onChange={(e) => setDraft(e.target.value)}
+                onChange={(e) =>
+                  handleDraftChange(
+                    e.target.value,
+                    e.target.selectionStart || e.target.value.length
+                  )
+                }
+                onSelect={(e) => {
+                  const target = e.currentTarget;
+                  updateCursorTriggers(target.value, target.selectionStart || target.value.length);
+                }}
                 onKeyDown={handleKeyDown}
                 placeholder={excludedIds.length ? `Ask ${scopedCount} selected file${scopedCount === 1 ? "" : "s"}… (Enter to send)` : "Ask about your sources… (Enter to send)"}
                 rows={3}

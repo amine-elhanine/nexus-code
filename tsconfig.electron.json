@@ -10,6 +10,12 @@
     "skipLibCheck": true,
     "types": ["node", "electron"]
   },
-  "include": ["electron/**/*"]
+  "include": ["electron/**/*"],
+  "exclude": [
+    "electron/system-skills/**/*",
+    "electron/system-commands/**/*",
+    "electron/system-agents/**/*",
+    "electron/system-rules/**/*"
+  ]
 }
 

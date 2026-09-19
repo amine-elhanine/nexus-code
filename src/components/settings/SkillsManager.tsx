@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from "react";
-import { FolderOpen, Puzzle, Trash2, Upload, Plus, FileCode2, File, X } from "lucide-react";
+import React, { useState, useEffect, useMemo } from "react";
+import { FolderOpen, Puzzle, Trash2, Upload, Plus, FileCode2, File, X, Search, Sparkles, BookOpen, Layers, Check } from "lucide-react";
 import { ConfirmModal } from "../../modals/ConfirmModal.js";
 import { Toggle } from "../common/Toggle.js";
 import type { SkillInfo } from "../../types.js";
@@ -14,7 +14,6 @@ function capMode(mode: string): string {
   return mode ? mode[0].toUpperCase() + mode.slice(1) : mode;
 }
 
-/** Canonical select value for a modes array ([] = All). Unknown values fall back to All. */
 function modesKey(modes: string[] | undefined): string {
   if (isAllModes(modes)) return "";
   const known = modes!.filter((m) => (MODE_ORDER as readonly string[]).includes(m));
@@ -30,7 +29,6 @@ const MODE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "code,notebook", label: "Code + Notebook" },
 ];
 
-/** Per-skill mode selector: one dropdown (All, singles, or pairs). */
 function ModeSelector({
   modes,
   onChange,
@@ -46,7 +44,7 @@ function ModeSelector({
       disabled={disabled}
       onChange={(e) => onChange(e.target.value ? e.target.value.split(",") : [])}
       title="Which modes can use this skill"
-      style={{ marginTop: 6, width: "100%" }}
+      style={{ width: "100%", fontSize: "11px", padding: "4px 8px" }}
     >
       {MODE_OPTIONS.map((o) => (
         <option key={o.value || "all"} value={o.value}>
@@ -74,6 +72,8 @@ export function SkillsManager({
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [activeTab, setActiveTab] = useState<"import" | "create" | "preview">("import");
   const [scope, setScope] = useState<"global" | "project">(hasProject ? "project" : "global");
+  const [filterScope, setFilterScope] = useState<"all" | "global" | "project" | "system">("all");
+  const [searchQuery, setSearchQuery] = useState("");
   const [selectedSources, setSelectedSources] = useState<string[]>([]);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState("");
@@ -224,14 +224,34 @@ export function SkillsManager({
 
   const globalSkills = skills.filter((skill) => skill.source === "global");
   const projectSkills = skills.filter((skill) => skill.source === "project");
+  const systemSkills = skills.filter((skill) => skill.source === "system");
+
+  const filteredSkills = useMemo(() => {
+    return skills.filter((skill) => {
+      if (filterScope !== "all" && skill.source !== filterScope) return false;
+      if (!searchQuery.trim()) return true;
+      const q = searchQuery.toLowerCase();
+      return (
+        skill.name.toLowerCase().includes(q) ||
+        (skill.description && skill.description.toLowerCase().includes(q)) ||
+        modesLabel(skill.modes).toLowerCase().includes(q)
+      );
+    });
+  }, [skills, filterScope, searchQuery]);
 
   return (
-    <>
-      <div className="toggle-row">
-        <span>
-          <strong>Enable skills middleware</strong>
-          <small>Allow the agent to load global and project SKILL.md files.</small>
-        </span>
+    <div className="skills-manager-container">
+      {/* Top Banner with Toggle */}
+      <div className="skills-top-banner">
+        <div className="skills-top-banner-info">
+          <strong>
+            <Sparkles size={15} style={{ color: "var(--nexus-bright)" }} />
+            Skills Middleware
+          </strong>
+          <small>
+            Autonomous task playbooks and domain guidelines for Home, Code, and Notebook modes.
+          </small>
+        </div>
         <Toggle
           checked={enabled}
           onChange={(next) => void onToggle(next)}
@@ -239,72 +259,163 @@ export function SkillsManager({
         />
       </div>
 
+      {/* Main Two-Column Layout */}
       <div className="provider-layout">
+        {/* Left Column: Skill Browser */}
         <div className="provider-list">
-          <div className="pane-top" style={{ padding: "0 0 8px 0" }}>
-            <span>GLOBAL SKILLS ({globalSkills.length})</span>
-            <div style={{ display: "flex", gap: "4px" }}>
-              <button className="pane-action" title="Open global skills folder" onClick={() => void openFolder("global")}><FolderOpen size={13} /></button>
+          {/* Filter and Search Bar */}
+          <div className="skills-filter-bar" style={{ marginBottom: "8px" }}>
+            <div className="skills-search-wrap">
+              <Search size={12} className="skills-search-icon" />
+              <input
+                className="skills-search-input"
+                type="text"
+                placeholder="Search skills…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+              {searchQuery && (
+                <button className="skills-search-clear" onClick={() => setSearchQuery("")} title="Clear search">
+                  <X size={11} />
+                </button>
+              )}
+            </div>
+
+            <div className="skills-scope-chips">
+              <button
+                className={`skills-scope-chip ${filterScope === "all" ? "active" : ""}`}
+                onClick={() => setFilterScope("all")}
+              >
+                All <span className="skills-count-pill">{skills.length}</span>
+              </button>
+              <button
+                className={`skills-scope-chip ${filterScope === "global" ? "active" : ""}`}
+                onClick={() => setFilterScope("global")}
+              >
+                Global <span className="skills-count-pill">{globalSkills.length}</span>
+              </button>
+              {hasProject && (
+                <button
+                  className={`skills-scope-chip ${filterScope === "project" ? "active" : ""}`}
+                  onClick={() => setFilterScope("project")}
+                >
+                  Project <span className="skills-count-pill">{projectSkills.length}</span>
+                </button>
+              )}
+              {systemSkills.length > 0 && (
+                <button
+                  className={`skills-scope-chip ${filterScope === "system" ? "active" : ""}`}
+                  onClick={() => setFilterScope("system")}
+                >
+                  System <span className="skills-count-pill">{systemSkills.length}</span>
+                </button>
+              )}
             </div>
           </div>
-          {globalSkills.map((skill) => (
-            <div className={`provider-card ${previewSkill?.path === skill.path ? "active" : ""}`} key={skill.path}>
-              <div className="provider-card-main" onClick={() => void handleSelectPreview(skill)} style={{ cursor: "pointer" }}>
-                <span className="provider-logo"><Puzzle size={13} /></span>
-                <div style={{ minWidth: 0 }}>
-                  <strong>{skill.name}</strong>
-                  <small>{skill.description || "No description"}</small>
-                  <div onClick={(e) => e.stopPropagation()} title="Which modes can use this skill">
-                    <ModeSelector modes={skill.modes || []} disabled={savingModesPath === skill.path} onChange={(next) => void handleSetModes(skill, next)} />
-                  </div>
-                </div>
-              </div>
-              <div className="provider-card-actions">
-                <button className="danger" onClick={(e) => { e.stopPropagation(); setDeleteTarget(skill); }} title="Delete skill"><Trash2 size={13} /></button>
-              </div>
-            </div>
-          ))}
-          {!globalSkills.length && <div className="empty-provider"><Puzzle size={16} /><p>No global skills yet.</p></div>}
 
-          {hasProject && (
-            <>
-              <div className="pane-top" style={{ padding: "12px 0 8px 0" }}>
-                <span>PROJECT SKILLS ({projectSkills.length})</span>
-                <button className="pane-action" title="Open project skills folder" onClick={() => void openFolder("project")}><FolderOpen size={13} /></button>
-              </div>
-              {projectSkills.map((skill) => (
-                <div className={`provider-card ${previewSkill?.path === skill.path ? "active" : ""}`} key={skill.path}>
-                  <div className="provider-card-main" onClick={() => void handleSelectPreview(skill)} style={{ cursor: "pointer" }}>
-                    <span className="provider-logo"><Puzzle size={13} /></span>
-                    <div style={{ minWidth: 0 }}>
-                      <strong>{skill.name}</strong>
-                      <small>{skill.description || "No description"}</small>
-                      <div onClick={(e) => e.stopPropagation()} title="Which modes can use this skill">
-                        <ModeSelector modes={skill.modes || []} disabled={savingModesPath === skill.path} onChange={(next) => void handleSetModes(skill, next)} />
-                      </div>
+          {/* Action Row for Folders */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "2px 2px 6px" }}>
+            <span style={{ fontSize: "10px", color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.04em", fontWeight: 600 }}>
+              {filterScope.toUpperCase()} SKILLS ({filteredSkills.length})
+            </span>
+            <div style={{ display: "flex", gap: "6px" }}>
+              <button
+                className="skills-action-btn"
+                style={{ width: "auto", padding: "2px 6px", fontSize: "10px", gap: "4px", display: "inline-flex" }}
+                title="Open global skills folder in explorer"
+                onClick={() => void openFolder("global")}
+              >
+                <FolderOpen size={11} /> Global folder
+              </button>
+              {hasProject && (
+                <button
+                  className="skills-action-btn"
+                  style={{ width: "auto", padding: "2px 6px", fontSize: "10px", gap: "4px", display: "inline-flex" }}
+                  title="Open project skills folder in explorer"
+                  onClick={() => void openFolder("project")}
+                >
+                  <FolderOpen size={11} /> Project folder
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Skill Cards List */}
+          {filteredSkills.map((skill) => {
+            const isSelected = previewSkill?.path === skill.path;
+            return (
+              <div
+                className={`skills-card ${skill.source} ${isSelected ? "active" : ""}`}
+                key={skill.path}
+              >
+                <div className="skills-card-main" onClick={() => void handleSelectPreview(skill)}>
+                  <span className="skills-card-icon">
+                    <Puzzle size={14} />
+                  </span>
+                  <div className="skills-card-content">
+                    <div className="skills-card-title-row">
+                      <strong className="skills-card-title">{skill.name}</strong>
+                      <span className={`skills-badge ${skill.source}`}>{skill.source}</span>
+                    </div>
+                    <p className="skills-card-desc">{skill.description || "No description provided."}</p>
+                    <div className="skills-card-footer">
+                      <span className="skills-mode-pill">
+                        {modesLabel(skill.modes)}
+                      </span>
                     </div>
                   </div>
-                  <div className="provider-card-actions">
-                    <button className="danger" onClick={(e) => { e.stopPropagation(); setDeleteTarget(skill); }} title="Delete skill"><Trash2 size={13} /></button>
-                  </div>
                 </div>
-              ))}
-              {!projectSkills.length && <div className="empty-provider"><Puzzle size={16} /><p>No project skills yet.</p></div>}
-            </>
+
+                <div className="skills-card-actions">
+                  {skill.source !== "system" && (
+                    <button
+                      className="skills-action-btn danger"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeleteTarget(skill);
+                      }}
+                      title="Delete skill"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+
+          {!filteredSkills.length && !loadError && (
+            <div className="empty-provider" style={{ padding: "30px 16px" }}>
+              <Puzzle size={22} style={{ color: "var(--faint)", marginBottom: "6px" }} />
+              <p style={{ margin: 0, fontSize: "12px", color: "var(--muted)" }}>
+                {searchQuery ? `No skills match "${searchQuery}"` : "No skills found in this category."}
+              </p>
+            </div>
           )}
+
           {loadError && <small className="fetch-error">{loadError}</small>}
         </div>
 
+        {/* Right Column: Actions / Preview */}
         <div className="provider-form">
           <div className="skills-tab-bar">
-            <button className={`skills-tab-btn ${activeTab === "import" ? "active" : ""}`} onClick={() => setActiveTab("import")}>
+            <button
+              className={`skills-tab-btn ${activeTab === "import" ? "active" : ""}`}
+              onClick={() => setActiveTab("import")}
+            >
               <Upload size={12} /> Import files
             </button>
-            <button className={`skills-tab-btn ${activeTab === "create" ? "active" : ""}`} onClick={() => setActiveTab("create")}>
+            <button
+              className={`skills-tab-btn ${activeTab === "create" ? "active" : ""}`}
+              onClick={() => setActiveTab("create")}
+            >
               <Plus size={12} /> Create skill
             </button>
             {previewSkill && (
-              <button className={`skills-tab-btn ${activeTab === "preview" ? "active" : ""}`} onClick={() => setActiveTab("preview")}>
+              <button
+                className={`skills-tab-btn ${activeTab === "preview" ? "active" : ""}`}
+                onClick={() => setActiveTab("preview")}
+              >
                 <FileCode2 size={12} /> Inspect: {previewSkill.name}
               </button>
             )}
@@ -314,13 +425,16 @@ export function SkillsManager({
             <>
               <div className="form-title">
                 <span>Import Skill Files</span>
-                <small>SKILL.md, ZIP or folder</small>
+                <small>SKILL.md, ZIP bundle or folder</small>
               </div>
+
               <label>
                 Destination Library
                 <select value={scope} onChange={(event) => setScope(event.target.value as "global" | "project")}>
                   <option value="global">Global (available to all projects)</option>
-                  <option value="project" disabled={!hasProject}>Current project {hasProject ? "" : "(open a project first)"}</option>
+                  <option value="project" disabled={!hasProject}>
+                    Current project {hasProject ? "" : "(open a project first)"}
+                  </option>
                 </select>
               </label>
 
@@ -358,8 +472,8 @@ export function SkillsManager({
                   </button>
                 </>
               ) : (
-                <div style={{ padding: "14px", border: "1px dashed #283648", borderRadius: "6px", textAlign: "center", color: "#748296", fontSize: "11px", margin: "8px 0 14px" }}>
-                  <Upload size={18} style={{ margin: "0 auto 6px", display: "block", color: "#54657c" }} />
+                <div style={{ padding: "16px", border: "1px dashed var(--line)", borderRadius: "8px", textAlign: "center", color: "var(--muted)", fontSize: "11px", margin: "8px 0 14px" }}>
+                  <Upload size={20} style={{ margin: "0 auto 8px", display: "block", color: "var(--faint)" }} />
                   Click <strong>Select SKILL.md / ZIP file(s)</strong> or <strong>Select Skill folder</strong> above to stage skills for addition.
                 </div>
               )}
@@ -374,7 +488,7 @@ export function SkillsManager({
             <>
               <div className="form-title">
                 <span>Create New Skill</span>
-                <small>Write instructions for agent</small>
+                <small>Author instructions for your agent</small>
               </div>
               <label>
                 Skill Identifier
@@ -388,19 +502,19 @@ export function SkillsManager({
                 </select>
               </label>
               <label>
-                Description (when should agent activate this skill?)
+                Description (when should the agent activate this skill?)
                 <input value={newSkillDesc} onChange={(e) => setNewSkillDesc(e.target.value)} placeholder="e.g. Use when writing, reviewing or refactoring React components" />
               </label>
               <label>
                 Usable in modes
+                <ModeSelector modes={newSkillModes} onChange={setNewSkillModes} />
               </label>
-              <ModeSelector modes={newSkillModes} onChange={setNewSkillModes} />
               <label>
                 SKILL.md Instructions (Markdown)
                 <textarea
                   value={newSkillContent}
                   onChange={(e) => setNewSkillContent(e.target.value)}
-                  rows={6}
+                  rows={7}
                   placeholder={`# Skill Instructions\n\n1. Inspect the relevant components.\n2. Follow patterns specified here.\n3. Validate with tests.`}
                 />
               </label>
@@ -420,20 +534,44 @@ export function SkillsManager({
 
           {activeTab === "preview" && previewSkill && (
             <>
-              <div className="form-title">
-                <span>{previewSkill.name}</span>
-                <span className={`skill-scope-tag ${previewSkill.source}`}>{previewSkill.source}</span>
+              <div className="skills-preview-header">
+                <div className="skills-preview-title">
+                  <strong>{previewSkill.name}</strong>
+                  <div className="skills-preview-meta">
+                    <span className={`skills-badge ${previewSkill.source}`}>{previewSkill.source}</span>
+                    <span>Modes: {modesLabel(previewSkill.modes)}</span>
+                  </div>
+                </div>
+                {previewSkill.source !== "system" && (
+                  <button className="skills-action-btn danger" onClick={() => setDeleteTarget(previewSkill)} title="Delete skill">
+                    <Trash2 size={13} />
+                  </button>
+                )}
               </div>
-              <small style={{ color: "#7f8d9f", fontSize: "10px", wordBreak: "break-all" }}>{previewSkill.path}</small>
-              <small style={{ color: "#7f8d9f", fontSize: "11px" }}>Modes: {modesLabel(previewSkill.modes)}</small>
-              <div onClick={(e) => e.stopPropagation()} title="Which modes can use this skill">
-                <ModeSelector modes={previewSkill.modes || []} disabled={savingModesPath === previewSkill.path} onChange={(next) => void handleSetModes(previewSkill, next)} />
-              </div>
-              <pre className="skill-preview-box">{previewContent}</pre>
+
+              {previewSkill.source !== "system" && (
+                <label style={{ margin: "6px 0" }}>
+                  Usable in modes
+                  <ModeSelector
+                    modes={previewSkill.modes || []}
+                    disabled={savingModesPath === previewSkill.path}
+                    onChange={(next) => void handleSetModes(previewSkill, next)}
+                  />
+                </label>
+              )}
+
+              <small style={{ color: "var(--faint)", fontSize: "10px", wordBreak: "break-all", display: "block", margin: "4px 0" }}>
+                {previewSkill.path}
+              </small>
+
+              <pre className="skills-preview-box-enhanced">{previewContent}</pre>
+
               <div className="modal-actions" style={{ justifyContent: "space-between", marginTop: "10px" }}>
-                <button className="secondary danger-btn" onClick={() => setDeleteTarget(previewSkill)}>
-                  <Trash2 size={13} /> Delete this skill
-                </button>
+                {previewSkill.source !== "system" ? (
+                  <button className="secondary danger-btn" onClick={() => setDeleteTarget(previewSkill)}>
+                    <Trash2 size={13} /> Delete skill
+                  </button>
+                ) : <span />}
                 <button className="secondary" onClick={() => setActiveTab("import")}>
                   Back to import
                 </button>
@@ -457,6 +595,6 @@ export function SkillsManager({
           onCancel={() => setDeleteTarget(null)}
         />
       )}
-    </>
+    </div>
   );
 }

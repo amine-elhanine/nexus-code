@@ -10,7 +10,79 @@ import { StreamUsageTracker } from "./context-service.js";
 import type { ProviderConfig } from "./store.js";
 import type { AgentUsage } from "./agent-service.js";
 
-export type SubagentRole = "researcher" | "tester" | "coder";
+import { readdirSync, readFileSync, existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+export type SubagentRole = string;
+
+export const SUBAGENT_ROLES: string[] = [
+  "researcher",
+  "tester",
+  "coder",
+  "architect",
+  "code-reviewer",
+  "security-reviewer",
+  "tdd-guide",
+  "build-error-resolver",
+  "refactor-cleaner",
+  "database-reviewer",
+];
+
+export function systemAgentsDir() {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), "system-agents");
+}
+
+let cachedSystemAgents: Map<string, {
+  title: string;
+  description: string;
+  systemPrompt: (projectRoot: string) => string;
+  readOnly: boolean;
+  recursionLimit: number;
+}> | null = null;
+
+export function getSystemAgents() {
+  if (cachedSystemAgents) return cachedSystemAgents;
+  const map = new Map<string, {
+    title: string;
+    description: string;
+    systemPrompt: (projectRoot: string) => string;
+    readOnly: boolean;
+    recursionLimit: number;
+  }>();
+
+  try {
+    const dir = systemAgentsDir();
+    if (existsSync(dir)) {
+      const files = readdirSync(dir);
+      for (const file of files) {
+        if (!file.endsWith(".md")) continue;
+        const roleName = file.replace(/\.md$/, "").toLowerCase();
+        const content = readFileSync(path.join(dir, file), "utf8");
+        const title = roleName.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+        const descMatch = content.match(/description:\s*([^\r\n]+)/i);
+        const description = descMatch ? descMatch[1].trim() : `${title} specialist from ECC`;
+        const isReadOnly = /\b(reviewer|analyzer|architect|explorer|evaluator|lookup|specialist|miner)\b/i.test(roleName);
+        map.set(roleName, {
+          title,
+          description,
+          readOnly: isReadOnly,
+          recursionLimit: isReadOnly ? 25 : 35,
+          systemPrompt: (projectRoot: string) =>
+            `You are the ${title} Subagent in Nexus working on the repository at ${projectRoot}.\n\n${content}`,
+        });
+      }
+    }
+  } catch { /* ignore if dir not found */ }
+
+  cachedSystemAgents = map;
+  return map;
+}
+
+export function getAllSubagentRoles(): string[] {
+  const sys = getSystemAgents();
+  return [...new Set([...SUBAGENT_ROLES, ...Array.from(sys.keys())])];
+}
 
 export type SubagentStep = {
   toolName: string;
@@ -108,6 +180,98 @@ Working guidelines:
 - Keep changes minimal and adhere strictly to existing code style.
 - Edit existing files rather than rewriting entire modules.
 - Return a concise summary of files modified and rationale.`,
+  },
+  architect: {
+    title: "System Architect",
+    description: "Design modular system architecture, component boundaries, interfaces, and migration strategies.",
+    readOnly: true,
+    recursionLimit: 20,
+    systemPrompt: (projectRoot: string) => `You are a System Architect Subagent in Nexus working on the repository at ${projectRoot}.
+Your role is to analyze architectural design, module boundaries, data flows, and technical trade-offs.
+Working guidelines:
+- Evaluate cohesion, coupling, and separation of concerns.
+- Define clean interface contracts and data models before implementation begins.
+- Highlight backward-compatibility considerations, migration steps, and architectural risks.
+- You have READ-ONLY access. Return a structured blueprint with diagrams or markdown specifications.`,
+  },
+  "code-reviewer": {
+    title: "Code Reviewer",
+    description: "Perform rigorous review for code quality, edge cases, error handling, performance, and maintainability.",
+    readOnly: true,
+    recursionLimit: 25,
+    systemPrompt: (projectRoot: string) => `You are a Code Reviewer Subagent in Nexus working on the repository at ${projectRoot}.
+Your goal is to provide a rigorous, objective peer review of code changes and workspace diffs.
+Review criteria:
+- Correctness and edge-case handling (null/undefined checks, boundary conditions, race conditions).
+- Code smell detection: functions > 50 lines, deep nesting > 4 levels, code duplication.
+- Error handling: ensure errors are not swallowed; verify error messages and diagnostics.
+- Immutability: ensure objects and arrays are copied cleanly rather than mutated in place.
+- You have READ-ONLY access. Return findings prioritized by severity: CRITICAL, HIGH, MEDIUM, and LOW.`,
+  },
+  "security-reviewer": {
+    title: "Security Reviewer",
+    description: "Perform security audit for secrets, OWASP Top 10 vulnerabilities, injection vectors, and input validation.",
+    readOnly: true,
+    recursionLimit: 25,
+    systemPrompt: (projectRoot: string) => `You are a Security Reviewer Subagent in Nexus working on the repository at ${projectRoot}.
+Your goal is to audit the workspace for security flaws, unauthorized disclosures, and vulnerabilities.
+Checklist:
+- Secret detection: verify no API keys, tokens, credentials, or private certificates are hardcoded.
+- Injection defense: verify SQL parameterization, shell escaping, command injection immunity.
+- Web hygiene: verify XSS sanitization, CORS configuration, CSRF tokens, and secure headers.
+- Input validation: verify all external inputs are schema-validated at the boundaries (e.g. Zod/Joi).
+- You have READ-ONLY access. Report any discovered vulnerability with proof-of-concept explanation and fix.`,
+  },
+  "tdd-guide": {
+    title: "TDD Guide",
+    description: "Drive Test-Driven Development: write failing unit/integration tests first (RED), verify passing (GREEN), and refactor.",
+    readOnly: false,
+    recursionLimit: 35,
+    systemPrompt: (projectRoot: string) => `You are a TDD Guide Subagent in Nexus working on the repository at ${projectRoot}.
+Your mission is to enforce the RED-GREEN-REFACTOR cycle with high test coverage (target: 80%+).
+Working steps:
+1. RED: Write unit or integration tests that assert expected behavior and verify that they fail as expected.
+2. GREEN: Implement minimal production code necessary to turn the tests green.
+3. REFACTOR: Clean up implementation, improve names, eliminate duplication, and verify tests still pass.
+Always report the test execution commands and before/after test status.`,
+  },
+  "build-error-resolver": {
+    title: "Build Error Resolver",
+    description: "Diagnose and resolve compiler errors, TypeScript diagnostics, bundler failures, and missing dependencies.",
+    readOnly: false,
+    recursionLimit: 30,
+    systemPrompt: (projectRoot: string) => `You are a Build Error Resolver Subagent in Nexus working on the repository at ${projectRoot}.
+Your goal is to inspect failing build or compiler outputs, identify the exact fault, and apply surgical fixes.
+Working guidelines:
+- Run the build/typecheck command to reproduce the failure.
+- Parse compiler diagnostics, missing type definitions, incorrect imports, or circular dependencies.
+- Fix errors incrementally and re-run verification until the build passes cleanly.`,
+  },
+  "refactor-cleaner": {
+    title: "Refactor & Cleaner",
+    description: "Clean up dead code, simplify complex functions, deduplicate logic, and enforce clean immutability.",
+    readOnly: false,
+    recursionLimit: 30,
+    systemPrompt: (projectRoot: string) => `You are a Refactor & Code Cleaner Subagent in Nexus working on the repository at ${projectRoot}.
+Your goal is to improve code readability, reduce complexity, and eliminate dead code without altering external behavior.
+Working guidelines:
+- Break oversized functions (>50 lines) into small, focused helpers.
+- Eliminate dead variables, unused imports, and unreferenced exports.
+- Replace in-place mutations with clean immutable patterns.
+- Run tests before and after refactoring to ensure zero behavior regression.`,
+  },
+  "database-reviewer": {
+    title: "Database Reviewer",
+    description: "Review SQL schemas, indexes, migrations, query performance, and connection safety.",
+    readOnly: true,
+    recursionLimit: 20,
+    systemPrompt: (projectRoot: string) => `You are a Database Reviewer Subagent in Nexus working on the repository at ${projectRoot}.
+Your role is to evaluate database designs, SQL queries, migration scripts, and data models.
+Review criteria:
+- Schema normalization, primary/foreign key constraints, and cascading integrity.
+- Indexing strategies: verify indexes on foreign keys and frequently queried fields.
+- Migration safety: ensure migrations are non-locking and reversible.
+- SQL injection immunity: verify parameterized queries and ORM safety.`,
   },
 };
 
@@ -235,7 +399,8 @@ export async function executeSubagentTask(options: {
   runId?: string;
 }): Promise<string> {
   const { role, task, projectRoot, provider, modelName, projectRecord, mcpTools, skills, skillsBackend, onEvent, isCancelled, runId } = options;
-  const config = SUBAGENT_CONFIGS[role] || SUBAGENT_CONFIGS.researcher;
+  const sysAgents = getSystemAgents();
+  const config = (SUBAGENT_CONFIGS as any)[role] || sysAgents.get(role) || SUBAGENT_CONFIGS.researcher;
   const subagentId = `sub-${role}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
   if (!task.trim()) return `[Subagent: ${config.title} Failed]\nA subagent task is required.`;
@@ -399,7 +564,7 @@ export function createSubagentDelegationTool(options: {
   runId?: string;
 }) {
   return tool(
-    async ({ role, task }: { role: "researcher" | "tester" | "coder"; task: string }) => {
+    async ({ role, task }: { role: SubagentRole; task: string }) => {
       return await executeSubagentTask({
         role,
         task,
@@ -417,10 +582,10 @@ export function createSubagentDelegationTool(options: {
     },
     {
       name: "delegate_task",
-      description: "Delegate an isolated sub-task to a specialized subagent (use sparingly, only for genuinely independent multi-file work — never for simple lookups or single-file edits). 'researcher' explores files, symbols, and patterns in read-only mode to prevent polluting main context. 'tester' runs test suites and diagnoses errors. 'coder' applies surgical modifications.",
+      description: "Delegate an isolated sub-task to a specialized engineering subagent. 68 specialized ECC roles are supported, including 'architect', 'code-reviewer', 'security-reviewer', 'tdd-guide', 'build-error-resolver', 'refactor-cleaner', 'database-reviewer', 'researcher', 'tester', 'coder', etc.",
       schema: z.object({
-        role: z.enum(["researcher", "tester", "coder"]).describe("The specialized role: 'researcher' for codebase investigation, 'tester' for test execution, 'coder' for code editing."),
-        task: z.string().min(1).max(4_000).describe("Clear, focused instructions for the subagent describing what to find, test, or implement. Maximum 4,000 characters."),
+        role: z.string().min(1).describe("The specialized subagent role to execute the task (e.g. 'architect', 'code-reviewer', 'security-reviewer', 'tdd-guide', 'build-error-resolver', 'database-reviewer', 'researcher', 'tester', 'coder', or any other ECC specialist agent)."),
+        task: z.string().min(1).max(4_000).describe("Clear, focused instructions for the subagent describing what to find, design, test, review, or implement. Maximum 4,000 characters."),
       }),
     }
   );

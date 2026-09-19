@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface CustomSlashCommand {
   command: string;          // e.g. "/review"
@@ -9,6 +10,32 @@ export interface CustomSlashCommand {
   promptTemplate: string;   // Prompt text with optional placeholders
   source: "builtin" | "project";
   filePath?: string;
+  /** Which assistant area may use the command. Absent = all areas. */
+  scope?: CommandScope;
+}
+
+/** Assistant area a command may serve. Mirrors the system-skills folder convention. */
+export type CommandScope = "all" | "home" | "code" | "notebook";
+export const ALL_COMMAND_SCOPES: CommandScope[] = ["all", "home", "code", "notebook"];
+
+/** Normalizes frontmatter/user input ("home,code", ["home"], "all", "") → scope. "all" means every area. */
+export function normalizeCommandScope(value: unknown): CommandScope {
+  const parts = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+  const cleaned = parts.map((part) => String(part || "").trim().toLowerCase());
+  if (cleaned.includes("all") || cleaned.length === 0) return "all";
+  const known = cleaned.find((part): part is CommandScope =>
+    (["home", "code", "notebook"] as string[]).includes(part));
+  return known ?? "all";
+}
+
+/** True when the command may be used in the given area ("all" = every area). */
+export function commandAppliesToScope(cmd: Pick<CustomSlashCommand, "scope">, scope: Exclude<CommandScope, "all">): boolean {
+  const s = cmd.scope ?? "all";
+  return s === "all" || s === scope;
+}
+
+export function systemCommandsDir() {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), "system-commands");
 }
 
 const MAX_COMMAND_FILE_BYTES = 100_000;
@@ -98,11 +125,101 @@ export const BUILTIN_COMMANDS: CustomSlashCommand[] = [
     promptTemplate: "Inspect current workspace checkpoint and review all changes made in this session.",
     source: "builtin",
   },
+  {
+    command: "/tdd",
+    name: "TDD Workflow",
+    description: "Enforce Test-Driven Development (RED-GREEN-REFACTOR cycle with 80%+ coverage)",
+    mode: "auto",
+    promptTemplate: "Follow the TDD workflow for: {{input}}. 1) Write failing tests first (RED). 2) Run tests to confirm failure. 3) Implement minimal code to pass tests (GREEN). 4) Refactor for cleanliness and maintainability (REFACTOR). Verify 80%+ test coverage.",
+    source: "builtin",
+  },
+  {
+    command: "/quality-gate",
+    name: "Quality Gate",
+    description: "Run multi-tier quality checks: typecheck, lint, security audit, and test suite",
+    mode: "auto",
+    promptTemplate: "Run the full quality gate on the repository: 1) Run typecheck and syntax verification. 2) Run linting. 3) Check for hardcoded secrets and security issues. 4) Run the test suite. Report any failing checks and fix them.",
+    source: "builtin",
+  },
+  {
+    command: "/build-fix",
+    name: "Build Fixer",
+    description: "Diagnose and fix compiler errors, type errors, and bundler failures",
+    mode: "auto",
+    promptTemplate: "Diagnose and resolve build or compilation errors for the project. Run the build/check command, analyze failure logs, and incrementally fix compiler and type errors until the build succeeds.",
+    source: "builtin",
+  },
+  {
+    command: "/test-coverage",
+    name: "Test Coverage",
+    description: "Analyze test coverage for active files and add missing test cases",
+    mode: "auto",
+    promptTemplate: "Analyze test coverage for {{activeFile}} and the workspace. Identify untested edge cases, error conditions, and branches, and implement comprehensive tests.",
+    source: "builtin",
+  },
+  {
+    command: "/architect",
+    name: "System Architecture",
+    description: "Design modular architecture, component boundaries, and API contracts",
+    mode: "plan",
+    promptTemplate: "Design a modular architecture and blueprint for: {{input}}. Detail component boundaries, data contracts, state management, migration strategy, and technical trade-offs.",
+    source: "builtin",
+  },
 ];
 
-export async function discoverCustomCommands(projectRoot?: string): Promise<CustomSlashCommand[]> {
+// Hardcoded mode-switch and code-action commands only make sense in the Code
+// area — Home/Notebook get their scoped system commands instead.
+BUILTIN_COMMANDS.forEach((c) => { c.scope = "code"; });
+
+export async function discoverCustomCommands(projectRoot?: string, scope?: Exclude<CommandScope, "all">): Promise<CustomSlashCommand[]> {
   const commands = [...BUILTIN_COMMANDS];
-  if (!projectRoot) return commands;
+
+  // Discover bundled system commands. Layout mirrors system-skills:
+  // system-commands/{all,home,code,notebook}/<name>.md — the folder sets the
+  // scope, an explicit `modes:` frontmatter key overrides it. Loose .md files
+  // directly under system-commands/ stay scope "all" (backward compat).
+  const sysDir = systemCommandsDir();
+  const scopeFolders: Array<{ dir: string; scope: CommandScope }> = [
+    { dir: "", scope: "all" },
+    { dir: "all", scope: "all" },
+    { dir: "home", scope: "home" },
+    { dir: "code", scope: "code" },
+    { dir: "notebook", scope: "notebook" },
+  ];
+  const pushSystemFile = async (filePath: string, fileName: string, folderScope: CommandScope) => {
+    try {
+      const raw = await fs.readFile(filePath, "utf8");
+      const cmd = parseCommandFile(fileName, raw, filePath);
+      if (cmd) {
+        cmd.source = "builtin";
+        // An explicit `modes:` frontmatter key overrides the folder scope.
+        const parsed = parseCommandModes(raw);
+        cmd.scope = parsed.explicit ? parsed.scope : folderScope;
+        const existingIdx = commands.findIndex((c) => c.command === cmd.command);
+        if (existingIdx < 0) {
+          commands.push(cmd);
+        }
+      }
+    } catch { /* ignore unreadable system command */ }
+  };
+  for (const { dir, scope: folderScope } of scopeFolders) {
+    const target = dir ? path.join(sysDir, dir) : sysDir;
+    let entries;
+    try {
+      entries = await fs.readdir(target, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      // Top-level scan only takes files (subfolders are scanned as scopes);
+      // scoped-folder scans only take files inside them.
+      if (!entry.isFile() || !(entry.name.endsWith(".md") || entry.name.endsWith(".txt"))) continue;
+      if (!dir && (ALL_COMMAND_SCOPES as string[]).includes(entry.name.replace(/\.(md|txt)$/i, "").toLowerCase())) continue;
+      await pushSystemFile(path.join(target, entry.name), entry.name, dir ? folderScope : "all");
+    }
+  }
+
+  if (!projectRoot) return scope ? commands.filter((c) => commandAppliesToScope(c, scope)) : commands;
 
   const customDirs = [
     path.join(projectRoot, ".nexus", "commands"),
@@ -140,7 +257,18 @@ export async function discoverCustomCommands(projectRoot?: string): Promise<Cust
     }
   }
 
-  return commands;
+  return scope ? commands.filter((c) => commandAppliesToScope(c, scope)) : commands;
+}
+
+/** Parses the `modes:` frontmatter key (same convention as skills), reporting whether it was declared. */
+export function parseCommandModes(content: string): { scope: CommandScope; explicit: boolean } {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!match) return { scope: "all", explicit: false };
+  for (const line of match[1].split(/\r?\n/)) {
+    const pair = line.match(/^\s*modes\s*:\s*(.*)$/i);
+    if (pair) return { scope: normalizeCommandScope(pair[1].trim().replace(/^["']|["']$/g, "")), explicit: true };
+  }
+  return { scope: "all", explicit: false };
 }
 
 export function parseCommandFile(fileName: string, content: string, filePath: string): CustomSlashCommand | null {
@@ -182,6 +310,7 @@ export function parseCommandFile(fileName: string, content: string, filePath: st
     promptTemplate,
     source: "project",
     filePath,
+    scope: parseCommandModes(content).scope,
   };
 }
 

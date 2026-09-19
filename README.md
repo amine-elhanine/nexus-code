@@ -113,6 +113,13 @@ Status per source (`NotebookSourceStatus`): `uploaded → parsing → chunking �
 
 - **Agentic Multi-Hop Retrieval** (`electron/notebook-rag.ts` → `runNotebookAgent`): Driven by a LangGraph + DeepAgent loop. Rather than a naive single-shot lookup, the agent plans queries, breaks complex or comparative questions into focused sub-queries, iteratively calls `search_notebook_sources`, inspects table of contents via `inspect_notebook_outline`, and reads context windows with `read_notebook_passage`.
 - **Self-RAG Reflection** (`evaluate_evidence`): The agent evaluates whether retrieved evidence is sufficient to answer faithfully without hallucinating. If gaps remain, it reformulates the query and retrieves again before generating the final response.
+- **Studio Generative Desk** (`electron/notebook-documents.ts`, `notebook-quiz.ts`, `notebook-flashcards.ts`, `notebook-mindmaps.ts`, `notebook-summaries.ts`): Built-in output suite generated directly from in-scope source evidence:
+  - **Reports** (`.docx` / `.pdf`): Structured executive briefs, sections, and key findings.
+  - **Slide Decks** (`.pptx`): Clean presentation decks designed with callouts and bullet highlights.
+  - **Interactive Quizzes**: Multiple-choice, True/False, or mixed knowledge checks with instant feedback in `QuizPlayerModal`.
+  - **Study Flashcards**: Key term and concept cards playable in `FlashcardPlayerModal`.
+  - **Interactive Mind Maps**: Hierarchical visual topic exploration using interactive diagrams in `MindmapViewerModal`.
+  - **Structured Summaries**: Overview, section-by-section breakdown, and key takeaways.
 - **Studio Note Integration** (`save_note_to_studio`): The agent can save key takeaways, study guides, and flashcards directly into Studio notes upon user request.
 - **Interactive Research Trail in UI**: Real-time feedback during search and a persistent, collapsible **Agentic Research Trail** accordion in the chat item showing each query executed, passages retrieved, and evidence checks.
 - **Citations on every answer** (`NotebookCitation`): `[S1]` numbered refs with `sourceId`, `sourceName`, `chunkId`, `heading`, `excerpt` (400 chars), `snippet`, `score`. Clicking a citation opens the passage modal at that exact chunk.
@@ -124,8 +131,8 @@ Status per source (`NotebookSourceStatus`): `uploaded → parsing → chunking �
 
 ### Notebook files in code
 
-- Backend: `electron/notebook-store.ts` (CRUD + `importSourceBuffer`/`pickAndImportSourceFiles`), `notebook-parse.ts`, `notebook-text.ts`, `notebook-library.ts`, `notebook-embeddings.ts`, `notebook-jobs.ts`, `notebook-rag.ts`, `notebook-flags.ts`, `notebook-youtube.ts` (keyless transcript fetch), `notebook-web.ts` (same-origin crawl).
-- Frontend: `src/views/NotebookView.tsx`, `src/components/notebook/SourcePassageModal.tsx`, `src/state/useNotebookController.ts` (`notebooks/activeNotebook/sources/chats/activeChat/stats/draft/asking/notice/embedding/excludedIds/streamByChat/stepsByChat/passage/settings/notes` + `create/remove/renameNotebook`, `create/removeChat`, `uploadFromPicker/uploadBrowserFiles`, `ask`, `toggleScope/resetScope`, `openPassage/closePassage`, `saveInstructions/saveNote/removeNote`, `reindexAll`).
+- Backend: `electron/notebook-store.ts` (CRUD + `importSourceBuffer`/`pickAndImportSourceFiles`), `notebook-parse.ts`, `notebook-text.ts`, `notebook-library.ts`, `notebook-embeddings.ts`, `notebook-jobs.ts`, `notebook-rag.ts`, `notebook-documents.ts`, `notebook-quiz.ts`, `notebook-flashcards.ts`, `notebook-mindmaps.ts`, `notebook-summaries.ts`, `notebook-flags.ts`, `notebook-youtube.ts` (keyless transcript fetch), `notebook-web.ts` (same-origin crawl).
+- Frontend: `src/views/NotebookView.tsx`, `src/components/notebook/SourcePassageModal.tsx`, `DocumentViewerModal.tsx`, `QuizPlayerModal.tsx`, `FlashcardPlayerModal.tsx`, `MindmapViewerModal.tsx`, `src/state/useNotebookController.ts`.
 - Tests: `npm run test:notebook` (text, parse, library, pipeline, agentic RAG).
 
 ---
@@ -145,7 +152,10 @@ Commands run **directly on your machine with your user privileges**. No containe
 
 - **15 providers** (`electron/providers.ts` → `PROVIDERS`): `openai`, `anthropic`, `google` (Gemini), `mistral`, `groq`, `xai`, `openrouter`, `ollama` (`http://127.0.0.1:11434`), `deepseek`, `opencode-zen` gateway, `together`, `fireworks`, `azure`, `bedrock`, `custom` (any OpenAI-compatible `baseUrl`). Per-model `chat | responses | messages` overrides; Zen sends `x-opencode-*` headers. Env fallback per provider (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OLLAMA_BASE_URL`, …). Unknown/local pricing → cost shows `—` (`formatCost`).
 - **MCP** (`mcp-service.ts`): `stdio | http | sse`, cached client per config fingerprint, save/test UI. Runs with your privileges.
-- **Skills** (`skills-service.ts`): global (`userData/skills`) + project (`.nexus/skills`, legacy `.deepagents/skills` read-only), path-confined list/read/import/create/delete, per-run recommendation, global on/off toggle.
+- **Skills** (`skills-service.ts`): global (`userData/skills`) + project (`.nexus/skills`, legacy `.deepagents/skills` read-only), path-confined list/read/import/create/delete, per-run recommendation, global on/off toggle. Includes **260+ curated system skills** distributed across `system-skills/{code, home, notebook, all}`.
+- **System Commands & Agents**:
+  - **Scoped slash commands** (`custom-commands-service.ts`): built-in and directory-based commands under `system-commands/{code, home, notebook}` automatically routed to matching workspace modes.
+  - **Specialized agent personas** (`electron/system-agents/`): 68 expert personas (architect, security reviewer, planner, code reviewer, build resolver, etc.) with preconfigured tool access and guidance.
 - **Web search for all**: Home research + Code/Notebook context via the same DuckDuckGo Lite tools.
 - **Themes** (`src/state/theme.ts`): 8 themes (Nexus Emerald default, Midnight Ocean, Grape Nebula, Ember Sunset, Crimson Rose, Lagoon Teal, Moss Citrus, Daylight Paper light), persisted as `nexus-theme`.
 
