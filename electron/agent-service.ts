@@ -3,7 +3,7 @@ import path from "node:path";
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import { createDeepAgent, CompositeBackend, FilesystemBackend } from "deepagents";
-import { todoListMiddleware } from "langchain";
+import { todoListMiddleware, createMiddleware } from "langchain";
 import { createChatModel } from "./providers.js";
 import { createCodeIntelligenceTools, pickRuntimeCodeTools } from "./code-tools.js";
 import { createEditTools, createQuestionTool } from "./edit-tools.js";
@@ -21,6 +21,7 @@ import { compactHistory, estimateTokens, StreamUsageTracker } from "./context-se
 import { saveArtifact, type ArtifactItem } from "./artifacts-service.js";
 import { TrajectoryLogger } from "./trajectory-service.js";
 import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint } from "./rate-limit.js";
+import { RunCancelledError, getRunAbortSignal } from "./command-service.js";
 import type { ProviderConfig } from "./store.js";
 
 export type AgentMode = "plan" | "ask" | "auto";
@@ -60,12 +61,7 @@ export type AgentMemoryContext = { projectMemory: string; sessionMemory: string 
 // questions): same tool loop, but no code-project verification and a
 // different system prompt.
 export type AgentTaskKind = "code" | "general";
-export class RunCancelledError extends Error {
-  constructor() {
-    super("Agent run cancelled by user");
-    this.name = "RunCancelledError";
-  }
-}
+export { RunCancelledError };
 
 // OpenCode-style doom-loop breaker: the model repeating the exact same tool
 // call is stuck, not working. Thrown from the stream consumer and converted
@@ -81,6 +77,8 @@ export class DoomLoopError extends Error {
 
 // LangGraph recursion budgets per mode. Lowered from the previous
 // 60/160/300: unbounded budgets let the model wander on trivial tasks.
+// LangGraph recursion budgets per mode. Lowered from the previous
+// 60/160/300: unbounded budgets let the model wander on trivial tasks.
 // Simple tasks get a tight budget via SIMPLE_TASK_LIMIT instead.
 const MODE_LIMITS: Record<AgentMode, number> = { plan: 40, ask: 100, auto: 150 };
 // Fast-path budget for single-lookup / single-edit tasks: enough to
@@ -88,11 +86,43 @@ const MODE_LIMITS: Record<AgentMode, number> = { plan: 40, ask: 100, auto: 150 }
 // where one tool call costs several supersteps — keep it >= 50 or trivial
 // tasks die with GraphRecursionError instead of finishing.
 const SIMPLE_TASK_LIMIT = 50;
-const MAX_REPAIRS: Record<AgentMode, number> = { plan: 0, ask: 1, auto: 3 };
+export const MAX_REPAIRS: Record<AgentMode, number> = { plan: 0, ask: 3, auto: 5 };
 const HISTORY_CHAR_CAP = 4000;
 const VERIFY_OUTPUT_CAP = 4000;
 const MEMORY_ENTRY_CAP = 600;
 const PROJECT_MEMORY_RUN_LOG_CAP = 20;
+
+export function extractDiagnosticFeedback(rawOutput: string, cap = VERIFY_OUTPUT_CAP): string {
+  if (!rawOutput) return "";
+  const cleaned = rawOutput.trim();
+  if (cleaned.length <= cap) return cleaned;
+
+  const lines = cleaned.split(/\r?\n/);
+  const isDiagnostic = (line: string) =>
+    /(?:error\s+[A-Z0-9]+:|error:|failed:|failure:|exception:|syntaxerror|typeerror|referenceerror|assertionerror|errno\s+\d+|undefined reference|cannot find module|\bFAILED\b)/i.test(line);
+
+  const keyLines: string[] = [];
+  for (let i = 0; i < lines.length && keyLines.length < 30; i++) {
+    if (isDiagnostic(lines[i])) {
+      keyLines.push(lines[i]);
+      if (i + 1 < lines.length && lines[i + 1].trim() && !isDiagnostic(lines[i + 1])) {
+        keyLines.push(`    ${lines[i + 1].trim()}`);
+      }
+    }
+  }
+
+  const budgetPerSection = Math.floor((cap - 200) / 3);
+  const head = cleaned.slice(0, budgetPerSection);
+  const tailPart = cleaned.slice(-budgetPerSection);
+
+  if (keyLines.length > 0) {
+    const diagnosticSummary = `=== Extracted Diagnostics ===\n${keyLines.slice(0, 20).join("\n")}`.slice(0, budgetPerSection);
+    return `${head}\n\n${diagnosticSummary}\n\n…[truncated ${Math.max(0, cleaned.length - budgetPerSection * 2)} chars]…\n\n${tailPart}`;
+  }
+
+  const half = Math.floor((cap - 100) / 2);
+  return `${cleaned.slice(0, half)}\n\n…[truncated ${Math.max(0, cleaned.length - half * 2)} chars]…\n\n${cleaned.slice(-half)}`;
+}
 
 const AgentState = Annotation.Root({
   projectRoot: Annotation<string>(),
@@ -117,6 +147,7 @@ function chunkText(chunk: any) {
   if (Array.isArray(content)) return content.map((part: any) => (typeof part === "string" ? part : part?.text ?? "")).join("");
   return "";
 }
+
 
 function tail(value: string | undefined, cap: number) {
   if (!value) return "";
@@ -373,6 +404,24 @@ function patchFilesSummary(patchText: string): string {
   return extra > files.length ? `${files.join(", ")} (+${extra - files.length} more)` : files.join(", ");
 }
 
+export function extractSkillNameFromPath(filePath: string): string | null {
+  if (!filePath) return null;
+  const normalized = filePath.replace(/\\/g, "/");
+  const skillMdMatch = normalized.match(/(?:^|\/)([a-zA-Z0-9_-]+)\/SKILL\.md$/i);
+  if (skillMdMatch) return skillMdMatch[1];
+
+  const prefixMatch = normalized.match(/(?:system-skills|global-skills|\.nexus\/skills)\/(?:[a-zA-Z0-9_-]+\/)?([a-zA-Z0-9_-]+)/i);
+  if (prefixMatch) {
+    const candidate = prefixMatch[1];
+    if (!/^SKILL$/i.test(candidate)) return candidate;
+  }
+
+  const skillsMatch = normalized.match(/\/skills\/([a-zA-Z0-9_-]+)/i);
+  if (skillsMatch && !/^SKILL$/i.test(skillsMatch[1])) return skillsMatch[1];
+
+  return null;
+}
+
 export function describeToolCall(name: string, args: any): string {
   if (!args || typeof args !== "object") return "";
   const str = (v: unknown) => (typeof v === "string" ? v : "");
@@ -381,6 +430,8 @@ export function describeToolCall(name: string, args: any): string {
   switch (name) {
     case "read_file": {
       if (!file) return "";
+      const skill = extractSkillNameFromPath(file);
+      if (skill) return `Consulting skill: ${skill}`;
       const hasRange = args.offset != null || args.limit != null;
       return hasRange ? `${file}:${args.offset ?? 0}+${args.limit ?? 100}` : file;
     }
@@ -405,6 +456,8 @@ export function describeToolCall(name: string, args: any): string {
       return shortLine(str(args.command), 110);
     case "read_file_range": {
       if (!file) return "";
+      const skill = extractSkillNameFromPath(file);
+      if (skill) return `Consulting skill: ${skill}`;
       return `${file}:${args.startLine ?? 1}-${args.endLine ?? 100}`;
     }
     case "grep_search": {
@@ -619,7 +672,7 @@ const CREATE_PROJECT_PATTERN =
 // run it, verify the file. Classifying them "simple" caps the run at ~3
 // tool calls — the agent burns them all on skill exploration and never acts.
 const DOC_BUILD_PATTERN =
-  /\b(presentation|power ?point|pptx?|slide deck|slideshow|slides?|spreadsheet|excel|xlsx?|workbook|word documents?|docx?|latex)\b/i;
+  /\b(pdf|presentation|power ?point|pptx?|slide deck|slideshow|slides?|spreadsheet|excel|xlsx?|workbook|word documents?|docx?|latex|document|report)\b/i;
 // "Create/write a report/memo/summary" is a document build even without a
 // format keyword: research + write + save is multi-step, never a lookup.
 const DOC_WRITE_PATTERN =
@@ -701,7 +754,27 @@ const CONTINUE_PHRASES = [
   "keep going",
   "carry on",
   "finish it",
+  "finish",
+  "finish the task",
+  "finish it up",
   "complete it",
+  "keep working",
+  "continue now",
+  "continue the task",
+  "pick up where you left off",
+  "pick up from where you left off",
+  "pick up where you stopped",
+  "pick up from where you stopped",
+  "continue from where you stopped",
+  "continue from where you left off",
+  "ok",
+  "okay",
+  "sure",
+  "go ahead",
+  "yes",
+  "do it",
+  "please do it",
+  "proceed please",
 ];
 export function isContinueRequest(request: string): boolean {
   const text = (request || "").trim().replace(/[.!…]+$/g, "").trim().toLowerCase();
@@ -709,10 +782,10 @@ export function isContinueRequest(request: string): boolean {
   const bare = text.startsWith("please ") ? text.slice("please ".length).trim() : text;
   const core = bare.endsWith(" please") ? bare.slice(0, -" please".length).trim() : bare;
   if ((CONTINUE_PHRASES as string[]).includes(core)) return true;
-  // "continue from where you stopped / left off" — still anchored at the
-  // start and length-capped, so a question like "how do I continue from
-  // where I left off?" does NOT match.
-  return /^continue\s+from\s+where\b.{0,60}$/i.test(text);
+  if (/^(?:continue|resume|pick\s+up)\s+(?:from\s+)?where\b.{0,60}$/i.test(core)) return true;
+  if (/^(?:continue|resume|keep\s+going|keep\s+working|go\s+ahead)\b.{0,40}$/i.test(core)) return true;
+  if (/^(?:ok|okay|sure|yes|do\s+it|proceed)\b.{0,20}$/i.test(core)) return true;
+  return false;
 }
 
 // Checkpoint of the last run per session: full LangChain message history
@@ -873,6 +946,48 @@ export function clearLastRunCheckpoint(sessionId: string | undefined): void {
   lastRunStore.delete(sessionId);
 }
 
+/**
+ * Normalizes tool arguments so models passing `filePath` or `path` instead of
+ * snake_case `file_path` for DeepAgents filesystem tools (read_file, write_file,
+ * edit_file, delete) succeed without validation crashes.
+ */
+export function toolParameterNormalizationMiddleware() {
+  const normalize = (toolCalls: any[]) => {
+    if (!Array.isArray(toolCalls)) return;
+    for (const tc of toolCalls) {
+      if (tc?.args && typeof tc.args === "object") {
+        if ("filePath" in tc.args && !("file_path" in tc.args)) {
+          tc.args.file_path = tc.args.filePath;
+        }
+        if ("path" in tc.args && !("file_path" in tc.args)) {
+          tc.args.file_path = tc.args.path;
+        }
+      }
+    }
+  };
+
+  return createMiddleware({
+    name: "toolParameterNormalizationMiddleware",
+    wrapModelCall: async (request: any, handler: any) => {
+      const response = await handler(request);
+      if (response && Array.isArray((response as any).tool_calls)) {
+        normalize((response as any).tool_calls);
+      }
+      return response;
+    },
+    afterModel: (state: any) => {
+      const messages = state?.messages;
+      if (!messages || messages.length === 0) return undefined;
+      for (const msg of messages) {
+        if (msg?.tool_calls) {
+          normalize(msg.tool_calls);
+        }
+      }
+      return undefined;
+    },
+  });
+}
+
 function isRecursionLimitError(error: unknown): boolean {
   const text = [error instanceof Error ? error.message : String(error), String((error as any)?.name ?? "")].join(" ");
   return /recursion\s*limit|GRAPH_RECURSION_LIMIT/i.test(text);
@@ -904,11 +1019,12 @@ Working rules:
 - Answer chit-chat and simple questions directly with zero tool calls.
 - For research: use web_search first, then read the most promising pages with browser_fetch_api or browser_inspect before stating facts. Never invent current prices, versions, or news. For latest/current-year rankings or "best of" lists, verify with web_search and include the current year — never clip ranges to your training cutoff.
 - If the task involves a library, API, or technology you are unsure about — especially anything recently released — research it first: web_search, then read the official docs with browser_inspect. Never invent APIs, import paths, or options; pin the exact version you verified.
-- For documents: check the skills in your System Note first — a skill may describe exactly how to build the requested file (Word, PowerPoint, Excel, LaTeX). Follow it: write a script (e.g. Python) with write_file and run it with execute, then verify the output file exists with ls. Once the deliverable is verified, delete the throwaway generator script with the delete tool so only the requested file(s) remain in the Nexus folder.
+- For documents: check the skills in your System Note first — a skill may describe exactly how to build the requested file (PDF, Word, PowerPoint, Excel, LaTeX, Markdown, etc.). Follow it: write a script (e.g. Python) with write_file and run it with execute, then verify the output file exists with ls. Once the deliverable is verified, delete the throwaway generator script with the delete tool so only the requested file(s) remain in the Nexus folder.
+- CRITICAL IN AUTO MODE: Do NOT stop after reading a skill or researching to announce your intent (e.g. never stop to say "Now I will write a script to generate the PDF"). Autonomously and immediately proceed with write_file, execute, verify with ls, and deliver the final result. Only conclude your response after the deliverable has been created and verified.
 - If a command fails because a tool is missing (python, pip packages), install it or fall back to the closest format you CAN produce, and say so clearly.
 - Save finished deliverables with clear file names in the workspace root and end by naming the exact file(s) the user can download.
 - Be efficient: at most 3 exploration calls before acting. Keep answers concise.
-- Skills listed in your instructions are mandatory pre-reads: if a skill covers the task, read its SKILL.md first via its exact given path. Never browse skill folders (ls/glob of .nexus/skills, /global-skills, /system-skills) to discover skills — the System Note already lists everything available to you.
+- Skills listed in your instructions are mandatory pre-reads: if a skill covers the task, read its SKILL.md first via its exact given path. CRITICAL: SKILL.md contains private operational instructions for YOU, not text for the user. NEVER quote, echo, dump, or output the SKILL.md text, code samples, or numbered lines back to the user. Silently follow its instructions to produce the requested deliverable (e.g. write a generator script with write_file, execute it to create the file, verify it with ls, clean up the script, and deliver the final result). Never browse skill folders (ls/glob of .nexus/skills, /global-skills, /system-skills) to discover skills — the System Note already lists everything available to you.
 - If a skill ships helper scripts you must run, copy them into the workspace first with materialize_skill_files, then run them via the returned workspace-relative paths with execute (skill folders are read-only and outside the run directory).
 - Additional MCP tools (if listed in your tools) come from user-configured MCP servers; prefer them for the capabilities they expose (e.g. GitHub issues and PRs, search, APIs, external systems) instead of reimplementing with shell commands. When GitHub MCP tools are available, never ask the user for their GitHub username — the token already identifies them (see the authenticated-user note, or call get_me). To list the user's own repositories: call get_me, then search_repositories with the query 'user:<login>'. Use the login verbatim — exact spelling, no spaces, never the display name. If GitHub rejects the query with 422 on the user: qualifier, call get_me again and retry once with that exact login before reporting failure.
 - Never expose secrets.`;
@@ -953,7 +1069,7 @@ Working rules:
 - Keep diffs minimal and focused; prefer editing existing files over rewriting them.
 - Only use the todo list for tasks with 3+ distinct steps. Skip it entirely for trivial tasks (single question, single-file fix, typo, rename).
 - Additional MCP tools (if listed in your tools) come from user-configured MCP servers; prefer them for the capabilities they expose (e.g. search, APIs, external systems). When GitHub MCP tools are available, never ask the user for their GitHub username — the token already identifies them (see the authenticated-user note, or call get_me). To list the user's own repositories: call get_me, then search_repositories with the query 'user:<login>'. Use the login verbatim — exact spelling, no spaces, never the display name. If GitHub rejects the query with 422 on the user: qualifier, call get_me again and retry once with that exact login before reporting failure.
-- Skills listed in your instructions are mandatory pre-reads, not options: before exploring or writing code, check whether any skill covers the task and read its SKILL.md first via its exact given path. Never browse skill folders (ls/glob of .nexus/skills, /global-skills, /system-skills) to discover skills — the System Note already lists everything available to you.
+- Skills listed in your instructions are mandatory pre-reads, not options: before exploring or writing code, check whether any skill covers the task and read its SKILL.md first via its exact given path. SKILL.md contains internal instructions for YOU — never output, quote, echo, or dump skill contents to the user. Never browse skill folders (ls/glob of .nexus/skills, /global-skills, /system-skills) to discover skills — the System Note already lists everything available to you.
 - If a skill ships helper scripts you must run, copy them into the workspace first with materialize_skill_files, then run them via the returned workspace-relative paths with execute (skill folders are read-only and outside the run directory).
 - Never expose secrets.
 - Self-review: before finishing, verify that modified code compiles, tests pass, and no unintended edits or secrets were introduced. Report files changed, commands run, and remaining risks.
@@ -1023,6 +1139,7 @@ export async function runProjectAgent(options: {
   const taskKind: AgentTaskKind = options.taskKind ?? "code";
   const isGeneral = taskKind === "general";
   const targetTelemetryRoot = telemetryRoot || projectRoot;
+  const signal = sessionId ? getRunAbortSignal(sessionId) : undefined;
   const emit = (type: AgentEvent["type"], text: string, items?: PlanItem[], usage?: AgentUsage, subagent?: SubagentItem, artifact?: ArtifactItem, detail?: string) => {
     if (text || items?.length || usage || subagent || artifact) onEvent({ type, sessionId: sessionId || "", text, timestamp: new Date().toISOString(), items, usage, subagent, artifact, detail });
   };
@@ -1072,7 +1189,7 @@ export async function runProjectAgent(options: {
       (r) => ({ ok: true as const, tools: r.tools, serverNames: r.serverNames }),
       (error: unknown) => ({ ok: false as const, error }),
     ),
-    discoverAllRules(projectRoot),
+    (isGeneral ? Promise.resolve({ hasRules: false, ruleFiles: [], combinedPromptSection: "" }) : discoverAllRules(projectRoot)),
     getSkillsConfig(),
     // Code runs get a symbol-outline map so the model orients without
     // re-listing the tree every task. Home/doc runs skip it (a documents
@@ -1120,7 +1237,7 @@ export async function runProjectAgent(options: {
       } catch { /* identity stays unknown; model falls back to tools */ }
     }
   }
-  if (rulesResult.hasRules) {
+  if (rulesResult.hasRules && !isGeneral) {
     emit("status", `Loaded ${rulesResult.ruleFiles.length} project rule file${rulesResult.ruleFiles.length === 1 ? "" : "s"} (${rulesResult.ruleFiles.map((r) => r.filename).join(", ")})`);
   }
 
@@ -1183,7 +1300,7 @@ export async function runProjectAgent(options: {
         const counts = (["project", "global", "system"] as const)
           .map((source) => `${catalog.filter((s) => s.source === source).length} ${source}`)
           .join(", ");
-        skillNote = `[System Note: ${catalog.length} skill(s) installed${skillsMode ? ` for ${skillsMode} mode` : ""} (${counts}). Most relevant to your task:\n${lines.join("\n")}\nIf a skill covers your task, read its SKILL.md BEFORE exploring or writing code. This read is free and does not count against your exploration budget.]`;
+        skillNote = `[System Note: ${catalog.length} skill(s) installed${skillsMode ? ` for ${skillsMode} mode` : ""} (${counts}). Most relevant to your task:\n${lines.join("\n")}\nIf a skill covers your task, read its SKILL.md BEFORE exploring or writing code. This read is free and does not count against your exploration budget.\nIMPORTANT: SKILL.md contains private operational guidance for YOU. NEVER output, quote, echo, or dump its text or numbered lines to the user. Silently apply the skill to fulfill the user's request.]`;
         if (offUser.length) {
           skillNote += `\n[Skills NOT available in ${skillsMode} mode — do NOT read, follow, or mention them: ${offUser.map((s) => s.name).join(", ")}.]`;
         }
@@ -1278,7 +1395,9 @@ export async function runProjectAgent(options: {
   const deepAgent = await createDeepAgent({
     model: llm,
     backend: compositeBackend as any,
-    middleware: isSimple ? [] : [todoListMiddleware()],
+    middleware: isSimple
+      ? [toolParameterNormalizationMiddleware()]
+      : [toolParameterNormalizationMiddleware(), todoListMiddleware()],
     tools: isSimple
       ? [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...mcpTools]
       : [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, subagentTool, ...mcpTools],
@@ -1355,6 +1474,8 @@ export async function runProjectAgent(options: {
   // Doom-loop tracker: consecutive identical tool-call signatures.
   let lastToolSig: string | null = null;
   let toolRepeatCount = 0;
+  let lastActiveToolName: string | null = null;
+  let lastActiveToolSkill: string | null = null;
   // Latest workspace diff, filled by verify and reused for the walkthrough
   // artifact so a run doesn't pay for the same git diff twice.
   let lastDiffFiles: any[] | null = null;
@@ -1363,13 +1484,22 @@ export async function runProjectAgent(options: {
   // edits behind, a follow-up question ("what does X do?") would otherwise
   // see the stale dirty diff, fail typecheck on the OLD breakage, and go
   // into repair mode on the previous task instead of answering.
+  const runStartMs = Date.now();
   const diffFingerprint = (d: { path: string; additions: number; deletions: number }) => `${d.additions}/${d.deletions}`;
   const initialDiff = new Map<string, string>();
+  const initialHomeFiles = new Set<string>();
   if (!isGeneral) {
     try {
       const before = await getWorkspaceDiffFiles(projectRoot);
       for (const d of before) initialDiff.set(d.path, diffFingerprint(d));
     } catch { /* baseline is best-effort; verify falls back to full diff */ }
+  } else {
+    try {
+      const entries = await fsPromises.readdir(projectRoot, { withFileTypes: true });
+      for (const d of entries) {
+        if (d.isFile()) initialHomeFiles.add(d.name);
+      }
+    } catch { /* baseline is best-effort */ }
   }
 
   // Provider rate limits (especially free tiers) surface as 429 errors, and long
@@ -1383,8 +1513,9 @@ export async function runProjectAgent(options: {
   const progress = createProgressTracker();
   const withAgentRetry = <T>(operation: () => Promise<T>): Promise<T> =>
     withRateLimitRetry(operation, {
+      signal,
       prepareAttempt: () => {
-        if (isCancelled()) throw new RunCancelledError();
+        if (isCancelled() || signal?.aborted) throw new RunCancelledError();
       },
       madeProgress: () => progress.madeProgress(),
       onRetry: ({ delayMs, attempt, maxAttempts, kind, reason, reset }) => {
@@ -1415,14 +1546,15 @@ export async function runProjectAgent(options: {
 
     const stream = await (deepAgent as any).stream(
       { messages: messagesToStream },
-      { streamMode: ["values", "updates", "messages"], recursionLimit }
+      { streamMode: ["values", "updates", "messages"], recursionLimit, signal }
     );
     try {
       for await (const item of stream as AsyncIterable<any>) {
-        if (isCancelled()) throw new RunCancelledError();
+        if (isCancelled() || signal?.aborted) throw new RunCancelledError();
         const [streamMode, payload] = Array.isArray(item) ? item : ["values", item];
         if (streamMode === "values" && Array.isArray(payload?.messages)) {
           finalMessages = payload.messages;
+          runMessages = payload.messages;
           progress.noteSuperstep(payload.messages.length);
           continue;
         }
@@ -1432,6 +1564,13 @@ export async function runProjectAgent(options: {
               if (Array.isArray(message?.tool_calls)) {
                 for (const call of message.tool_calls) {
                   const name = call?.name || "tool";
+                  lastActiveToolName = name;
+                  if (name === "read_file" || name === "read_file_range") {
+                    const filePath = String(call?.args?.file_path || call?.args?.filePath || call?.args?.file || call?.args?.path || "");
+                    lastActiveToolSkill = extractSkillNameFromPath(filePath);
+                  } else {
+                    lastActiveToolSkill = null;
+                  }
                   if (/todo/i.test(name)) {
                     const items = planItemsFromArgs(call.args);
                     if (items) {
@@ -1441,7 +1580,8 @@ export async function runProjectAgent(options: {
                     continue;
                   }
                   const summary = toolCallSummary(call);
-                  const desc = summary ? `${name} · ${summary}` : name;
+                  const isSkillRead = summary.startsWith("Consulting skill: ");
+                  const desc = isSkillRead ? summary : (summary ? `${name} · ${summary}` : name);
                   // Doom-loop breaker (opencode DOOM_LOOP_THRESHOLD): the same
                   // tool with identical args 3x in a row is stuck, not working.
                   const sig = `${name}:${JSON.stringify(call?.args ?? {}).slice(0, 500)}`;
@@ -1466,10 +1606,13 @@ export async function runProjectAgent(options: {
                 // instead of re-reading the same files. The UI renders only
                 // the short text; detail travels in the transcript + history.
                 const excerpt = toolResultExcerpt((message as { content?: unknown })?.content);
-                emit("tool", `${message.name || "tool"} ✓`, undefined, undefined, undefined, undefined, excerpt || undefined);
+                const doneLabel = lastActiveToolSkill
+                  ? `Skill loaded: ${lastActiveToolSkill} ✓`
+                  : `${message.name || lastActiveToolName || "tool"} ✓`;
+                emit("tool", doneLabel, undefined, undefined, undefined, undefined, excerpt || undefined);
                 progress.noteToolResult();
                 if (trajectory) {
-                  void trajectory.log({ source: "TOOL", type: "TOOL_RESULT", content: `${message.name || "tool"} finished` });
+                  void trajectory.log({ source: "TOOL", type: "TOOL_RESULT", content: `${message.name || lastActiveToolName || "tool"} finished` });
                 }
               }
             }
@@ -1479,7 +1622,6 @@ export async function runProjectAgent(options: {
         if (streamMode === "messages") {
           const [chunk] = Array.isArray(payload) ? payload : [payload];
           usage.noteChunk(chunk);
-
           const text = chunkText(chunk);
           if (text) {
             // Counted only as a fallback; finalize ignores it when the
@@ -1489,21 +1631,22 @@ export async function runProjectAgent(options: {
           }
         }
       }
-    } catch (error) {
-      // The stream died mid-run (rate limit, dropped connection). Keep the
-      // furthest complete superstep as the resume checkpoint so the next
-      // attempt continues from where this one stopped instead of redoing the
-      // whole task. Trailing unanswered tool calls are pruned: providers
-      // reject a checkpoint whose tool calls never produced results.
+    } catch (error: any) {
       if (finalMessages.length > 0) {
         runMessages = sanitizeResumeCheckpoint(finalMessages);
+      }
+      const isAbort = error instanceof RunCancelledError || error?.name === "AbortError" || isCancelled() || signal?.aborted;
+      if (isAbort) {
+        saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
+        throw new RunCancelledError();
       }
       throw error;
     }
     if (finalMessages.length > 0) {
       runMessages = finalMessages;
     }
-    return textFromMessage(finalMessages[finalMessages.length - 1]) || "Agent finished without a textual response.";
+    const finalAnswer = textFromMessage(finalMessages[finalMessages.length - 1]);
+    return finalAnswer || (isGeneral ? "I have completed the requested task." : "Agent finished without a textual response.");
   };
 
   const streamDeepAgent = async (extra: HumanMessage[]) => {
@@ -1521,19 +1664,70 @@ export async function runProjectAgent(options: {
 
   const graph = new StateGraph(AgentState as any)
     .addNode("deep_agent", async (state: any) => {
-      if (isCancelled()) throw new RunCancelledError();
+      if (isCancelled() || signal?.aborted) throw new RunCancelledError();
       const extra = state.verifyFeedback ? [new HumanMessage(state.verifyFeedback)] : [];
-      emit("status", state.verifyFeedback ? "Repairing verification failures" : "Agent is working on the task");
+      emit("status", state.verifyFeedback ? `Self-healing repair in progress (attempt ${state.repairs || 1} of ${MAX_REPAIRS[mode] ?? 3})` : "Agent is working on the task");
       const answer = await streamDeepAgent(extra);
       return { response: answer, verifyFeedback: "", runMessages };
     })
     .addNode("verify", async (state: any) => {
-      if (isCancelled()) throw new RunCancelledError();
+      if (isCancelled() || signal?.aborted) throw new RunCancelledError();
 
-      // Home general runs produce documents, not code projects — there is
-      // no typecheck/test cascade to run. The agent verifies its own
-      // deliverable (ls the file) before finishing.
-      if (isGeneral) return { verification: "none" };
+      // Home general runs produce documents/deliverables, not code projects —
+      // verify that the requested file (PDF, docx, etc.) was actually created.
+      if (isGeneral) {
+        const currentRepairs = Number(state.repairs) || 0;
+        const maxRepairs = MAX_REPAIRS[mode] ?? 1;
+        const wantsDeliverable =
+          DOC_BUILD_PATTERN.test(request) ||
+          DOC_WRITE_PATTERN.test(request) ||
+          /\b(create|make|generate|build|write|produce|export|save)\b.{0,40}\b(file|pdf|docx?|pptx?|xlsx?|presentation|document|report|script|chart|diagram|csv)\b/i.test(request);
+
+        let freshFiles: string[] = [];
+        try {
+          const currentFiles = await fsPromises.readdir(projectRoot, { withFileTypes: true });
+          for (const f of currentFiles) {
+            if (f.isFile() && !initialHomeFiles.has(f.name)) {
+              freshFiles.push(f.name);
+            }
+          }
+        } catch { /* best effort */ }
+
+        if (freshFiles.length === 0) {
+          try {
+            const currentFiles = await fsPromises.readdir(projectRoot, { withFileTypes: true });
+            for (const f of currentFiles) {
+              if (f.isFile()) {
+                const stat = await fsPromises.stat(path.join(projectRoot, f.name));
+                if (stat.mtimeMs >= runStartMs) {
+                  freshFiles.push(f.name);
+                }
+              }
+            }
+          } catch { /* best effort */ }
+        }
+
+        const deliverableExtensions = /\.(pdf|docx?|pptx?|xlsx?|html|md|png|jpg|svg|py|json|csv|txt)$/i;
+        const createdDeliverable = freshFiles.some((name) => deliverableExtensions.test(name));
+        const conversationalPromise = /\b(let me|i will|now i'll|i am going to|i'll now|going to write|next step is to)\b.{0,50}\b(write|create|generate|run|execute|build)\b/i.test(state.response || "");
+
+        if (wantsDeliverable && !createdDeliverable && (conversationalPromise || currentRepairs < maxRepairs)) {
+          if (currentRepairs < maxRepairs) {
+            emit("tool", "Verification · Deliverable check failed (no output file created yet)");
+            return {
+              verification: "failed",
+              verifyFeedback: `You promised or were asked to create a deliverable (such as a PDF, document, or report), but no new file was generated in the workspace. You are in AUTO mode: do NOT stop to talk or narrate future steps. Immediately write the code/script using write_file or execute the required commands to generate the actual file, verify that it was created with ls, and then present the result to the user.`,
+            };
+          }
+        }
+
+        if (createdDeliverable) {
+          emit("tool", `Verification passed · Deliverable created: ${freshFiles.join(", ")}`);
+          return { verification: "passed" };
+        }
+
+        return { verification: "none" };
+      }
 
       const currentRepairs = Number(state.repairs) || 0;
       const maxRepairs = MAX_REPAIRS[mode] ?? 1;
@@ -1564,14 +1758,14 @@ export async function runProjectAgent(options: {
       if (scoped) {
         emit("status", `Verifying changed files with \`${scoped}\``);
         const scopedResult = await runCommand(scoped);
-        if (isCancelled()) throw new RunCancelledError();
+        if (isCancelled() || signal?.aborted) throw new RunCancelledError();
         const scopedOutput = String((scopedResult as any)?.output ?? "").trim();
         if ((scopedResult as any)?.exitCode !== 0) {
-          emit("tool", `Verification failed · ${scoped}`, undefined, undefined, undefined, undefined, tail(scopedOutput, VERIFY_OUTPUT_CAP));
+          emit("tool", `Verification failed · ${scoped}`, undefined, undefined, undefined, undefined, extractDiagnosticFeedback(scopedOutput));
           if (currentRepairs < maxRepairs && scopedOutput) {
             return {
               repairs: currentRepairs + 1,
-              verifyFeedback: `The scoped check \`${scoped}\` failed (repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${tail(scopedOutput, VERIFY_OUTPUT_CAP)}\n\nFix these failures with minimal, focused changes, then summarize what you changed.`,
+              verifyFeedback: `The scoped check \`${scoped}\` failed (self-healing repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${extractDiagnosticFeedback(scopedOutput)}\n\nFix these failures with minimal, focused changes, then summarize what you changed.`,
             };
           }
           return { verification: "failed" };
@@ -1590,14 +1784,14 @@ export async function runProjectAgent(options: {
         if (scaffolded) {
           emit("status", "Installing dependencies for the new project (npm install)");
           const installResult = await runCommand("npm install");
-          if (isCancelled()) throw new RunCancelledError();
+          if (isCancelled() || signal?.aborted) throw new RunCancelledError();
           const installOutput = String((installResult as any)?.output ?? "").trim();
           if ((installResult as any)?.exitCode !== 0) {
             emit("tool", "Verification failed · npm install");
             if (currentRepairs < maxRepairs && installOutput) {
               return {
                 repairs: currentRepairs + 1,
-                verifyFeedback: `npm install failed (repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${tail(installOutput, VERIFY_OUTPUT_CAP)}\n\nFix the dependency setup (package.json, registry access, Node version), then summarize what you changed.`,
+                verifyFeedback: `npm install failed (self-healing repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${extractDiagnosticFeedback(installOutput)}\n\nFix the dependency setup (package.json, registry access, Node version), then summarize what you changed.`,
               };
             }
             return { verification: "failed" };
@@ -1616,14 +1810,14 @@ export async function runProjectAgent(options: {
       for (const verificationCommand of configuredCommands) {
         emit("status", `Verifying changes with \`${verificationCommand}\``);
         const result = await runCommand(verificationCommand);
-        if (isCancelled()) throw new RunCancelledError();
+        if (isCancelled() || signal?.aborted) throw new RunCancelledError();
         const output = String((result as any)?.output ?? "").trim();
         if ((result as any)?.exitCode !== 0) {
-            emit("tool", `Verification failed · ${verificationCommand}`, undefined, undefined, undefined, undefined, tail(output, VERIFY_OUTPUT_CAP));
+          emit("tool", `Verification failed · ${verificationCommand}`, undefined, undefined, undefined, undefined, extractDiagnosticFeedback(output));
           if (currentRepairs < maxRepairs && output) {
             return {
               repairs: currentRepairs + 1,
-              verifyFeedback: `The verification command \`${verificationCommand}\` failed (repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${tail(output, VERIFY_OUTPUT_CAP)}\n\nFix these failures with minimal, focused changes, then summarize what you changed.`,
+              verifyFeedback: `The verification command \`${verificationCommand}\` failed (self-healing repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${extractDiagnosticFeedback(output)}\n\nFix these failures with minimal, focused changes, then summarize what you changed.`,
             };
           }
           return { verification: "failed" };
@@ -1636,14 +1830,14 @@ export async function runProjectAgent(options: {
       if (targetTestCmd) {
         emit("status", `Running targeted test \`${targetTestCmd}\``);
         const testResult = await runCommand(targetTestCmd);
-        if (isCancelled()) throw new RunCancelledError();
+        if (isCancelled() || signal?.aborted) throw new RunCancelledError();
         const testOutput = String((testResult as any)?.output ?? "").trim();
         if ((testResult as any)?.exitCode !== 0) {
-          emit("tool", `Targeted test failed · ${targetTestCmd}`, undefined, undefined, undefined, undefined, tail(testOutput, VERIFY_OUTPUT_CAP));
+          emit("tool", `Targeted test failed · ${targetTestCmd}`, undefined, undefined, undefined, undefined, extractDiagnosticFeedback(testOutput));
           if (currentRepairs < maxRepairs && testOutput) {
             return {
               repairs: currentRepairs + 1,
-              verifyFeedback: `Targeted test \`${targetTestCmd}\` failed (repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${tail(testOutput, VERIFY_OUTPUT_CAP)}\n\nFix the code to pass this test.`,
+              verifyFeedback: `Targeted test \`${targetTestCmd}\` failed (self-healing repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${extractDiagnosticFeedback(testOutput)}\n\nFix the code to pass this test.`,
             };
           }
           return { verification: "failed" };
@@ -1665,8 +1859,13 @@ export async function runProjectAgent(options: {
   let result: any;
   let escalated = false;
   try {
-    result = await graph.invoke({ projectRoot, request }, { recursionLimit: outerLimit });
+    result = await graph.invoke({ projectRoot, request }, { recursionLimit: outerLimit, signal });
   } catch (error) {
+    const isCancel = error instanceof RunCancelledError || (error as any)?.name === "AbortError" || isCancelled() || signal?.aborted;
+    if (isCancel) {
+      saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
+      throw new RunCancelledError();
+    }
     const isDoom = error instanceof DoomLoopError || (error as any)?.name === "DoomLoopError";
     const isBudget = isRecursionLimitError(error);
     // Misclassified simple tasks die at the 50-step wall even though the run
@@ -1685,9 +1884,13 @@ export async function runProjectAgent(options: {
       emit("status", `Simple budget exhausted at ${SIMPLE_TASK_LIMIT} steps — escalating to full budget (${outerLimit} steps) and continuing…`);
       if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: `Simple-task budget hit at ${SIMPLE_TASK_LIMIT}; auto-escalated to complex budget ${outerLimit}.` });
       try {
-        result = await graph.invoke({ projectRoot, request }, { recursionLimit: outerLimit });
+        result = await graph.invoke({ projectRoot, request }, { recursionLimit: outerLimit, signal });
       } catch (retryError) {
         error = retryError;
+        if (error instanceof RunCancelledError || (error as any)?.name === "AbortError" || isCancelled() || signal?.aborted) {
+          saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
+          throw new RunCancelledError();
+        }
       }
     }
     if (result === undefined) {

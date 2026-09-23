@@ -36,18 +36,25 @@ function approvalKey(command: string): string {
   return "command-change";
 }
 
+export class RunCancelledError extends Error {
+  constructor(message = "Agent run cancelled by user") {
+    super(message);
+    this.name = "RunCancelledError";
+  }
+}
+
 // Cancellation is scoped per run (keyed by session id). The old process-global
 // flag meant cancelling session A killed session B's run too — and starting a
 // new run cleared a pending cancel for another session. Each run now owns its
-// flag plus its child processes; cancelling one run never touches the others.
-type RunState = { cancelled: boolean; children: Set<ChildProcess> };
+// flag, AbortController, plus its child processes; cancelling one run never touches the others.
+type RunState = { cancelled: boolean; children: Set<ChildProcess>; abortController: AbortController };
 const DEFAULT_RUN_ID = "global";
 const runStates = new Map<string, RunState>();
 
 function stateFor(runId: string = DEFAULT_RUN_ID): RunState {
   let state = runStates.get(runId);
   if (!state) {
-    state = { cancelled: false, children: new Set() };
+    state = { cancelled: false, children: new Set(), abortController: new AbortController() };
     runStates.set(runId, state);
   }
   return state;
@@ -56,19 +63,32 @@ function stateFor(runId: string = DEFAULT_RUN_ID): RunState {
 function killChildren(state: RunState) {
   for (const child of state.children) {
     try {
-      if (process.platform === "win32" && child.pid) spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
-      else child.kill();
+      if (process.platform === "win32" && child.pid) {
+        spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+      } else {
+        child.kill("SIGKILL");
+      }
     } catch { /* child already exited */ }
   }
   state.children.clear();
 }
 
 export function beginCommandRun(runId: string = DEFAULT_RUN_ID) {
-  // Fresh state for THIS run only — never touches other runs' flags/children.
-  runStates.set(runId, { cancelled: false, children: new Set() });
-  return runId;
+  // Fresh state and abort controller for THIS run only — never touches other runs.
+  const abortController = new AbortController();
+  runStates.set(runId, { cancelled: false, children: new Set(), abortController });
+  return abortController;
 }
-export function isCommandRunCancelled(runId: string = DEFAULT_RUN_ID) { return runStates.get(runId)?.cancelled ?? false; }
+
+export function getRunAbortSignal(runId: string = DEFAULT_RUN_ID): AbortSignal | undefined {
+  return runStates.get(runId)?.abortController.signal;
+}
+
+export function isCommandRunCancelled(runId: string = DEFAULT_RUN_ID) {
+  const state = runStates.get(runId);
+  return state?.cancelled || state?.abortController.signal.aborted || false;
+}
+
 export function cancelCommandRun(runId?: string) {
   // No id → cancel everything (fallback for stray callers); with an id only
   // that run's flag is set and only its process trees are killed.
@@ -77,6 +97,9 @@ export function cancelCommandRun(runId?: string) {
     const state = runStates.get(id);
     if (!state) continue;
     state.cancelled = true;
+    try {
+      state.abortController.abort();
+    } catch { /* ignore */ }
     killChildren(state);
   }
 }
@@ -111,25 +134,39 @@ export type CommandResult = { output: string; exitCode: number; truncated: boole
 // to the model (head + tail) so one command cannot blow up the run.
 export const MODEL_OUTPUT_CAP = 8000;
 
+export function cleanTerminalOutput(raw: string): string {
+  if (!raw) return "";
+  let cleaned = raw.replace(/\r\n/g, "\n");
+  // Collapse carriage returns that overwrite current line (spinners/progress)
+  cleaned = cleaned.replace(/[^\n\r]*\r/g, "");
+  // Collapse runs of 3+ blank lines
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
+  return cleaned;
+}
+
 export function capModelOutput(output: string): { output: string; truncated: boolean } {
-  if (!output || output.length <= MODEL_OUTPUT_CAP) return { output, truncated: false };
-  const head = output.slice(0, 6000);
-  const tail = output.slice(-2000);
+  const cleaned = cleanTerminalOutput(output);
+  if (!cleaned || cleaned.length <= MODEL_OUTPUT_CAP) return { output: cleaned, truncated: false };
+  const head = cleaned.slice(0, 6000);
+  const tail = cleaned.slice(-2000);
   return {
-    output: `${head}\n\n…[output truncated: ${output.length} chars total, showing first 6000 + last 2000]…\n\n${tail}`,
+    output: `${head}\n\n…[output truncated: ${cleaned.length} chars total, showing first 6000 + last 2000]…\n\n${tail}`,
     truncated: true,
   };
 }
 
 export async function executeCommand(projectRoot: string, command: string, options: { timeoutSeconds?: number; runId?: string; requireApproval?: boolean } = {}): Promise<CommandResult> {
   const state = stateFor(options.runId);
-  if (state.cancelled) return { output: "Run cancelled by user.", exitCode: 130, truncated: false };
+  if (state.cancelled || state.abortController.signal.aborted) {
+    throw new RunCancelledError();
+  }
   const trimmed = command.trim();
   if (!trimmed) return { output: "Command is empty.", exitCode: 1, truncated: false };
   const policy = await readCommandPolicy(projectRoot);
   if (isDeniedCommand(trimmed) || classifyCommand(trimmed, policy) === "deny") return { output: "Command blocked by permission policy (destructive pattern).", exitCode: 1, truncated: false };
   if (options.requireApproval && classifyCommand(trimmed, policy) === "ask") {
     const decision = await requestCommandApproval({ runId: options.runId, approvalKey: approvalKey(trimmed), command: trimmed, cwd: path.resolve(projectRoot), reason: "This command can change dependencies, Git history, remote state, or execute downloaded code." });
+    if (state.cancelled || state.abortController.signal.aborted) throw new RunCancelledError();
     if (decision === "deny") return { output: "Command denied or approval timed out.", exitCode: 126, truncated: false };
   }
 
@@ -138,7 +175,15 @@ export async function executeCommand(projectRoot: string, command: string, optio
   const appNodeModules = path.resolve(process.cwd(), "node_modules");
   const existingNodePath = process.env.NODE_PATH || "";
   const nodePath = [existingNodePath, appNodeModules].filter(Boolean).join(path.delimiter);
-  const env = { ...process.env, CI: "true", NODE_PATH: nodePath };
+  const env = {
+    ...process.env,
+    CI: "true",
+    DEBIAN_FRONTEND: "noninteractive",
+    NONINTERACTIVE: "1",
+    GIT_TERMINAL_PROMPT: "0",
+    PAGER: "cat",
+    NODE_PATH: nodePath,
+  };
 
   try {
     const result = await runProcess(shell, args, {
@@ -147,10 +192,13 @@ export async function executeCommand(projectRoot: string, command: string, optio
       timeout: Math.max(10, options.timeoutSeconds || DEFAULT_COMMAND_TIMEOUT_SECONDS) * 1000,
       maxBuffer: 8_000_000,
     }, state);
+    if (state.cancelled || state.abortController.signal.aborted) throw new RunCancelledError();
     const capped = capModelOutput([result.stdout, result.stderr].filter(Boolean).join("\n"));
     return { output: capped.output, exitCode: 0, truncated: capped.truncated };
   } catch (error: any) {
-    if (state.cancelled) return { output: "Run cancelled by user.", exitCode: 130, truncated: false };
+    if (error instanceof RunCancelledError || state.cancelled || state.abortController.signal.aborted) {
+      throw new RunCancelledError();
+    }
     const output = [error?.stdout, error?.stderr, error?.message].filter(Boolean).join("\n");
     const capped = capModelOutput(output);
     return { output: capped.output, exitCode: typeof error?.code === "number" ? error.code : 1, truncated: capped.truncated };

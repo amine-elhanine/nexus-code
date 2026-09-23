@@ -58,7 +58,7 @@ export type ProjectRecord = { id: string; name: string; root: string; createdAt:
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
 export type ChatAttachment = { url: string; name: string; mimeType: string; size: number };
 export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; checkpointIds?: string[]; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; subagent?: SubagentItem; artifact?: unknown; detail?: string }>; model?: { providerId: string; model: string } };
-type PersistedState = { projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; appSettings?: AppSettings; notebookParser?: NotebookParserConfig };
+type PersistedState = { projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; appSettings?: AppSettings; notebookParser?: NotebookParserConfig; homeSessions?: SessionRecord[] };
 
 let cache: PersistedState | null = null;
 
@@ -133,6 +133,14 @@ export function calculateSessionUsage(messages: SessionRecord["messages"]): Agen
   };
 }
 
+export function sortSessionsInPlace(sessions: SessionRecord[]): SessionRecord[] {
+  return sessions.sort((a, b) => {
+    const tA = new Date(a.updatedAt || a.createdAt || 0).getTime();
+    const tB = new Date(b.updatedAt || b.createdAt || 0).getTime();
+    return tB - tA;
+  });
+}
+
 async function ensureLoaded(): Promise<PersistedState> {
   if (cache) return cache;
 
@@ -157,6 +165,7 @@ async function ensureLoaded(): Promise<PersistedState> {
     cache.projects = cache.projects || [];
     cache.providers = cache.providers || [];
     cache.embeddingProviders = cache.embeddingProviders || [];
+    cache.homeSessions = cache.homeSessions || [];
     cache.providers.forEach((provider) => {
       provider.apiKey = decryptSecret(provider.apiKey);
     });
@@ -166,15 +175,36 @@ async function ensureLoaded(): Promise<PersistedState> {
     if (cache.notebookParser) cache.notebookParser.apiKey = decryptSecret(cache.notebookParser.apiKey);
     cache.projects.forEach((project) => {
       project.sessions = project.sessions || [];
+      sortSessionsInPlace(project.sessions);
       project.sessions.forEach((session) => {
         session.usage = calculateSessionUsage(session.messages);
       });
+    });
+
+    // Migrate any legacy pseudo-project "home" to isolated homeSessions
+    const legacyHomeIdx = cache.projects.findIndex((project) => project.id === "home");
+    if (legacyHomeIdx !== -1) {
+      const legacyHome = cache.projects[legacyHomeIdx];
+      if (legacyHome.sessions?.length) {
+        const existingIds = new Set(cache.homeSessions.map((s) => s.id));
+        for (const session of legacyHome.sessions) {
+          if (!existingIds.has(session.id)) {
+            cache.homeSessions.push(session);
+          }
+        }
+      }
+      cache.projects.splice(legacyHomeIdx, 1);
+    }
+    sortSessionsInPlace(cache.homeSessions);
+    cache.homeSessions.forEach((session) => {
+      session.usage = calculateSessionUsage(session.messages);
     });
   } else {
     cache = {
       projects: [],
       providers: [],
       embeddingProviders: [],
+      homeSessions: [],
     };
   }
 
@@ -185,6 +215,12 @@ async function persist() {
   if (!cache) return;
   const target = statePath();
   await fs.mkdir(path.dirname(target), { recursive: true });
+  cache.projects.forEach((p) => {
+    if (p.sessions) sortSessionsInPlace(p.sessions);
+  });
+  if (cache.homeSessions) {
+    sortSessionsInPlace(cache.homeSessions);
+  }
   const snapshot: PersistedState = {
     ...cache,
     providers: (cache.providers || []).map((provider) => ({ ...provider, apiKey: encryptSecret(provider.apiKey) })),
@@ -195,7 +231,13 @@ async function persist() {
 }
 
 export async function listProjects() { return (await ensureLoaded()).projects; }
-export async function getProject(projectId: string) { return (await ensureLoaded()).projects.find((project) => project.id === projectId) ?? null; }
+export async function getProject(projectId: string) {
+  const project = (await ensureLoaded()).projects.find((project) => project.id === projectId) ?? null;
+  if (project?.sessions) {
+    sortSessionsInPlace(project.sessions);
+  }
+  return project;
+}
 export async function upsertProject(input: { id?: string; name: string; root: string }) {
   const state = await ensureLoaded();
   const existing = input.id ? state.projects.find((project) => project.id === input.id) : state.projects.find((project) => path.resolve(project.root) === path.resolve(input.root));
@@ -222,6 +264,7 @@ export async function ensureHomeProject(homeId: string, name: string, root: stri
   if (existing) {
     existing.root = root;
     existing.updatedAt = new Date().toISOString();
+    if (existing.sessions) sortSessionsInPlace(existing.sessions);
     await persist();
     return existing;
   }
@@ -233,6 +276,7 @@ export async function ensureHomeProject(homeId: string, name: string, root: stri
 export async function listSessions(projectId: string) {
   const project = await getProject(projectId);
   if (!project) return [];
+  sortSessionsInPlace(project.sessions);
   project.sessions.forEach((session) => {
     session.usage = calculateSessionUsage(session.messages);
   });
@@ -250,17 +294,22 @@ export async function createSession(projectId: string, title = "New coding task"
   if (!project) throw new Error("Project not found");
   const session: SessionRecord = { id: uid("session"), title, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), memory: "", messages: [] };
   project.sessions.unshift(session);
+  sortSessionsInPlace(project.sessions);
   project.updatedAt = new Date().toISOString();
   await persist();
   return session;
 }
 export async function updateSession(projectId: string, sessionId: string, patch: Partial<Pick<SessionRecord, "title" | "memory" | "model" | "messages" | "usage" | "checkpointId" | "checkpointIds">>) {
-  const session = await getSession(projectId, sessionId);
+  const project = await getProject(projectId);
+  if (!project) throw new Error("Project not found");
+  const session = project.sessions.find((s) => s.id === sessionId);
   if (!session) throw new Error("Session not found");
   Object.assign(session, patch, { updatedAt: new Date().toISOString() });
   if (patch.messages || !session.usage) {
     session.usage = calculateSessionUsage(session.messages);
   }
+  sortSessionsInPlace(project.sessions);
+  project.updatedAt = new Date().toISOString();
   await persist();
   return session;
 }
@@ -268,13 +317,96 @@ export async function appendSessionMessage(projectId: string, sessionId: string,
   return appendSessionMessages(projectId, sessionId, [message]);
 }
 export async function appendSessionMessages(projectId: string, sessionId: string, messages: SessionRecord["messages"]): Promise<SessionRecord> {
-  const session = await getSession(projectId, sessionId);
+  const project = await getProject(projectId);
+  if (!project) throw new Error("Project not found");
+  const session = project.sessions.find((s) => s.id === sessionId);
   if (!session) throw new Error("Session not found");
   session.messages.push(...messages);
   session.usage = calculateSessionUsage(session.messages);
   session.updatedAt = new Date().toISOString();
+  sortSessionsInPlace(project.sessions);
+  project.updatedAt = new Date().toISOString();
   await persist();
   return session;
+}
+
+// ---------------------------------------------------------------------------
+// Dedicated Home Mode Session Storage (Isolated from Code projects)
+// ---------------------------------------------------------------------------
+export async function listHomeSessions(): Promise<SessionRecord[]> {
+  const state = await ensureLoaded();
+  state.homeSessions = state.homeSessions || [];
+  sortSessionsInPlace(state.homeSessions);
+  state.homeSessions.forEach((session) => {
+    session.usage = calculateSessionUsage(session.messages);
+  });
+  return state.homeSessions;
+}
+
+export async function getHomeSession(sessionId: string): Promise<SessionRecord | null> {
+  const state = await ensureLoaded();
+  const session = (state.homeSessions || []).find((s) => s.id === sessionId) ?? null;
+  if (session) {
+    session.usage = calculateSessionUsage(session.messages);
+  }
+  return session;
+}
+
+export async function createHomeSession(title = "New chat"): Promise<SessionRecord> {
+  const state = await ensureLoaded();
+  state.homeSessions = state.homeSessions || [];
+  const session: SessionRecord = {
+    id: uid("homesess"),
+    title,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    memory: "",
+    messages: [],
+  };
+  state.homeSessions.unshift(session);
+  sortSessionsInPlace(state.homeSessions);
+  await persist();
+  return session;
+}
+
+export async function updateHomeSession(
+  sessionId: string,
+  patch: Partial<Pick<SessionRecord, "title" | "memory" | "model" | "messages" | "usage" | "checkpointId" | "checkpointIds">>
+): Promise<SessionRecord> {
+  const state = await ensureLoaded();
+  state.homeSessions = state.homeSessions || [];
+  const session = state.homeSessions.find((s) => s.id === sessionId);
+  if (!session) throw new Error("Home session not found");
+  Object.assign(session, patch, { updatedAt: new Date().toISOString() });
+  if (patch.messages || !session.usage) {
+    session.usage = calculateSessionUsage(session.messages);
+  }
+  sortSessionsInPlace(state.homeSessions);
+  await persist();
+  return session;
+}
+
+export async function appendHomeSessionMessages(
+  sessionId: string,
+  messages: SessionRecord["messages"]
+): Promise<SessionRecord> {
+  const state = await ensureLoaded();
+  state.homeSessions = state.homeSessions || [];
+  const session = state.homeSessions.find((s) => s.id === sessionId);
+  if (!session) throw new Error("Home session not found");
+  session.messages.push(...messages);
+  session.usage = calculateSessionUsage(session.messages);
+  session.updatedAt = new Date().toISOString();
+  sortSessionsInPlace(state.homeSessions);
+  await persist();
+  return session;
+}
+
+export async function deleteHomeSession(sessionId: string): Promise<boolean> {
+  const state = await ensureLoaded();
+  state.homeSessions = (state.homeSessions || []).filter((s) => s.id !== sessionId);
+  await persist();
+  return true;
 }
 export async function listProviders() { return (await ensureLoaded()).providers; }
 export async function upsertProvider(input: Omit<ProviderConfig, "id"> & { id?: string }) {

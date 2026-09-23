@@ -135,3 +135,40 @@ console.log("\nPASS: retry resumed from checkpoint — attempt 2 continued from 
   assert.equal(delays[0], 7000, `retry should wait 7000ms per Retry-After, got ${delays[0]}`);
   console.log("PASS: Retry-After header drives the retry delay (7000ms honored, backoff base 60000ms ignored)");
 }
+
+// Test cancellation checkpoint saving and continue resume
+{
+  const { isContinueRequest, saveLastRunCheckpoint, getLastRunCheckpoint, loadLastRunCheckpoint } = await import("../dist-electron/agent-service.js");
+  const { RunCancelledError } = await import("../dist-electron/command-service.js");
+
+  // Verify continue request recognition
+  assert.equal(isContinueRequest("continue"), true);
+  assert.equal(isContinueRequest("Continue please"), true);
+  assert.equal(isContinueRequest("pick up from where it stopped"), true);
+  assert.equal(isContinueRequest("pick up where you left off"), true);
+  assert.equal(isContinueRequest("keep working"), true);
+  assert.equal(isContinueRequest("resume work"), true);
+  assert.equal(isContinueRequest("write a new python script"), false);
+
+  // Test checkpoint saving and loading for cancelled session
+  const testSessionId = "test-cancel-session-" + Date.now();
+  const sampleMessages = [
+    { type: "human", content: "Implement feature X" },
+    { type: "ai", tool_calls: [{ id: "t1", name: "read_file" }] },
+    { type: "tool", content: "file content" },
+    { type: "ai", tool_calls: [{ id: "t2", name: "broken_unanswered" }] }, // should be sanitized
+  ];
+  const samplePlan = [{ step: "Step 1", status: "completed" }, { step: "Step 2", status: "in_progress" }];
+
+  const sanitized = sanitizeResumeCheckpoint(sampleMessages);
+  assert.equal(sanitized.length, 3);
+
+  saveLastRunCheckpoint(testSessionId, { messages: sanitized, planItems: samplePlan });
+  const loaded = getLastRunCheckpoint(testSessionId);
+
+  assert.ok(loaded !== null, "Checkpoint should be loaded");
+  assert.equal(loaded.messages.length, 3);
+  assert.equal(loaded.planItems.length, 2);
+  console.log("PASS: Cancellation checkpoint saving and continue request matching verified");
+}
+

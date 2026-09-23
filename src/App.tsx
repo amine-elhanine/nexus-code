@@ -1,9 +1,9 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Brain, BookOpen, Check, ChevronDown, ChevronRight, Code2, Coins, Download, FileCode2, FileText,
-  FolderOpen, GitBranch, Globe, Home, Info, KeyRound, Loader2, Menu,
+  FolderOpen, GitBranch, Globe, Home, Info, Loader2, Menu,
   MessageSquare, PanelRight, Pencil, Plus, RefreshCw, Undo2,
-  Server, Settings2, Sparkles, Terminal, Trash2, TriangleAlert, Activity
+  Settings2, Terminal, Trash2, TriangleAlert, Activity
 } from "lucide-react";
 import { WindowControls } from "./components/common/WindowControls.js";
 import { ConfirmModal } from "./modals/ConfirmModal.js";
@@ -25,9 +25,10 @@ import { AgentView } from "./views/AgentView.js";
 import { HomeView } from "./views/HomeView.js";
 import { NotebookView } from "./views/NotebookView.js";
 import { useNotebookController } from "./state/useNotebookController.js";
+import { useHomeController } from "./state/useHomeController.js";
 import { DiffView } from "./views/DiffView.js";
 import { MemoryView, ContextRow, MemoryRow } from "./views/MemoryView.js";
-import { useAppController } from "./state/useAppController.js";
+import { useAppController, sortSessionsByUpdatedAt } from "./state/useAppController.js";
 import { applyTheme } from "./state/theme.js";
 import { getSessionUsage, fileIcon } from "./utils/format.js";
 import { timeLabel } from "./utils/format.js";
@@ -204,16 +205,10 @@ function App() {
     currentMessages,
     visibleFiles,
     area,
-    homeRoot,
-    homeFiles,
-    homeSessionFiles,
-    refreshHomeFiles,
-    refreshHomeSessionFiles,
     enterHome,
     enterCode,
     enterNotebook,
     setArea,
-    createHomeSession,
     activateProject,
     deleteProjectById,
     openProjectFromDialog,
@@ -243,10 +238,15 @@ function App() {
     setOpenFiles,
   } = useAppController();
 
+  const sortedSessions = useMemo(() => sortSessionsByUpdatedAt(sessions), [sessions]);
+
   const api = window.nexus || window.forgepilot;
+  const home = useHomeController(area === "home");
   const notebook = useNotebookController(area === "notebook");
   const headerTitle = area === "notebook"
     ? (notebook.activeNotebook ? notebook.activeNotebook.name : "Notebook sessions")
+    : area === "home"
+    ? (home.activeSession?.title || "Home")
     : (activeSession?.title || "No session selected");
   const currentSessionUsage = getSessionUsage(activeSession);
   const [homePreviewPath, setHomePreviewPath] = useState<string | null>(null);
@@ -409,11 +409,10 @@ function App() {
                     <div className="project-dropdown-head">
                       <span>PROJECTS</span>
                       <span className="notebook-head-count-pill">
-                        {projects.filter((p) => p.id !== "home").length}
+                        {projects.length}
                       </span>
                     </div>
                     {projects
-                      .filter((p) => p.id !== "home")
                       .map((p) => (
                         <button
                           key={p.id}
@@ -438,7 +437,7 @@ function App() {
                           )}
                         </button>
                       ))}
-                    {!projects.filter((p) => p.id !== "home").length && (
+                    {!projects.length && (
                       <div className="empty-pane" style={{ padding: "8px 6px" }}>
                         No projects yet.
                       </div>
@@ -470,18 +469,11 @@ function App() {
         </div>
 
         <div className="product-right">
-          <button className="top-link" onClick={() => setShowSkills(true)}>
-            <Sparkles size={13} /> Skills
-          </button>
-          <button className="top-link" onClick={() => setShowMcp(true)}>
-            <Server size={13} /> MCP
-          </button>
-          <button className="top-link" onClick={() => setShowDaemonsModal(true)} title="Manage long-running background processes and dev servers">
-            <Terminal size={13} /> Services
-          </button>
-          <button className="top-link" onClick={() => setShowProviders(true)}>
-            <KeyRound size={13} /> Providers
-          </button>
+          {area === "code" && (
+            <button className="top-link" onClick={() => setShowDaemonsModal(true)} title="Manage long-running background processes and dev servers">
+              <Terminal size={13} /> Services
+            </button>
+          )}
           <button className="icon-plain" onClick={() => setShowSettings(true)} title="Settings">
             <Settings2 size={15} />
           </button>
@@ -524,27 +516,27 @@ function App() {
             <div className="pane-top">
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span className="context-kicker">CHATS</span>
-                <span className="notebook-head-count-pill">{sessions.length}</span>
+                <span className="notebook-head-count-pill">{home.sessions.length}</span>
               </div>
-              <button className="pane-action" onClick={() => void createHomeSession()} title="New chat"><Plus size={14} /></button>
+              <button className="pane-action" onClick={() => void home.createChat()} title="New chat"><Plus size={14} /></button>
             </div>
             <div className="session-list">
-              {sessions.map((session) => (
+              {home.sessions.map((session) => (
                 <SessionRow
                   key={session.id}
                   session={session}
-                  active={session.id === activeSession?.id}
-                  editing={session.id === editingSessionId}
-                  draftTitle={editingSessionTitle}
-                  onActivate={() => void activateSession(session.id)}
-                  onStartEdit={() => startSessionRename(session)}
-                  onDraftChange={setEditingSessionTitle}
-                  onCommit={commitSessionRename}
-                  onCancel={cancelSessionRename}
-                  onDelete={() => void deleteActiveSession(session.id)}
+                  active={session.id === home.activeSession?.id}
+                  editing={session.id === home.editingSessionId}
+                  draftTitle={home.editingSessionTitle}
+                  onActivate={() => void home.selectChat(session.id)}
+                  onStartEdit={() => home.startRename(session)}
+                  onDraftChange={home.setEditingSessionTitle}
+                  onCommit={home.commitRename}
+                  onCancel={home.cancelRename}
+                  onDelete={() => void home.deleteChat(session.id)}
                 />
               ))}
-              {!sessions.length && <div className="empty-pane">Start a new chat to begin.</div>}
+              {!home.sessions.length && <div className="empty-pane">Start a new chat to begin.</div>}
             </div>
           </aside>
         )}
@@ -553,12 +545,12 @@ function App() {
             <div className="pane-top">
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span className="context-kicker">PROJECTS</span>
-                <span className="notebook-head-count-pill">{projects.filter((project) => project.id !== "home").length}</span>
+                <span className="notebook-head-count-pill">{projects.length}</span>
               </div>
               <button className="pane-action" onClick={() => void openProjectFromDialog()} title="New project"><Plus size={14} /></button>
             </div>
             <div className="project-list">
-              {projects.filter((project) => project.id !== "home").map((project) => (
+              {projects.map((project) => (
                 <button
                   key={project.id}
                   className={`project-row ${project.id === activeProject?.id ? "active" : ""}`}
@@ -585,12 +577,12 @@ function App() {
                 <div className="pane-top sessions-label" style={{ marginTop: 4 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <span className="context-kicker">SESSIONS</span>
-                    <span className="notebook-head-count-pill">{sessions.length}</span>
+                    <span className="notebook-head-count-pill">{sortedSessions.length}</span>
                   </div>
                   <button className="pane-action" onClick={() => void createSession()} title="New coding session (⌘ N)"><Plus size={14} /></button>
                 </div>
                 <div className="session-list">
-                  {sessions.map((session) => (
+                  {sortedSessions.map((session) => (
                     <SessionRow
                       key={session.id}
                       session={session}
@@ -697,6 +689,8 @@ function App() {
                   onImportYouTube={(url) => void notebook.importYouTube(url)}
                   onImportWebsite={(url) => void notebook.importWebsite(url)}
                   onBrowserFiles={(files) => void notebook.uploadBrowserFiles(files)}
+                  importingLink={notebook.importingLink}
+                  isUploading={notebook.isUploading}
                   onRefresh={() => {
                     if (notebook.activeNotebook) void notebook.refreshNotebookDetail(notebook.activeNotebook.id);
                   }}
@@ -769,31 +763,31 @@ function App() {
             ) : area === "home" ? (
               <section className="center-pane">
               <HomeView
-                messages={currentMessages}
-                draft={draft}
-                setDraft={setDraft}
-                submit={(override) => void submit(override)}
-                running={running}
-                onStop={() => void stopAgent()}
-                streamingText={streamingText}
-                liveEvents={liveEvents}
+                messages={home.currentMessages}
+                draft={home.draft}
+                setDraft={home.setDraft}
+                submit={(override) => void home.submit(override, { providerId: selectedProviderId, model: selectedModel })}
+                running={home.running}
+                onStop={() => void home.stopAgent()}
+                streamingText={home.streamingText}
+                liveEvents={home.liveEvents}
                 selectedProviderId={selectedProviderId}
                 selectedModel={selectedModel}
                 providers={providers}
                 definitions={providerDefinitions}
                 switchModel={(providerId, model) => void switchModel(providerId, model)}
                 onOpenProviders={() => setShowProviders(true)}
-                sessionUsage={currentSessionUsage}
-                homeFiles={homeFiles}
-                homeRoot={homeRoot}
-                onRefreshFiles={() => void refreshHomeFiles()}
+                sessionUsage={home.sessionUsage}
+                homeFiles={home.homeFiles}
+                homeRoot={home.homeRoot}
+                onRefreshFiles={() => void home.refreshFiles()}
                 onDownloadFile={(relPath) => void api.downloadHomeFile(relPath)}
                 onOpenFolder={() => void api.openHomeFolder()}
-                onNewChat={() => void createHomeSession()}
-                attachedImages={attachedImages}
-                setAttachedImages={setAttachedImages}
-                attachments={attachments}
-                setAttachments={setAttachments}
+                onNewChat={() => void home.createChat()}
+                attachedImages={home.attachedImages}
+                setAttachedImages={home.setAttachedImages}
+                attachments={home.attachments}
+                setAttachments={home.setAttachments}
                 hasProvider={providers.length > 0}
                 onOpenImage={openImagePreview}
                 onOpenAttachment={setAttachmentPreview}
@@ -1072,7 +1066,7 @@ function App() {
                 onClick={() => setHomeSideTab("artifacts")}
                 title="Files generated in this chat"
               >
-                <FileText size={12} /> Artifacts{homeSessionFiles.length > 0 ? ` (${homeSessionFiles.length})` : ""}
+                <FileText size={12} /> Artifacts{home.homeSessionFiles.length > 0 ? ` (${home.homeSessionFiles.length})` : ""}
               </button>
               <button
                 type="button"
@@ -1094,30 +1088,29 @@ function App() {
                 <small>{running ? "Researching, writing files…" : "Ask, research, create documents"}</small>
               </div>
             </div>
-            {currentSessionUsage && currentSessionUsage.totalTokens > 0 && (
+            {home.sessionUsage && (
               <div className="context-section">
                 <div className="context-section-title">
                   <span>SESSION TOTAL TOKENS</span>
                   <small>CUMULATIVE</small>
                 </div>
-                <MemoryRow label="Total tokens" value={`${currentSessionUsage.totalTokens.toLocaleString()} tokens`} />
-                <MemoryRow label="In / Out" value={`${currentSessionUsage.inputTokens.toLocaleString()} in / ${currentSessionUsage.outputTokens.toLocaleString()} out`} />
-                <MemoryRow label="Est. cost" value={formatCost(currentSessionUsage.estimatedCost)} />
+                <MemoryRow label="Total tokens" value={`${home.sessionUsage.totalTokens.toLocaleString()} tokens`} />
+                <MemoryRow label="In / Out" value={`${home.sessionUsage.inputTokens.toLocaleString()} in / ${home.sessionUsage.outputTokens.toLocaleString()} out`} />
+                <MemoryRow label="Est. cost" value={formatCost(home.sessionUsage.estimatedCost)} />
               </div>
             )}
             <div className="context-section">
               <div className="context-section-title">
                 <span>MEMORY</span>
               </div>
-              <MemoryRow label="Project memory" value={activeProject?.memory ? "Updated" : "Empty"} />
-              <MemoryRow label="Session memory" value={activeSession?.memory ? "Updated" : "Empty"} />
+              <MemoryRow label="Session memory" value={home.activeSession?.memory ? "Updated" : "Empty"} />
             </div>
             <div className="context-section">
               <div className="context-section-title">
                 <span>NEXUS FOLDER</span>
-                <small>{homeFiles.length} TOTAL</small>
+                <small>{home.homeFiles.length} TOTAL</small>
               </div>
-              <MemoryRow label="Location" value={homeRoot ? homeRoot.split(/[\\/]/).pop() || "Nexus" : "Nexus"} />
+              <MemoryRow label="Location" value={home.homeRoot ? home.homeRoot.split(/[\\/]/).pop() || "Nexus" : "Nexus"} />
             </div>
             </div>
             )}
@@ -1127,12 +1120,12 @@ function App() {
               <div className="context-section-title">
                 <span>SESSION FILES</span>
                 <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                  <small>{homeSessionFiles.length} FILE{homeSessionFiles.length === 1 ? "" : "S"}</small>
+                  <small>{home.homeSessionFiles.length} FILE{home.homeSessionFiles.length === 1 ? "" : "S"}</small>
                   <button
                     className="pane-action"
                     onClick={() => {
-                      void refreshHomeFiles();
-                      if (activeSession?.id) void refreshHomeSessionFiles(activeSession.id);
+                      void home.refreshFiles();
+                      if (home.activeSession?.id) void home.refreshSessionFiles(home.activeSession.id);
                     }}
                     title="Refresh session files"
                   >
@@ -1140,10 +1133,10 @@ function App() {
                   </button>
                 </span>
               </div>
-              {activeSession ? (
-                homeSessionFiles.length ? (
+              {home.activeSession ? (
+                home.homeSessionFiles.length ? (
                   <div className="home-files-list">
-                    {homeSessionFiles.map((file) => (
+                    {home.homeSessionFiles.map((file) => (
                       <div
                         className="home-file-row clickable"
                         key={file.path}
@@ -1180,7 +1173,7 @@ function App() {
             </div>
             )}
             <div className={`context-tab-panel${homeSideTab === "browser" ? "" : " hidden"}`}>
-              <SidebarBrowser key="home-browser" sessionId={activeSession?.id} browserScope="home" onAgentNavigate={() => setHomeSideTab("browser")} />
+              <SidebarBrowser key="home-browser" sessionId={home.activeSession?.id} browserScope="home" onAgentNavigate={() => setHomeSideTab("browser")} />
             </div>
           </aside>
           )

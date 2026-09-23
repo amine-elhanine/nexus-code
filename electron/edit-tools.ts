@@ -124,6 +124,157 @@ function parseAttachedFile(source: string): { mime: string; data: Buffer; sugges
   return { mime, data, suggestedName };
 }
 
+export function applySearchReplaceBlocks(original: string, updateBody: string): string | null {
+  const blockRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>>/g;
+  const matches = [...updateBody.matchAll(blockRegex)];
+  if (matches.length === 0) return null;
+
+  let result = original.replace(/\r\n/g, "\n");
+  for (const match of matches) {
+    const search = match[1].replace(/\r\n/g, "\n");
+    const replace = match[2].replace(/\r\n/g, "\n");
+
+    // 1. Exact match
+    if (result.includes(search)) {
+      result = result.replace(search, replace);
+      continue;
+    }
+
+    // 2. Trailing whitespace & line-ending normalized match
+    const resultLines = result.split("\n");
+    const searchLines = search.split("\n");
+    const cleanSearchLines = searchLines.map((l) => l.trimEnd());
+
+    let matchIdx = -1;
+    for (let i = 0; i <= resultLines.length - searchLines.length; i++) {
+      let matched = true;
+      for (let j = 0; j < searchLines.length; j++) {
+        if (resultLines[i + j].trimEnd() !== cleanSearchLines[j]) {
+          matched = false;
+          break;
+        }
+      }
+      if (matched) {
+        matchIdx = i;
+        break;
+      }
+    }
+
+    if (matchIdx !== -1) {
+      resultLines.splice(matchIdx, searchLines.length, replace);
+      result = resultLines.join("\n");
+      continue;
+    }
+
+    // 3. Trimmed line matching (indentation-tolerant)
+    const trimmedSearchLines = searchLines.map((l) => l.trim());
+    for (let i = 0; i <= resultLines.length - searchLines.length; i++) {
+      let matched = true;
+      for (let j = 0; j < searchLines.length; j++) {
+        if (resultLines[i + j].trim() !== trimmedSearchLines[j]) {
+          matched = false;
+          break;
+        }
+      }
+      if (matched) {
+        matchIdx = i;
+        break;
+      }
+    }
+
+    if (matchIdx !== -1) {
+      resultLines.splice(matchIdx, searchLines.length, replace);
+      result = resultLines.join("\n");
+      continue;
+    }
+
+    throw new Error(`Search block not found in target file:\n${search.slice(0, 200)}`);
+  }
+
+  return result.replace(/\s+$/, "") + "\n";
+}
+
+export function applyUnifiedDiffHunks(original: string, updateBody: string): string | null {
+  if (!/^@@ -\d+/m.test(updateBody)) return null;
+
+  const hunkRegex = /@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[^\n]*\n([\s\S]*?)(?=(?:\n@@ -|\n\*\*\*|$))/g;
+  const hunks = [...updateBody.matchAll(hunkRegex)];
+  if (hunks.length === 0) return null;
+
+  const lines = original.replace(/\r\n/g, "\n").split("\n");
+
+  for (const hunk of hunks) {
+    const origStart = Math.max(0, parseInt(hunk[1], 10) - 1);
+    const hunkBody = hunk[5];
+    const hunkLines = hunkBody.split("\n");
+
+    const expectedOldLines: string[] = [];
+    const newLines: string[] = [];
+
+    for (const hl of hunkLines) {
+      if (hl.startsWith("+")) {
+        newLines.push(hl.slice(1));
+      } else if (hl.startsWith("-")) {
+        expectedOldLines.push(hl.slice(1));
+      } else if (hl.startsWith(" ")) {
+        expectedOldLines.push(hl.slice(1));
+        newLines.push(hl.slice(1));
+      } else if (hl === "") {
+        expectedOldLines.push("");
+        newLines.push("");
+      }
+    }
+
+    if (expectedOldLines.length === 0 && newLines.length === 0) continue;
+
+    let matchIdx = -1;
+    const searchRange = 50;
+    const minStart = Math.max(0, origStart - searchRange);
+    const maxStart = Math.min(lines.length - expectedOldLines.length, origStart + searchRange);
+
+    const tryMatchAt = (start: number) => {
+      for (let j = 0; j < expectedOldLines.length; j++) {
+        if (lines[start + j].trimEnd() !== expectedOldLines[j].trimEnd()) {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    for (let i = origStart; i <= maxStart; i++) {
+      if (tryMatchAt(i)) { matchIdx = i; break; }
+    }
+    if (matchIdx === -1) {
+      for (let i = origStart - 1; i >= minStart; i--) {
+        if (tryMatchAt(i)) { matchIdx = i; break; }
+      }
+    }
+    if (matchIdx === -1) {
+      for (let i = 0; i <= lines.length - expectedOldLines.length; i++) {
+        if (tryMatchAt(i)) { matchIdx = i; break; }
+      }
+    }
+
+    if (matchIdx === -1) {
+      throw new Error(`Unified diff hunk could not be located around line ${origStart + 1}`);
+    }
+
+    lines.splice(matchIdx, expectedOldLines.length, ...newLines);
+  }
+
+  return lines.join("\n").replace(/\s+$/, "") + "\n";
+}
+
+export function applyUpdatedFileContent(original: string, updateBody: string): string {
+  const fromSearchReplace = applySearchReplaceBlocks(original, updateBody);
+  if (fromSearchReplace !== null) return fromSearchReplace;
+
+  const fromUnifiedDiff = applyUnifiedDiffHunks(original, updateBody);
+  if (fromUnifiedDiff !== null) return fromUnifiedDiff;
+
+  return updateBody.replace(/\s+$/, "") + "\n";
+}
+
 export function createEditTools(projectRoot: string, options: { attachedImages?: string[]; attachedFiles?: string[] } = {}) {
   const applyPatchTool = tool(
     async ({ patchText }: { patchText: string }) => {
@@ -183,11 +334,16 @@ export function createEditTools(projectRoot: string, options: { attachedImages?:
             await fs.mkdir(path.dirname(op.toPath), { recursive: true });
             await fs.rename(op.fromPath, op.toPath);
             applied.push(`moved ${op.from} -> ${op.to}`);
-          } else {
+          } else if (op.kind === "add") {
             await fs.mkdir(path.dirname(op.targetPath), { recursive: true });
             await fs.writeFile(op.targetPath, op.body.replace(/\s+$/, "") + "\n", "utf8");
-            if (op.kind === "add") applied.push(`added ${op.file}`);
-            else applied.push(`updated ${op.file}`);
+            applied.push(`added ${op.file}`);
+          } else {
+            await fs.mkdir(path.dirname(op.targetPath), { recursive: true });
+            const currentContent = snapshots.get(op.targetPath)?.content?.toString("utf8") ?? "";
+            const finalContent = applyUpdatedFileContent(currentContent, op.body);
+            await fs.writeFile(op.targetPath, finalContent, "utf8");
+            applied.push(`updated ${op.file}`);
           }
         }
         return `Applied ${applied.length} patch operation(s):\n${applied.map((a) => `- ${a}`).join("\n")}`;
@@ -202,9 +358,9 @@ export function createEditTools(projectRoot: string, options: { attachedImages?:
     {
       name: "apply_patch",
       description:
-        "Apply an atomic multi-file patch in one step (preferred over N sequential edits). Use markers '*** Add File: <path>', '*** Update File: <path> (sha256: <hash>)', '*** Delete File: <path>', '*** Move to: <new-path>' with file bodies after Add/Update markers. The optional hash rejects stale updates.",
+        "Apply an atomic multi-file patch in one step (preferred over N sequential edits). Use markers '*** Add File: <path>', '*** Update File: <path> (sha256: <hash>)', '*** Delete File: <path>', '*** Move to: <new-path>'. Under '*** Update File', you may provide the full new file body OR surgical hunks using '<<<<<<< SEARCH ... ======= ... >>>>>>>' or unified diff hunks '@@ -line,count +line,count @@'. The optional hash rejects stale updates.",
       schema: z.object({
-        patchText: z.string().describe("Patch text with *** markers and file bodies, paths relative to repo root"),
+        patchText: z.string().describe("Patch text with *** markers, search/replace blocks or file bodies, paths relative to repo root"),
       }),
     }
   );

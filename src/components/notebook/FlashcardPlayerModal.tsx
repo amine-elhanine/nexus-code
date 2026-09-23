@@ -55,8 +55,9 @@ export function FlashcardPlayerModal({ set, onClose }: { set: NotebookFlashcardS
                 marginTop: 8,
                 padding: 16,
                 borderRadius: 8,
-                border: "1px solid var(--border, #30363d)",
-                background: flipped ? "rgba(63,185,80,0.08)" : "rgba(31,111,235,0.08)",
+                border: "1px solid var(--line2)",
+                background: flipped ? "var(--accent-soft)" : "var(--panel2)",
+                color: "var(--text)",
                 cursor: "pointer",
               }}
             >

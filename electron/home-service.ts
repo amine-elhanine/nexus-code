@@ -1,6 +1,22 @@
-import { promises as fs } from "node:fs";
+import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
-import { app, dialog, shell } from "electron";
+import { createRequire } from "node:module";
+
+const electronRequire = createRequire(import.meta.url);
+type ElectronShim = {
+  app?: { getPath: (name: string) => string };
+  dialog?: { showSaveDialog: (options: unknown) => Promise<{ canceled: boolean; filePath?: string }> };
+  shell?: { openPath: (path: string) => Promise<string> };
+};
+function electronMod(): ElectronShim {
+  try {
+    const mod = electronRequire("electron") as unknown;
+    if (mod && typeof mod === "object") return mod as ElectronShim;
+    return {};
+  } catch {
+    return {};
+  }
+}
 
 export const HOME_PROJECT_ID = "home";
 
@@ -10,10 +26,17 @@ export const HOME_PROJECT_ID = "home";
 export function getHomeRoot(): string {
   const docs = (() => {
     try {
-      return app?.getPath ? app.getPath("documents") : null;
-    } catch {
-      return null;
+      const app = electronMod().app;
+      if (app?.getPath) return app.getPath("documents");
+    } catch { /* not in electron */ }
+    const userProfile = process.env.USERPROFILE;
+    if (userProfile) {
+      const oneDriveDocs = path.join(userProfile, "OneDrive", "Documents");
+      if (existsSync(oneDriveDocs)) return oneDriveDocs;
+      const regularDocs = path.join(userProfile, "Documents");
+      if (existsSync(regularDocs)) return regularDocs;
     }
+    return null;
   })();
   const base = docs || process.env.USERPROFILE || process.cwd();
   return path.join(base, "Nexus");
@@ -60,38 +83,183 @@ export async function listHomeFiles(): Promise<HomeFileEntry[]> {
   return entries.slice(0, 200);
 }
 
-// Ownership: each file in the shared Home folder belongs to exactly one
-// session — the most recent session created at or before the file's mtime.
-// This works even for files produced indirectly via `execute` (e.g. a Python
-// script generating report.docx), where tool args never name the output.
+const MANIFEST_REL_PATH = path.join(".nexus", "home-manifest.json");
+
+export type HomeManifest = Record<string, { sessionId: string; updatedAt: string }>;
+
+export async function loadHomeManifest(): Promise<HomeManifest> {
+  const root = await ensureHomeDir();
+  const file = path.join(root, MANIFEST_REL_PATH);
+  try {
+    const raw = await fs.readFile(file, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+export async function saveHomeManifest(manifest: HomeManifest): Promise<void> {
+  const root = await ensureHomeDir();
+  const file = path.join(root, MANIFEST_REL_PATH);
+  try {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, JSON.stringify(manifest, null, 2), "utf8");
+  } catch { /* best effort */ }
+}
+
+export async function recordHomeFilesOwnedBySession(sessionId: string, relativePaths: string[]): Promise<void> {
+  if (!sessionId || !relativePaths.length) return;
+  const manifest = await loadHomeManifest();
+  let changed = false;
+  const now = new Date().toISOString();
+  for (const p of relativePaths) {
+    const normalized = p.replace(/\\/g, "/");
+    manifest[normalized] = { sessionId, updatedAt: now };
+    changed = true;
+  }
+  if (changed) {
+    await saveHomeManifest(manifest);
+  }
+}
+
+export async function recordHomeRunFiles(sessionId: string, runStartMs: number, responseText = ""): Promise<string[]> {
+  if (!sessionId) return [];
+  const all = await listHomeFiles();
+  const TOLERANCE_MS = 10_000;
+  const created: string[] = [];
+  for (const f of all) {
+    const mtime = new Date(f.modified).getTime();
+    const isRecent = !Number.isNaN(mtime) && mtime >= runStartMs - TOLERANCE_MS;
+    const isMentioned = responseText ? (responseText.includes(f.name) || responseText.includes(f.path)) : false;
+    if (isRecent || isMentioned) {
+      created.push(f.path);
+    }
+  }
+  if (created.length) {
+    await recordHomeFilesOwnedBySession(sessionId, created);
+  }
+  return created;
+}
+
+export async function removeSessionFromManifest(sessionId: string): Promise<void> {
+  const manifest = await loadHomeManifest();
+  let changed = false;
+  for (const [key, entry] of Object.entries(manifest)) {
+    if (entry.sessionId === sessionId) {
+      delete manifest[key];
+      changed = true;
+    }
+  }
+  if (changed) {
+    await saveHomeManifest(manifest);
+  }
+}
+
+export type SessionInfoForAttribution = {
+  id: string;
+  createdAt: string;
+  updatedAt?: string;
+  messages?: Array<{ text?: string; createdAt?: string }>;
+};
+
+// Ownership: each file in the shared Home folder belongs to the session that
+// produced it. Resolution order:
+// 1. Explicit run manifest (.nexus/home-manifest.json)
+// 2. Transcript message match (filename explicitly mentioned in session turns)
+// 3. Activity proximity (session active around file's mtime)
+// 4. Earliest session fallback for predated/unclaimed files
 export async function listHomeSessionFiles(
   sessionId: string,
-  sessions: Array<{ id: string; createdAt: string }>
+  sessions: SessionInfoForAttribution[]
 ): Promise<HomeFileEntry[]> {
   if (!sessionId || !sessions.length) return [];
   const target = sessions.find((s) => s.id === sessionId);
   if (!target) return [];
   const all = await listHomeFiles();
-  const ordered = [...sessions].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  const TOLERANCE_MS = 60_000;
-  const targetTime = new Date(target.createdAt).getTime();
-  if (Number.isNaN(targetTime)) return [];
+  if (!all.length) return [];
+
+  const manifest = await loadHomeManifest();
+  let manifestDirty = false;
+
   const owned = all.filter((file) => {
-    const mtime = new Date(file.modified).getTime();
-    if (Number.isNaN(mtime)) return false;
-    // Latest session whose creation precedes (or roughly matches) the file.
-    let owner: string | null = null;
-    for (const s of ordered) {
-      const created = new Date(s.createdAt).getTime();
-      if (Number.isNaN(created)) continue;
-      if (created <= mtime + TOLERANCE_MS) owner = s.id;
-      else break;
+    // 1. Explicit manifest assignment
+    const manifestEntry = manifest[file.path] || manifest[file.name];
+    if (manifestEntry?.sessionId) {
+      return manifestEntry.sessionId === sessionId;
     }
-    // Files predating every session surface under the earliest session so
-    // nothing is orphaned.
-    if (!owner) owner = ordered[0]?.id ?? null;
-    return owner === sessionId;
+
+    // 2. Transcript message matching: does any session explicitly mention this file?
+    let messageOwner: string | null = null;
+    let newestMentionTime = -1;
+    for (const s of sessions) {
+      if (!s.messages?.length) continue;
+      for (const m of s.messages) {
+        if (m.text && (m.text.includes(file.name) || m.text.includes(file.path))) {
+          const t = new Date(m.createdAt || s.updatedAt || s.createdAt).getTime();
+          if (t > newestMentionTime) {
+            newestMentionTime = t;
+            messageOwner = s.id;
+          }
+        }
+      }
+    }
+    if (messageOwner) {
+      manifest[file.path] = { sessionId: messageOwner, updatedAt: new Date().toISOString() };
+      manifestDirty = true;
+      return messageOwner === sessionId;
+    }
+
+    // 3. Activity proximity matching: which session was active when the file was modified?
+    const mtime = new Date(file.modified).getTime();
+    if (!Number.isNaN(mtime)) {
+      let bestSessionId: string | null = null;
+      let minDistance = Infinity;
+
+      for (const s of sessions) {
+        const timestamps: number[] = [];
+        if (s.createdAt) {
+          const t = new Date(s.createdAt).getTime();
+          if (!Number.isNaN(t)) timestamps.push(t);
+        }
+        if (s.updatedAt) {
+          const t = new Date(s.updatedAt).getTime();
+          if (!Number.isNaN(t)) timestamps.push(t);
+        }
+        for (const m of s.messages || []) {
+          if (m.createdAt) {
+            const t = new Date(m.createdAt).getTime();
+            if (!Number.isNaN(t)) timestamps.push(t);
+          }
+        }
+
+        for (const t of timestamps) {
+          const diff = mtime - t;
+          // Prefer turns that occurred before or within 2 minutes after mtime
+          const distance = diff >= -120_000 ? Math.abs(diff) : Math.abs(diff) + 1_000_000;
+          if (distance < minDistance && distance < 45 * 60_000) {
+            minDistance = distance;
+            bestSessionId = s.id;
+          }
+        }
+      }
+
+      if (bestSessionId) {
+        manifest[file.path] = { sessionId: bestSessionId, updatedAt: new Date().toISOString() };
+        manifestDirty = true;
+        return bestSessionId === sessionId;
+      }
+    }
+
+    // 4. Fallback for files predating all sessions or with no matching activity:
+    const ordered = [...sessions].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const fallbackOwner = ordered[0]?.id ?? null;
+    return fallbackOwner === sessionId;
   });
+
+  if (manifestDirty) {
+    void saveHomeManifest(manifest);
+  }
+
   return owned;
 }
 
@@ -103,6 +271,8 @@ export async function downloadHomeFile(relativePath: string): Promise<string | n
   if (source !== root && !source.startsWith(`${root}${path.sep}`)) {
     throw new Error("Path escapes the Home folder.");
   }
+  const dialog = electronMod().dialog;
+  if (!dialog) return null;
   const { canceled, filePath } = await dialog.showSaveDialog({
     defaultPath: path.basename(relativePath),
     title: "Download file",
@@ -114,7 +284,10 @@ export async function downloadHomeFile(relativePath: string): Promise<string | n
 
 export async function openHomeFolder(): Promise<void> {
   const root = await ensureHomeDir();
-  await shell.openPath(root);
+  const shell = electronMod().shell;
+  if (shell) {
+    await shell.openPath(root);
+  }
 }
 
 // After a Home run produces document deliverable(s) (docx, xlsx, pptx, pdf…),

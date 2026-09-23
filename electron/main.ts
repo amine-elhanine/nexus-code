@@ -10,13 +10,13 @@ const execFileAsync = promisify(execFile);
 import { runProjectAgent, RunCancelledError, clearLastRunCheckpoint, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint, summarizeCompletedSteps, type AgentMode, type AgentSettings, type AgentEvent, type HistoryInput } from "./agent-service.js";
 import { PROVIDERS, fetchRemoteModels } from "./providers.js";
 import {
-  appendSessionMessages, createSession, deleteProject, deleteSession, ensureHomeProject, getProject, getSession,
-  getSkillsConfig, listEmbeddingProviders, listMcpServers, listProjects, listProviders, listSessions,
-  removeEmbeddingProvider, removeMcpServer, removeProvider, saveSkillsConfig, updateProjectMemory,
+  appendHomeSessionMessages, appendSessionMessages, createHomeSession, createSession, deleteHomeSession, deleteProject, deleteSession, getHomeSession, getProject, getSession,
+  getSkillsConfig, listEmbeddingProviders, listHomeSessions, listMcpServers, listProjects, listProviders, listSessions,
+  removeEmbeddingProvider, removeMcpServer, removeProvider, saveSkillsConfig, updateHomeSession, updateProjectMemory,
   updateSession, upsertEmbeddingProvider, upsertMcpServer, upsertProject, upsertProvider, getAppSettings, saveAppSettings, getNotebookParserConfig, saveNotebookParserConfig, type EmbeddingProviderConfig,
-  type McpServerConfig, type ProviderConfig
+  type McpServerConfig, type ProviderConfig, type ChatAttachment
 } from "./store.js";
-import { HOME_PROJECT_ID, cleanupHomeGeneratorScripts, downloadHomeFile, ensureHomeDir, listHomeFiles, listHomeSessionFiles, openHomeFolder, readHomeFile } from "./home-service.js";
+import { HOME_PROJECT_ID, cleanupHomeGeneratorScripts, downloadHomeFile, ensureHomeDir, listHomeFiles, listHomeSessionFiles, openHomeFolder, readHomeFile, recordHomeRunFiles, removeSessionFromManifest } from "./home-service.js";
 import { testMcpServer } from "./mcp-service.js";
 import { createSkill, deleteSkill, ensureSkillSourceDirs, importSkill, listAllSkills, listSkills, openSkillsFolder, readSkillContent, setSkillModes } from "./skills-service.js";
 import { beginCommandRun, cancelCommandRun, endCommandRun, isCommandRunCancelled, runProjectCommand, getAgentBackend } from "./command-service.js";
@@ -43,7 +43,7 @@ import {
 } from "./notebook-store.js";
 import { getNotebookEmbeddingConfig, saveNotebookEmbeddingConfig, testEmbeddingEndpoint, type EmbeddingEndpoint } from "./notebook-embeddings.js";
 import { answerNotebookQuestion, getChunkPassage, hybridRetrieve } from "./notebook-rag.js";
-import { enqueueIngest, recoverInterruptedJobs, reindexSessionFromLibrary, retrySource } from "./notebook-jobs.js";
+import { enqueueIngest, onNotebookJobProgress, recoverInterruptedJobs, reindexSessionFromLibrary, retrySource } from "./notebook-jobs.js";
 import { sessionOutline } from "./notebook-library.js";
 
 protocol.registerSchemesAsPrivileged([
@@ -99,6 +99,7 @@ function createWindow() {
     return { action: "deny" };
   });
   setApprovalNotifier((request) => mainWindow?.webContents.send("command:approval-request", request));
+  onNotebookJobProgress((progress) => mainWindow?.webContents.send("notebook:progress", progress));
 }
 
 // Agent events are tagged with the session they belong to, so the renderer can
@@ -320,12 +321,9 @@ app.whenReady().then(async () => {
     }
   });
 
-  // Home area bootstrap: fixed folder + built-in project (id "home") so
-  // general-assistant sessions persist like coding sessions. Best-effort —
-  // Home is created lazily by its IPC handlers if this fails.
+  // Home area bootstrap: ensure fixed ~/Documents/Nexus folder exists.
   try {
-    const homeRoot = await ensureHomeDir();
-    await ensureHomeProject(HOME_PROJECT_ID, "Home", homeRoot);
+    await ensureHomeDir();
   } catch { /* lazy fallback in home:get */ }
 
   // Notebook recovery: files stuck mid-ingestion reset to `uploaded` and
@@ -338,13 +336,35 @@ app.whenReady().then(async () => {
 
   ipcMain.handle("home:get", async () => {
     const homeRoot = await ensureHomeDir();
-    const project = await ensureHomeProject(HOME_PROJECT_ID, "Home", homeRoot);
-    return { project, root: homeRoot };
+    return { project: { id: "home", name: "Home", root: homeRoot }, root: homeRoot };
+  });
+  ipcMain.handle("home:sessions:list", () => listHomeSessions());
+  ipcMain.handle("home:sessions:create", (_event, title?: string) => createHomeSession(title));
+  ipcMain.handle("home:sessions:activate", async (_event, sessionId: string) => getHomeSession(sessionId));
+  ipcMain.handle("home:sessions:update", (_event, sessionId: string, patch: Parameters<typeof updateHomeSession>[1]) => updateHomeSession(sessionId, patch));
+  ipcMain.handle("home:sessions:delete", async (_event, sessionId: string, options?: { deleteFiles?: boolean }) => {
+    const root = await ensureHomeDir();
+    if (options?.deleteFiles && root) {
+      try {
+        const sessions = await listHomeSessions();
+        const owned = await listHomeSessionFiles(sessionId, sessions);
+        for (const file of owned) {
+          const abs = path.resolve(root, file.path);
+          if (abs === root || !abs.startsWith(`${root}${path.sep}`)) continue;
+          try {
+            await fs.rm(abs, { force: true });
+          } catch { /* best effort */ }
+        }
+        await removeSessionFromManifest(sessionId);
+      } catch { /* best effort */ }
+    }
+    await deleteHomeSession(sessionId);
+    return { success: true };
   });
   ipcMain.handle("home:files", () => listHomeFiles());
   ipcMain.handle("home:sessionFiles", async (_event, sessionId: string) => {
-    const sessions = await listSessions(HOME_PROJECT_ID);
-    return listHomeSessionFiles(sessionId, sessions.map((s) => ({ id: s.id, createdAt: s.createdAt })));
+    const sessions = await listHomeSessions();
+    return listHomeSessionFiles(sessionId, sessions);
   });
   ipcMain.handle("home:readFile", (_event, relativePath: string) => readHomeFile(relativePath));
   ipcMain.handle("home:download", (_event, relativePath: string) => downloadHomeFile(relativePath));
@@ -693,30 +713,9 @@ app.whenReady().then(async () => {
     return session;
   });
   ipcMain.handle("session:update", (_event, projectId: string, sessionId: string, patch: Parameters<typeof updateSession>[2]) => updateSession(projectId, sessionId, patch));
-  ipcMain.handle("session:delete", async (_event, projectId: string, sessionId: string, options?: { deleteFiles?: boolean }) => {
+  ipcMain.handle("session:delete", async (_event, projectId: string, sessionId: string) => {
     const project = await getProject(projectId);
     const root = project?.root || activeProjectRoot;
-    // Home deliverables live in the Nexus folder and are only attributed to a
-    // session by timestamp heuristic — remove them only with explicit consent,
-    // and only files actually created after the session started (pre-existing
-    // files that merely surfaced under it are kept).
-    if (projectId === HOME_PROJECT_ID && options?.deleteFiles && root) {
-      try {
-        const sessions = await listSessions(projectId);
-        const target = sessions.find((s) => s.id === sessionId);
-        const created = target ? new Date(target.createdAt).getTime() : NaN;
-        const owned = await listHomeSessionFiles(sessionId, sessions.map((s) => ({ id: s.id, createdAt: s.createdAt })));
-        for (const file of owned) {
-          const mtime = new Date(file.modified).getTime();
-          if (!Number.isNaN(created) && (!Number.isNaN(mtime) && mtime < created - 60_000)) continue;
-          const abs = path.resolve(root, file.path);
-          if (abs === root || !abs.startsWith(`${root}${path.sep}`)) continue;
-          try {
-            await fs.rm(abs, { force: true });
-          } catch { /* one bad file never fails the delete */ }
-        }
-      } catch { /* file cleanup is best-effort */ }
-    }
     const updated = await deleteSession(projectId, sessionId);
     if (root) {
       await discardSessionWorktree(root, sessionId);
@@ -1053,13 +1052,25 @@ app.whenReady().then(async () => {
   // session in one batch — tool traces and plans survive an app restart now.
   type RunTranscript = { items: Array<{ role: "event"; text: string; kind: AgentEvent["type"]; createdAt: string; plan?: AgentEvent["items"]; subagent?: AgentEvent["subagent"]; artifact?: AgentEvent["artifact"]; usage?: AgentEvent["usage"]; detail?: string }> };
 
-  ipcMain.handle("agent:run", async (_event, payload: { request: string; images?: string[]; attachments?: Array<{ url: string; name: string; mimeType: string; size: number }>; providerId?: string; model?: string; mode?: string }) => {
+  ipcMain.handle("agent:run", async (_event, payload: { request: string; images?: string[]; attachments?: Array<{ url: string; name: string; mimeType: string; size: number }>; providerId?: string; model?: string; mode?: string; sessionId?: string; projectId?: string }) => {
     const root = requireRoot();
-    if (!activeProjectId || !activeSessionId) throw new Error("Create a session first.");
-    if (activeRunSessions.has(activeSessionId)) throw new Error("An agent run is already in progress in this session.");
+    const sessionId = payload.sessionId || activeSessionId;
+    const projectId = payload.projectId || activeProjectId;
+    if (!projectId || !sessionId) throw new Error("Create a session first.");
+    activeSessionId = sessionId;
+    activeProjectId = projectId;
+    if (activeRunSessions.has(sessionId)) {
+      if (isCommandRunCancelled(sessionId)) {
+        const waitStart = Date.now();
+        while (activeRunSessions.has(sessionId) && Date.now() - waitStart < 1000) {
+          await new Promise((r) => setTimeout(r, 25));
+        }
+      }
+      if (activeRunSessions.has(sessionId)) {
+        throw new Error("An agent run is already in progress in this session.");
+      }
+    }
 
-    const sessionId = activeSessionId;
-    const projectId = activeProjectId;
     activeRunSessions.add(sessionId);
     beginCommandRun(sessionId);
     const transcript: RunTranscript = { items: [] };
@@ -1217,17 +1228,14 @@ app.whenReady().then(async () => {
         importableAttachments.push(...modelImages);
       }
 
-      // Home sessions run the general assistant: same tool loop, but no
-      // code-project verification and a Home-oriented system prompt.
-      const isHomeRun = project.id === HOME_PROJECT_ID;
       const runStartMs = Date.now();
       let result: Awaited<ReturnType<typeof runProjectAgent>>;
       try {
         result = await runProjectAgent({
           projectRoot: executionRoot,
           telemetryRoot: root,
-          taskKind: isHomeRun ? "general" : "code",
-          skillsMode: isHomeRun ? "home" : "code",
+          taskKind: "code",
+          skillsMode: "code",
           sessionId,
           request: payload.request,
           images: modelImages,
@@ -1263,6 +1271,17 @@ app.whenReady().then(async () => {
           isCancelled: () => isCommandRunCancelled(sessionId),
         });
       } catch (error) {
+        const isCancel = error instanceof RunCancelledError || isCommandRunCancelled(sessionId) || (error as any)?.name === "AbortError";
+        if (isCancel) {
+          const stopText = "⏹️ Run stopped by user. Progress has been saved.\n\nSay **continue** to pick up from where I stopped.";
+          await appendSessionMessages(projectId, sessionId, [
+            ...transcript.items,
+            { role: "assistant", text: stopText, createdAt: new Date().toISOString() },
+          ]);
+          emitFor(sessionId, { type: "assistant", text: stopText });
+          emitFor(sessionId, { type: "status", text: "Stopped by user. Ready to continue." });
+          return stopText;
+        }
         const errorText = error instanceof Error ? error.message : String(error);
         // Failed runs leave a persistent error entry so the transcript tells
         // the truth after a reload, not just in the live view.
@@ -1271,7 +1290,6 @@ app.whenReady().then(async () => {
           { role: "event", kind: "error", text: `Agent run failed: ${errorText}`, createdAt: new Date().toISOString() },
         ]);
         emitFor(sessionId, { type: "error", text: `Agent run failed: ${errorText}` });
-        if (error instanceof RunCancelledError) return "Run cancelled by user.";
         throw error;
       }
 
@@ -1279,23 +1297,10 @@ app.whenReady().then(async () => {
         ...transcript.items,
         { role: "assistant", text: result.response, createdAt: new Date().toISOString(), usage: result.usage },
       ]);
-      // Home safety net: if the agent left its throwaway generator script
-      // behind (e.g. generate_report.py next to report.docx), remove it so
-      // only the requested deliverable(s) remain. Recorded in-transcript.
-      if (isHomeRun) {
-        try {
-          const deleted = await cleanupHomeGeneratorScripts(runStartMs, payload.request || "");
-          if (deleted.length) {
-            await appendSessionMessages(projectId, sessionId, [
-              { role: "event", kind: "tool", text: `Cleaned up generator script${deleted.length === 1 ? "" : "s"}: ${deleted.join(", ")}`, createdAt: new Date().toISOString() },
-            ]);
-          }
-        } catch { /* best effort — deliverable already exists */ }
-      }
       // Worktree-scoped auto-commit: isolated session branches get a durable
       // per-task commit (undo resets it); the user's main branch is never
       // auto-committed. Best-effort — a commit failure never fails the run.
-      if (!isHomeRun && mode !== "plan") {
+      if (mode !== "plan") {
         try {
           const wt = await getSessionWorktree(root, sessionId).catch(() => null);
           if (wt && path.resolve(executionRoot) === path.resolve(wt.worktreePath)) {
@@ -1333,6 +1338,228 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle("agent:cancel", (_event, sessionId?: string) => { cancelCommandRun(sessionId); cancelCommandApprovals(sessionId); return true; });
+
+  // Dedicated Home Agent Runner (Isolated from Code Mode)
+  ipcMain.handle("home:run", async (_event, payload: {
+    sessionId: string;
+    request: string;
+    images?: string[];
+    attachments?: ChatAttachment[];
+    providerId?: string;
+    model?: string;
+  }) => {
+    const { sessionId } = payload;
+    const session = await getHomeSession(sessionId);
+    if (!session) throw new Error("Home session not found.");
+    const homeRoot = await ensureHomeDir();
+
+    activeRunSessions.add(sessionId);
+    beginCommandRun(sessionId);
+    const transcript: { items: any[] } = { items: [] };
+
+    const emit = (event: AgentEvent) => {
+      emitFor(sessionId, event);
+    };
+
+    try {
+      const providers = await listProviders();
+      const providerId = payload.providerId || session.model?.providerId;
+      const provider = providers.find((p) => p.id === providerId) || providers[0];
+      const modelName = payload.model || session.model?.model || provider?.models[0] || "";
+
+      if (!provider || !modelName) {
+        throw new Error("No provider/model selected for Home Assistant. Configure Providers first.");
+      }
+
+      await updateHomeSession(sessionId, { model: { providerId: provider.id, model: modelName } });
+
+      const history: HistoryInput[] = (session.messages || []).map((message) => {
+        if (message.role === "event") {
+          return {
+            role: "assistant",
+            text: message.text,
+            kind: message.kind,
+            createdAt: message.createdAt,
+            plan: message.plan,
+            detail: message.detail,
+          };
+        }
+        return { role: message.role as "user" | "assistant", text: message.text };
+      });
+
+      const modelImages = payload.images?.length
+        ? await Promise.all(payload.images.map((img) => resolveImageForModel(img).catch(() => img)))
+        : undefined;
+
+      const ATTACH_DOC_CHAR_CAP = 20_000;
+      const attachmentDocs: Array<{ name: string; mimeType: string; text: string; truncated: boolean }> = [];
+      if (payload.attachments?.length) {
+        const { parseToMarkdown } = await import("./notebook-parse.js");
+        for (const attachment of payload.attachments) {
+          try {
+            const { buffer, mimeType } = await resolveAttachmentBytes(attachment.url);
+            const mime = attachment.mimeType || mimeType;
+            const name = attachment.name || "attachment";
+            try {
+              const parsed = await parseToMarkdown(buffer, name);
+              if (!parsed.markdown.trim()) continue;
+              const truncated = parsed.markdown.length > ATTACH_DOC_CHAR_CAP || parsed.truncated;
+              attachmentDocs.push({ name, mimeType: mime, text: parsed.markdown.slice(0, ATTACH_DOC_CHAR_CAP), truncated });
+            } catch {
+              attachmentDocs.push({ name, mimeType: mime, text: `[Binary file ${name} could not be text-extracted.]`, truncated: false });
+            }
+          } catch { /* best effort */ }
+        }
+      }
+
+      const importableAttachments: string[] = [];
+      if (payload.attachments?.length) {
+        for (const attachment of payload.attachments) {
+          try {
+            const { buffer, mimeType } = await resolveAttachmentBytes(attachment.url);
+            const mime = attachment.mimeType || mimeType;
+            importableAttachments.push(`data:${mime};base64,${buffer.toString("base64")}#${encodeURIComponent(attachment.name || "attachment")}`);
+          } catch { /* skip unreadable */ }
+        }
+      } else if (modelImages?.length) {
+        importableAttachments.push(...modelImages);
+      }
+
+      // Continue-resume: a bare "continue" / affirmation after an interrupt/stop must pick
+      // up the prior run's tool checkpoint, plan and diff — otherwise the
+      // model restarts from scratch.
+      const wantResume = isContinueRequest(payload.request || "");
+      const stored = wantResume ? getLastRunCheckpoint(sessionId) ?? await loadLastRunCheckpoint(homeRoot, sessionId) : null;
+      let resumeNote: string | null = null;
+      if (wantResume) {
+        const planEvents = session.messages.filter((m) => m.role === "event" && m.kind === "plan" && m.plan?.length);
+        const lastPlan = planEvents.length ? planEvents[planEvents.length - 1].plan! : null;
+        const errorEvents = session.messages.filter((m) => m.role === "event" && m.kind === "error");
+        const lastError = errorEvents.length ? errorEvents[errorEvents.length - 1].text : null;
+        const assistants = session.messages.filter((m) => m.role === "assistant");
+        const lastAssistant = assistants.length ? assistants[assistants.length - 1].text.slice(-1500) : null;
+        let diffSummary = "";
+        try {
+          const diffs = await getWorkspaceDiffFiles(homeRoot);
+          if (diffs.length) diffSummary = `\nFiles already changed:\n${diffs.slice(0, 20).map((d) => `- ${d.path} (+${d.additions}/-${d.deletions})`).join("\n")}`;
+        } catch { /* diff is best-effort */ }
+        const planSummary = (stored?.planItems ?? lastPlan)?.length
+          ? `\nWorking plan status:\n${(stored?.planItems ?? lastPlan)!.map((p) => `- [${p.status === "completed" ? "x" : " "}] ${p.content} (${p.status})`).join("\n")}`
+          : "";
+        const ledger = stored?.messages?.length ? summarizeCompletedSteps(stored.messages) : [];
+        const ledgerSummary = ledger.length
+          ? `\nSteps already DONE (never repeat — results are in history):\n${ledger.map((s) => `- ${s}`).join("\n")}`
+          : "";
+        resumeNote = `[System Note: The user asked to continue the previous interrupted run. All preceding tool executions and results ${stored ? `(${stored.messages.length} checkpointed messages) ` : ""}are already complete.${planSummary}${ledgerSummary}${lastError ? `\nLast stop reason: ${lastError.slice(0, 500)}` : ""}${lastAssistant ? `\nLast assistant summary: ${lastAssistant}` : ""}${diffSummary}\n\nIMPORTANT: Do NOT restart from the beginning, do NOT re-create the todo list from scratch, and do NOT repeat completed tool actions or file reads. Proceed directly with the next unfinished step.]`;
+      }
+
+      const backendRecord = { id: "home", name: "Home", root: homeRoot, createdAt: "", updatedAt: "", memory: "", sessions: [] };
+      emitFor(sessionId, { type: "status", text: "Starting Home Assistant…" });
+      const { backend } = await getAgentBackend(backendRecord, { readOnly: false, runId: sessionId });
+
+      await appendHomeSessionMessages(sessionId, [
+        { role: "user", text: payload.request, images: payload.images, attachments: payload.attachments, createdAt: new Date().toISOString() }
+      ]);
+
+      const runStartMs = Date.now();
+      let result: Awaited<ReturnType<typeof runProjectAgent>>;
+
+      try {
+        result = await runProjectAgent({
+          projectRoot: homeRoot,
+          telemetryRoot: homeRoot,
+          taskKind: "general",
+          skillsMode: "home",
+          sessionId,
+          request: payload.request,
+          images: modelImages,
+          attachments: modelImages,
+          attachmentDocs,
+          importableAttachments: importableAttachments.length ? importableAttachments : undefined,
+          settings: {
+            provider,
+            model: modelName,
+            apiKey: provider.apiKey,
+            baseUrl: provider.baseUrl,
+          },
+          memory: { projectMemory: "", sessionMemory: session.memory },
+          history,
+          mode: "auto",
+          agentBackend: backend,
+          resumeMessages: stored?.messages ?? null,
+          resumePlanItems: stored?.planItems ?? null,
+          resumeNote,
+          onEvent: (event) => {
+            if (event.type !== "token") {
+              transcript.items.push({
+                role: "event",
+                text: event.text,
+                kind: event.type,
+                createdAt: event.timestamp,
+                plan: event.items,
+                subagent: event.subagent,
+                artifact: event.artifact,
+                usage: event.type === "usage" ? undefined : event.usage,
+                detail: event.detail,
+              });
+            }
+            emit(event);
+          },
+          isCancelled: () => isCommandRunCancelled(sessionId),
+        });
+      } catch (error) {
+        const isCancel = error instanceof RunCancelledError || isCommandRunCancelled(sessionId) || (error as any)?.name === "AbortError";
+        if (isCancel) {
+          const stopText = "⏹️ Run stopped by user. Progress has been saved.\n\nSay **continue** to pick up from where I stopped.";
+          await appendHomeSessionMessages(sessionId, [
+            ...transcript.items,
+            { role: "assistant", text: stopText, createdAt: new Date().toISOString() },
+          ]);
+          emitFor(sessionId, { type: "assistant", text: stopText });
+          emitFor(sessionId, { type: "status", text: "Stopped by user. Ready to continue." });
+          return stopText;
+        }
+        const errorText = error instanceof Error ? error.message : String(error);
+        await appendHomeSessionMessages(sessionId, [
+          ...transcript.items,
+          { role: "event", kind: "error", text: `Home run failed: ${errorText}`, createdAt: new Date().toISOString() },
+        ]);
+        emitFor(sessionId, { type: "error", text: `Home run failed: ${errorText}` });
+        throw error;
+      }
+
+      await appendHomeSessionMessages(sessionId, [
+        ...transcript.items,
+        { role: "assistant", text: result.response, createdAt: new Date().toISOString(), usage: result.usage },
+      ]);
+
+      try {
+        const deleted = await cleanupHomeGeneratorScripts(runStartMs, payload.request || "");
+        if (deleted.length) {
+          await appendHomeSessionMessages(sessionId, [
+            { role: "event", kind: "tool", text: `Cleaned up generator script${deleted.length === 1 ? "" : "s"}: ${deleted.join(", ")}`, createdAt: new Date().toISOString() },
+          ]);
+        }
+        await recordHomeRunFiles(sessionId, runStartMs, result.response);
+      } catch { /* best effort */ }
+
+      const nextSessionMemory = [session.memory, result.memoryEntry].filter(Boolean).join("\n\n");
+      await updateHomeSession(sessionId, {
+        memory: nextSessionMemory.slice(-4000),
+      });
+
+      return result.response;
+    } finally {
+      activeRunSessions.delete(sessionId);
+      endCommandRun(sessionId);
+    }
+  });
+
+  ipcMain.handle("home:cancel", (_event, sessionId?: string) => {
+    cancelCommandRun(sessionId);
+    cancelCommandApprovals(sessionId);
+    return true;
+  });
 
   createWindow();
   // Silent startup update check (packaged builds only — dev runs report

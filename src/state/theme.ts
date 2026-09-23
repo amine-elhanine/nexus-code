@@ -59,11 +59,18 @@ export const APP_THEMES: AppTheme[] = [
     accent: "#a3e635",
   },
   {
+    id: "alabaster",
+    name: "Warm Alabaster",
+    description: "Soothing warm parchment & antique paper with terracotta accents.",
+    swatches: ["#ede5d8", "#e2d7c5", "#d9530f", "#ea580c"],
+    accent: "#d9530f",
+  },
+  {
     id: "daylight",
     name: "Daylight Paper",
-    description: "Light theme for bright rooms. Best-effort light palette.",
-    swatches: ["#f4f5f7", "#ffffff", "#059669", "#0d9488"],
-    accent: "#059669",
+    description: "Calm unbleached reading paper with deep forest emerald accents.",
+    swatches: ["#e9e4d8", "#ddd8cb", "#047857", "#059669"],
+    accent: "#047857",
   },
 ];
 

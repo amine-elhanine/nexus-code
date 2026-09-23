@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { WorktreeBar } from "../components/worktree/WorktreeBar.js";
 import { SlashCommandPopup, filterSlashCommands, DEFAULT_SLASH_COMMANDS, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
-import { ChatItemView, ActivityGroupView } from "../components/chat/ChatMessageItem.js";
+import { ChatItemView, ActivityGroupView, StreamingAssistantMessage } from "../components/chat/ChatMessageItem.js";
 import { fileIcon } from "../utils/format.js";
 import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
 import { formatCost } from "../types.js";
@@ -573,15 +573,28 @@ export function AgentView({
             </div>
           </div>
         )}
-        {running && (
+        {running && liveEvents.length > 0 && (
           <ActivityGroupView
             events={liveEvents}
             running
-            currentText={streamingText || (liveEvents.length ? undefined : "Starting the agent… the first step can take a while.")}
+            currentText={streamingText ? "Writing response…" : undefined}
             onOpenArtifact={onOpenArtifact}
             onOpenImage={onOpenImage}
             onOpenAttachment={onOpenAttachment}
           />
+        )}
+        {running && !liveEvents.length && !streamingText && (
+          <ActivityGroupView
+            events={[]}
+            running
+            currentText="Starting the agent… the first step can take a while."
+            onOpenArtifact={onOpenArtifact}
+            onOpenImage={onOpenImage}
+            onOpenAttachment={onOpenAttachment}
+          />
+        )}
+        {running && streamingText && (
+          <StreamingAssistantMessage text={streamingText} />
         )}
       </div>
       <div className="agent-input-area">

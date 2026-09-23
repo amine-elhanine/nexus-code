@@ -241,5 +241,66 @@ await test('errorSummary flattens and caps error text', () => {
   assert.equal(errorSummary(''), 'unknown error');
 });
 
+await test('isTransientError returns false for RunCancelledError and AbortError', () => {
+  const cancelErr = new Error('Execution cancelled by user');
+  cancelErr.name = 'RunCancelledError';
+  assert.equal(isTransientError(cancelErr), false);
+
+  const abortErr = new Error('The operation was aborted');
+  abortErr.name = 'AbortError';
+  assert.equal(isTransientError(abortErr), false);
+});
+
+await test('withRateLimitRetry aborts immediately without retrying when cancelled', async () => {
+  let attempts = 0;
+  const controller = new AbortController();
+  const cancelErr = new Error('Execution cancelled by user');
+  cancelErr.name = 'RunCancelledError';
+
+  await assert.rejects(
+    () => withRateLimitRetry(
+      async () => {
+        attempts++;
+        throw cancelErr;
+      },
+      {
+        signal: controller.signal,
+        baseDelayMs: 5000,
+        maxAttempts: 3,
+      }
+    ),
+    (err) => err.name === 'RunCancelledError'
+  );
+
+  assert.equal(attempts, 1);
+});
+
+await test('withRateLimitRetry aborts backoff delay immediately via signal', async () => {
+  let attempts = 0;
+  const controller = new AbortController();
+
+  const start = Date.now();
+  const runPromise = withRateLimitRetry(
+    async () => {
+      attempts++;
+      throw Object.assign(new Error('429 rate limit'), { code: 429 });
+    },
+    {
+      signal: controller.signal,
+      baseDelayMs: 10000,
+      maxAttempts: 3,
+    }
+  );
+
+  // Trigger abort after 50ms while sleeping in backoff
+  setTimeout(() => controller.abort(), 50);
+
+  await assert.rejects(runPromise, (err) => err.name === 'AbortError' || err.message?.includes('aborted'));
+  const duration = Date.now() - start;
+  assert.ok(duration < 2000, `Expected instant abort, took ${duration}ms`);
+  assert.equal(attempts, 1);
+});
+
 console.log(`\nSummary: ${passed} passed, ${failed} failed.`);
 process.exit(failed > 0 ? 1 : 0);
+

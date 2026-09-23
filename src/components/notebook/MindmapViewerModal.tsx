@@ -330,7 +330,7 @@ export function MindmapViewerModal({ map, onClose }: { map: NotebookMindmap; onC
             <svg width="100%" height="100%" style={{ display: "block", overflow: "visible" }}>
               <defs>
                 <pattern id="mm-dots" width="26" height="26" patternUnits="userSpaceOnUse">
-                  <circle cx="1.5" cy="1.5" r="1.5" fill="#21262d" />
+                  <circle cx="1.5" cy="1.5" r="1.5" fill="var(--line2)" opacity={0.6} />
                 </pattern>
               </defs>
               <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
@@ -356,11 +356,11 @@ export function MindmapViewerModal({ map, onClose }: { map: NotebookMindmap; onC
                       <circle
                         r={r + (isSelected ? 3.5 : 0)}
                         fill="none"
-                        stroke={isSelected ? "#ffffff" : "transparent"}
+                        stroke={isSelected ? "var(--text)" : "transparent"}
                         strokeWidth={1.5}
                         opacity={0.9}
                       />
-                      <circle r={r} fill="#0d1117" stroke={p.color} strokeWidth={2.5} />
+                      <circle r={r} fill="var(--panel)" stroke={p.color} strokeWidth={2.5} />
                       <circle r={r - 2.5} fill={p.color} opacity={0.9} pointerEvents="none" />
                       <text
                         x={isCentral ? -(r + 10) : r + 9}
@@ -368,8 +368,8 @@ export function MindmapViewerModal({ map, onClose }: { map: NotebookMindmap; onC
                         textAnchor={isCentral ? "end" : "start"}
                         fontSize={isCentral ? 15 : p.depth === 1 ? 13.5 : 12.5}
                         fontWeight={p.depth <= 1 ? 700 : 400}
-                        fill="#ffffff"
-                        stroke="#0d1117"
+                        fill="var(--text)"
+                        stroke="var(--bg)"
                         strokeWidth={3}
                         paintOrder="stroke"
                         pointerEvents="none"

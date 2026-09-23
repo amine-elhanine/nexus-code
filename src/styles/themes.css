@@ -140,24 +140,44 @@ html[data-theme="moss"] {
   --accent-soft: rgba(163, 230, 53, 0.12);
 }
 
+html[data-theme="alabaster"] {
+  color-scheme: light;
+  --bg: #ede5d8;
+  --panel: #e2d7c5;
+  --panel2: #d5c8b2;
+  --line: #c6b79f;
+  --line2: #b4a38a;
+  --text: #241e17;
+  --muted: #635444;
+  --faint: #8f7d6a;
+  --purple: #7e22ce;
+  --green: #d9530f;
+  --orange: #ea580c;
+  --red: #dc2626;
+  --nexus-green: #d9530f;
+  --nexus-bright: #ea580c;
+  --nexus-glow: rgba(217, 83, 15, 0.18);
+  --accent-soft: rgba(217, 83, 15, 0.10);
+}
+
 html[data-theme="daylight"] {
   color-scheme: light;
-  --bg: #eef1f4;
-  --panel: #ffffff;
-  --panel2: #f1f4f8;
-  --line: #dfe5ec;
-  --line2: #c9d3df;
-  --text: #1b2432;
-  --muted: #5f6f84;
-  --faint: #93a1b3;
-  --purple: #059669;
-  --green: #059669;
+  --bg: #e9e4d8;
+  --panel: #ddd8cb;
+  --panel2: #d0c9bb;
+  --line: #c1baa9;
+  --line2: #aca492;
+  --text: #1d231e;
+  --muted: #525c53;
+  --faint: #7e887f;
+  --purple: #047857;
+  --green: #047857;
   --orange: #b45309;
   --red: #dc2626;
-  --nexus-green: #059669;
-  --nexus-bright: #047857;
-  --nexus-glow: rgba(5, 150, 105, 0.14);
-  --accent-soft: rgba(5, 150, 105, 0.1);
+  --nexus-green: #047857;
+  --nexus-bright: #059669;
+  --nexus-glow: rgba(4, 120, 87, 0.16);
+  --accent-soft: rgba(4, 120, 87, 0.09);
 }
 
 /* --- Bind major hardcoded dark surfaces to theme vars --- */
@@ -231,6 +251,15 @@ html[data-theme] .seg {
   border-color: var(--line);
 }
 
+html[data-theme] .switch {
+  background: var(--line2);
+  border-color: var(--line2);
+}
+
+html[data-theme] .switch .knob {
+  background: var(--panel);
+}
+
 html[data-theme] .switch.on {
   background: var(--accent-soft);
   border-color: var(--nexus-green);
@@ -238,6 +267,42 @@ html[data-theme] .switch.on {
 
 html[data-theme] .switch.on .knob {
   background: var(--nexus-bright);
+}
+
+html[data-theme] .provider-card,
+html[data-theme] .mcp-card {
+  background: var(--panel2);
+  border-color: var(--line);
+}
+
+html[data-theme] .provider-card:hover,
+html[data-theme] .mcp-card:hover {
+  background: var(--panel);
+  border-color: var(--line2);
+}
+
+html[data-theme] .provider-card.active {
+  background: var(--accent-soft);
+  border-color: var(--nexus-green);
+}
+
+html[data-theme] .provider-card-main strong,
+html[data-theme] .mcp-card-name {
+  color: var(--text);
+}
+
+html[data-theme] .provider-card-main small,
+html[data-theme] .mcp-card-detail,
+html[data-theme] .modal-card-head p,
+html[data-theme] .form-title small,
+html[data-theme] .provider-form label small {
+  color: var(--muted);
+}
+
+html[data-theme] .provider-logo {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--nexus-green);
 }
 
 html[data-theme] .settings-side {
@@ -258,6 +323,319 @@ html[data-theme] .scope-checkbox {
 
 html[data-theme] .stream-caret {
   color: var(--nexus-green);
+}
+
+html[data-theme] .agent-view-head h1 {
+  color: var(--text);
+}
+
+html[data-theme] .chat-message-text {
+  color: var(--text);
+}
+
+html[data-theme] .chat-author {
+  color: var(--muted);
+}
+
+html[data-theme] .chat-author time {
+  color: var(--faint);
+}
+
+html[data-theme] .activity-group {
+  border-color: var(--line);
+  background: var(--panel2);
+}
+
+html[data-theme] .activity-group-summary {
+  background: var(--panel2);
+  color: var(--text);
+}
+
+html[data-theme] .activity-group-body {
+  background: var(--panel);
+}
+
+html[data-theme] .activity-step-detail {
+  background: var(--bg);
+  border-left-color: var(--line2);
+}
+
+html[data-theme] .activity-step {
+  border-bottom-color: var(--line);
+}
+
+html[data-theme] .activity-step-dot {
+  background: var(--panel2);
+  color: var(--muted);
+}
+
+html[data-theme] .activity-step summary,
+html[data-theme] .activity-step .activity-step-row {
+  color: var(--muted);
+}
+
+html[data-theme] .activity-step summary:hover {
+  color: var(--text);
+}
+
+html[data-theme] .message-usage-footer {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  color: var(--muted);
+}
+
+html[data-theme] .message-usage-footer b {
+  color: var(--text);
+}
+
+html[data-theme] .session-usage-pill {
+  background: var(--panel2);
+  border-color: var(--line2);
+  color: var(--muted);
+}
+
+html[data-theme] .session-usage-pill b {
+  color: var(--text);
+}
+
+html[data-theme] .memory-row {
+  color: var(--text);
+  border-bottom-color: var(--line);
+}
+
+html[data-theme] .memory-row small {
+  color: var(--muted);
+}
+
+html[data-theme] .memory-row small.memory-updated {
+  color: var(--nexus-bright);
+}
+
+html[data-theme] .context-section-title {
+  color: var(--muted);
+}
+
+html[data-theme] .context-summary {
+  border-bottom-color: var(--line);
+}
+
+html[data-theme] .context-summary strong {
+  color: var(--text);
+}
+
+html[data-theme] .context-summary small {
+  color: var(--muted);
+}
+
+html[data-theme] .context-head {
+  border-bottom-color: var(--line);
+}
+
+html[data-theme] .context-head strong {
+  color: var(--text);
+}
+
+html[data-theme] .notebook-side-head {
+  border-bottom-color: var(--line);
+}
+
+html[data-theme] .notebook-side-title {
+  color: var(--text);
+}
+
+html[data-theme] .agent-input {
+  background: var(--panel);
+  border-color: var(--line2);
+}
+
+html[data-theme] .agent-input textarea {
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  color: var(--text) !important;
+}
+
+html[data-theme] .attach-button {
+  background: var(--panel2);
+  border-color: var(--line2);
+  color: var(--muted);
+}
+
+html[data-theme] .attach-button:hover {
+  background: var(--panel);
+  color: var(--text);
+}
+
+html[data-theme] .model-select select {
+  background: var(--panel2);
+  color: var(--text);
+  border: 1px solid var(--line2);
+}
+
+html[data-theme] .model-select > svg {
+  color: var(--muted);
+}
+
+html[data-theme] .provider-dot {
+  background: var(--accent-soft);
+  color: var(--nexus-green);
+}
+
+html[data-theme] .mode-select {
+  background: var(--panel2);
+  border-color: var(--line2);
+}
+
+html[data-theme] .mode-select button {
+  color: var(--muted);
+}
+
+html[data-theme] .mode-select button.active {
+  background: var(--accent-soft);
+  color: var(--nexus-bright);
+  border-color: var(--nexus-green);
+}
+
+html[data-theme] .send-button {
+  background: var(--nexus-green);
+  color: #ffffff;
+  box-shadow: 0 0 10px var(--nexus-glow);
+}
+
+html[data-theme] .send-button:hover:not(:disabled) {
+  background: var(--nexus-green);
+  box-shadow: 0 0 16px var(--nexus-glow);
+}
+
+html[data-theme] .send-button:disabled {
+  background: var(--panel2);
+  color: var(--faint);
+  box-shadow: none;
+}
+
+html[data-theme] .icon-plain {
+  color: var(--muted);
+}
+
+html[data-theme] .icon-plain:hover {
+  background: var(--panel2);
+  color: var(--text);
+}
+
+html[data-theme] .top-link {
+  color: var(--muted);
+}
+
+html[data-theme] .top-link:hover {
+  background: var(--panel2);
+  color: var(--text);
+}
+
+html[data-theme] .win-btn {
+  color: var(--muted);
+}
+
+html[data-theme] .win-btn:hover {
+  background: var(--panel2);
+  color: var(--text);
+}
+
+html[data-theme] .notebook-card-name {
+  color: var(--text);
+}
+
+html[data-theme] .notebook-card-meta {
+  color: var(--muted);
+}
+
+html[data-theme] .notebook-card:hover {
+  border-color: var(--line2);
+}
+
+html[data-theme] .notebook-card-new {
+  border-color: var(--line2);
+  color: var(--muted);
+}
+
+html[data-theme] .notebook-card-new:hover {
+  border-color: var(--nexus-green);
+  color: var(--nexus-bright);
+}
+
+html[data-theme] .xterm-toolbar {
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+html[data-theme] .xterm-title {
+  color: var(--text);
+}
+
+html[data-theme] .xterm-badge {
+  background: var(--accent-soft);
+  border: 1px solid var(--nexus-green);
+  color: var(--nexus-bright);
+}
+
+html[data-theme] .xterm-btn {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  color: var(--muted);
+}
+
+html[data-theme] .xterm-btn:hover {
+  background: var(--panel);
+  color: var(--text);
+  border-color: var(--nexus-green);
+}
+
+html[data-theme] .side-browser-tabs {
+  background: var(--panel);
+  border-bottom-color: var(--line);
+}
+
+html[data-theme] .side-tab {
+  color: var(--muted);
+}
+
+html[data-theme] .side-tab:hover {
+  color: var(--text);
+}
+
+html[data-theme] .side-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--nexus-bright);
+}
+
+html[data-theme] .side-tab.agent {
+  color: var(--muted);
+}
+
+html[data-theme] .side-tab.active.agent {
+  color: var(--nexus-bright);
+}
+
+html[data-theme] .side-browser-bar {
+  background: var(--panel);
+  border-bottom-color: var(--line);
+}
+
+html[data-theme] .side-browser-bar input {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  color: var(--text);
+}
+
+html[data-theme] .side-browser-servers {
+  background: var(--panel);
+  border-bottom-color: var(--line);
+}
+
+html[data-theme] .bookmark-chip {
+  background: var(--panel2);
+  border-color: var(--line2);
+  color: var(--text);
 }
 
 /* --- Appearance picker --- */
@@ -393,17 +771,21 @@ html[data-theme] .stream-caret {
 
 /* Light theme needs broader surface remapping since base CSS is dark-first */
 html[data-theme="daylight"] .product-topbar .session-top-title,
-html[data-theme="daylight"] .session-title-text {
+html[data-theme="daylight"] .session-title-text,
+html[data-theme="alabaster"] .product-topbar .session-top-title,
+html[data-theme="alabaster"] .session-title-text {
   color: var(--text);
 }
 
-html[data-theme="daylight"] .modal-card {
+html[data-theme="daylight"] .modal-card,
+html[data-theme="alabaster"] .modal-card {
   background: var(--panel);
   border-color: var(--line);
   color: var(--text);
 }
 
-html[data-theme="daylight"] .settings-side button:hover {
+html[data-theme="daylight"] .settings-side button:hover,
+html[data-theme="alabaster"] .settings-side button:hover {
   background: var(--panel2);
   color: var(--text);
 }
@@ -412,16 +794,611 @@ html[data-theme="daylight"] .text-field,
 html[data-theme="daylight"] .select-field,
 html[data-theme="daylight"] input,
 html[data-theme="daylight"] select,
-html[data-theme="daylight"] textarea {
+html[data-theme="daylight"] textarea:not(.agent-input textarea),
+html[data-theme="alabaster"] .text-field,
+html[data-theme="alabaster"] .select-field,
+html[data-theme="alabaster"] input,
+html[data-theme="alabaster"] select,
+html[data-theme="alabaster"] textarea:not(.agent-input textarea) {
   background: var(--panel);
   border-color: var(--line2);
   color: var(--text);
 }
 
-html[data-theme="daylight"] .seg button {
+html[data-theme="daylight"] .seg button,
+html[data-theme="alabaster"] .seg button {
   color: var(--muted);
 }
 
-html[data-theme="daylight"] .seg button:hover {
+html[data-theme="daylight"] .seg button:hover,
+html[data-theme="alabaster"] .seg button:hover {
   color: var(--text);
 }
+
+html[data-theme="alabaster"] .chat-message.user .chat-message-text,
+html[data-theme="daylight"] .chat-message.user .chat-message-text,
+html[data-theme="alabaster"] .chat-item.user .chat-text,
+html[data-theme="daylight"] .chat-item.user .chat-text {
+  background: var(--panel2);
+  color: var(--text);
+  border: 1px solid var(--line2);
+}
+
+html[data-theme="alabaster"] .md code,
+html[data-theme="alabaster"] .rich-markdown code,
+html[data-theme="daylight"] .md code,
+html[data-theme="daylight"] .rich-markdown code {
+  background: var(--panel2);
+  color: var(--nexus-green);
+  border-color: var(--line);
+}
+
+html[data-theme="alabaster"] .md pre,
+html[data-theme="alabaster"] .rich-markdown pre,
+html[data-theme="daylight"] .md pre,
+html[data-theme="daylight"] .rich-markdown pre {
+  background: var(--panel2);
+  border-color: var(--line);
+}
+
+html[data-theme="alabaster"] .md pre code,
+html[data-theme="alabaster"] .rich-markdown pre code,
+html[data-theme="daylight"] .md pre code,
+html[data-theme="daylight"] .rich-markdown pre code {
+  color: var(--text);
+  background: transparent;
+}
+
+html[data-theme="alabaster"] .katex,
+html[data-theme="alabaster"] .katex-display,
+html[data-theme="daylight"] .katex,
+html[data-theme="daylight"] .katex-display {
+  color: var(--text);
+}
+
+html[data-theme="alabaster"] .notebook-working,
+html[data-theme="daylight"] .notebook-working {
+  background: var(--panel2);
+  border-color: var(--line2);
+  color: var(--text);
+}
+
+html[data-theme="alabaster"] .notebook-working-step,
+html[data-theme="daylight"] .notebook-working-step {
+  color: var(--muted);
+}
+
+html[data-theme="alabaster"] .input-note,
+html[data-theme="daylight"] .input-note {
+  color: var(--muted);
+}
+
+html[data-theme="alabaster"] .md blockquote,
+html[data-theme="alabaster"] .rich-markdown blockquote,
+html[data-theme="daylight"] .md blockquote,
+html[data-theme="daylight"] .rich-markdown blockquote {
+  background: var(--accent-soft);
+  border-left-color: var(--nexus-green);
+  color: var(--muted);
+}
+
+/* Markdown Tables (chat, generated summaries, reports, notebook discussion) */
+html[data-theme="alabaster"] .md table,
+html[data-theme="alabaster"] .rich-markdown table,
+html[data-theme="daylight"] .md table,
+html[data-theme="daylight"] .rich-markdown table {
+  color: var(--text);
+}
+
+html[data-theme="alabaster"] .md th,
+html[data-theme="alabaster"] .rich-markdown th,
+html[data-theme="daylight"] .md th,
+html[data-theme="daylight"] .rich-markdown th {
+  background: var(--panel2);
+  color: var(--text);
+  border-color: var(--line2);
+  font-weight: 600;
+}
+
+html[data-theme="alabaster"] .md td,
+html[data-theme="alabaster"] .rich-markdown td,
+html[data-theme="daylight"] .md td,
+html[data-theme="daylight"] .rich-markdown td {
+  border-color: var(--line);
+  color: var(--text);
+}
+
+html[data-theme="alabaster"] .md-table-wrap,
+html[data-theme="alabaster"] .rich-markdown .md-table-wrap,
+html[data-theme="daylight"] .md-table-wrap,
+html[data-theme="daylight"] .rich-markdown .md-table-wrap {
+  border-color: var(--line);
+}
+
+html[data-theme="alabaster"] .chat-message.user .chat-author {
+  color: var(--muted);
+}
+
+html[data-theme="alabaster"] .primary,
+html[data-theme="alabaster"] .send-button,
+html[data-theme="daylight"] .primary,
+html[data-theme="daylight"] .send-button {
+  color: #ffffff;
+}
+
+/* Notebook Studio Artifact Cards (Right sidebar OUTPUTS list) */
+html[data-theme="alabaster"] .notebook-artifact-card,
+html[data-theme="daylight"] .notebook-artifact-card {
+  background: var(--panel2);
+  border-color: var(--line);
+}
+
+html[data-theme="alabaster"] .notebook-artifact-card:hover,
+html[data-theme="daylight"] .notebook-artifact-card:hover {
+  background: var(--accent-soft) !important;
+  border-color: var(--nexus-green) !important;
+}
+
+html[data-theme="alabaster"] .notebook-artifact-title,
+html[data-theme="daylight"] .notebook-artifact-title {
+  color: var(--text);
+}
+
+html[data-theme="alabaster"] .notebook-artifact-excerpt,
+html[data-theme="daylight"] .notebook-artifact-excerpt {
+  color: var(--muted);
+}
+
+html[data-theme="alabaster"] .notebook-source-card,
+html[data-theme="daylight"] .notebook-source-card {
+  background: var(--panel2);
+  border-color: var(--line);
+}
+
+html[data-theme="alabaster"] .notebook-source-card:hover,
+html[data-theme="daylight"] .notebook-source-card:hover {
+  background: var(--accent-soft) !important;
+  border-color: var(--line2) !important;
+}
+
+/* Ingestion Badges in Light Themes */
+html[data-theme="alabaster"] .ingestion-badge.queued,
+html[data-theme="daylight"] .ingestion-badge.queued {
+  color: #57534e !important;
+  background: rgba(120, 113, 108, 0.12) !important;
+  border-color: rgba(120, 113, 108, 0.35) !important;
+}
+
+html[data-theme="alabaster"] .ingestion-badge.parsing,
+html[data-theme="alabaster"] .ingestion-badge.chunking,
+html[data-theme="alabaster"] .ingestion-badge.indexing,
+html[data-theme="daylight"] .ingestion-badge.parsing,
+html[data-theme="daylight"] .ingestion-badge.chunking,
+html[data-theme="daylight"] .ingestion-badge.indexing {
+  color: #92400e !important;
+  background: #fef3c7 !important;
+  border-color: #d97706 !important;
+  font-weight: 700 !important;
+}
+
+html[data-theme="alabaster"] .ingestion-badge.ready,
+html[data-theme="daylight"] .ingestion-badge.ready {
+  color: #065f46 !important;
+  background: #ecfdf5 !important;
+  border-color: #059669 !important;
+  font-weight: 700 !important;
+}
+
+html[data-theme="alabaster"] .ingestion-badge.error,
+html[data-theme="daylight"] .ingestion-badge.error {
+  color: #991b1b !important;
+  background: #fef2f2 !important;
+  border-color: #dc2626 !important;
+  font-weight: 700 !important;
+}
+
+html[data-theme="alabaster"] .notebook-ingestion-card,
+html[data-theme="daylight"] .notebook-ingestion-card {
+  background: #f8f3ea !important;
+  border-color: var(--line2) !important;
+  box-shadow: 0 2px 10px rgba(70, 50, 20, 0.06) !important;
+}
+
+html[data-theme="alabaster"] .notebook-ingestion-progress-track,
+html[data-theme="daylight"] .notebook-ingestion-progress-track {
+  background: #e7ded0 !important;
+  border-color: var(--line) !important;
+}
+
+html[data-theme="alabaster"] .notebook-source-card.is-processing,
+html[data-theme="daylight"] .notebook-source-card.is-processing {
+  border-color: #d97706 !important;
+  background: #fffdfa !important;
+  box-shadow: 0 0 0 1px rgba(217, 119, 6, 0.25) !important;
+}
+
+/* Artifact Type Pills in Light Themes */
+html[data-theme="alabaster"] .notebook-artifact-type-pill.tone-summary,
+html[data-theme="daylight"] .notebook-artifact-type-pill.tone-summary {
+  background: rgba(217, 119, 6, 0.12);
+  color: #b45309;
+  border-color: rgba(217, 119, 6, 0.3);
+}
+
+html[data-theme="alabaster"] .notebook-artifact-type-pill.tone-mindmap,
+html[data-theme="daylight"] .notebook-artifact-type-pill.tone-mindmap {
+  background: rgba(219, 39, 119, 0.12);
+  color: #be185d;
+  border-color: rgba(219, 39, 119, 0.3);
+}
+
+html[data-theme="alabaster"] .notebook-artifact-type-pill.tone-flashcards,
+html[data-theme="daylight"] .notebook-artifact-type-pill.tone-flashcards {
+  background: rgba(147, 51, 234, 0.12);
+  color: #7e22ce;
+  border-color: rgba(147, 51, 234, 0.3);
+}
+
+html[data-theme="alabaster"] .notebook-artifact-type-pill.tone-quiz,
+html[data-theme="daylight"] .notebook-artifact-type-pill.tone-quiz {
+  background: rgba(37, 99, 235, 0.12);
+  color: #1d4ed8;
+  border-color: rgba(37, 99, 235, 0.3);
+}
+
+html[data-theme="alabaster"] .notebook-artifact-type-pill.tone-doc,
+html[data-theme="daylight"] .notebook-artifact-type-pill.tone-doc {
+  background: var(--accent-soft);
+  color: var(--nexus-green);
+  border-color: var(--nexus-green);
+}
+
+html[data-theme="alabaster"] .notebook-artifact-type-pill.tone-note,
+html[data-theme="daylight"] .notebook-artifact-type-pill.tone-note {
+  background: rgba(13, 148, 136, 0.12);
+  color: #0f766e;
+  border-color: rgba(13, 148, 136, 0.3);
+}
+
+/* Artifact Viewer Modals & Passages */
+html[data-theme="alabaster"] .passage-main,
+html[data-theme="daylight"] .passage-main {
+  background: var(--panel);
+  border-color: var(--line2);
+  color: var(--text);
+}
+
+html[data-theme="alabaster"] .passage-neighbor,
+html[data-theme="daylight"] .passage-neighbor {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+html[data-theme="alabaster"] .passage-neighbor summary,
+html[data-theme="daylight"] .passage-neighbor summary {
+  color: var(--text);
+}
+
+html[data-theme="alabaster"] .passage-summary,
+html[data-theme="daylight"] .passage-summary {
+  color: var(--muted);
+}
+
+html[data-theme="alabaster"] .passage-actions button,
+html[data-theme="daylight"] .passage-actions button {
+  background: var(--panel2);
+  color: var(--text);
+  border-color: var(--line2);
+}
+
+html[data-theme="alabaster"] .passage-actions button:hover,
+html[data-theme="daylight"] .passage-actions button:hover {
+  background: var(--accent-soft);
+  color: var(--nexus-bright);
+  border-color: var(--nexus-green);
+}
+
+html[data-theme="alabaster"] .citation-row,
+html[data-theme="daylight"] .citation-row {
+  color: var(--muted);
+}
+
+html[data-theme="alabaster"] .citation-name,
+html[data-theme="daylight"] .citation-name {
+  color: var(--text);
+}
+
+html[data-theme="alabaster"] .citation-tag,
+html[data-theme="daylight"] .citation-tag {
+  color: var(--nexus-green);
+}
+
+html[data-theme="alabaster"] .pane-action:hover,
+html[data-theme="daylight"] .pane-action:hover {
+  background: var(--panel2);
+  color: var(--text);
+}
+
+/* File Preview Modal in Light Themes */
+html[data-theme="alabaster"] .file-preview-card,
+html[data-theme="daylight"] .file-preview-card {
+  background: var(--panel);
+  border-color: var(--line2);
+}
+
+html[data-theme="alabaster"] .file-preview-head,
+html[data-theme="daylight"] .file-preview-head {
+  border-color: var(--line);
+}
+
+html[data-theme="alabaster"] .file-preview-sheet table,
+html[data-theme="daylight"] .file-preview-sheet table {
+  color: var(--text);
+}
+
+html[data-theme="alabaster"] .file-preview-sheet td,
+html[data-theme="alabaster"] .file-preview-sheet th,
+html[data-theme="daylight"] .file-preview-sheet td,
+html[data-theme="daylight"] .file-preview-sheet th {
+  border-color: var(--line2);
+  color: var(--text);
+}
+
+html[data-theme="alabaster"] .file-preview-sheet tr:first-child td,
+html[data-theme="daylight"] .file-preview-sheet tr:first-child td {
+  background: var(--panel2);
+  color: var(--text);
+}
+
+/* --- Slash Command Menu Theme Overrides --- */
+html[data-theme] .slash-command-menu {
+  background: var(--panel);
+  border-color: var(--line2);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.25);
+}
+
+html[data-theme] .slash-command-header {
+  color: var(--faint);
+  border-bottom-color: var(--line);
+}
+
+html[data-theme] .slash-command-item {
+  color: var(--text);
+}
+
+html[data-theme] .slash-command-item:hover,
+html[data-theme] .slash-command-item.selected {
+  background: var(--accent-soft);
+}
+
+html[data-theme] .slash-command-item:hover .slash-command-name,
+html[data-theme] .slash-command-item.selected .slash-command-name {
+  color: var(--nexus-bright);
+}
+
+html[data-theme] .slash-command-item:hover .slash-command-desc,
+html[data-theme] .slash-command-item.selected .slash-command-desc {
+  color: var(--text);
+}
+
+html[data-theme] .slash-command-icon {
+  background: var(--panel2);
+  color: var(--text);
+}
+
+html[data-theme] .slash-project-badge {
+  background: var(--accent-soft);
+  color: var(--nexus-bright);
+  border: 1px solid var(--line2);
+}
+
+html[data-theme] .slash-mode-badge {
+  background: var(--panel2);
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+
+/* --- Integrated Browser Workspace View Theme Overrides --- */
+html[data-theme] .integrated-browser-view {
+  background: var(--bg);
+}
+
+html[data-theme] .browser-tab-strip {
+  background: var(--panel);
+  border-bottom-color: var(--line);
+}
+
+html[data-theme] .browser-tab {
+  background: var(--panel);
+  border-right-color: var(--line);
+  color: var(--muted);
+}
+
+html[data-theme] .browser-tab:hover {
+  background: var(--panel2);
+  color: var(--text);
+}
+
+html[data-theme] .browser-tab.active {
+  background: var(--accent-soft);
+  color: var(--text);
+  border-top-color: var(--nexus-green);
+}
+
+html[data-theme] .browser-tab.active .tab-icon {
+  color: var(--nexus-green);
+}
+
+html[data-theme] .tab-close-btn {
+  color: var(--muted);
+}
+
+html[data-theme] .tab-close-btn:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--red);
+}
+
+html[data-theme] .browser-navbar {
+  background: var(--panel2);
+  border-bottom-color: var(--line);
+}
+
+html[data-theme] .browser-btn {
+  background: var(--panel);
+  border-color: var(--line2);
+  color: var(--muted);
+}
+
+html[data-theme] .browser-btn:hover:not(:disabled) {
+  background: var(--panel2);
+  color: var(--text);
+  border-color: var(--line2);
+}
+
+html[data-theme] .browser-btn.highlight {
+  background: var(--accent-soft);
+  border-color: var(--nexus-green);
+  color: var(--nexus-green);
+}
+
+html[data-theme] .browser-url-bar {
+  background: var(--bg);
+  border-color: var(--line2);
+}
+
+html[data-theme] .browser-url-bar input {
+  color: var(--text);
+}
+
+html[data-theme] .browser-device-switch {
+  background: var(--panel);
+  border-color: var(--line2);
+}
+
+html[data-theme] .device-btn {
+  color: var(--muted);
+}
+
+html[data-theme] .device-btn:hover {
+  color: var(--text);
+  background: var(--panel2);
+}
+
+html[data-theme] .device-btn.active {
+  background: var(--panel2);
+  color: var(--nexus-bright);
+}
+
+html[data-theme] .browser-bookmarks-bar {
+  background: var(--panel);
+  border-bottom-color: var(--line);
+}
+
+html[data-theme] .bookmark-chip {
+  background: var(--panel2);
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+html[data-theme] .bookmark-chip:hover {
+  background: var(--panel2);
+  border-color: var(--line2);
+  color: var(--text);
+}
+
+html[data-theme] .bookmark-chip.server-chip {
+  background: var(--accent-soft);
+  border-color: var(--nexus-green);
+  color: var(--nexus-bright);
+}
+
+html[data-theme] .browser-viewport-container {
+  background: var(--bg);
+}
+
+html[data-theme] .browser-frame-wrapper.device-framed {
+  border-color: var(--line2);
+  background: var(--panel);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.25);
+}
+
+html[data-theme] .device-frame-header {
+  background: var(--panel2);
+  border-bottom-color: var(--line);
+}
+
+html[data-theme] .device-pill {
+  background: var(--line2);
+}
+
+html[data-theme] .device-label {
+  color: var(--muted);
+}
+
+html[data-theme] .browser-iframe {
+  background: var(--bg);
+}
+
+html[data-theme] .browser-no-server-bar {
+  background: var(--panel);
+  border-color: var(--line2);
+}
+
+/* --- Daylight & Alabaster Light Theme Contrast Enhancements --- */
+html[data-theme="daylight"] .top-link,
+html[data-theme="alabaster"] .top-link {
+  color: var(--text);
+  opacity: 0.85;
+}
+
+html[data-theme="daylight"] .top-link:hover,
+html[data-theme="alabaster"] .top-link:hover {
+  opacity: 1;
+  background: var(--panel2);
+  color: var(--text);
+}
+
+html[data-theme="daylight"] .win-btn,
+html[data-theme="alabaster"] .win-btn {
+  color: var(--text);
+  opacity: 0.75;
+}
+
+html[data-theme="daylight"] .win-btn:hover,
+html[data-theme="alabaster"] .win-btn:hover {
+  opacity: 1;
+  background: var(--panel2);
+  color: var(--text);
+}
+
+html[data-theme="daylight"] .home-suggestion,
+html[data-theme="alabaster"] .home-suggestion {
+  background: var(--panel2) !important;
+  border-color: var(--line) !important;
+  color: var(--text) !important;
+}
+
+html[data-theme="daylight"] .home-suggestion:hover,
+html[data-theme="alabaster"] .home-suggestion:hover {
+  background: var(--panel) !important;
+  border-color: var(--nexus-green) !important;
+  color: var(--nexus-bright) !important;
+}
+
+html[data-theme="daylight"] .starter-prompts button,
+html[data-theme="alabaster"] .starter-prompts button {
+  border-color: var(--line);
+  background: var(--panel);
+  color: var(--muted);
+}
+
+html[data-theme="daylight"] .starter-prompts button:hover,
+html[data-theme="alabaster"] .starter-prompts button:hover {
+  border-color: var(--nexus-green);
+  color: var(--nexus-bright);
+  background: var(--accent-soft);
+}
+
+
+

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 
 import {
   ArrowLeft, ArrowUp, BookOpen, Check, ChevronRight, Clapperboard, Download, FileText, Globe, HelpCircle,
   Layers, Loader2, Network, PanelLeft, PanelRight, Pencil, Plus, Presentation, RefreshCw, Sparkles, Square, Trash2, Upload, X,
-  FolderArchive, Workflow, Compass,
+  FolderArchive, Workflow, Compass, AlertCircle, Clock, Cpu, UploadCloud,
 } from "lucide-react";
 import { ModelSelect } from "./AgentView.js";
 import { ActivityGroupView, CopyTextButton } from "../components/chat/ChatMessageItem.js";
@@ -24,11 +24,32 @@ function verdictColor(verdict?: string) {
   return "#8b949e";
 }
 
+function sourceProgressPercent(status: NotebookSource["status"]): number {
+  if (status === "ready") return 100;
+  if (status === "indexing") return 88;
+  if (status === "chunking") return 65;
+  if (status === "parsing") return 35;
+  if (status === "uploaded") return 12;
+  return 0;
+}
+
 function ingestionBadge(status: NotebookSource["status"]) {
-  if (status === "ready") return <span className="ingestion-badge ready">ready</span>;
-  if (status === "failed") return <span className="ingestion-badge error">failed</span>;
-  const label = status === "uploaded" ? "queued" : status === "parsing" ? "parsing…" : status === "chunking" ? "chunking…" : "indexing…";
-  return <span className="ingestion-badge indexing"><Loader2 size={11} className="spin" /> {label}</span>;
+  if (status === "ready") {
+    return <span className="ingestion-badge ready"><Check size={10} /> ready</span>;
+  }
+  if (status === "failed") {
+    return <span className="ingestion-badge error"><AlertCircle size={10} /> failed</span>;
+  }
+  if (status === "uploaded") {
+    return <span className="ingestion-badge queued"><Clock size={10} /> queued</span>;
+  }
+  if (status === "parsing") {
+    return <span className="ingestion-badge parsing"><Loader2 size={10} className="spin" /> parsing…</span>;
+  }
+  if (status === "chunking") {
+    return <span className="ingestion-badge chunking"><Layers size={10} className="spin" /> chunking…</span>;
+  }
+  return <span className="ingestion-badge indexing"><Cpu size={10} className="spin" /> indexing…</span>;
 }
 
 function getSourceIcon(filename: string) {
@@ -328,6 +349,8 @@ export function NotebookView({
   onOpenProviders,
   hasProvider,
   customCommands,
+  importingLink,
+  isUploading,
 }: {
   notebooks: NotebookMeta[];
   activeNotebook: NotebookMeta | null;
@@ -378,6 +401,8 @@ export function NotebookView({
   onImportYouTube: (url: string) => void;
   onImportWebsite: (url: string) => void;
   onBrowserFiles: (files: FileList | File[]) => void;
+  importingLink?: { kind: "youtube" | "website"; url: string } | null;
+  isUploading?: boolean;
   onRefresh: () => void;
   onDeleteSource: (sourceId: string) => void;
   onReindexSource: (sourceId: string) => void;
@@ -709,6 +734,17 @@ export function NotebookView({
   // ---- Entered session: sources left, chat middle, cited sources right ----
   const pendingCount = sources.filter((s) => s.status !== "ready" && s.status !== "failed").length;
   const scopedCount = scopedIds.length;
+  const queuedCount = sources.filter((s) => s.status === "uploaded").length;
+  const parsingCount = sources.filter((s) => s.status === "parsing").length;
+  const chunkingCount = sources.filter((s) => s.status === "chunking").length;
+  const indexingCount = sources.filter((s) => s.status === "indexing").length;
+  const readyCount = sources.filter((s) => s.status === "ready").length;
+  const totalCount = sources.length;
+
+  const overallProgressPercent = totalCount === 0 ? 0 : Math.round(
+    sources.reduce((sum, s) => sum + sourceProgressPercent(s.status), 0) / totalCount
+  );
+  const showIngestionCard = pendingCount > 0 || Boolean(importingLink) || Boolean(isUploading);
 
   return (
     <div className="agent-view notebook-view">
@@ -864,18 +900,84 @@ export function NotebookView({
                 }}
               />
 
-              {!!pendingCount && (
-                <div className="settings-note" style={{ margin: "6px 0 10px" }}>
-                  <Loader2 size={12} className="spin" />
-                  <span>Processing {pendingCount} file{pendingCount === 1 ? "" : "s"} — parsing → chunking → indexing…</span>
+              {showIngestionCard && (
+                <div className="notebook-ingestion-card">
+                  <div className="notebook-ingestion-head">
+                    <div className="notebook-ingestion-title">
+                      <Loader2 size={13} className="spin" />
+                      <span>
+                        {importingLink
+                          ? (importingLink.kind === "youtube" ? "Importing YouTube Video" : "Crawling Web Page")
+                          : isUploading
+                          ? "Uploading Files…"
+                          : `Processing ${pendingCount} file${pendingCount === 1 ? "" : "s"}`}
+                      </span>
+                    </div>
+                    <span className="notebook-ingestion-pill">
+                      {readyCount} of {totalCount} ready ({overallProgressPercent}%)
+                    </span>
+                  </div>
+
+                  {importingLink && (
+                    <div className="notebook-ingestion-in-flight">
+                      {importingLink.kind === "youtube" ? <Clapperboard size={12} className="spin" /> : <Globe size={12} className="spin" />}
+                      <span className="in-flight-url" title={importingLink.url}>{importingLink.url}</span>
+                    </div>
+                  )}
+
+                  {isUploading && !importingLink && (
+                    <div className="notebook-ingestion-in-flight">
+                      <UploadCloud size={12} className="spin" />
+                      <span>Reading and adding files to session…</span>
+                    </div>
+                  )}
+
+                  <div className="notebook-ingestion-progress-track">
+                    <div
+                      className="notebook-ingestion-progress-fill"
+                      style={{ width: `${Math.max(overallProgressPercent, importingLink || isUploading ? 12 : 5)}%` }}
+                    />
+                  </div>
+
+                  <div className="notebook-ingestion-stepper">
+                    <div className={`ingestion-step${queuedCount > 0 ? " active" : readyCount > 0 ? " done" : ""}`}>
+                      <span className="step-dot" />
+                      <span>Queued{queuedCount > 0 ? ` (${queuedCount})` : ""}</span>
+                    </div>
+                    <span className="step-arrow">→</span>
+                    <div className={`ingestion-step${parsingCount > 0 ? " active" : ""}`}>
+                      <span className="step-dot" />
+                      <span>Parse{parsingCount > 0 ? ` (${parsingCount})` : ""}</span>
+                    </div>
+                    <span className="step-arrow">→</span>
+                    <div className={`ingestion-step${chunkingCount > 0 ? " active" : ""}`}>
+                      <span className="step-dot" />
+                      <span>Chunk{chunkingCount > 0 ? ` (${chunkingCount})` : ""}</span>
+                    </div>
+                    <span className="step-arrow">→</span>
+                    <div className={`ingestion-step${indexingCount > 0 ? " active" : ""}`}>
+                      <span className="step-dot" />
+                      <span>Index{indexingCount > 0 ? ` (${indexingCount})` : ""}</span>
+                    </div>
+                    <span className="step-arrow">→</span>
+                    <div className={`ingestion-step${readyCount === totalCount && totalCount > 0 ? " done" : ""}`}>
+                      <span className="step-dot" />
+                      <span>Ready{readyCount > 0 ? ` (${readyCount})` : ""}</span>
+                    </div>
+                  </div>
                 </div>
               )}
 
               <div className="notebook-sources-list">
                 {sources.map((source) => {
                   const inScope = !excludedIds.includes(source.id);
+                  const isProcessing = source.status !== "ready" && source.status !== "failed";
                   return (
-                    <div className={`notebook-source-card${inScope ? " in-scope" : " excluded"}`} key={source.id} title={source.error || `${source.chunks} chunks · ${source.chars} chars`}>
+                    <div
+                      className={`notebook-source-card${inScope ? " in-scope" : " excluded"}${isProcessing ? " is-processing" : ""}`}
+                      key={source.id}
+                      title={source.error || `${source.chunks} chunks · ${source.chars} chars`}
+                    >
                       <div className="notebook-source-row">
                         <input
                           type="checkbox"
@@ -918,6 +1020,14 @@ export function NotebookView({
                           </button>
                         </div>
                       </div>
+                      {isProcessing && (
+                        <div className="notebook-source-mini-progress">
+                          <div
+                            className={`notebook-source-mini-bar ${source.status}`}
+                            style={{ width: `${sourceProgressPercent(source.status)}%` }}
+                          />
+                        </div>
+                      )}
                     </div>
                   );
                 })}

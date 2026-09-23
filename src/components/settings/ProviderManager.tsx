@@ -300,7 +300,7 @@ export function ProviderManager({
               );
             })}
             {!form.models.length && (
-              <div style={{ color: "#6e7c8e", fontSize: "10.5px", padding: "4px 0" }}>
+              <div style={{ color: "var(--muted)", fontSize: "10.5px", padding: "4px 0" }}>
                 No models added yet. Add a model below.
               </div>
             )}

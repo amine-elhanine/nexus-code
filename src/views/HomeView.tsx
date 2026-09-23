@@ -4,7 +4,7 @@ import {
   Paperclip, FileText, Search, Presentation, Table2, Mic,
 } from "lucide-react";
 import { ModelSelect } from "./AgentView.js";
-import { ChatItemView, ActivityGroupView } from "../components/chat/ChatMessageItem.js";
+import { ChatItemView, ActivityGroupView, StreamingAssistantMessage } from "../components/chat/ChatMessageItem.js";
 import { SlashCommandPopup, filterSlashCommands, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
 import { formatCost } from "../types.js";
 import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
@@ -340,14 +340,26 @@ export function HomeView({
             </div>
           )}
           {transcriptNodes}
-          {running && (
-          <ActivityGroupView
-            events={liveEvents}
-            running
-            onOpenImage={onOpenImage}
-            onOpenAttachment={onOpenAttachment}
-              currentText={streamingText || (liveEvents.length ? undefined : "Starting the agent… the first step can take a while.")}
+          {running && liveEvents.length > 0 && (
+            <ActivityGroupView
+              events={liveEvents}
+              running
+              onOpenImage={onOpenImage}
+              onOpenAttachment={onOpenAttachment}
+              currentText={streamingText ? "Writing response…" : undefined}
             />
+          )}
+          {running && !liveEvents.length && !streamingText && (
+            <ActivityGroupView
+              events={[]}
+              running
+              onOpenImage={onOpenImage}
+              onOpenAttachment={onOpenAttachment}
+              currentText="Starting the agent… the first step can take a while."
+            />
+          )}
+          {running && streamingText && (
+            <StreamingAssistantMessage text={streamingText} />
           )}
         </div>
       </div>
