@@ -75,6 +75,13 @@ export function parseRetryAfterMs(error: unknown): number | null {
  * checkpoint at the last complete superstep by dropping trailing unanswered
  * tool calls. Supersteps are atomic in LangGraph, so tool results always
  * arrive complete — only the model's final, unexecuted calls need pruning.
+ *
+ * In addition, when an agent run was interrupted due to a repetitive read/inspection
+ * loop (e.g. repeating read_file on the same target), the tail of the checkpoint
+ * contains multiple identical [AIMessage(tool_call), ToolMessage(result)] pairs.
+ * Leaving those pairs in place primes the model on resume to immediately repeat
+ * that same inspection pattern. We prune duplicate trailing inspection pairs so
+ * at most one representative pair remains at the tail.
  */
 export function sanitizeResumeCheckpoint(messages: any[]): any[] {
   const checkpoint = [...messages];
@@ -83,6 +90,41 @@ export function sanitizeResumeCheckpoint(messages: any[]): any[] {
     if (Array.isArray(last?.tool_calls) && last.tool_calls.length > 0) checkpoint.pop();
     else break;
   }
+
+  let i = checkpoint.length - 1;
+  let lastSeenSig: string | null = null;
+
+  while (i >= 1) {
+    const maybeToolMsg = checkpoint[i];
+    const maybeAiMsg = checkpoint[i - 1];
+
+    const isTool = (maybeToolMsg as any)?.type === "tool" || (maybeToolMsg as any)?._getType?.() === "tool" || (maybeToolMsg as any)?.constructor?.name === "ToolMessage";
+    const isAi = (maybeAiMsg as any)?.type === "ai" || (maybeAiMsg as any)?._getType?.() === "ai" || (maybeAiMsg as any)?.constructor?.name === "AIMessage";
+    const toolCalls = Array.isArray((maybeAiMsg as any)?.tool_calls) ? (maybeAiMsg as any).tool_calls : [];
+
+    if (isTool && isAi && toolCalls.length === 1) {
+      const tc = toolCalls[0];
+      const name = String(tc?.name || "");
+      const isInspection = /^(read_file|read_file_range|grep_search|glob|ls|view_file|search_code)$/i.test(name);
+      if (isInspection) {
+        const rawTarget = tc?.args?.file_path || tc?.args?.filePath || tc?.args?.path || tc?.args?.file || tc?.args?.pattern || tc?.args?.query || "";
+        const target = String(rawTarget).replace(/\\/g, "/").replace(/^\/+/, "");
+        const sig = `${name}:${target}`;
+
+        if (lastSeenSig === null) {
+          lastSeenSig = sig;
+          i -= 2;
+          continue;
+        } else if (sig === lastSeenSig) {
+          checkpoint.splice(i - 1, 2);
+          i -= 2;
+          continue;
+        }
+      }
+    }
+    break;
+  }
+
   return checkpoint;
 }
 
