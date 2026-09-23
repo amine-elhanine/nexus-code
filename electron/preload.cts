@@ -149,8 +149,15 @@ const nexusApi = {
   closeWindow: () => invoke("window:close"),
   isWindowMaximized: () => invoke("window:isMaximized"),
 
-  // Home (general assistant)
+  // Home (isolated general assistant)
   getHome: () => invoke("home:get"),
+  listHomeSessions: () => invoke("home:sessions:list"),
+  createHomeSession: (title?: string) => invoke("home:sessions:create", title),
+  activateHomeSession: (sessionId: string) => invoke("home:sessions:activate", sessionId),
+  deleteHomeSession: (sessionId: string, options?: { deleteFiles?: boolean }) => invoke("home:sessions:delete", sessionId, options),
+  updateHomeSession: (sessionId: string, patch: unknown) => invoke("home:sessions:update", sessionId, patch),
+  runHomeAgent: (payload: { sessionId: string; request: string; images?: string[]; attachments?: any[]; providerId?: string; model?: string }) => invoke("home:run", payload),
+  cancelHomeAgent: (sessionId?: string) => invoke("home:cancel", sessionId),
   listHomeFiles: () => invoke("home:files"),
   listHomeSessionFiles: (sessionId: string) => invoke("home:sessionFiles", sessionId),
   readHomeFile: (relativePath: string) => invoke("home:readFile", relativePath),
@@ -209,7 +216,7 @@ const nexusApi = {
   removeEmbeddingProvider: (providerId: string) => invoke("notebook:embedding-provider:remove", providerId),
   testEmbeddingProvider: (input: { id?: string; kind: string; baseUrl?: string; apiKey?: string; model: string }) => invoke("notebook:embedding-provider:test", input),
 
-  runAgent: (payload: { request: string; images?: string[]; attachments?: Array<{ url: string; name: string; mimeType: string; size: number }>; providerId?: string; model?: string; mode?: string }) => invoke("agent:run", payload),
+  runAgent: (payload: { request: string; images?: string[]; attachments?: Array<{ url: string; name: string; mimeType: string; size: number }>; providerId?: string; model?: string; mode?: string; sessionId?: string; projectId?: string }) => invoke("agent:run", payload),
   cancelAgent: (sessionId?: string) => invoke("agent:cancel", sessionId),
   resolveCommandApproval: (id: string, decision: "once" | "session" | "deny") => invoke("command:approval", { id, decision }),
   onCommandApprovalRequest: (listener: (request: { id: string; runId?: string; command: string; cwd: string; reason: string; approvalKey?: string; createdAt: string }) => void) => {
@@ -221,6 +228,11 @@ const nexusApi = {
     const handler = (_event: IpcRendererEvent, payload: AgentEvent) => listener(payload);
     ipcRenderer.on("agent:event", handler);
     return () => ipcRenderer.removeListener("agent:event", handler);
+  },
+  onNotebookJobProgress: (listener: (progress: { notebookId: string; sourceId: string; status: string; chunks?: number; error?: string }) => void) => {
+    const handler = (_event: IpcRendererEvent, payload: { notebookId: string; sourceId: string; status: string; chunks?: number; error?: string }) => listener(payload);
+    ipcRenderer.on("notebook:progress", handler);
+    return () => ipcRenderer.removeListener("notebook:progress", handler);
   },
 };
 

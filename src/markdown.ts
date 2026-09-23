@@ -28,11 +28,38 @@ function mathHtml(expression: string, displayMode: boolean): string {
 
 function looksLikeMath(expression: string): boolean {
   const value = expression.trim();
-  // Many educational models emit equations inside backticks instead of using
-  // $...$ delimiters. Only promote code spans with unmistakable math markers;
-  // ordinary snippets such as `npm run test` remain code.
-  return /(?:\\[A-Za-z]+|[_^]|\b(?:ReLU|softmax|sigmoid|argmax|RMSE|MSE)\b)/.test(value)
-    && (/[=_^]/.test(value) || /\\[A-Za-z]+/.test(value));
+  if (!value) return false;
+
+  // Single programming identifiers (snake_case, camelCase, filenames, cli flags) remain code
+  if (/^[a-zA-Z0-9_.-]+$/.test(value)) return false;
+
+  const mathFuncPattern = /\b(?:ReLU|softmax|sigmoid|argmax|argmin|RMSE|MSE)\b/;
+
+  // Standard programming function calls (e.g. `create_agent(...)`, `print(x)`) unless calling a known math function
+  if (/^[a-zA-Z0-9_.-]+\s*\([^)]*\)$/.test(value) && !mathFuncPattern.test(value)) return false;
+
+  // Typical programming statements, imports, assignments, or operators remain code
+  if (/\b(import|from|export|def|return|const|let|var|function|class|npm|pip|git|npx|cd|cargo|python)\b/.test(value)) return false;
+  if (/(=>|->|===|!==|&&|\|\||::)/.test(value)) return false;
+
+  // Unmistakable LaTeX control sequences: \frac, \sum, \sigma, \alpha, \sqrt, \times, etc.
+  if (/\\(?:frac|sqrt|sum|prod|int|partial|nabla|alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|lambda|mu|nu|xi|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega|approx|times|cdot|le|ge|neq|forall|exists|infty|in|notin|subset|subseteq|cup|cap|mathbf|mathit|text|mathrm|left|right|begin|end|dots|quad)\b/.test(value)) {
+    return true;
+  }
+
+  // Math subscripts/superscripts with braces: x_{i}, e^{-x}, W_{ij}
+  if (/([a-zA-Z0-9]|\))[_\^]\{[^}]+\}/.test(value)) {
+    return true;
+  }
+
+  // Math activation/loss functions with operators: ReLU(W x + b), softmax(z_i)
+  const hasMathOp = /[=+\-*/\^]/.test(value);
+  if (mathFuncPattern.test(value) && hasMathOp) return true;
+
+  // Explicit exponent or math operations without snake_case identifiers
+  if (hasMathOp && /\^/.test(value) && !/[a-zA-Z0-9_]+_[a-zA-Z0-9_]+/.test(value)) return true;
+
+  return false;
 }
 
 function protectMath(source: string): { source: string; math: Array<{ expression: string; display: boolean }> } {

@@ -91,7 +91,12 @@ export function ChatItemView({
             <Activity size={12} />
           )}
         </span>
-        <p>{message.text}</p>
+        <div className="chat-event-body">
+          <p>{message.text}</p>
+          {message.detail && (
+            <pre className="chat-event-detail">{message.detail}</pre>
+          )}
+        </div>
         <time>{timeLabel(message.createdAt)}</time>
       </div>
     );
@@ -202,31 +207,71 @@ export function ActivityGroupView({
       </button>
       {expanded && (
         <div className="activity-group-body">
-          {events.map((event, index) => (
-            <details className="activity-step" key={`${event.createdAt}-${index}`} open={index === events.length - 1 && running}>
-              <summary>
-                <span className={`activity-step-dot ${event.kind || "status"}`}>
-                  {event.kind === "tool" ? (
-                    <Terminal size={11} />
-                  ) : event.kind === "error" ? (
-                    <X size={11} />
-                  ) : event.kind === "plan" ? (
-                    <Brain size={11} />
-                  ) : event.kind === "subagent" ? (
-                    <Bot size={11} />
-                  ) : (
-                    <Activity size={11} />
+          {events.map((event, index) => {
+            const hasDetail = Boolean(
+              (event.detail && event.detail.trim().length > 0) ||
+              event.artifact ||
+              event.subagent ||
+              (event.plan && event.plan.length > 0)
+            );
+
+            const icon =
+              event.kind === "tool" ? (
+                <Terminal size={11} />
+              ) : event.kind === "error" ? (
+                <X size={11} />
+              ) : event.kind === "plan" ? (
+                <Brain size={11} />
+              ) : event.kind === "subagent" ? (
+                <Bot size={11} />
+              ) : (
+                <Activity size={11} />
+              );
+
+            if (!hasDetail) {
+              return (
+                <div className="activity-step static" key={`${event.createdAt}-${index}`}>
+                  <div className="activity-step-row">
+                    <span className={`activity-step-dot ${event.kind || "status"}`}>{icon}</span>
+                    <span title={event.text || event.kind || "Agent action"}>
+                      {event.text || event.kind || "Agent action"}
+                    </span>
+                    <time>{timeLabel(event.createdAt)}</time>
+                  </div>
+                </div>
+              );
+            }
+
+            return (
+              <details className="activity-step" key={`${event.createdAt}-${index}`} open={index === events.length - 1 && running}>
+                <summary>
+                  <span className={`activity-step-dot ${event.kind || "status"}`}>{icon}</span>
+                  <span title={event.text || event.kind || "Agent action"}>
+                    {event.text || event.kind || "Agent action"}
+                  </span>
+                  <time>{timeLabel(event.createdAt)}</time>
+                  <ChevronRight size={12} />
+                </summary>
+                <div className="activity-step-detail">
+                  {event.artifact && (
+                    <ArtifactCard
+                      artifact={event.artifact}
+                      onClick={() => onOpenArtifact?.(event.artifact!)}
+                    />
                   )}
-                </span>
-                <span title={event.text || event.kind || "Agent action"}>{event.text || event.kind || "Agent action"}</span>
-                <time>{timeLabel(event.createdAt)}</time>
-                <ChevronRight size={12} />
-              </summary>
-              <div className="activity-step-detail">
-              <ChatItemView message={event} onOpenArtifact={onOpenArtifact} onOpenImage={onOpenImage} onOpenAttachment={onOpenAttachment} />
-              </div>
-            </details>
-          ))}
+                  {event.subagent && (
+                    <SubagentCardView subagent={event.subagent} timestamp={event.createdAt} />
+                  )}
+                  {event.plan && event.plan.length > 0 && (
+                    <PlanCard plan={event.plan} createdAt={event.createdAt} />
+                  )}
+                  {event.detail && (
+                    <pre className="chat-event-detail">{event.detail}</pre>
+                  )}
+                </div>
+              </details>
+            );
+          })}
           {running && currentText && (
             <div className="activity-current">
               <Loader2 size={11} className="spin" />
@@ -235,6 +280,25 @@ export function ActivityGroupView({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+export function StreamingAssistantMessage({ text }: { text: string }) {
+  if (!text) return null;
+  return (
+    <div className="chat-message assistant streaming">
+      <div className="chat-author">
+        <span className="agent-avatar">
+          <Bot size={13} />
+        </span>{" "}
+        Nexus
+        <time>{timeLabel(new Date().toISOString())}</time>
+      </div>
+      <div
+        className="chat-message-text md"
+        dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
+      />
     </div>
   );
 }

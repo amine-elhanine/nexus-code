@@ -33,6 +33,8 @@ export function useNotebookController(enabled: boolean) {
   const [generatingDoc, setGeneratingDoc] = useState(false);
   const [generatingQuiz, setGeneratingQuiz] = useState(false);
   const [generatingFlashcards, setGeneratingFlashcards] = useState(false);
+  const [importingLink, setImportingLink] = useState<{ kind: "youtube" | "website"; url: string } | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
   const activeChatRef = useRef<NotebookChat | null>(null);
   activeChatRef.current = activeChat;
   // Guards the one-chat-per-session ensure below against parallel creates
@@ -155,6 +157,37 @@ export function useNotebookController(enabled: boolean) {
     }, 3000);
     return () => clearInterval(timer);
   }, [enabled, activeNotebook?.id, hasPending]);
+
+  // Real-time job progress updates from the background ingestion pipeline
+  useEffect(() => {
+    if (!enabled) return;
+    const typed = api as unknown as {
+      onNotebookJobProgress?: (listener: (progress: { notebookId: string; sourceId: string; status: NotebookSource["status"]; chunks?: number; error?: string }) => void) => () => void;
+    };
+    if (typeof typed.onNotebookJobProgress !== "function") return;
+    return typed.onNotebookJobProgress((progress) => {
+      if (activeNotebook && progress.notebookId === activeNotebook.id) {
+        setSources((prev) => {
+          const index = prev.findIndex((s) => s.id === progress.sourceId);
+          if (index === -1) {
+            void refreshNotebookDetail(progress.notebookId);
+            return prev;
+          }
+          const next = [...prev];
+          next[index] = {
+            ...next[index],
+            status: progress.status,
+            chunks: typeof progress.chunks === "number" ? progress.chunks : next[index].chunks,
+            error: progress.error !== undefined ? progress.error : next[index].error,
+          };
+          return next;
+        });
+        if (progress.status === "ready" || progress.status === "failed") {
+          void refreshNotebookDetail(progress.notebookId);
+        }
+      }
+    });
+  }, [enabled, activeNotebook?.id, refreshNotebookDetail]);
 
   // Streamed answer tokens for notebook conversations (scoped by chat id so
   // concurrent sessions never mix).
@@ -546,16 +579,18 @@ export function useNotebookController(enabled: boolean) {
 
   async function uploadFromPicker() {
     if (!activeNotebook) return;
+    setIsUploading(true);
     setNotice("Importing files…");
     try {
       const typed = api as unknown as { notebookPickFiles: (id: string) => Promise<NotebookSource[]> };
       const next = await typed.notebookPickFiles(activeNotebook.id);
       setSources(next);
       setNotice("Indexing in the background — ask in a moment if sources show “indexing”.");
-      setTimeout(() => void refreshNotebookDetail(activeNotebook.id), 4000);
-      setTimeout(() => void refreshNotebookDetail(activeNotebook.id), 10000);
+      void refreshNotebookDetail(activeNotebook.id);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Import failed.");
+    } finally {
+      setIsUploading(false);
     }
   }
 
@@ -563,16 +598,18 @@ export function useNotebookController(enabled: boolean) {
     if (!activeNotebook || asking) return;
     const link = url.trim();
     if (!link) return;
+    setImportingLink({ kind: "youtube", url: link });
     setNotice("Fetching the video transcript…");
     try {
       const typed = api as unknown as { notebookImportYouTube: (id: string, u: string) => Promise<NotebookSource[]> };
       const next = await typed.notebookImportYouTube(activeNotebook.id, link);
       setSources(next);
       setNotice("Transcript added — indexing in the background, ask in a moment.");
-      setTimeout(() => activeNotebook && void refreshNotebookDetail(activeNotebook.id), 4000);
-      setTimeout(() => activeNotebook && void refreshNotebookDetail(activeNotebook.id), 10000);
+      void refreshNotebookDetail(activeNotebook.id);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "YouTube import failed.");
+    } finally {
+      setImportingLink(null);
     }
   }
 
@@ -580,21 +617,24 @@ export function useNotebookController(enabled: boolean) {
     if (!activeNotebook || asking) return;
     const link = url.trim();
     if (!link) return;
+    setImportingLink({ kind: "website", url: link });
     setNotice("Reading the website (start page plus linked pages)…");
     try {
       const typed = api as unknown as { notebookImportWebsite: (id: string, u: string) => Promise<NotebookSource[]> };
       const next = await typed.notebookImportWebsite(activeNotebook.id, link);
       setSources(next);
       setNotice("Website added — indexing in the background, ask in a moment.");
-      setTimeout(() => activeNotebook && void refreshNotebookDetail(activeNotebook.id), 4000);
-      setTimeout(() => activeNotebook && void refreshNotebookDetail(activeNotebook.id), 10000);
+      void refreshNotebookDetail(activeNotebook.id);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Website import failed.");
+    } finally {
+      setImportingLink(null);
     }
   }
 
   async function uploadBrowserFiles(files: FileList | File[]) {
     if (!activeNotebook) return;
+    setIsUploading(true);
     const list = Array.from(files).slice(0, 10);
     const typed = api as unknown as {
       notebookUploadContent: (a: string, b: string, c: string) => Promise<NotebookSource[]>;
@@ -621,9 +661,10 @@ export function useNotebookController(enabled: boolean) {
       }
       await refreshNotebookDetail(activeNotebook.id);
       setNotice("Indexing in the background — ask in a moment if sources show “indexing”.");
-      setTimeout(() => activeNotebook && void refreshNotebookDetail(activeNotebook.id), 8000);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Upload failed.");
+    } finally {
+      setIsUploading(false);
     }
   }
 
@@ -699,6 +740,7 @@ export function useNotebookController(enabled: boolean) {
   }
 
   async function stopAsk() {
+    setAsking(false);
     try {
       const typed = api as unknown as { cancelAgent?: (sessionId?: string) => Promise<unknown> };
       if (typeof typed.cancelAgent === "function") {
@@ -767,6 +809,8 @@ export function useNotebookController(enabled: boolean) {
     importWebsite,
     uploadFromPicker,
     uploadBrowserFiles,
+    importingLink,
+    isUploading,
     ask,
     stopAsk,
   };

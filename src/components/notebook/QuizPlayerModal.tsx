@@ -71,8 +71,8 @@ export function QuizPlayerModal({ quiz, onClose }: { quiz: NotebookQuiz; onClose
                         style={{
                           justifyContent: "flex-start",
                           textAlign: "left",
-                          borderColor: isCorrect ? "#3fb950" : selected && finished ? "#f85149" : selected ? "#1f6feb" : undefined,
-                          background: !finished && selected ? "rgba(31,111,235,0.15)" : undefined,
+                          borderColor: isCorrect ? "#3fb950" : selected && finished ? "#f85149" : selected ? "var(--nexus-green)" : undefined,
+                          background: !finished && selected ? "var(--accent-soft)" : undefined,
                           opacity: finished && !selected && !isCorrect ? 0.75 : 1,
                         }}
                       >
@@ -96,8 +96,8 @@ export function QuizPlayerModal({ quiz, onClose }: { quiz: NotebookQuiz; onClose
                         aria-pressed={selected}
                         className="home-suggestion"
                         style={{
-                          borderColor: isCorrect ? "#3fb950" : selected && finished ? "#f85149" : selected ? "#1f6feb" : undefined,
-                          background: !finished && selected ? "rgba(31,111,235,0.15)" : undefined,
+                          borderColor: isCorrect ? "#3fb950" : selected && finished ? "#f85149" : selected ? "var(--nexus-green)" : undefined,
+                          background: !finished && selected ? "var(--accent-soft)" : undefined,
                         }}
                       >
                         {v ? "True" : "False"}

@@ -4,7 +4,7 @@ import { createDeepAgent } from "deepagents";
 import { z } from "zod";
 import { createChatModel } from "./providers.js";
 import { createCodeIntelligenceTools } from "./code-tools.js";
-import { getAgentBackend } from "./command-service.js";
+import { getAgentBackend, getRunAbortSignal } from "./command-service.js";
 import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint } from "./rate-limit.js";
 import { StreamUsageTracker } from "./context-service.js";
 import type { ProviderConfig } from "./store.js";
@@ -399,6 +399,7 @@ export async function executeSubagentTask(options: {
   runId?: string;
 }): Promise<string> {
   const { role, task, projectRoot, provider, modelName, projectRecord, mcpTools, skills, skillsBackend, onEvent, isCancelled, runId } = options;
+  const signal = runId ? getRunAbortSignal(runId) : undefined;
   const sysAgents = getSystemAgents();
   const config = (SUBAGENT_CONFIGS as any)[role] || sysAgents.get(role) || SUBAGENT_CONFIGS.researcher;
   const subagentId = `sub-${role}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -418,7 +419,7 @@ export async function executeSubagentTask(options: {
   onEvent?.({ type: "subagent_start", subagent: { ...subagentItem } });
 
   try {
-    if (isCancelled?.()) throw new Error("Subagent cancelled by user");
+    if (isCancelled?.() || signal?.aborted) throw new Error("Subagent cancelled by user");
 
     const { backend } = await getAgentBackend(projectRecord, {
       readOnly: config.readOnly,
@@ -460,11 +461,11 @@ export async function executeSubagentTask(options: {
       }
       const stream = await (subAgent as any).stream(
         { messages: messagesToStream },
-        { streamMode: ["values", "updates", "messages"], recursionLimit: config.recursionLimit }
+        { streamMode: ["values", "updates", "messages"], recursionLimit: config.recursionLimit, signal }
       );
       try {
         for await (const item of stream as AsyncIterable<any>) {
-          if (isCancelled?.()) throw new Error("Subagent cancelled by user");
+          if (isCancelled?.() || signal?.aborted) throw new Error("Subagent cancelled by user");
           const [streamMode, payload] = Array.isArray(item) ? item : ["values", item];
 
           if (streamMode === "values" && Array.isArray(payload?.messages)) {

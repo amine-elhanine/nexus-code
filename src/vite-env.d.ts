@@ -149,8 +149,15 @@ export interface NexusApi {
   closeWindow: () => Promise<void>;
   isWindowMaximized: () => Promise<boolean>;
 
-  // Home (general assistant)
+  // Home (isolated general assistant)
   getHome: () => Promise<{ project: ProjectRecord; root: string }>;
+  listHomeSessions: () => Promise<SessionRecord[]>;
+  createHomeSession: (title?: string) => Promise<SessionRecord>;
+  activateHomeSession: (sessionId: string) => Promise<SessionRecord | null>;
+  deleteHomeSession: (sessionId: string, options?: { deleteFiles?: boolean }) => Promise<{ success: boolean }>;
+  updateHomeSession: (sessionId: string, patch: Partial<SessionRecord>) => Promise<SessionRecord>;
+  runHomeAgent: (payload: { sessionId: string; request: string; images?: string[]; attachments?: ChatAttachment[]; providerId?: string; model?: string }) => Promise<string>;
+  cancelHomeAgent: (sessionId?: string) => Promise<boolean>;
   listHomeFiles: () => Promise<Array<{ path: string; name: string; size: number; modified: string }>>;
   listHomeSessionFiles: (sessionId: string) => Promise<Array<{ path: string; name: string; size: number; modified: string }>>;
   readHomeFile: (relativePath: string) => Promise<{ name: string; path: string; size: number; base64: string }>;
@@ -196,7 +203,7 @@ export interface NexusApi {
   removeEmbeddingProvider: (providerId: string) => Promise<Array<{ id: string; name: string; kind: string; baseUrl?: string; apiKey: string; models: string[] }>>;
   testEmbeddingProvider: (input: { id?: string; kind: string; baseUrl?: string; apiKey?: string; model: string }) => Promise<{ dims: number }>;
 
-  runAgent: (payload: { request: string; images?: string[]; attachments?: ChatAttachment[]; providerId?: string; model?: string; mode?: string }) => Promise<string>;
+  runAgent: (payload: { request: string; images?: string[]; attachments?: ChatAttachment[]; providerId?: string; model?: string; mode?: string; sessionId?: string; projectId?: string }) => Promise<string>;
   cancelAgent: (sessionId?: string) => Promise<boolean>;
   onAgentEvent: (listener: (event: AgentEvent) => void) => () => void;
 }

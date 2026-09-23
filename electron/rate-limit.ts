@@ -33,6 +33,13 @@ export function isRateLimitError(error: unknown): boolean {
 
 /** Rate limits, connection failures and server overload — worth another attempt. */
 export function isTransientError(error: unknown): boolean {
+  if (
+    (error as any)?.name === "RunCancelledError" ||
+    (error as any)?.name === "AbortError" ||
+    (error instanceof Error && error.name === "RunCancelledError")
+  ) {
+    return false;
+  }
   const text = errorParts(error).join(" ");
   if (TOOL_TIMEOUT_PATTERN.test(text)) return false;
   return RATE_LIMIT_PATTERN.test(text) || TRANSIENT_PATTERN.test(text);
@@ -122,6 +129,8 @@ export async function withRateLimitRetry<T>(
     maxProgressResets?: number;
     /** Runs before each attempt (including the first); may throw to abort the run. */
     prepareAttempt?: () => void;
+    /** Abort signal to cancel retry loop and sleep immediately. */
+    signal?: AbortSignal;
     /**
      * Probe consulted after a retryable failure (from the second failure on):
      * return true if the previous attempt made observable progress. The probe
@@ -145,11 +154,12 @@ export async function withRateLimitRetry<T>(
   let attempt = 1;
   let progressResets = 0;
   for (;;) {
+    if (options.signal?.aborted) throw options.signal.reason || new Error("Run cancelled");
     options.prepareAttempt?.();
     try {
       return await operation();
     } catch (error) {
-      if (!isTransientError(error)) throw error;
+      if (options.signal?.aborted || !isTransientError(error)) throw error;
       // A failure that happened after observable progress is a fresh incident,
       // not a continuation of the previous one: restart the countdown (and with
       // it the backoff delay) so one scattered 429 in a long, otherwise healthy
@@ -171,7 +181,22 @@ export async function withRateLimitRetry<T>(
         reason: errorSummary(error),
         reset,
       });
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      if (options.signal?.aborted) throw options.signal.reason || new Error("Run cancelled");
+      await new Promise<void>((resolve, reject) => {
+        let timer: NodeJS.Timeout | null = null;
+        const onAbort = () => {
+          if (timer) clearTimeout(timer);
+          options.signal?.removeEventListener("abort", onAbort);
+          reject(options.signal?.reason || new Error("Run cancelled"));
+        };
+        timer = setTimeout(() => {
+          options.signal?.removeEventListener("abort", onAbort);
+          resolve();
+        }, delayMs);
+        if (options.signal) {
+          options.signal.addEventListener("abort", onAbort, { once: true });
+        }
+      });
       attempt++;
     }
   }

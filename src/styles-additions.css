@@ -192,7 +192,10 @@
   cursor: pointer;
 }
 .slash-command-item:hover, .slash-command-item.selected {
-  background: #211c3c;
+  background: var(--accent-soft);
+}
+.slash-command-item:hover .slash-command-name, .slash-command-item.selected .slash-command-name {
+  color: var(--nexus-bright);
 }
 .slash-command-icon {
   display: grid;
@@ -230,14 +233,14 @@
   gap: 10px;
   padding: 10px 14px;
   margin: 10px 0 14px;
-  border: 1px solid #3c3258;
-  background: #151325;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
   border-radius: 8px;
   cursor: pointer;
 }
 .chat-artifact-card:hover {
-  background: #1d1a33;
-  border-color: #584880;
+  background: var(--panel);
+  border-color: var(--nexus-green);
 }
 .chat-artifact-left {
   display: flex;
@@ -247,7 +250,7 @@
 .chat-artifact-name {
   font-size: 11.5px;
   font-weight: 600;
-  color: #e2dbff;
+  color: var(--text);
 }
 .chat-artifact-right {
   display: flex;
@@ -279,8 +282,8 @@
 .studio-composer{display:flex;flex-direction:column;gap:8px;margin-bottom:4px}
 .studio-format{border-radius:8px}
 .studio-format .doc-toggle{flex:1;text-align:center;padding:9px 12px;font-size:11px}
-.studio-generate{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;border:0;border-radius:9px;padding:11px;font-size:11.5px;font-weight:700;color:#06281c;background:linear-gradient(135deg,#34d399,#5cf2ae);cursor:pointer;box-shadow:0 2px 12px rgba(52,211,153,.25)}
-.studio-generate:hover:not(:disabled){filter:brightness(1.07)}
+.studio-generate{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;border:0;border-radius:9px;padding:11px;font-size:11.5px;font-weight:700;color:#ffffff;background:var(--nexus-green);cursor:pointer;box-shadow:0 2px 12px var(--nexus-glow)}
+.studio-generate:hover:not(:disabled){filter:brightness(1.07);box-shadow:0 4px 18px var(--nexus-glow)}
 .studio-generate:disabled{opacity:.45;cursor:default;box-shadow:none}
 
 /* --- Agentic RAG Trace in Notebook --- */
@@ -425,7 +428,7 @@
   min-height: 0;
   position: relative;
   overflow: hidden;
-  background: #090d13;
+  background: var(--bg);
 }
 
 .mindmap-canvas-wrap {
@@ -543,7 +546,7 @@
 .mindmap-selected-detail {
   font-size: 11.5px;
   line-height: 1.55;
-  color: #a4b3c6;
+  color: var(--muted);
   margin: 0;
   white-space: pre-wrap;
 }
@@ -888,7 +891,8 @@
   box-shadow: 0 0 0 1px var(--nexus-green), 0 8px 24px var(--nexus-glow);
 }
 
-.modal-card.settings-modal-card .provider-card {
+.modal-card.settings-modal-card .provider-card,
+.provider-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -900,29 +904,81 @@
   margin-bottom: 6px;
 }
 
-.modal-card.settings-modal-card .provider-card:hover {
+.modal-card.settings-modal-card .provider-card:hover,
+.provider-card:hover {
   border-color: var(--line2);
-  background: #141b26;
+  background: var(--panel);
 }
 
-.modal-card.settings-modal-card .provider-card.active {
-  border-color: var(--nexus-green);
-  background: rgba(52, 211, 153, 0.08);
-  box-shadow: 0 0 0 1px var(--nexus-green);
+.modal-card.settings-modal-card .provider-card.active,
+.provider-card.active {
+  border-color: var(--nexus-green) !important;
+  background: var(--accent-soft) !important;
+  box-shadow: 0 0 0 1px var(--nexus-green) !important;
 }
 
-.modal-card.settings-modal-card .provider-logo {
+.modal-card.settings-modal-card .provider-card.active:hover,
+.provider-card.active:hover {
+  border-color: var(--nexus-bright) !important;
+  background: var(--accent-soft) !important;
+}
+
+.provider-card-main strong {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text) !important;
+}
+
+.provider-card-main small {
+  font-size: 9px;
+  color: var(--muted) !important;
+}
+
+.modal-card.settings-modal-card .provider-logo,
+.provider-logo {
   display: grid;
   place-items: center;
   width: 28px;
   height: 28px;
   border-radius: 6px;
-  background: var(--bg);
+  background: var(--panel);
   border: 1px solid var(--line);
   color: var(--nexus-green);
   font-weight: 700;
   font-family: 'DM Mono', monospace;
   font-size: 11px;
+  flex: none;
+}
+
+.provider-card.active .provider-logo {
+  background: var(--accent-soft);
+  border-color: var(--nexus-green);
+  color: var(--nexus-bright);
+}
+
+.provider-card-actions button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted) !important;
+  transition: all 0.15s ease;
+}
+
+.provider-card-actions button:hover {
+  background: var(--panel) !important;
+  border-color: var(--line) !important;
+  color: var(--text) !important;
+}
+
+.provider-card-actions button.danger:hover,
+.provider-card-actions .danger:hover {
+  background: rgba(239, 68, 68, 0.12) !important;
+  border-color: rgba(239, 68, 68, 0.3) !important;
+  color: #ef4444 !important;
 }
 
 .modal-card.settings-modal-card .provider-form .form-title {
@@ -1213,12 +1269,170 @@
 
 .notebook-source-card:hover {
   border-color: var(--line2);
-  background: #141b25;
+  background: var(--accent-soft);
 }
 
 .notebook-source-card.excluded {
   opacity: 0.5;
   border-style: dashed;
+}
+
+.notebook-source-card.is-processing {
+  border-color: rgba(245, 158, 11, 0.45);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.1);
+}
+
+.notebook-source-mini-progress {
+  width: 100%;
+  height: 3px;
+  background: var(--panel);
+  border-radius: 999px;
+  margin-top: 5px;
+  overflow: hidden;
+}
+
+.notebook-source-mini-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--orange);
+  transition: width 0.3s ease;
+}
+
+.notebook-source-mini-bar.uploaded {
+  background: var(--muted);
+  opacity: 0.5;
+}
+
+.notebook-source-mini-bar.parsing {
+  background: var(--orange);
+}
+
+.notebook-source-mini-bar.chunking {
+  background: #f59e0b;
+}
+
+.notebook-source-mini-bar.indexing {
+  background: var(--nexus-green);
+}
+
+/* --- Ingestion Progress Card --- */
+.notebook-ingestion-card {
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  background: var(--panel2);
+  padding: 9px 10px;
+  margin: 6px 0 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.notebook-ingestion-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.notebook-ingestion-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.notebook-ingestion-pill {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid var(--line2);
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-family: 'DM Mono', monospace;
+}
+
+.notebook-ingestion-in-flight {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--orange);
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: 5px;
+  padding: 3px 7px;
+  overflow: hidden;
+}
+
+.notebook-ingestion-in-flight .in-flight-url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'DM Mono', monospace;
+  font-size: 9.5px;
+}
+
+.notebook-ingestion-progress-track {
+  width: 100%;
+  height: 5px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  position: relative;
+}
+
+.notebook-ingestion-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--orange) 0%, var(--nexus-green) 100%);
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 0 6px var(--nexus-glow);
+}
+
+.notebook-ingestion-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 9px;
+  color: var(--muted);
+  padding-top: 1px;
+}
+
+.ingestion-step {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  opacity: 0.6;
+  transition: all 0.2s ease;
+}
+
+.ingestion-step.active {
+  opacity: 1;
+  color: var(--orange);
+  font-weight: 700;
+}
+
+.ingestion-step.done {
+  opacity: 1;
+  color: var(--nexus-bright);
+}
+
+.ingestion-step .step-dot {
+  width: 4.5px;
+  height: 4.5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.step-arrow {
+  color: var(--faint);
+  font-size: 8px;
+  opacity: 0.4;
 }
 
 .notebook-source-row {
@@ -1413,7 +1627,7 @@
 
 .notebook-artifact-card:hover {
   border-color: var(--nexus-green);
-  background: #141b25;
+  background: var(--accent-soft);
   transform: translateY(-1px);
 }
 
@@ -1563,12 +1777,12 @@
 /* Top Navigation Bar */
 .product-topbar {
   height: 42px !important;
-  background: rgba(13, 18, 25, 0.92) !important;
+  background: var(--panel) !important;
   backdrop-filter: blur(16px) !important;
   -webkit-backdrop-filter: blur(16px) !important;
   border-bottom: 1px solid var(--line) !important;
   padding: 0 0 0 10px !important;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03);
+  box-shadow: 0 1px 0 var(--line);
 }
 
 .product-logo {
@@ -1587,10 +1801,10 @@
   display: flex !important;
   align-items: center !important;
   gap: 3px !important;
-  background: rgba(18, 24, 34, 0.75) !important;
+  background: var(--panel2) !important;
   padding: 3px !important;
   border-radius: 8px !important;
-  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  border: 1px solid var(--line) !important;
 }
 
 .area-tabs button {
@@ -1610,20 +1824,20 @@
 
 .area-tabs button:hover:not(.active) {
   color: var(--text) !important;
-  background: rgba(255, 255, 255, 0.04) !important;
+  background: rgba(127, 127, 127, 0.08) !important;
 }
 
 .area-tabs button.active {
-  background: #142420 !important;
+  background: var(--accent-soft) !important;
   color: var(--nexus-bright) !important;
   font-weight: 600 !important;
-  border: 1px solid rgba(52, 211, 153, 0.3) !important;
-  box-shadow: 0 0 12px rgba(52, 211, 153, 0.15) !important;
+  border: 1px solid var(--nexus-green) !important;
+  box-shadow: 0 0 12px var(--nexus-glow) !important;
 }
 
 /* Topbar Project & Git Indicators */
 .project-menu {
-  background: rgba(18, 24, 34, 0.6) !important;
+  background: var(--panel2) !important;
   border: 1px solid var(--line) !important;
   border-radius: 6px !important;
   padding: 4px 9px !important;
@@ -1766,17 +1980,17 @@
 }
 
 .branch {
-  background: rgba(18, 24, 34, 0.5) !important;
+  background: var(--panel2) !important;
   border: 1px solid var(--line) !important;
   border-radius: 5px !important;
   padding: 3px 8px !important;
-  color: #8da0b5 !important;
+  color: var(--muted) !important;
   font-size: 10px !important;
 }
 
 .session-top-title {
-  background: rgba(18, 24, 34, 0.45) !important;
-  border: 1px solid rgba(255, 255, 255, 0.05) !important;
+  background: var(--panel2) !important;
+  border: 1px solid var(--line) !important;
   border-radius: 20px !important;
   padding: 3px 14px !important;
   font-size: 11px !important;
@@ -1917,7 +2131,7 @@
 /* Center Workspace Bar & Breadcrumb */
 .workspace-bar {
   height: 42px !important;
-  background: rgba(15, 20, 29, 0.95) !important;
+  background: var(--panel) !important;
   border-bottom: 1px solid var(--line) !important;
   padding: 0 14px !important;
 }
@@ -1955,13 +2169,13 @@
 
 .workspace-actions button:hover {
   color: var(--text) !important;
-  border-color: rgba(52, 211, 153, 0.4) !important;
+  border-color: var(--line2) !important;
 }
 
 .workspace-actions button.active {
-  background: rgba(52, 211, 153, 0.12) !important;
+  background: var(--accent-soft) !important;
   color: var(--nexus-bright) !important;
-  border-color: rgba(52, 211, 153, 0.35) !important;
+  border-color: var(--nexus-green) !important;
   font-weight: 600 !important;
 }
 
@@ -2000,10 +2214,10 @@
 }
 
 .home-suggestion:hover {
-  border-color: rgba(52, 211, 153, 0.4) !important;
-  background: #141c28 !important;
+  border-color: var(--nexus-green) !important;
+  background: var(--panel) !important;
   transform: translateY(-2px) !important;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15) !important;
 }
 
 .home-suggestion-icon {
@@ -2012,8 +2226,8 @@
   width: 34px;
   height: 34px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--panel);
+  border: 1px solid var(--line);
   flex: none;
 }
 
@@ -2080,15 +2294,26 @@
 .agent-input {
   border: 1px solid var(--line2) !important;
   border-radius: 10px !important;
-  background: rgba(13, 18, 25, 0.95) !important;
+  background: var(--panel) !important;
   padding: 12px !important;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35) !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08) !important;
   transition: all 0.18s ease !important;
+}
+
+.agent-input textarea {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: var(--text) !important;
+}
+
+.agent-input textarea::placeholder {
+  color: var(--faint) !important;
 }
 
 .agent-input:focus-within {
   border-color: var(--nexus-green) !important;
-  box-shadow: 0 0 0 3px var(--nexus-glow), 0 8px 30px rgba(0, 0, 0, 0.45) !important;
+  box-shadow: 0 0 0 3px var(--nexus-glow), 0 8px 30px var(--nexus-glow) !important;
 }
 
 .mode-select {
@@ -2110,10 +2335,10 @@
 }
 
 .mode-select button.active {
-  background: rgba(52, 211, 153, 0.15) !important;
+  background: var(--accent-soft) !important;
   color: var(--nexus-bright) !important;
   font-weight: 700 !important;
-  border: 1px solid rgba(52, 211, 153, 0.25) !important;
+  border: 1px solid var(--nexus-green) !important;
 }
 
 .send-button {
@@ -2131,10 +2356,27 @@
   gap: 12px !important;
   margin: 12px 0 16px !important;
   padding: 11px 16px !important;
-  border: 1px solid rgba(168, 85, 247, 0.3) !important;
+  border: 1px solid var(--line2) !important;
   border-radius: 9px !important;
-  background: rgba(24, 21, 43, 0.9) !important;
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.3) !important;
+  background: var(--panel2) !important;
+  color: var(--text) !important;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08) !important;
+}
+
+.rollback-info {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  font-size: 11px !important;
+  color: var(--text) !important;
+}
+
+.rollback-info strong {
+  color: var(--text) !important;
+}
+
+.rollback-info svg {
+  color: var(--nexus-green) !important;
 }
 
 /* Right Context Sidebar & Tabs */
@@ -2189,9 +2431,80 @@
 }
 
 .modal-card {
+  background: var(--panel) !important;
   border: 1px solid var(--line2) !important;
   border-radius: 12px !important;
   box-shadow: 0 24px 90px rgba(0, 0, 0, 0.85), inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
+  color: var(--text) !important;
+}
+
+.modal-card-head h2 {
+  color: var(--text) !important;
+}
+
+.modal-card-head p {
+  color: var(--muted) !important;
+}
+
+.modal-card label {
+  color: var(--text) !important;
+}
+
+.modal-card label small,
+.form-title small,
+.provider-form label small,
+.setting-card label small {
+  color: var(--muted) !important;
+}
+
+.modal-card input,
+.modal-card select,
+.modal-card textarea {
+  background: var(--bg) !important;
+  border: 1px solid var(--line2) !important;
+  color: var(--text) !important;
+}
+
+.modal-card input:focus,
+.modal-card select:focus,
+.modal-card textarea:focus {
+  border-color: var(--nexus-green) !important;
+  box-shadow: 0 0 0 2px var(--nexus-glow) !important;
+}
+
+.modal-card input::placeholder,
+.modal-card textarea::placeholder {
+  color: var(--faint) !important;
+}
+
+.secondary {
+  border: 1px solid var(--line2) !important;
+  background: var(--panel2) !important;
+  color: var(--text) !important;
+}
+
+.secondary:hover {
+  border-color: var(--nexus-green) !important;
+  background: var(--accent-soft) !important;
+  color: var(--nexus-bright) !important;
+}
+
+.model-row-item button {
+  background: var(--panel2) !important;
+  border: 1px solid var(--line2) !important;
+  color: var(--muted) !important;
+}
+
+.model-row-item button:hover {
+  background: rgba(239, 68, 68, 0.12) !important;
+  color: #ef4444 !important;
+  border-color: #ef4444 !important;
+}
+
+.model-row-item select.model-endpoint-select {
+  background: var(--bg) !important;
+  border: 1px solid var(--line2) !important;
+  color: var(--text) !important;
 }
 
 /* ==========================================================================
@@ -2212,7 +2525,7 @@
 
 .mcp-card:hover {
   border-color: var(--line2);
-  background: #141c27;
+  background: var(--panel);
 }
 
 .mcp-card.enabled {
@@ -2238,17 +2551,17 @@
   width: 32px;
   height: 32px;
   border-radius: 7px;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--panel);
   color: var(--muted);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line);
   flex: none;
   transition: all 0.15s ease;
 }
 
 .mcp-card-icon.enabled {
-  background: rgba(52, 211, 153, 0.12);
+  background: var(--accent-soft);
   color: var(--nexus-bright);
-  border-color: rgba(52, 211, 153, 0.25);
+  border-color: var(--nexus-green);
 }
 
 .mcp-card-info {
@@ -2284,15 +2597,15 @@
 }
 
 .mcp-status-badge.enabled {
-  background: rgba(52, 211, 153, 0.15);
+  background: var(--accent-soft);
   color: var(--nexus-bright);
-  border: 1px solid rgba(52, 211, 153, 0.3);
+  border: 1px solid var(--nexus-green);
 }
 
 .mcp-status-badge.disabled {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--panel);
   color: var(--muted);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--line);
 }
 
 .mcp-card-detail {
@@ -2307,11 +2620,11 @@
   font-size: 8.5px;
   font-family: 'DM Mono', monospace;
   text-transform: uppercase;
-  background: var(--bg);
+  background: var(--panel);
   border: 1px solid var(--line);
   padding: 1px 5px;
   border-radius: 4px;
-  color: #8fa0b5;
+  color: var(--muted);
 }
 
 .mcp-command-line {
@@ -2345,7 +2658,7 @@
   flex: none !important;
   border-radius: 999px !important;
   border: 1px solid var(--line2) !important;
-  background: #151d27 !important;
+  background: var(--line2) !important;
   padding: 0 !important;
   cursor: pointer !important;
   display: block !important;
@@ -2361,14 +2674,15 @@
   width: 14px !important;
   height: 14px !important;
   border-radius: 50% !important;
-  background: var(--muted) !important;
+  background: var(--panel) !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25) !important;
   transition: left 0.15s ease, background 0.15s ease !important;
 }
 
 .switch.on,
 .provider-card-actions .switch.on,
 .mcp-card-actions .switch.on {
-  background: rgba(52, 211, 153, 0.22) !important;
+  background: var(--accent-soft) !important;
   border-color: var(--nexus-green) !important;
 }
 
@@ -2377,7 +2691,7 @@
 .mcp-card-actions .switch.on .knob {
   left: 18px !important;
   background: var(--nexus-bright) !important;
-  box-shadow: 0 0 6px rgba(52, 211, 153, 0.6) !important;
+  box-shadow: 0 0 6px var(--nexus-glow) !important;
 }
 
 .switch:disabled {
@@ -2401,13 +2715,13 @@
 .mcp-icon-btn:hover {
   border-color: var(--line2);
   color: var(--text);
-  background: #1b2533;
+  background: var(--panel2);
 }
 
 .mcp-icon-btn.danger:hover {
-  border-color: rgba(248, 113, 113, 0.3);
-  color: #f87171;
-  background: rgba(248, 113, 113, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
 }
 
 /* MCP Form Toggle Row */
@@ -2594,13 +2908,39 @@
 
 .skills-card:hover {
   border-color: var(--line2);
-  background: #151d27;
+  background: var(--panel2);
 }
 
 .skills-card.active {
-  border-color: rgba(52, 211, 153, 0.4);
-  background: #112022;
-  box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.2);
+  border-color: var(--nexus-green);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--nexus-green);
+}
+
+.skills-tab-btn {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 5px 10px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.15s ease;
+}
+
+.skills-tab-btn:hover:not(.active) {
+  background: var(--panel2);
+  color: var(--text);
+}
+
+.skills-tab-btn.active {
+  background: var(--accent-soft) !important;
+  color: var(--nexus-bright) !important;
+  font-weight: 600;
+  border: 1px solid var(--nexus-green);
 }
 
 .skills-card-main {
