@@ -1156,7 +1156,7 @@ app.whenReady().then(async () => {
         const ledgerSummary = ledger.length
           ? `\nSteps already DONE (never repeat — results are in history):\n${ledger.map((s) => `- ${s}`).join("\n")}`
           : "";
-        resumeNote = `[System Note: The user asked to continue the previous interrupted run. All preceding tool executions and results ${stored ? `(${stored.messages.length} checkpointed messages) ` : ""}are already complete.${planSummary}${ledgerSummary}${lastError ? `\nLast stop reason: ${lastError.slice(0, 500)}` : ""}${lastAssistant ? `\nLast assistant summary: ${lastAssistant}` : ""}${diffSummary}\n\nIMPORTANT: Do NOT restart from the beginning, do NOT re-create the todo list from scratch, and do NOT repeat completed tool actions or file reads. Proceed directly with the next unfinished step.]`;
+        resumeNote = `[System Note: The user asked to continue the previous interrupted run. All preceding tool executions and results ${stored ? `(${stored.messages.length} checkpointed messages) ` : ""}are already complete.${planSummary}${ledgerSummary}${lastError ? `\nLast stop reason: ${lastError.slice(0, 500)}` : ""}${lastAssistant ? `\nLast assistant summary: ${lastAssistant}` : ""}${diffSummary}\n\nIMPORTANT INSTRUCTIONS FOR RESUME:\n1. Do NOT restart from the beginning or re-create todos from scratch.\n2. Do NOT re-read or inspect files already in history.\n3. If code changes and build/tests were already completed, do NOT run more checks or tools. Update your todo list to completed using write_todos immediately and provide your final response to the user.\n4. If unfinished work remains, proceed directly with that next step.]`;
       }
 
       const backendRecord = { ...project, root: executionRoot };

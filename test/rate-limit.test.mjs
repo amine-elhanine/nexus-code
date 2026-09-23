@@ -217,6 +217,26 @@ await test('sanitizeResumeCheckpoint drops trailing unanswered tool calls', () =
   assert.deepEqual(sanitizeResumeCheckpoint([]), []);
 });
 
+await test('sanitizeResumeCheckpoint prunes trailing duplicate read/inspection loops', () => {
+  const loopMsgs = [
+    { type: 'human', text: 'build an app' },
+    { type: 'ai', tool_calls: [{ name: 'execute', args: { command: 'npm run build' } }] },
+    { type: 'tool', content: 'build ok' },
+    { type: 'ai', tool_calls: [{ name: 'read_file', args: { file_path: 'src/App.tsx' } }] },
+    { type: 'tool', content: 'app content' },
+    { type: 'ai', tool_calls: [{ name: 'read_file', args: { file_path: 'src/App.tsx' } }] },
+    { type: 'tool', content: 'app content' },
+    { type: 'ai', tool_calls: [{ name: 'read_file', args: { file_path: 'src/App.tsx' } }] },
+    { type: 'tool', content: 'app content' },
+    { type: 'ai', tool_calls: [{ name: 'read_file', args: { file_path: 'src/App.tsx' } }] }, // trailing unanswered
+  ];
+  const cleaned = sanitizeResumeCheckpoint(loopMsgs);
+  // Trailing unanswered dropped + 2 duplicate pairs pruned = 1 read_file pair remains
+  assert.equal(cleaned.length, 5);
+  assert.equal(cleaned[cleaned.length - 1].type, 'tool');
+  assert.equal(cleaned[cleaned.length - 2].tool_calls[0].name, 'read_file');
+});
+
 await test('createProgressTracker counts superstep and tool-result progress per attempt', () => {
   const tracker = createProgressTracker();
   tracker.beginAttempt(2);

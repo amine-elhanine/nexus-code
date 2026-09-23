@@ -988,6 +988,88 @@ export function toolParameterNormalizationMiddleware() {
   });
 }
 
+/**
+ * Loop Prevention Middleware:
+ * Detects and breaks repetitive read/inspection tool loops (e.g., repeatedly calling
+ * read_file, grep_search, or glob on the same file/target without any edits or modifying commands).
+ *
+ * Modifying actions (write_file, edit_file, delete, apply_patch, execute) reset inspection tracking.
+ *
+ * Repetition 2: Injects a proactive steering notice into the tool message advising the model
+ *               that the file has not changed, build/tests already passed, and to mark todos completed.
+ * Repetition 3+: Blocks execution of the tool, returning an intervention ToolMessage directing the model
+ *                to update its todo list and provide its final answer immediately.
+ */
+export function loopPreventionMiddleware() {
+  let lastReadSig: string | null = null;
+  let consecutiveCount = 0;
+  const inspectionCounts = new Map<string, number>();
+
+  const isModifying = (name: string) => /^(write_file|edit_file|delete|apply_patch|execute)$/i.test(name);
+  const isInspection = (name: string) => /^(read_file|read_file_range|grep_search|glob|ls|view_file|search_code|code_structure|code_symbol)$/i.test(name);
+
+  const normalizePath = (args: any) => {
+    if (!args || typeof args !== "object") return "";
+    const p = String(args.file_path || args.filePath || args.path || args.file || args.query || args.pattern || "");
+    return p.replace(/\\/g, "/").replace(/^\/+/, "").trim();
+  };
+
+  return createMiddleware({
+    name: "loopPreventionMiddleware",
+    wrapToolCall: async (request: any, handler: any) => {
+      const toolName = String(request.tool?.name ?? request.toolCall?.name ?? "");
+      const args = request.toolCall?.args ?? {};
+      const toolCallId = String(request.toolCall?.id ?? "");
+
+      if (isModifying(toolName)) {
+        inspectionCounts.clear();
+        lastReadSig = null;
+        consecutiveCount = 0;
+        return handler(request);
+      }
+
+      if (isInspection(toolName)) {
+        const target = normalizePath(args);
+        const sig = `${toolName}:${target}`;
+        const totalCount = (inspectionCounts.get(sig) ?? 0) + 1;
+        inspectionCounts.set(sig, totalCount);
+
+        if (sig === lastReadSig) {
+          consecutiveCount++;
+        } else {
+          lastReadSig = sig;
+          consecutiveCount = 1;
+        }
+
+        // 3rd+ consecutive repetition or 4th total inspection without modifying actions:
+        // Intervene and short-circuit! Do NOT re-execute the tool.
+        if (consecutiveCount >= 3 || totalCount >= 4) {
+          return new ToolMessage({
+            tool_call_id: toolCallId,
+            name: toolName,
+            status: "error",
+            content: `[LOOP PREVENTION NOTICE]: You have already inspected '${target || toolName}' multiple times (${totalCount}x) without making any workspace edits or code changes. The file content has not changed.\n\nCRITICAL INSTRUCTIONS:\n1. Stop inspecting or re-reading files.\n2. If build or tests already passed and required changes are in place, call write_todos to mark remaining in-progress todos as completed.\n3. Output your final response to the user immediately detailing the changes made.`,
+          });
+        }
+
+        const result = await handler(request);
+
+        // 2nd consecutive repetition or 2nd total inspection of the same target:
+        // Append proactive steering notice to guide the model before a hard block.
+        if (consecutiveCount === 2 || totalCount === 2) {
+          const currentContent = typeof result.content === "string" ? result.content : JSON.stringify(result.content);
+          const nudge = `\n\n[Notice: You already inspected '${target || toolName}'. The content has not changed. Do NOT re-read or inspect this again. If your build or verification passed, update your todo list to completed with write_todos and present your final response now.]`;
+          result.content = currentContent + nudge;
+        }
+
+        return result;
+      }
+
+      return handler(request);
+    },
+  });
+}
+
 function isRecursionLimitError(error: unknown): boolean {
   const text = [error instanceof Error ? error.message : String(error), String((error as any)?.name ?? "")].join(" ");
   return /recursion\s*limit|GRAPH_RECURSION_LIMIT/i.test(text);
@@ -1072,7 +1154,7 @@ Working rules:
 - Skills listed in your instructions are mandatory pre-reads, not options: before exploring or writing code, check whether any skill covers the task and read its SKILL.md first via its exact given path. SKILL.md contains internal instructions for YOU — never output, quote, echo, or dump skill contents to the user. Never browse skill folders (ls/glob of .nexus/skills, /global-skills, /system-skills) to discover skills — the System Note already lists everything available to you.
 - If a skill ships helper scripts you must run, copy them into the workspace first with materialize_skill_files, then run them via the returned workspace-relative paths with execute (skill folders are read-only and outside the run directory).
 - Never expose secrets.
-- Self-review: before finishing, verify that modified code compiles, tests pass, and no unintended edits or secrets were introduced. Report files changed, commands run, and remaining risks.
+- Self-review: before finishing, verify that modified code compiles, tests pass, and no unintended edits or secrets were introduced. Once compilation or verification passes (e.g. npm run build succeeds), do NOT repeatedly re-read the source files you just wrote. Update your todo list to completed with write_todos and summarize your work to the user. Report files changed, commands run, and remaining risks.
 ${repoMapSection ? `\n${repoMapSection}` : ""}`;
 
   // New-project builds must come out production-ready (Claude-Code bar), not
@@ -1085,7 +1167,7 @@ ${repoMapSection ? `\n${repoMapSection}` : ""}`;
 - Settings page: provider base URL, API key, and model selectable, persisted to localStorage, loaded on start. Never hardcode secrets.
 - Chat: streaming responses via fetch to /chat/completions (SSE), with loading, empty, and error states (bad key, network failure, non-200 with body excerpt). No dead buttons — every control must work.
 - README.md with prerequisites, setup (npm install), dev (npm run dev), and build (npm run build) instructions.
-- Finish only when npm run build passes. If the build fails, fix and rebuild — do not hand back a project that does not compile.`;
+- Finish only when npm run build passes. If the build fails, fix and rebuild — do not hand back a project that does not compile. Once the build passes, conclude your task and report the result. Do NOT loop re-reading files after a successful build.`;
   }
 
   if (complexity === "simple") {
@@ -1396,8 +1478,8 @@ export async function runProjectAgent(options: {
     model: llm,
     backend: compositeBackend as any,
     middleware: isSimple
-      ? [toolParameterNormalizationMiddleware()]
-      : [toolParameterNormalizationMiddleware(), todoListMiddleware()],
+      ? [toolParameterNormalizationMiddleware(), loopPreventionMiddleware()]
+      : [toolParameterNormalizationMiddleware(), loopPreventionMiddleware(), todoListMiddleware()],
     tools: isSimple
       ? [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...mcpTools]
       : [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, subagentTool, ...mcpTools],
@@ -1532,7 +1614,10 @@ export async function runProjectAgent(options: {
     progress.beginAttempt(runMessages.length);
 
     let messagesToStream = runMessages;
-    if (retryCount > 1 && runMessages.length > priorMessages.length + 1) {
+    if (
+      (retryCount > 1 && runMessages.length > priorMessages.length + 1) ||
+      (hasResume && retryCount === 1 && runMessages.length > priorMessages.length + 1)
+    ) {
       const planNotice = lastPlanItems && lastPlanItems.length > 0
         ? `\nCurrent working plan status:\n${lastPlanItems.map((p) => `- [${p.status === "completed" ? "x" : " "}] ${p.content} (${p.status})`).join("\n")}`
         : "";
@@ -1540,7 +1625,7 @@ export async function runProjectAgent(options: {
       const ledgerNotice = ledger.length
         ? `\nSteps already DONE (never repeat these — their results are above):\n${ledger.map((s) => `- ${s}`).join("\n")}`
         : "";
-      const resumeNotice = `[System Note: Stream was resumed after temporary provider interruption. All preceding tool executions and results are recorded above and already complete.${planNotice}${ledgerNotice}\n\nIMPORTANT: Do NOT restart from the beginning, do NOT re-create the todo list from scratch, and do NOT repeat already completed tool actions. Proceed directly with the next unfinished task.]`;
+      const resumeNotice = `[System Note: Stream was resumed after pause/interruption. All preceding tool executions and results are recorded above and already complete.${planNotice}${ledgerNotice}\n\nIMPORTANT: Do NOT restart from the beginning, do NOT re-create the todo list from scratch, and do NOT repeat already completed tool actions. If builds and code are in place, mark remaining in-progress todos completed and output your final response immediately.]`;
       messagesToStream = [...runMessages, new HumanMessage(resumeNotice)];
     }
 
@@ -1583,15 +1668,25 @@ export async function runProjectAgent(options: {
                   const isSkillRead = summary.startsWith("Consulting skill: ");
                   const desc = isSkillRead ? summary : (summary ? `${name} · ${summary}` : name);
                   // Doom-loop breaker (opencode DOOM_LOOP_THRESHOLD): the same
-                  // tool with identical args 3x in a row is stuck, not working.
-                  const sig = `${name}:${JSON.stringify(call?.args ?? {}).slice(0, 500)}`;
+                  // tool with identical args 6x in a row is stuck, not working.
+                  // loopPreventionMiddleware intercepts and steers at repetition 2 & 3,
+                  // so 6x acts as the final safety circuit breaker if model persists.
+                  const normalizedCallArgs = { ...call?.args };
+                  if (normalizedCallArgs.filePath && !normalizedCallArgs.file_path) {
+                    normalizedCallArgs.file_path = normalizedCallArgs.filePath;
+                    delete normalizedCallArgs.filePath;
+                  }
+                  if (typeof normalizedCallArgs.file_path === "string") {
+                    normalizedCallArgs.file_path = normalizedCallArgs.file_path.replace(/\\/g, "/").replace(/^\/+/, "");
+                  }
+                  const sig = `${name}:${JSON.stringify(normalizedCallArgs).slice(0, 500)}`;
                   if (sig === lastToolSig) {
                     toolRepeatCount++;
                   } else {
                     lastToolSig = sig;
                     toolRepeatCount = 1;
                   }
-                  if (toolRepeatCount >= 3) {
+                  if (toolRepeatCount >= 6) {
                     throw new DoomLoopError(name, summary || "identical arguments");
                   }
                   emit("tool", desc);
