@@ -72,9 +72,11 @@ export async function duckDuckGoSearch(query: string, maxResults = MAX_RESULTS):
   }
 }
 
-export function createWebSearchTools(opts?: { onSearch?: (query: string, url: string) => void }) {
+export function createWebSearchTools(opts?: { onSearch?: (query: string, url: string) => void; beforeSearch?: () => string | null }) {
   const webSearchTool = tool(
     async ({ query, maxResults = MAX_RESULTS }: { query: string; maxResults?: number }) => {
+      const guard = opts?.beforeSearch?.();
+      if (guard) return guard;
       const cleanQuery = query.trim();
       if (!cleanQuery) return "A search query is required.";
       // Visibility mirror: show the query in the built-in browser (Watching

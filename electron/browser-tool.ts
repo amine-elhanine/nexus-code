@@ -113,7 +113,7 @@ export type BrowserCallMeta = {
   scope?: "home" | "code";
 };
 
-export function createBrowserTools(_projectRoot?: string, opts?: { renderedInspect?: RenderedInspect; agentBrowser?: AgentBrowser }) {
+export function createBrowserTools(_projectRoot?: string, opts?: { renderedInspect?: RenderedInspect; agentBrowser?: AgentBrowser; beforeRead?: (toolName: string) => string | null }) {
   const renderedInspect = opts?.renderedInspect ?? opts?.agentBrowser?.inspect;
   // fetch follows redirects transparently, which would let a loopback URL
   // 302-hop straight to an external host. Redirects are handled manually and
@@ -152,6 +152,8 @@ export function createBrowserTools(_projectRoot?: string, opts?: { renderedInspe
 
   const browserInspectTool = tool(
     async ({ url }: { url: string }) => {
+      const guard = opts?.beforeRead?.("browser_inspect");
+      if (guard) return guard;
       // Prefer the rendered agent window (real Chromium with JS) when one is
       // wired in; fall back to plain fetch if it fails or isn't available
       // (e.g. tests, which never pass a renderer).
@@ -226,6 +228,8 @@ export function createBrowserTools(_projectRoot?: string, opts?: { renderedInspe
 
   const browserFetchApiTool = tool(
     async ({ url, method = "GET", headers = {}, body }: { url: string; method?: string; headers?: Record<string, string>; body?: string }) => {
+      const guard = opts?.beforeRead?.("browser_fetch_api");
+      if (guard) return guard;
       try {
         const targetUrl = normalizeUrl(url);
 
@@ -280,7 +284,7 @@ export function createBrowserTools(_projectRoot?: string, opts?: { renderedInspe
         {
           name: "browser_act",
           description:
-            "Drives the built-in browser (hidden in-app webview sharing the Browser tab session — no separate window). Workflow: snapshot first to get element refs (e3, e7…), then click/fill/type against refs. Actions: snapshot (list interactive elements), click (buttons/links/checkboxes), fill (set input/textarea/select value, React-safe), type (append keystrokes), press (Enter/Escape/Tab/arrows via key), scroll (direction up/down/top/bottom), navigate (open URL), back, reload, text (full rendered text), screenshot (saves PNG under .nexus/browser/, returns its path — the model cannot view images, open it yourself). Refs expire after navigation or DOM changes — snapshot again when an action reports a missing ref.",
+            "Drives the built-in browser (hidden in-app webview sharing the Browser tab session — no separate window). Workflow: snapshot first to get element refs (e3, e7…), then click/fill/type against refs. Actions: snapshot (list interactive elements), click (buttons/links/checkboxes), fill (set input/textarea/select value, React-safe), type (append keystrokes), press (Enter/Escape/Tab/arrows via key), scroll (direction up/down/top/bottom), navigate (open URL), back, reload, text (full rendered text), screenshot (saves PNG under .nexus/browser/ for the user + returns page title and rendered-text excerpt for agent verification). Refs expire after navigation or DOM changes — snapshot again when an action reports a missing ref.",
           schema: z.object({
             action: z
               .enum(["snapshot", "click", "fill", "type", "press", "scroll", "navigate", "back", "reload", "text", "screenshot"])

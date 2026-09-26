@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Brain, BookOpen, Check, ChevronDown, ChevronRight, Code2, Coins, Download, FileCode2, FileText,
-  FolderOpen, GitBranch, Globe, Home, Info, Loader2, Menu,
+  FolderOpen, GitBranch, Globe, Home, Info, Loader2, Menu, Sparkles, X,
   MessageSquare, PanelRight, Pencil, Plus, RefreshCw, Undo2,
   Settings2, Terminal, Trash2, TriangleAlert, Activity
 } from "lucide-react";
@@ -144,6 +144,170 @@ function SessionRow({
   );
 }
 
+type HomeMemoryStructureProp = {
+  profile: string[];
+  preferences: string[];
+  facts: string[];
+  context: string[];
+  recentDeliverables: Array<{ date: string; summary: string; sessionId?: string }>;
+  customNotes?: string;
+};
+type HomeMemoryPendingProp = { id: string; category: string; fact: string; source: string; createdAt: string };
+
+function MemoryFactList({
+  items,
+  category,
+  onRemove,
+  emptyText,
+}: {
+  items: string[];
+  category: string;
+  onRemove: (category: string, fact: string) => void;
+  emptyText: string;
+}) {
+  if (!items.length) return <div className="empty-pane" style={{ padding: "6px" }}>{emptyText}</div>;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      {items.map((fact) => (
+        <div key={fact} className="home-file-row" title={fact}>
+          <Brain size={13} style={{ flex: "none", color: "var(--nexus-green)" }} />
+          <div className="home-file-info">
+            <span className="home-file-name" style={{ whiteSpace: "normal" }}>{fact}</span>
+            <small>{category}</small>
+          </div>
+          <button className="pane-action" onClick={() => onRemove(category, fact)} title={`Forget "${fact}"`}>
+            <Trash2 size={13} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function HomeMemoryPanel({
+  structure,
+  pending,
+  sessionMemory,
+  sessionTitle,
+  onResolvePending,
+  onRemoveFact,
+  onClearSession,
+  onOpenChat,
+}: {
+  structure: HomeMemoryStructureProp;
+  pending: HomeMemoryPendingProp[];
+  sessionMemory: string;
+  sessionTitle?: string;
+  onResolvePending: (id: string, accept: boolean) => void;
+  onRemoveFact: (category: string, fact: string) => void;
+  onClearSession: () => void;
+  onOpenChat?: (sessionId: string) => void;
+}) {
+  const durableCount = structure.profile.length + structure.preferences.length + structure.facts.length + structure.context.length;
+  return (
+    <div className="context-tab-body">
+      {pending.length > 0 && (
+        <div className="context-section">
+          <div className="context-section-title">
+            <span>SUGGESTED ({pending.length})</span>
+            <small>REVIEW</small>
+          </div>
+          <p style={{ color: "#687588", fontSize: "11px", lineHeight: 1.5, margin: "0 0 8px" }}>
+            The agent proposed these from recent chats. Nothing is saved until you accept it.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {pending.map((p) => (
+              <div key={p.id} className="home-file-row" style={{ alignItems: "flex-start" }} title={p.source ? `From: ${p.source}` : undefined}>
+                <Sparkles size={13} style={{ flex: "none", marginTop: 2, color: "var(--nexus-green)" }} />
+                <div className="home-file-info">
+                  <span className="home-file-name" style={{ whiteSpace: "normal" }}>{p.fact}</span>
+                  <small>{p.category}{p.source ? ` · from “${p.source.slice(0, 60)}”` : ""}</small>
+                </div>
+                <div style={{ display: "flex", gap: 4, flex: "none" }}>
+                  <button className="pane-action" onClick={() => onResolvePending(p.id, true)} title="Save to long-term memory">
+                    <Check size={13} />
+                  </button>
+                  <button className="pane-action" onClick={() => onResolvePending(p.id, false)} title="Dismiss">
+                    <X size={13} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="context-section">
+        <div className="context-section-title">
+          <span>REMEMBERED ({durableCount})</span>
+          <small>SHARED</small>
+        </div>
+        <p style={{ color: "#687588", fontSize: "11px", lineHeight: 1.5, margin: "0 0 8px" }}>
+          Durable facts shared by every Home chat. The agent sees the relevant ones for each question — manage them here, or say “remember…” in chat.
+        </p>
+        <strong style={{ fontSize: "11px" }}>User profile</strong>
+        <div style={{ height: 4 }} />
+        <MemoryFactList items={structure.profile} category="profile" onRemove={onRemoveFact} emptyText="No profile facts yet." />
+        <div style={{ height: 8 }} />
+        <strong style={{ fontSize: "11px" }}>Preferences</strong>
+        <div style={{ height: 4 }} />
+        <MemoryFactList items={structure.preferences} category="preference" onRemove={onRemoveFact} emptyText="No preferences yet." />
+        <div style={{ height: 8 }} />
+        <strong style={{ fontSize: "11px" }}>Remembered facts</strong>
+        <div style={{ height: 4 }} />
+        <MemoryFactList items={structure.facts} category="fact" onRemove={onRemoveFact} emptyText="No remembered facts yet." />
+        {structure.context.length > 0 && (
+          <>
+            <div style={{ height: 8 }} />
+            <strong style={{ fontSize: "11px" }}>Project context</strong>
+            <div style={{ height: 4 }} />
+            <MemoryFactList items={structure.context} category="context" onRemove={onRemoveFact} emptyText="No project context." />
+          </>
+        )}
+      </div>
+      <div className="context-section">
+        <div className="context-section-title">
+          <span>RECENT ACTIVITY</span>
+          <small>{structure.recentDeliverables.length} LAST</small>
+        </div>
+        {structure.recentDeliverables.length ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {structure.recentDeliverables.slice().reverse().map((d, i) => (
+              <div
+                key={`${d.date}-${i}`}
+                className={`home-file-row${d.sessionId && onOpenChat ? " clickable" : ""}`}
+                title={d.sessionId ? "Open the originating chat" : d.summary}
+                onClick={d.sessionId && onOpenChat ? () => onOpenChat(d.sessionId!) : undefined}
+              >
+                <FileText size={13} style={{ flex: "none" }} />
+                <div className="home-file-info">
+                  <span className="home-file-name" style={{ whiteSpace: "normal" }}>{d.summary}</span>
+                  <small>{d.date}</small>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-pane">No recent activity yet. Substantive work lands here — chit-chat doesn't.</div>
+        )}
+      </div>
+      <div className="context-section">
+        <div className="context-section-title">
+          <span>THIS CHAT</span>
+          <button className="pane-action" onClick={onClearSession} title="Clear this chat's session notes (transcript is kept)">
+            Clear
+          </button>
+        </div>
+        <p style={{ color: "#687588", fontSize: "11px", lineHeight: 1.5, margin: "0 0 8px" }}>
+          Short pointers for {sessionTitle ? `“${sessionTitle}”` : "this chat"} — full answers stay in the transcript, which the agent reads directly.
+        </p>
+        <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: 0, padding: "8px", border: "1px solid #28374a", borderRadius: "5px", background: "#090d14", color: "#a6b2c2", font: "10px/1.5 'DM Mono', monospace" }}>
+          {sessionMemory || "No session notes yet."}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const {
     projects,
@@ -222,6 +386,7 @@ function App() {
     loadWorkspace,
     refreshDiff,
     revertSingleFile,
+    revertSingleHunk,
     revertAllChanges,
     undoRun,
     undoLatest,
@@ -295,11 +460,13 @@ function App() {
     };
   }, [showProjectDropdown]);
 
-  const [homeSideTab, setHomeSideTab] = useState<"session" | "artifacts" | "browser">("session");
+  const [homeSideTab, setHomeSideTab] = useState<"session" | "artifacts" | "browser" | "memory">("session");
   const [codeSideTab, setCodeSideTab] = useState<"session" | "files" | "browser" | "terminal" | "diff" | "memory">("session");
   const [updater, setUpdater] = useState<UpdaterState>({ status: "idle" });
   const [appVersion, setAppVersion] = useState("");
   const [approvalRequest, setApprovalRequest] = useState<{ id: string; runId?: string; command: string; cwd: string; reason: string; approvalKey?: string } | null>(null);
+  const [userQuestion, setUserQuestion] = useState<{ id: string; sessionId: string; questions: Array<{ header: string; question: string; options: string[] }> } | null>(null);
+  const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
 
   useEffect(() => {
     void api.getAppVersion().then(setAppVersion).catch(() => {});
@@ -312,6 +479,13 @@ function App() {
     return api.onUpdaterStatus((state) => setUpdater(state as UpdaterState));
   }, []);
   useEffect(() => api.onCommandApprovalRequest((request) => setApprovalRequest(request)), [api]);
+  useEffect(() => {
+    const off = (api as unknown as { onUserQuestionRequest?: (l: (r: { id: string; sessionId: string; questions: Array<{ header: string; question: string; options: string[] }> }) => void) => () => void }).onUserQuestionRequest?.((request) => {
+      setQuestionAnswers({});
+      setUserQuestion(request);
+    });
+    return off;
+  }, [api]);
 
   useEffect(() => {
     const typed = api as unknown as { getAppSettings?: () => Promise<{ theme?: string }> };
@@ -997,6 +1171,7 @@ function App() {
                 sessionId={activeSession?.id}
                 browserScope="code"
                 projectRoot={activeProject?.root}
+                files={files}
                 onSendToAgent={(p) => {
                   setDraft(p);
                   setView("chat");
@@ -1015,6 +1190,7 @@ function App() {
                 onUndoRun={(id) => void undoRun(id)}
                 onRefresh={() => void refreshDiff()}
                 onRevertFile={(f) => void revertSingleFile(f)}
+                onRevertHunk={(f, h) => void revertSingleHunk(f, h)}
                 onRevertAll={() => void revertAllChanges()}
                 onInspectFile={(f) => setInspectDiffFile(f)}
               />
@@ -1078,6 +1254,16 @@ function App() {
               >
                 <Globe size={12} /> Browser
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={homeSideTab === "memory"}
+                className={homeSideTab === "memory" ? "active" : ""}
+                onClick={() => { setHomeSideTab("memory"); void home.refreshHomeMemory(); }}
+                title="Long-term memory shared across all Home chats"
+              >
+                <Brain size={12} /> Memory{home.homePending.length > 0 ? ` (${home.homePending.length})` : ""}
+              </button>
             </div>
             {homeSideTab === "session" && (
             <div className="context-tab-body">
@@ -1102,8 +1288,11 @@ function App() {
             <div className="context-section">
               <div className="context-section-title">
                 <span>MEMORY</span>
+                <button onClick={() => { setHomeSideTab("memory"); void home.refreshHomeMemory(); }}><ChevronRight size={13} /></button>
               </div>
-              <MemoryRow label="Session memory" value={home.activeSession?.memory ? "Updated" : "Empty"} />
+              <MemoryRow label="Remembered" value={String(home.homeStructure.profile.length + home.homeStructure.preferences.length + home.homeStructure.facts.length + home.homeStructure.context.length)} />
+              {home.homePending.length > 0 && <MemoryRow label="Suggested" value={`${home.homePending.length} to review`} />}
+              <MemoryRow label="Session notes" value={home.activeSession?.memory ? "Updated" : "Empty"} />
             </div>
             <div className="context-section">
               <div className="context-section-title">
@@ -1175,6 +1364,18 @@ function App() {
             <div className={`context-tab-panel${homeSideTab === "browser" ? "" : " hidden"}`}>
               <SidebarBrowser key="home-browser" sessionId={home.activeSession?.id} browserScope="home" onAgentNavigate={() => setHomeSideTab("browser")} />
             </div>
+            {homeSideTab === "memory" && (
+              <HomeMemoryPanel
+                structure={home.homeStructure}
+                pending={home.homePending}
+                sessionMemory={home.activeSession?.memory || ""}
+                sessionTitle={home.activeSession?.title}
+                onResolvePending={(id, accept) => void home.resolvePending(id, accept)}
+                onRemoveFact={(category, fact) => void home.removeFact(category, fact)}
+                onClearSession={() => void home.clearSessionMemory()}
+                onOpenChat={(sessionId) => void home.selectChat(sessionId)}
+              />
+            )}
           </aside>
           )
         ) : area !== "notebook" ? (
@@ -1295,6 +1496,67 @@ function App() {
               <button className="secondary" onClick={() => void answerApproval("deny")}>Deny</button>
               <button className="secondary" onClick={() => void answerApproval("session")}>Allow for run</button>
               <button className="primary" onClick={() => void answerApproval("once")}>Allow once</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {userQuestion && (
+        <div className="modal-layer confirm-layer">
+          <div className="modal-card confirm-card" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-card-head" style={{ marginBottom: "10px" }}>
+              <div>
+                <span className="view-kicker" style={{ color: "var(--nexus-green)" }}>AGENT QUESTION</span>
+                <h2 style={{ fontSize: "16px", margin: "6px 0 4px" }}>The agent needs your input</h2>
+              </div>
+            </div>
+            {userQuestion.questions.map((q) => (
+              <div key={q.header} style={{ marginBottom: "12px" }}>
+                <strong style={{ fontSize: "12px" }}>{q.header}</strong>
+                <p style={{ color: "#a6b2c2", fontSize: "11px", lineHeight: "1.5", margin: "4px 0 6px" }}>{q.question}</p>
+                {q.options.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "6px" }}>
+                    {q.options.map((opt) => (
+                      <button
+                        key={opt}
+                        className={`secondary${questionAnswers[q.header] === opt ? " active" : ""}`}
+                        onClick={() => setQuestionAnswers((curr) => ({ ...curr, [q.header]: opt }))}
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <input
+                  className="session-rename-input"
+                  style={{ width: "100%" }}
+                  placeholder={q.options.length ? "Or type a custom answer…" : "Type your answer…"}
+                  value={questionAnswers[q.header] || ""}
+                  onChange={(event) => setQuestionAnswers((curr) => ({ ...curr, [q.header]: event.target.value }))}
+                />
+              </div>
+            ))}
+            <div className="modal-actions" style={{ marginTop: "6px" }}>
+              <button
+                className="secondary"
+                onClick={() => {
+                  const id = userQuestion.id;
+                  setUserQuestion(null);
+                  void (api as unknown as { resolveUserQuestion: (id: string, a: null, c: boolean) => Promise<unknown> }).resolveUserQuestion(id, null, true);
+                }}
+              >
+                Skip (best guess)
+              </button>
+              <button
+                className="primary"
+                onClick={() => {
+                  const id = userQuestion.id;
+                  const answers = { ...questionAnswers };
+                  setUserQuestion(null);
+                  void (api as unknown as { resolveUserQuestion: (id: string, a: Record<string, string>) => Promise<unknown> }).resolveUserQuestion(id, answers);
+                }}
+              >
+                Send answers
+              </button>
             </div>
           </div>
         </div>

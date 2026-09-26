@@ -165,11 +165,24 @@ export async function mergeWorktreeToMain(
   projectRoot: string,
   sessionId: string,
   commitMessage?: string
-): Promise<{ success: boolean; mergedBranch: string; error?: string }> {
+): Promise<{ success: boolean; mergedBranch: string; error?: string; conflictFiles?: string[] }> {
   const root = path.resolve(projectRoot);
   const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
   const branchName = `forgepilot/session-${safeSessionId}`;
   const worktreePath = path.join(getWorktreeBaseDir(root), `session-${safeSessionId}`);
+
+  const listConflicts = async (): Promise<string[]> => {
+    try {
+      const { stdout } = await execFileAsync("git", ["status", "--porcelain=v1"], { cwd: root, maxBuffer: 1_000_000 });
+      return stdout
+        .split(/\r?\n/)
+        .filter((line) => /^[AU]{2} /.test(line) || line.startsWith("UU ") || line.startsWith("AA ") || line.startsWith("DD "))
+        .map((line) => line.slice(3).trim())
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  };
 
   try {
     // 1. Commit any uncommitted changes in the worktree
@@ -193,11 +206,23 @@ export async function mergeWorktreeToMain(
 
     return { success: true, mergedBranch: branchName };
   } catch (error) {
+    const conflictFiles = await listConflicts();
     return {
       success: false,
       mergedBranch: branchName,
       error: error instanceof Error ? error.message : String(error),
+      conflictFiles,
     };
+  }
+}
+
+export async function abortWorktreeMerge(projectRoot: string): Promise<boolean> {
+  const root = path.resolve(projectRoot);
+  try {
+    await execFileAsync("git", ["merge", "--abort"], { cwd: root, maxBuffer: 500_000 });
+    return true;
+  } catch {
+    return false;
   }
 }
 

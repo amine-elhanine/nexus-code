@@ -275,9 +275,27 @@ export function applyUpdatedFileContent(original: string, updateBody: string): s
   return updateBody.replace(/\s+$/, "") + "\n";
 }
 
+// Writes from delegated workers share one workspace. Serialize patch
+// transactions per project so snapshots, validation, and rollback cannot
+// interleave with another writer.
+const projectWriteTails = new Map<string, Promise<void>>();
+async function acquireProjectWriteLock(projectRoot: string): Promise<() => void> {
+  const key = path.resolve(projectRoot);
+  const previous = projectWriteTails.get(key) || Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  projectWriteTails.set(key, current);
+  await previous;
+  return () => {
+    release();
+    if (projectWriteTails.get(key) === current) projectWriteTails.delete(key);
+  };
+}
+
 export function createEditTools(projectRoot: string, options: { attachedImages?: string[]; attachedFiles?: string[] } = {}) {
   const applyPatchTool = tool(
     async ({ patchText }: { patchText: string }) => {
+      const releaseWrite = await acquireProjectWriteLock(projectRoot);
       type Snapshot = { path: string; existed: boolean; content?: Buffer; mode?: number };
       const snapshots = new Map<string, Snapshot>();
       const snapshot = async (target: string) => {
@@ -353,6 +371,8 @@ export function createEditTools(projectRoot: string, options: { attachedImages?:
           try { await restore(entry); } catch { /* preserve the original error */ }
         }
         return `apply_patch failed: ${error instanceof Error ? error.message : String(error)}`;
+      } finally {
+        releaseWrite();
       }
     },
     {
@@ -433,12 +453,13 @@ export function createEditTools(projectRoot: string, options: { attachedImages?:
 }
 
 /**
- * Opencode-style question tool (v1: non-blocking). Emits the question to the
- * transcript via onAsk so the user sees it; returns a directive so the agent
- * proceeds with its best guess instead of stalling or guessing silently.
+ * Opencode-style question tool (v2: blocking with timeout). The agent pauses
+ * until the user answers in the UI; on timeout / no UI it falls back to
+ * best-guess so runs never stall forever.
  */
-export function createQuestionTool(onAsk?: (questions: Array<{ header: string; question: string; options: string[] }>) => void, options: { maxCalls?: number } = {}) {
+export function createQuestionTool(onAsk?: (questions: Array<{ header: string; question: string; options: string[] }>) => Promise<string | null | void> | void, options: { maxCalls?: number; timeoutMs?: number } = {}) {
   const maxCalls = options.maxCalls ?? 1;
+  const timeoutMs = options.timeoutMs ?? 120000;
   let calls = 0;
   const askTool = tool(
     async ({ questions }: { questions: Array<{ header: string; question: string; options?: string[] }> }) => {
@@ -452,7 +473,21 @@ export function createQuestionTool(onAsk?: (questions: Array<{ header: string; q
           .slice(0, 4)
           .map((q) => ({ header: q.header || "Question", question: q.question, options: (q.options || []).slice(0, 6) }));
         if (!normalized.length) return "No questions provided.";
-        onAsk?.(normalized);
+        let answer: string | null | void = null;
+        try {
+          const pending = onAsk?.(normalized);
+          answer = pending instanceof Promise
+            ? await Promise.race([
+                pending,
+                new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+              ])
+            : pending;
+        } catch {
+          answer = null;
+        }
+        if (typeof answer === "string" && answer.trim()) {
+          return `User answered:\n${answer.trim().slice(0, 2000)}\nProceed with these answers.`;
+        }
         return `Recorded ${normalized.length} clarifying question(s) for the user. Proceed with your best guess for now; the user will correct you if needed. Do not block waiting for an answer.`;
       } catch (error) {
         return `ask_user failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -461,7 +496,7 @@ export function createQuestionTool(onAsk?: (questions: Array<{ header: string; q
     {
       name: "ask_user",
       description:
-        "Ask the user clarifying questions when genuinely ambiguous (use sparingly — at most once per task, max 4 questions). Proceed with best guess afterwards; do not block.",
+        "Ask the user clarifying questions when genuinely ambiguous (use sparingly — at most once per task, max 4 questions). Waits for the user's answer; if none arrives, proceed with best guess.",
       schema: z.object({
         questions: z
           .array(

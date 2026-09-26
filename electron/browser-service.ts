@@ -439,9 +439,21 @@ class AgentBrowserService {
         await fs.writeFile(path.join(shotDir, file), Buffer.from(base64, "base64"));
         const where = projectRoot ? `.nexus/browser/${file}` : path.join(shotDir, file);
         const dims = shot.width && shot.height ? ` (${shot.width}x${shot.height})` : "";
+        // P1 vision-lite: pixels go to the user (Browser tab Watching mode),
+        // structure goes to the agent in the same return so it can verify
+        // without seeing the image.
+        let context = "";
+        try {
+          const res = await this.evalJs<{ text: string; title: string }>(
+            AgentBrowserService.pageTry(`return{title:document.title||'',text:(document.body?document.body.innerText:'').slice(0,1500)};`),
+            scope
+          );
+          const unwrapped = AgentBrowserService.unwrap(res, "screenshot-context");
+          if (unwrapped?.text) context = `\nPage: "${unwrapped.title || this.lastUrl || ""}"\nRendered text excerpt:\n${unwrapped.text}`;
+        } catch { /* screenshot still succeeds without context */ }
         return (
-          `Screenshot saved to ${where}${dims}. ` +
-          `The model cannot view images yet — open the file yourself to verify visually, or describe what to check and ask the agent to snapshot/text instead.`
+          `Screenshot saved to ${where}${dims} (open it in the Browser tab / file preview to verify pixels).` +
+          `${context}\nNote: use snapshot/text for element-level checks; treat the text excerpt above as the agent-visible state at screenshot time.`
         );
       }
       default:

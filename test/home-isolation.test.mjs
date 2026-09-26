@@ -91,7 +91,7 @@ test("Home Mode Skill Formatting: clean labels and path abstraction", async () =
 });
 
 test("Home Mode Continuity: complexity classification and continuation phrases", async () => {
-  const { classifyTaskComplexity, isContinueRequest } = await import("../dist-electron/agent-service.js");
+  const { classifyTaskComplexity, isContinueRequest, inferHomeTaskContract } = await import("../dist-electron/agent-service.js");
 
   // Document and PDF requests must route to 'complex' so they are not trapped in 3-call efficiency mode
   assert.equal(classifyTaskComplexity("create a pdf report on the US-Iran war"), "complex");
@@ -116,4 +116,14 @@ test("Home Mode Continuity: complexity classification and continuation phrases",
   // Non-continue requests should not be flagged as continue
   assert.equal(isContinueRequest("What is the capital of France?"), false);
   assert.equal(isContinueRequest("create a new file called test.txt"), false);
+
+  // Home uses a generic output contract, not a PDF/course-specific branch.
+  assert.deepEqual(inferHomeTaskContract("read the CrewAI docs and generate me a PDF course"), {
+    expectsOutput: true,
+    needsResearch: true,
+  });
+  assert.deepEqual(inferHomeTaskContract("what is CrewAI?"), {
+    expectsOutput: false,
+    needsResearch: false,
+  });
 });

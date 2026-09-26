@@ -222,6 +222,10 @@ export function HomeView({
     if (event.key === "Enter") {
       if (event.ctrlKey || event.metaKey || event.shiftKey) return;
       event.preventDefault();
+      // While a run is active the send button acts as Stop — Enter must not
+      // fire a second concurrent run (the backend would reject it, but the
+      // optimistic user message would already pollute the transcript).
+      if (running) return;
       submit();
     }
   }

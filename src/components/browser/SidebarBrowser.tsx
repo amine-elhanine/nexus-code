@@ -80,9 +80,10 @@ export const SidebarBrowser: React.FC<{
   /** Which browser this is: separate partitions, separate jars. */
   browserScope: "home" | "code";
   projectRoot?: string;
+  files?: Array<{ path: string; kind: "file" | "folder" }>;
   onSendToAgent?: (prompt: string) => void;
   onAgentNavigate?: () => void;
-}> = ({ sessionId, browserScope, projectRoot, onSendToAgent, onAgentNavigate }) => {
+}> = ({ sessionId, browserScope, projectRoot, files = [], onSendToAgent, onAgentNavigate }) => {
   const makeTab = (id: string, url: string, isAgent: boolean): SideTab => ({
     id,
     title: titleFor(url, isAgent),
@@ -187,7 +188,14 @@ export const SidebarBrowser: React.FC<{
     if (typeof api.startDaemon !== "function") return;
     setStartingServer(true);
     try {
-      await api.startDaemon("Dev Server", "npm run dev", projectRoot || "");
+      const packageFiles = files.filter((file) => file.kind === "file" && /(^|\/)package\.json$/i.test(file.path));
+      const rootPackage = packageFiles.find((file) => file.path === "package.json");
+      const packagePath = rootPackage?.path || packageFiles.sort((a, b) => a.path.split("/").length - b.path.split("/").length)[0]?.path;
+      const packageDir = packagePath ? packagePath.slice(0, packagePath.lastIndexOf("/")) : "";
+      const command = packageDir
+        ? `npm --prefix "${packageDir}" run dev`
+        : "npm run dev";
+      await api.startDaemon("Dev Server", command, projectRoot || "");
     } catch { /* error surfaces in Services dialog */ }
     setStartingServer(false);
   }

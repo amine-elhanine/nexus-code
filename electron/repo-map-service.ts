@@ -62,6 +62,27 @@ const MAP_CACHE_VERSION = 2;
 type MapCacheEntry = { mtimeMs: number; size: number; symbols: string[]; imports: string[]; listOnly: boolean };
 type MapCache = { version: number; files: Record<string, MapCacheEntry> };
 
+const STOP_WORDS = new Set(["the", "and", "for", "with", "from", "that", "this", "into", "then", "make", "add", "change", "fix", "update", "use"]);
+
+function taskTerms(task: string): string[] {
+  return [...new Set((task.toLowerCase().match(/[a-z][a-z0-9_-]{2,}/g) || []).filter((term) => !STOP_WORDS.has(term)))].slice(0, 40);
+}
+
+function relevanceScore(relativePath: string, entry: MapCacheEntry, terms: string[]): number {
+  if (!terms.length) return 0;
+  const pathText = relativePath.toLowerCase().replace(/[\\/_.-]+/g, " ");
+  const symbolText = entry.symbols.join(" ").toLowerCase();
+  const importText = entry.imports.join(" ").toLowerCase();
+  let score = 0;
+  for (const term of terms) {
+    if (new RegExp(`(^|\\s)${term.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}(?=\\s|$)`, "i").test(pathText)) score += 12;
+    else if (pathText.includes(term)) score += 5;
+    if (symbolText.includes(term)) score += 8;
+    if (importText.includes(term)) score += 2;
+  }
+  return score;
+}
+
 function mapCachePath(projectRoot: string) {
   return path.join(projectRoot, ".nexus", "repo-map-cache.json");
 }
@@ -138,7 +159,7 @@ function extractLocalImports(content: string, relPath: string): string[] {
 // Returns the markdown section ("" when the project has nothing mappable).
 // Incremental: per-file mtime+size cache under .nexus/ — unchanged files are
 // never re-read or re-parsed.
-export async function getRepoMapSection(projectRoot: string): Promise<string> {
+export async function getRepoMapSection(projectRoot: string, task = ""): Promise<string> {
   const root = path.resolve(projectRoot);
   let relPaths: string[];
   try {
@@ -151,6 +172,9 @@ export async function getRepoMapSection(projectRoot: string): Promise<string> {
   const cache = await loadMapCache(root);
   const nextFiles: Record<string, MapCacheEntry> = {};
   const sections: string[] = [];
+  const terms = taskTerms(task);
+  const rankedPaths = relPaths.map((rel, index) => ({ rel, index, score: 0, entry: null as MapCacheEntry | null }));
+  const rankedByPath = new Map(rankedPaths.map((item) => [item.rel, item]));
   let used = 0;
   let truncated = false;
 
@@ -186,16 +210,19 @@ export async function getRepoMapSection(projectRoot: string): Promise<string> {
       entry = { mtimeMs: stat.mtimeMs, size: stat.size, symbols, imports, listOnly };
     }
     nextFiles[rel] = entry;
+    const ranked = rankedByPath.get(rel)!;
+    ranked.entry = entry;
+    ranked.score = relevanceScore(rel, entry, terms);
+  }
 
-    const body = entry.listOnly || entry.symbols.length === 0
-      ? ""
-      : `\n${entry.symbols.join("\n")}`;
+  rankedPaths.sort((a, b) => b.score - a.score || a.index - b.index);
+  for (const ranked of rankedPaths) {
+    const entry = ranked.entry;
+    if (!entry) continue;
+    const body = entry.listOnly || entry.symbols.length === 0 ? "" : `\n${entry.symbols.join("\n")}`;
     const imports = entry.imports?.length ? `\n  imports: ${entry.imports.join(", ")}` : "";
-    const block = `## ${rel}${imports}${body}`;
-    if (used + block.length > MAX_MAP_CHARS) {
-      truncated = true;
-      break;
-    }
+    const block = `## ${ranked.rel}${imports}${body}`;
+    if (used + block.length > MAX_MAP_CHARS) { truncated = true; continue; }
     sections.push(block);
     used += block.length;
   }
@@ -206,7 +233,7 @@ export async function getRepoMapSection(projectRoot: string): Promise<string> {
 
   if (!sections.length) return "";
   return (
-    `REPO MAP (symbol outline and local dependency hints — paths relative to /. ` +
+    `REPO MAP (${terms.length ? "task-ranked symbol outline and local dependency hints" : "symbol outline and local dependency hints"} — paths relative to /. ` +
     `Read the specific files you need with read_file_range before editing; do not re-list the tree.)\n` +
     sections.join("\n") +
     (truncated ? `\n…[map truncated to ${MAX_MAP_CHARS} chars — grep_search for the rest]` : "")

@@ -58,7 +58,8 @@ export type ProjectRecord = { id: string; name: string; root: string; createdAt:
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
 export type ChatAttachment = { url: string; name: string; mimeType: string; size: number };
 export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; checkpointIds?: string[]; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; subagent?: SubagentItem; artifact?: unknown; detail?: string }>; model?: { providerId: string; model: string } };
-type PersistedState = { projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; appSettings?: AppSettings; notebookParser?: NotebookParserConfig; homeSessions?: SessionRecord[] };
+export type HomeMemoryPending = { id: string; category: string; fact: string; source: string; createdAt: string };
+type PersistedState = { projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; appSettings?: AppSettings; notebookParser?: NotebookParserConfig; homeSessions?: SessionRecord[]; homeMemory?: string; homeMemoryPending?: HomeMemoryPending[] };
 
 let cache: PersistedState | null = null;
 
@@ -227,7 +228,17 @@ async function persist() {
     embeddingProviders: (cache.embeddingProviders || []).map((provider) => ({ ...provider, apiKey: encryptSecret(provider.apiKey) })),
     notebookParser: cache.notebookParser ? { ...cache.notebookParser, apiKey: encryptSecret(cache.notebookParser.apiKey) } : undefined,
   };
-  await fs.writeFile(target, JSON.stringify(snapshot, null, 2), "utf8");
+  // Never overwrite the live state file in place. A process termination or
+  // power loss during writeFile could otherwise leave valid-looking but
+  // truncated JSON and discard every project/session on the next launch.
+  const temporary = `${target}.tmp-${process.pid}-${Date.now().toString(36)}`;
+  try {
+    await fs.writeFile(temporary, JSON.stringify(snapshot, null, 2), { encoding: "utf8", mode: 0o600 });
+    await fs.rename(temporary, target);
+  } catch (error) {
+    try { await fs.unlink(temporary); } catch { /* best effort cleanup */ }
+    throw error;
+  }
 }
 
 export async function listProjects() { return (await ensureLoaded()).projects; }
@@ -407,6 +418,42 @@ export async function deleteHomeSession(sessionId: string): Promise<boolean> {
   state.homeSessions = (state.homeSessions || []).filter((s) => s.id !== sessionId);
   await persist();
   return true;
+}
+// Shared Home memory: ChatGPT-style long-term memory across all Home chats.
+// Session memory stays per-chat; this is the cross-chat layer injected as
+// "Project memory" into the Home system prompt.
+export async function getHomeMemory(): Promise<string> {
+  const state = await ensureLoaded();
+  return state.homeMemory || "";
+}
+export async function updateHomeMemory(memory: string): Promise<string> {
+  const state = await ensureLoaded();
+  state.homeMemory = memory;
+  await persist();
+  return state.homeMemory;
+}
+export async function listHomeMemoryPending(): Promise<HomeMemoryPending[]> {
+  return (await ensureLoaded()).homeMemoryPending ?? [];
+}
+export async function addHomeMemoryPending(input: Omit<HomeMemoryPending, "id" | "createdAt"> & { id?: string }): Promise<HomeMemoryPending[]> {
+  const state = await ensureLoaded();
+  state.homeMemoryPending = state.homeMemoryPending ?? [];
+  const fact = input.fact.trim().slice(0, 200);
+  if (!fact) return state.homeMemoryPending;
+  const dupe = state.homeMemoryPending.some(
+    (p) => p.fact.toLowerCase() === fact.toLowerCase() || (p.category === input.category && p.fact.toLowerCase().includes(fact.toLowerCase()))
+  );
+  if (dupe) return state.homeMemoryPending;
+  state.homeMemoryPending.push({ id: input.id || uid("memcand"), category: input.category, fact, source: input.source.slice(0, 120), createdAt: new Date().toISOString() });
+  state.homeMemoryPending = state.homeMemoryPending.slice(-20);
+  await persist();
+  return state.homeMemoryPending;
+}
+export async function removeHomeMemoryPending(id: string): Promise<HomeMemoryPending[]> {
+  const state = await ensureLoaded();
+  state.homeMemoryPending = (state.homeMemoryPending ?? []).filter((p) => p.id !== id);
+  await persist();
+  return state.homeMemoryPending;
 }
 export async function listProviders() { return (await ensureLoaded()).providers; }
 export async function upsertProvider(input: Omit<ProviderConfig, "id"> & { id?: string }) {

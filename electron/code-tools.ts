@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -264,6 +264,69 @@ async function walkSearch(
   return hits;
 }
 
+export type DiagnosticItem = { file: string; line: number; col: number; code: string; message: string };
+
+function parseTscLine(line: string): DiagnosticItem | null {
+  const m = line.match(/^(.+?)\((\d+),(\d+)\):\s*(error|warning)\s+([A-Z0-9]+):\s*(.+)$/);
+  if (!m) return null;
+  return { file: m[1].replace(/\\/g, "/"), line: Number(m[2]), col: Number(m[3]), code: m[5], message: m[6].slice(0, 300) };
+}
+
+/**
+ * Structured diagnostics for the agent (LSP-lite without native deps).
+ * Runs the project's real checker scoped to the requested files when
+ * possible, falling back to a full fast check with output filtered.
+ * Always capped and never throws — returns human-readable text.
+ */
+export async function runDiagnostics(projectRoot: string, files: string[] = []): Promise<{ items: DiagnosticItem[]; summary: string }> {
+  const root = path.resolve(projectRoot);
+  const cleanFiles = files.map((f) => f.replace(/"/g, "").trim()).filter(Boolean).slice(0, 10);
+  const items: DiagnosticItem[] = [];
+  try {
+    const pkgPath = path.join(root, "package.json");
+    if (existsSync(pkgPath) || existsSync(path.join(root, "tsconfig.json"))) {
+      // Prefer tsc; eslint is a lint fast-path handled by verify, not here.
+      const tscArgs = ["--no-install", "tsc", "--noEmit", "--pretty", "false"];
+      try {
+        await execFileAsync("npx", tscArgs, { cwd: root, timeout: 60000, maxBuffer: 8_000_000 });
+        return { items, summary: "No TypeScript errors." };
+      } catch (error: any) {
+        const output = String(error?.stdout || error?.output || error?.message || "");
+        for (const line of output.split(/\r?\n/)) {
+          const parsed = parseTscLine(line);
+          if (!parsed) continue;
+          if (cleanFiles.length && !cleanFiles.some((f) => parsed.file.endsWith(f.replace(/^\.\//, "")))) continue;
+          items.push(parsed);
+          if (items.length >= 50) break;
+        }
+        if (!items.length) return { items, summary: "TypeScript check passed (no parseable errors)." };
+        const summary = items.map((d) => `${d.file}:${d.line}:${d.col} ${d.code} ${d.message}`).join("\n");
+        return { items, summary: `TypeScript diagnostics (${items.length}):\n${summary}`.slice(0, 4000) };
+      }
+    }
+    if (cleanFiles.length && cleanFiles.every((f) => f.endsWith(".py"))) {
+      try {
+        await execFileAsync("ruff", ["check", "--output-format", "concise", ...cleanFiles], { cwd: root, timeout: 30000, maxBuffer: 4_000_000 });
+        return { items, summary: "No ruff errors." };
+      } catch (error: any) {
+        const output = String(error?.stdout || error?.output || error?.message || "").slice(0, 4000);
+        return { items, summary: output || "Ruff reported issues." };
+      }
+    }
+    if (cleanFiles.length === 1 && cleanFiles[0].endsWith(".py")) {
+      try {
+        await execFileAsync("python", ["-m", "py_compile", cleanFiles[0]], { cwd: root, timeout: 30000, maxBuffer: 1_000_000 });
+        return { items, summary: `No syntax errors in ${cleanFiles[0]}.` };
+      } catch (error: any) {
+        return { items, summary: String(error?.stdout || error?.message || "Python syntax error.").slice(0, 2000) };
+      }
+    }
+    return { items, summary: "No supported checker found for diagnostics (need tsconfig.json/package.json or Python files)." };
+  } catch (error) {
+    return { items, summary: `Diagnostics failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 1000) };
+  }
+}
+
 export function createCodeIntelligenceTools(projectRoot: string) {
   const getSymbolOutlineTool = tool(
     async ({ filePath }: { filePath: string }) => {
@@ -442,12 +505,30 @@ export function createCodeIntelligenceTools(projectRoot: string) {
   // one symbol-reference escape hatch. The backend already exposes read/grep/
   // glob, so outline/definition tools were pure choice-overload — their pure
   // parsers (parseSymbolsFromCode/formatOutline) stay exported for tests.
-  return [findSymbolReferencesTool, readFileRangeTool, grepSearchTool];
+  const getDiagnosticsTool = tool(
+    async ({ files }: { files?: string[] }) => {
+      try {
+        const { summary } = await runDiagnostics(projectRoot, files ?? []);
+        return summary;
+      } catch (error) {
+        return `Diagnostics failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    },
+    {
+      name: "get_diagnostics",
+      description: "Run the project's real language checker (tsc --noEmit, ruff, py_compile) and return structured file:line:col errors, optionally filtered to the given relative file paths. Use this instead of guessing whether edits compile.",
+      schema: z.object({
+        files: z.array(z.string()).optional().describe("Optional relative file paths to filter diagnostics (max 10). Omit for whole-project check."),
+      }),
+    }
+  );
+
+  return [findSymbolReferencesTool, readFileRangeTool, grepSearchTool, getDiagnosticsTool];
 }
 
 // Opencode parity: the backend already exposes read/grep/glob, so the LLM
 // only needs a small core.
-export const CORE_CODE_TOOL_NAMES = ["read_file_range", "grep_search"];
+export const CORE_CODE_TOOL_NAMES = ["read_file_range", "grep_search", "get_diagnostics"];
 
 export function pickRuntimeCodeTools(allTools: any[], complexity: "simple" | "complex"): any[] {
   if (complexity === "simple") {

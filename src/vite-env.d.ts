@@ -79,6 +79,7 @@ export interface NexusApi {
   readAttachment: (url: string) => Promise<{ base64: string; fileName: string; mimeType: string; size: number }>;
   getDiff: () => Promise<WorkspaceDiffFile[]>;
   revertFile: (file: string) => Promise<boolean>;
+  revertHunk: (file: string, hunkHeader: string) => Promise<boolean>;
   revertAll: () => Promise<boolean>;
   restoreCheckpoint: (checkpointId: string) => Promise<boolean>;
   clearCheckpoints: () => Promise<boolean>;
@@ -160,6 +161,11 @@ export interface NexusApi {
   cancelHomeAgent: (sessionId?: string) => Promise<boolean>;
   listHomeFiles: () => Promise<Array<{ path: string; name: string; size: number; modified: string }>>;
   listHomeSessionFiles: (sessionId: string) => Promise<Array<{ path: string; name: string; size: number; modified: string }>>;
+  getHomeMemory: () => Promise<string>;
+  updateHomeMemory: (memory: string) => Promise<string>;
+  getHomeMemoryStructured: () => Promise<{ structure: { profile: string[]; preferences: string[]; facts: string[]; context: string[]; recentDeliverables: Array<{ date: string; summary: string; sessionId?: string }>; customNotes?: string }; pending: Array<{ id: string; category: string; fact: string; source: string; createdAt: string }> }>;
+  resolveHomeMemoryPending: (id: string, accept: boolean) => Promise<{ structure: { profile: string[]; preferences: string[]; facts: string[]; context: string[]; recentDeliverables: Array<{ date: string; summary: string; sessionId?: string }>; customNotes?: string }; pending: Array<{ id: string; category: string; fact: string; source: string; createdAt: string }> }>;
+  removeHomeMemoryFact: (category: string, fact: string) => Promise<{ profile: string[]; preferences: string[]; facts: string[]; context: string[]; recentDeliverables: Array<{ date: string; summary: string; sessionId?: string }>; customNotes?: string }>;
   readHomeFile: (relativePath: string) => Promise<{ name: string; path: string; size: number; base64: string }>;
   downloadHomeFile: (relativePath: string) => Promise<string | null>;
   openHomeFolder: () => Promise<void>;
@@ -205,6 +211,8 @@ export interface NexusApi {
 
   runAgent: (payload: { request: string; images?: string[]; attachments?: ChatAttachment[]; providerId?: string; model?: string; mode?: string; sessionId?: string; projectId?: string }) => Promise<string>;
   cancelAgent: (sessionId?: string) => Promise<boolean>;
+  resolveUserQuestion: (id: string, answers?: Record<string, string> | null, cancelled?: boolean) => Promise<boolean>;
+  onUserQuestionRequest: (listener: (request: { id: string; sessionId: string; questions: Array<{ header: string; question: string; options: string[] }> }) => void) => () => void;
   onAgentEvent: (listener: (event: AgentEvent) => void) => () => void;
 }
 

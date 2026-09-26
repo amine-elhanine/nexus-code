@@ -19,6 +19,7 @@ export const WorktreeBar: React.FC<WorktreeBarProps> = ({
   const [merging, setMerging] = useState(false);
   const [discarding, setDiscarding] = useState(false);
   const [mergeStatus, setMergeStatus] = useState<string | null>(null);
+  const [conflictFiles, setConflictFiles] = useState<string[]>([]);
   const [showConfirmDiscard, setShowConfirmDiscard] = useState(false);
 
   if (!isGit || !worktree) return null;
@@ -29,18 +30,30 @@ export const WorktreeBar: React.FC<WorktreeBarProps> = ({
     try {
       setMerging(true);
       setMergeStatus(null);
-      const result = await api.mergeWorktree(sessionId);
+      setConflictFiles([]);
+      const result = await api.mergeWorktree(sessionId) as { success: boolean; error?: string; conflictFiles?: string[] };
       if (result.success) {
         setMergeStatus("Merged successfully!");
         onMergeSuccess?.();
         setTimeout(() => setMergeStatus(null), 3000);
       } else {
+        setConflictFiles(result.conflictFiles || []);
         setMergeStatus(`Merge failed: ${result.error || "Conflict detected"}`);
       }
     } catch (err) {
       setMergeStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setMerging(false);
+    }
+  };
+
+  const handleAbortMerge = async () => {
+    try {
+      await (api as unknown as { abortWorktreeMerge: () => Promise<boolean> }).abortWorktreeMerge();
+      setConflictFiles([]);
+      setMergeStatus("Merge aborted — worktree kept intact.");
+    } catch (err) {
+      setMergeStatus(`Abort failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
@@ -72,6 +85,11 @@ export const WorktreeBar: React.FC<WorktreeBarProps> = ({
               {mergeStatus}
             </span>
           )}
+          {conflictFiles.length > 0 && (
+            <button type="button" className="btn-worktree-discard" onClick={handleAbortMerge} title="Abort the failed merge, keep worktree intact">
+              <AlertCircle size={13} /> Abort merge
+            </button>
+          )}
           <button
             type="button"
             className="btn-worktree-merge"
@@ -102,7 +120,19 @@ export const WorktreeBar: React.FC<WorktreeBarProps> = ({
               <div>
                 <span className="view-kicker" style={{ color: "var(--red)" }}>CONFIRM ACTION</span>
                 <h2 style={{ fontSize: "16px", margin: "6px 0 4px" }}>Discard Worktree</h2>
-              </div>
+      </div>
+
+      {conflictFiles.length > 0 && (
+        <div className="worktree-conflicts" style={{ padding: "8px 12px", fontSize: "11px", color: "#f0a35e" }}>
+          <strong style={{ display: "flex", alignItems: "center", gap: 6 }}><AlertCircle size={13} /> Conflicting files ({conflictFiles.length}) — resolve in Editor, then Merge again or Abort:</strong>
+          <ul style={{ margin: "6px 0 0 18px", color: "#a6b2c2" }}>
+            {conflictFiles.slice(0, 20).map((f) => (
+              <li key={f}><code>{f}</code></li>
+            ))}
+          </ul>
+          {conflictFiles.length > 20 && <small>…and {conflictFiles.length - 20} more</small>}
+        </div>
+      )}
             </div>
             <p style={{ color: "#a6b2c2", fontSize: "11px", lineHeight: "1.5", margin: "0 0 18px" }}>
               Are you sure you want to discard this isolated worktree and all its changes? This action cannot be undone.

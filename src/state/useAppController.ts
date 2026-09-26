@@ -125,7 +125,9 @@ export function useAppController() {
       // Events from a session other than the currently viewed one still
       // accumulate (so switching later shows them) but don't stream into view.
       if (event.type === "token") {
-        if (activeSession?.id && event.sessionId === activeSession.id) {
+        // This subscription intentionally runs once. Read the ref so tokens
+        // follow the session selected after the initial render as well.
+        if (activeSessionRef.current?.id && event.sessionId === activeSessionRef.current.id) {
           setStreamingText((current) => current + event.text);
         }
         return;
@@ -133,7 +135,7 @@ export function useAppController() {
 
       // While tool actions or steps are running, clear any speculative pre-tool text
       if (event.type === "tool" || event.type === "status" || event.type === "plan") {
-        if (activeSession?.id && event.sessionId === activeSession.id) {
+        if (activeSessionRef.current?.id && event.sessionId === activeSessionRef.current.id) {
           setStreamingText("");
         }
       }
@@ -648,6 +650,16 @@ export function useAppController() {
     }
   }
 
+  async function revertSingleHunk(filePath: string, hunkHeader: string) {
+    try {
+      await (api as unknown as { revertHunk: (f: string, h: string) => Promise<boolean> }).revertHunk(filePath, hunkHeader);
+      await refreshDiff();
+      await loadWorkspace();
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
   function revertAllChanges() {
     setConfirmDialog({
       title: "Discard all changes?",
@@ -794,6 +806,7 @@ export function useAppController() {
     loadWorkspace,
     refreshDiff,
     revertSingleFile,
+    revertSingleHunk,
     revertAllChanges,
     undoRun,
     undoLatest,

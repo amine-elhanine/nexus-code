@@ -1,7 +1,7 @@
 // Unit tests for loopPreventionMiddleware in agent-service
 import assert from "node:assert/strict";
 import { ToolMessage } from "@langchain/core/messages";
-import { loopPreventionMiddleware } from "../dist-electron/agent-service.js";
+import { loopPreventionMiddleware, loadedSkillNamesFromMessages, shouldSkipMcpForTask } from "../dist-electron/agent-service.js";
 
 let passed = 0;
 let failed = 0;
@@ -108,6 +108,66 @@ await test("path normalization handles Windows slashes and leading slashes", asy
 
   // Should detect as same target despite \\ vs / and filePath vs file_path
   assert.ok(res2.content.includes("[Notice: You already inspected 'src/App.tsx'"));
+});
+
+await test("second read of the same SKILL.md is short-circuited without executing", async () => {
+  const middleware = loopPreventionMiddleware();
+  let calls = 0;
+  const handler = async () => {
+    calls++;
+    return new ToolMessage({ content: "# pptx skill", tool_call_id: "s", name: "read_file" });
+  };
+
+  const first = await middleware.wrapToolCall(
+    { toolCall: { name: "read_file", args: { file_path: "/system-skills/pptx/SKILL.md" }, id: "s1" } },
+    handler
+  );
+  assert.equal(calls, 1);
+  assert.equal(first.content, "# pptx skill");
+
+  // Same skill via a different path spelling still hits the guard
+  const second = await middleware.wrapToolCall(
+    { toolCall: { name: "read_file", args: { file_path: "system-skills/pptx/SKILL.md" }, id: "s2" } },
+    handler
+  );
+  assert.equal(calls, 1); // handler NOT executed again
+  assert.equal(second.status, "error");
+  assert.ok(second.content.includes("[SKILL ALREADY LOADED]"));
+  assert.ok(second.content.includes("pptx"));
+});
+
+await test("different skills each load once; regular reads unaffected", async () => {
+  const middleware = loopPreventionMiddleware();
+  let calls = 0;
+  const handler = async () => {
+    calls++;
+    return new ToolMessage({ content: "body", tool_call_id: "x", name: "read_file" });
+  };
+
+  await middleware.wrapToolCall({ toolCall: { name: "read_file", args: { file_path: "system-skills/pptx/SKILL.md" }, id: "a1" } }, handler);
+  await middleware.wrapToolCall({ toolCall: { name: "read_file", args: { file_path: "system-skills/latex/SKILL.md" }, id: "a2" } }, handler);
+  await middleware.wrapToolCall({ toolCall: { name: "read_file", args: { file_path: "src/App.tsx" }, id: "a3" } }, handler);
+  assert.equal(calls, 3);
+});
+
+await test("loadedSkillNamesFromMessages extracts unique skill names", () => {
+  const messages = [
+    { role: "user", content: "hi" },
+    { tool_calls: [{ name: "read_file", args: { file_path: "/system-skills/pptx/SKILL.md" } }] },
+    { tool_calls: [{ name: "read_file", args: { file_path: "system-skills/pptx/SKILL.md" } }] },
+    { tool_calls: [{ name: "read_file", args: { file_path: "src/App.tsx" } }] },
+    { additional_kwargs: { tool_calls: [{ function: { arguments: JSON.stringify({ file_path: ".nexus/skills/latex/SKILL.md" }) } }] } },
+  ];
+  assert.deepEqual(loadedSkillNamesFromMessages(messages), ["pptx", "latex"]);
+  assert.deepEqual(loadedSkillNamesFromMessages([]), []);
+});
+
+await test("shouldSkipMcpForTask drops MCP only for pure doc builds", () => {
+  assert.equal(shouldSkipMcpForTask("generate me a presentation where you explain transformers"), true);
+  assert.equal(shouldSkipMcpForTask("Create a Word document (.docx) about Q3 results"), true);
+  assert.equal(shouldSkipMcpForTask("Research the web for transformer papers and write a report"), false);
+  assert.equal(shouldSkipMcpForTask("list me my github repos"), false);
+  assert.equal(shouldSkipMcpForTask("Fix the login bug in src/auth.ts"), false);
 });
 
 console.log(`\nSummary: ${passed} passed, ${failed} failed.`);

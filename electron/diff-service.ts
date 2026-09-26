@@ -170,6 +170,57 @@ export async function revertAllWorkspaceChanges(projectRoot: string): Promise<bo
   }
 }
 
+/**
+ * Per-hunk discard (opencode-style accept/reject). Reverts a single `@@`
+ * hunk of a tracked file by reverse-applying just that hunk, leaving the
+ * rest of the file's changes intact. Untracked files have no HEAD hunk to
+ * restore — use whole-file revert for those.
+ */
+export async function revertWorkspaceHunk(projectRoot: string, relativePath: string, hunkHeader: string): Promise<boolean> {
+  const root = path.resolve(projectRoot);
+  const normalized = relativePath.replace(/\\/g, "/").replace(/^\.\//, "");
+  const target = path.resolve(root, normalized);
+  if (!target.startsWith(`${root}${path.sep}`) && target !== root) throw new Error("Target file escapes project root.");
+  if (!/^@@\s+-?\d+(,\d+)?\s+\+\d+(,\d+)?\s+@@/.test(hunkHeader.trim())) throw new Error("Invalid hunk header.");
+  const diffs = await getWorkspaceDiffFiles(root);
+  const file = diffs.find((d) => d.path === normalized);
+  if (!file || !file.patch) throw new Error("No diff found for file.");
+  const lines = file.patch.split(/\r?\n/);
+  let headerEnd = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith("+++ ")) { headerEnd = i; break; }
+  }
+  if (headerEnd < 0) throw new Error("Cannot parse file patch header.");
+  const fileHeader = lines.slice(0, headerEnd + 1);
+  const wanted = hunkHeader.trim();
+  const hunks: string[][] = [];
+  let current: string[] | null = null;
+  for (let i = headerEnd + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith("@@ ")) {
+      if (current) hunks.push(current);
+      current = [line];
+    } else if (current) {
+      current.push(line);
+    }
+  }
+  if (current) hunks.push(current);
+  const match = hunks.find((h) => h[0].trim() === wanted);
+  if (!match) throw new Error("Hunk not found in current diff.");
+  const singlePatch = [...fileHeader, ...match].join("\n") + "\n";
+  await new Promise<void>((resolve, reject) => {
+    import("node:child_process").then(({ execFile: ef }) => {
+      const child = ef("git", ["apply", "-R", "--unidiff-zero", "--whitespace=nowarn", "-"], { cwd: root, maxBuffer: 4_000_000 }, (error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+      child.stdin?.write(singlePatch);
+      child.stdin?.end();
+    }).catch(reject);
+  });
+  return true;
+}
+
 // Checkpoints persist to disk (.nexus/checkpoints/<id>/manifest.json) so an
 // "Undo run" survives app restarts. Content is stored as utf8 text — the same
 // fidelity the in-memory snapshot had; binary files are not checkpointed.
