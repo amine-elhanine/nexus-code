@@ -10,6 +10,15 @@ import type {
 import { getSessionUsage } from "../utils/format.js";
 
 export type HomeFile = { path: string; name: string; size: number; modified: string };
+export type HomeMemoryStructureView = {
+  profile: string[];
+  preferences: string[];
+  facts: string[];
+  context: string[];
+  recentDeliverables: Array<{ date: string; summary: string; sessionId?: string }>;
+  customNotes?: string;
+};
+export type HomeMemoryPendingView = { id: string; category: string; fact: string; source: string; createdAt: string };
 
 export function sortHomeSessions(list: SessionRecord[]): SessionRecord[] {
   return [...list].sort((a, b) => {
@@ -25,6 +34,10 @@ export function useHomeController(enabled = true) {
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [activeSession, setActiveSession] = useState<SessionRecord | null>(null);
   const [homeRoot, setHomeRoot] = useState("");
+  const [homeMemory, setHomeMemory] = useState("");
+  const emptyStructure: HomeMemoryStructureView = { profile: [], preferences: [], facts: [], context: [], recentDeliverables: [] };
+  const [homeStructure, setHomeStructure] = useState<HomeMemoryStructureView>(emptyStructure);
+  const [homePending, setHomePending] = useState<HomeMemoryPendingView[]>([]);
   const [homeFiles, setHomeFiles] = useState<HomeFile[]>([]);
   const [homeSessionFiles, setHomeSessionFiles] = useState<HomeFile[]>([]);
   const [draft, setDraft] = useState("");
@@ -40,6 +53,9 @@ export function useHomeController(enabled = true) {
 
   const liveEventsRef = useRef<Record<string, ChatItem[]>>({});
   liveEventsRef.current = liveEvents;
+  // Guards re-submits within the same tick (before runningSessionIds state
+  // propagates) — see submit below.
+  const submitInflightRef = useRef<Set<string>>(new Set());
   const activeSessionRef = useRef<SessionRecord | null>(null);
   activeSessionRef.current = activeSession;
   const sessionsRef = useRef<SessionRecord[]>([]);
@@ -81,6 +97,31 @@ export function useHomeController(enabled = true) {
     }
   }, [api]);
 
+  const refreshHomeMemory = useCallback(async () => {
+    try {
+      const value = await (api as unknown as { getHomeMemory: () => Promise<string> }).getHomeMemory?.();
+      if (typeof value === "string") setHomeMemory(value);
+    } catch {
+      /* memory is best-effort */
+    }
+    try {
+      const detailed = await (api as unknown as { getHomeMemoryStructured?: () => Promise<{ structure: HomeMemoryStructureView; pending: HomeMemoryPendingView[] }> }).getHomeMemoryStructured?.();
+      if (detailed?.structure) setHomeStructure(detailed.structure);
+      if (detailed?.pending) setHomePending(detailed.pending);
+    } catch {
+      /* structured view is best-effort */
+    }
+  }, [api]);
+
+  const saveHomeMemory = useCallback(async (memory: string) => {
+    try {
+      const value = await (api as unknown as { updateHomeMemory: (m: string) => Promise<string> }).updateHomeMemory?.(memory);
+      setHomeMemory(typeof value === "string" ? value : memory);
+    } catch (error) {
+      console.error("Failed to save home memory", error);
+    }
+  }, [api]);
+
   // Initial load
   useEffect(() => {
     let mounted = true;
@@ -88,12 +129,17 @@ export function useHomeController(enabled = true) {
       api.getHome().catch(() => ({ root: "", project: { id: "home", name: "Home", root: "" } })),
       api.listHomeSessions().catch(() => []),
       api.listHomeFiles().catch(() => []),
-    ]).then(([homeInfo, sessionList, files]) => {
+      (api as unknown as { getHomeMemory?: () => Promise<string> }).getHomeMemory?.().catch(() => ""),
+      (api as unknown as { getHomeMemoryStructured?: () => Promise<{ structure: HomeMemoryStructureView; pending: HomeMemoryPendingView[] }> }).getHomeMemoryStructured?.().catch(() => null),
+    ]).then(([homeInfo, sessionList, files, memory, detailed]) => {
       if (!mounted) return;
       if (homeInfo?.root) setHomeRoot(homeInfo.root);
       const sorted = sortHomeSessions(sessionList || []);
       setSessions(sorted);
       if (files) setHomeFiles(files);
+      if (typeof memory === "string") setHomeMemory(memory);
+      if (detailed?.structure) setHomeStructure(detailed.structure);
+      if (detailed?.pending) setHomePending(detailed.pending);
       if (sorted.length > 0) {
         setActiveSession(sorted[0]);
         void refreshSessionFiles(sorted[0].id);
@@ -140,6 +186,7 @@ export function useHomeController(enabled = true) {
       };
 
       if (event.type === "assistant" || event.type === "error") {
+        const log = liveEventsRef.current[bucket] || [];
         const { [bucket]: _dropped, ...rest } = liveEventsRef.current;
         liveEventsRef.current = rest;
         setLiveEvents(rest);
@@ -150,15 +197,35 @@ export function useHomeController(enabled = true) {
           return next;
         });
 
-        // Update active session messages
-        if (activeSessionRef.current?.id === bucket) {
-          void api.activateHomeSession(bucket).then((fresh) => {
-            if (fresh) {
-              setActiveSession(fresh);
-              void refreshSessionFiles(fresh.id);
-            }
+        // Deterministic display (Code parity): fold the final item into the
+        // local transcript NOW from the event itself. The backend refetch
+        // below only reconciles — previously display depended entirely on a
+        // refetch that fires before the backend has persisted the answer,
+        // so the streamed text vanished with nothing replacing it.
+        const targetSessionId = bucket;
+        setActiveSession((current) => {
+          if (!current || current.id !== targetSessionId) return current;
+          const logItems = log.filter((entry) => !(entry.kind === "usage"));
+          const finalItem: ChatItem = event.type === "assistant"
+            ? { role: "assistant", text: event.text, createdAt: event.timestamp || new Date().toISOString(), usage: event.usage }
+            : { role: "event", kind: "error", text: event.text, createdAt: event.timestamp || new Date().toISOString() };
+          const tail = current.messages[current.messages.length - 1] as ChatItem | undefined;
+          if (tail && tail.role === finalItem.role && tail.text === finalItem.text && (tail.kind || null) === (finalItem.kind || null)) return current;
+          return { ...current, messages: [...current.messages, ...logItems, finalItem] };
+        });
+        // Background reconcile with server truth (usage totals, memory, files).
+        // Never clobber: if the server copy is shorter than local, its persist
+        // simply hasn't landed yet — keep local until the next refresh.
+        void api.activateHomeSession(bucket).then((fresh) => {
+          if (!fresh || fresh.id !== targetSessionId) return;
+          setActiveSession((prev) => {
+            if (!prev || prev.id !== targetSessionId) return prev;
+            const serverMessages = (fresh.messages || []) as ChatItem[];
+            if (serverMessages.length < prev.messages.length) return prev;
+            void refreshSessionFiles(fresh.id);
+            return { ...prev, ...fresh, messages: serverMessages };
           });
-        }
+        });
         void refreshFiles();
         void refreshSessions();
       } else {
@@ -260,6 +327,11 @@ export function useHomeController(enabled = true) {
       }
 
       const sessionId = currentActive.id;
+      // Drop re-submits while this chat's run is still active (e.g. double
+      // Enter during silent setup) — the backend rejects twins, but the
+      // optimistic user message below would already corrupt the transcript.
+      if (submitInflightRef.current.has(sessionId)) return;
+      submitInflightRef.current.add(sessionId);
       const imagesToSend = [...attachedImages];
       const attachmentsToSend = [...attachments];
 
@@ -299,6 +371,7 @@ export function useHomeController(enabled = true) {
       } catch (error) {
         console.error("Home agent run failed", error);
       } finally {
+        submitInflightRef.current.delete(sessionId);
         setRunningSessionIds((curr) => {
           const next = new Set(curr);
           next.delete(sessionId);
@@ -306,14 +379,22 @@ export function useHomeController(enabled = true) {
         });
         const fresh = await api.activateHomeSession(sessionId);
         if (fresh) {
-          setActiveSession(fresh);
+          // Same never-clobber rule as the event path: a lagging fetch must
+          // not drop the locally folded answer.
+          setActiveSession((prev) => {
+            if (!prev || prev.id !== fresh.id) return fresh;
+            const serverMessages = (fresh.messages || []) as ChatItem[];
+            if (serverMessages.length < prev.messages.length) return prev;
+            return fresh;
+          });
           void refreshSessionFiles(fresh.id);
         }
         void refreshFiles();
         void refreshSessions();
+        void refreshHomeMemory();
       }
     },
-    [activeSessionRef, api, attachedImages, attachments, createChat, draft, refreshFiles, refreshSessionFiles, refreshSessions]
+    [activeSessionRef, api, attachedImages, attachments, createChat, draft, refreshFiles, refreshHomeMemory, refreshSessionFiles, refreshSessions]
   );
 
   const stopAgent = useCallback(async () => {
@@ -362,5 +443,55 @@ export function useHomeController(enabled = true) {
     refreshFiles,
     refreshSessionFiles,
     refreshSessions,
+    homeMemory,
+    setHomeMemory,
+    refreshHomeMemory,
+    saveHomeMemory,
+    homeStructure,
+    homePending,
+    resolvePending: async (id: string, accept: boolean) => {
+      try {
+        const result = await (api as unknown as { resolveHomeMemoryPending: (id: string, accept: boolean) => Promise<{ structure: HomeMemoryStructureView; pending: HomeMemoryPendingView[] }> }).resolveHomeMemoryPending(id, accept);
+        if (result?.structure) {
+          setHomeStructure(result.structure);
+          // Keep raw string in sync for legacy consumers.
+          void refreshHomeMemory();
+        }
+        if (result?.pending) setHomePending(result.pending);
+      } catch (error) {
+        console.error("Failed to resolve memory suggestion", error);
+      }
+    },
+    removeFact: async (category: string, fact: string) => {
+      try {
+        const structure = await (api as unknown as { removeHomeMemoryFact: (c: string, f: string) => Promise<HomeMemoryStructureView> }).removeHomeMemoryFact(category, fact);
+        if (structure) setHomeStructure(structure);
+        void refreshHomeMemory();
+      } catch (error) {
+        console.error("Failed to remove memory fact", error);
+      }
+    },
+    clearSessionMemory: async () => {
+      const active = activeSessionRef.current;
+      if (!active) return;
+      try {
+        const fresh = await api.updateHomeSession(active.id, { memory: "" });
+        setActiveSession(fresh);
+      } catch (error) {
+        console.error("Failed to clear session memory", error);
+      }
+    },
+    saveMemories: async (nextHomeMemory: string, nextSessionMemory: string) => {
+      await saveHomeMemory(nextHomeMemory);
+      const active = activeSessionRef.current;
+      if (active) {
+        try {
+          const fresh = await api.updateHomeSession(active.id, { memory: nextSessionMemory });
+          setActiveSession(fresh);
+        } catch (error) {
+          console.error("Failed to save home session memory", error);
+        }
+      }
+    },
   };
 }

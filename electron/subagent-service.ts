@@ -106,8 +106,10 @@ export type SubagentEventHandler = (event: {
 }) => void;
 
 export const MAX_SUBAGENTS_PER_RUN = 3;
+export const MAX_MUTATING_SUBAGENTS_PER_RUN = 1;
 export const MAX_SUBAGENT_OUTPUT_CHARS = 12_000;
 const activeSubagents = new Map<string, number>();
+const activeMutatingSubagents = new Map<string, number>();
 
 function runKey(runId?: string) { return runId || "global"; }
 function tryAcquireSubagent(runId?: string): boolean {
@@ -122,6 +124,21 @@ function releaseSubagent(runId?: string) {
   const next = (activeSubagents.get(key) || 1) - 1;
   if (next <= 0) activeSubagents.delete(key);
   else activeSubagents.set(key, next);
+}
+
+function tryAcquireMutatingSubagent(runId?: string): boolean {
+  const key = runKey(runId);
+  const active = activeMutatingSubagents.get(key) || 0;
+  if (active >= MAX_MUTATING_SUBAGENTS_PER_RUN) return false;
+  activeMutatingSubagents.set(key, active + 1);
+  return true;
+}
+
+function releaseMutatingSubagent(runId?: string) {
+  const key = runKey(runId);
+  const next = (activeMutatingSubagents.get(key) || 1) - 1;
+  if (next <= 0) activeMutatingSubagents.delete(key);
+  else activeMutatingSubagents.set(key, next);
 }
 
 export function capSubagentOutput(output: string, maxChars = MAX_SUBAGENT_OUTPUT_CHARS): string {
@@ -407,6 +424,11 @@ export async function executeSubagentTask(options: {
   if (!task.trim()) return `[Subagent: ${config.title} Failed]\nA subagent task is required.`;
   if (task.length > 4_000) return `[Subagent: ${config.title} Failed]\nSubagent task is too large; narrow it to a focused subtask (maximum 4,000 characters).`;
   if (!tryAcquireSubagent(runId)) return `[Subagent: ${config.title} Failed]\nSubagent concurrency limit reached (${MAX_SUBAGENTS_PER_RUN} active tasks for this run).`;
+  const mutatesWorkspace = !config.readOnly;
+  if (mutatesWorkspace && !tryAcquireMutatingSubagent(runId)) {
+    releaseSubagent(runId);
+    return `[Subagent: ${config.title} Failed]\nA write-capable subagent is already modifying this workspace. Wait for it to finish before delegating another mutating task.`;
+  }
 
   const subagentItem: SubagentItem = {
     id: subagentId,
@@ -548,6 +570,7 @@ export async function executeSubagentTask(options: {
     onEvent?.({ type: "subagent_finish", subagent: { ...subagentItem } });
     return `[Subagent: ${config.title} Failed]\n${errorMsg}`;
   } finally {
+    if (mutatesWorkspace) releaseMutatingSubagent(runId);
     releaseSubagent(runId);
   }
 }
@@ -583,7 +606,7 @@ export function createSubagentDelegationTool(options: {
     },
     {
       name: "delegate_task",
-      description: "Delegate an isolated sub-task to a specialized engineering subagent. 68 specialized ECC roles are supported, including 'architect', 'code-reviewer', 'security-reviewer', 'tdd-guide', 'build-error-resolver', 'refactor-cleaner', 'database-reviewer', 'researcher', 'tester', 'coder', etc.",
+      description: "Delegate a focused sub-task to a specialized engineering subagent. Read-only specialists may run concurrently, but only one write-capable subagent may modify the workspace at a time. 68 specialized ECC roles are supported, including 'architect', 'code-reviewer', 'security-reviewer', 'tdd-guide', 'build-error-resolver', 'refactor-cleaner', 'database-reviewer', 'researcher', 'tester', 'coder', etc.",
       schema: z.object({
         role: z.string().min(1).describe("The specialized subagent role to execute the task (e.g. 'architect', 'code-reviewer', 'security-reviewer', 'tdd-guide', 'build-error-resolver', 'database-reviewer', 'researcher', 'tester', 'coder', or any other ECC specialist agent)."),
         task: z.string().min(1).max(4_000).describe("Clear, focused instructions for the subagent describing what to find, design, test, review, or implement. Maximum 4,000 characters."),

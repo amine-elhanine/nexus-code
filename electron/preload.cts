@@ -53,6 +53,7 @@ const nexusApi = {
   readAttachment: (url: string) => invoke("attachments:read", url),
   getDiff: () => invoke("workspace:diff"),
   revertFile: (file: string) => invoke("workspace:revert-file", file),
+  revertHunk: (file: string, hunkHeader: string) => invoke("workspace:revert-hunk", file, hunkHeader),
   revertAll: () => invoke("workspace:revert-all"),
   restoreCheckpoint: (checkpointId: string) => invoke("checkpoint:restore", checkpointId),
   clearCheckpoints: () => invoke("checkpoint:clear"),
@@ -64,6 +65,7 @@ const nexusApi = {
   createWorktree: (sessionId: string) => invoke("worktree:create", sessionId),
   getWorktreeStatus: (sessionId: string) => invoke("worktree:status", sessionId),
   mergeWorktree: (sessionId: string, commitMessage?: string) => invoke("worktree:merge", sessionId, commitMessage),
+  abortWorktreeMerge: () => invoke("worktree:abort-merge"),
   discardWorktree: (sessionId: string) => invoke("worktree:discard", sessionId),
   getWorktreeDiff: (sessionId: string) => invoke("worktree:diff", sessionId),
 
@@ -160,6 +162,11 @@ const nexusApi = {
   cancelHomeAgent: (sessionId?: string) => invoke("home:cancel", sessionId),
   listHomeFiles: () => invoke("home:files"),
   listHomeSessionFiles: (sessionId: string) => invoke("home:sessionFiles", sessionId),
+  getHomeMemory: () => invoke("home:memory:get"),
+  updateHomeMemory: (memory: string) => invoke("home:memory:update", memory),
+  getHomeMemoryStructured: () => invoke("home:memory:structured"),
+  resolveHomeMemoryPending: (id: string, accept: boolean) => invoke("home:memory:pending:resolve", { id, accept }),
+  removeHomeMemoryFact: (category: string, fact: string) => invoke("home:memory:fact:remove", { category, fact }),
   readHomeFile: (relativePath: string) => invoke("home:readFile", relativePath),
   downloadHomeFile: (relativePath: string) => invoke("home:download", relativePath),
   openHomeFolder: () => invoke("home:openFolder"),
@@ -219,6 +226,12 @@ const nexusApi = {
   runAgent: (payload: { request: string; images?: string[]; attachments?: Array<{ url: string; name: string; mimeType: string; size: number }>; providerId?: string; model?: string; mode?: string; sessionId?: string; projectId?: string }) => invoke("agent:run", payload),
   cancelAgent: (sessionId?: string) => invoke("agent:cancel", sessionId),
   resolveCommandApproval: (id: string, decision: "once" | "session" | "deny") => invoke("command:approval", { id, decision }),
+  resolveUserQuestion: (id: string, answers?: Record<string, string> | null, cancelled?: boolean) => invoke("question:resolve", { id, answers, cancelled }),
+  onUserQuestionRequest: (listener: (request: { id: string; sessionId: string; questions: Array<{ header: string; question: string; options: string[] }> }) => void) => {
+    const handler = (_event: IpcRendererEvent, request: { id: string; sessionId: string; questions: Array<{ header: string; question: string; options: string[] }> }) => listener(request);
+    ipcRenderer.on("question:request", handler);
+    return () => ipcRenderer.removeListener("question:request", handler);
+  },
   onCommandApprovalRequest: (listener: (request: { id: string; runId?: string; command: string; cwd: string; reason: string; approvalKey?: string; createdAt: string }) => void) => {
     const handler = (_event: IpcRendererEvent, request: { id: string; runId?: string; command: string; cwd: string; reason: string; approvalKey?: string; createdAt: string }) => listener(request);
     ipcRenderer.on("command:approval-request", handler);

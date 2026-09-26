@@ -10,18 +10,23 @@ import { createEditTools, createQuestionTool } from "./edit-tools.js";
 import { createBrowserTools } from "./browser-tool.js";
 import { agentBrowserService } from "./browser-service.js";
 import { getRepoMapSection } from "./repo-map-service.js";
+import { getProjectIndexSection } from "./project-index-service.js";
 import { createWebSearchTools } from "./websearch-tool.js";
 import { discoverAllRules, discoverProjectRules } from "./rules-service.js";
-import { createSubagentDelegationTool, calculateAgentUsage, type SubagentItem } from "./subagent-service.js";
+import { createSubagentDelegationTool, executeSubagentTask, calculateAgentUsage, type SubagentItem } from "./subagent-service.js";
 import { getWorkspaceDiffFiles } from "./diff-service.js";
 import { getMcpTools } from "./mcp-service.js";
 import { getSkillsConfig } from "./store.js";
 import { GLOBAL_SKILLS_ROUTE, PROJECT_SKILLS_DIR, SKILL_SOURCE_PRIORITY, SYSTEM_SKILLS_ROUTE, buildSkillMounts, createSkillFilesTool, globalSkillsDir, listSkills, listSystemSkills, recommendSkills, skillAppliesToMode, skillDirVirtualPath, skillVirtualPath, systemSkillsDir, type SkillInfo, type SkillMode } from "./skills-service.js";
-import { compactHistory, estimateTokens, StreamUsageTracker } from "./context-service.js";
+import { compactHistory, compactHistoryWithModel, estimateTokens, StreamUsageTracker } from "./context-service.js";
 import { saveArtifact, type ArtifactItem } from "./artifacts-service.js";
 import { TrajectoryLogger } from "./trajectory-service.js";
 import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint } from "./rate-limit.js";
 import { RunCancelledError, getRunAbortSignal } from "./command-service.js";
+import { createHomeMemoryTool, addMemoryFact, removeMemoryFact, selectRelevantHomeMemory, parseCandidateFacts, shouldExtractMemory, type MemoryCandidate } from "./home-memory-service.js";
+import { createHomeTaskJournal, finishHomeTaskJournal, recordHomeTaskAction, saveHomeTaskJournal, type HomeTaskJournal, type HomeTaskPhase } from "./home-task-service.js";
+import { selectHomeArtifactCandidates, validateHomeArtifacts } from "./home-artifact-service.js";
+import { createCodeTaskJournal, finishCodeTaskJournal, inferCodeTaskContract, loadCodeTaskJournal, recordCodeTaskAction, recordCodeTaskPlan, saveCodeTaskJournal, type CodeTaskContract, type CodeTaskJournal, type CodeTaskPhase } from "./code-task-service.js";
 import type { ProviderConfig } from "./store.js";
 
 export type AgentMode = "plan" | "ask" | "auto";
@@ -62,6 +67,59 @@ export type AgentMemoryContext = { projectMemory: string; sessionMemory: string 
 // different system prompt.
 export type AgentTaskKind = "code" | "general";
 export { RunCancelledError };
+
+/**
+ * Generic contract inferred from a Home request. This deliberately does not
+ * classify formats or domains (PDF, courses, reports, etc.). It only captures
+ * whether the user asked the agent to produce an observable result and whether
+ * research is part of the request. The model remains responsible for deciding
+ * what the result should be and how to produce it.
+ */
+export type HomeTaskContract = {
+  expectsOutput: boolean;
+  needsResearch: boolean;
+};
+
+export function inferHomeTaskContract(request: string): HomeTaskContract {
+  const text = (request || "").trim();
+  const expectsOutput =
+    /\b(create|make|generate|build|write|draft|prepare|produce|export|save|deliver|develop|design|turn|convert|transform)\b/i.test(text) &&
+    !/^\s*(what|why|how|where|when|which|who|can|could|would|should)\b/i.test(text);
+  const needsResearch = /\b(research|read|docs?|documentation|investigate|look\s+up|find\s+out|compare|sources?|latest|current)\b/i.test(text);
+  return { expectsOutput, needsResearch };
+}
+
+type HomeFileSnapshot = Map<string, number>;
+
+async function snapshotHomeFiles(root: string): Promise<HomeFileSnapshot> {
+  const snapshot: HomeFileSnapshot = new Map();
+  async function walk(dir: string): Promise<void> {
+    let entries: import("node:fs").Dirent[] = [];
+    try { entries = await fsPromises.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+        continue;
+      }
+      try {
+        const stat = await fsPromises.stat(full);
+        snapshot.set(path.relative(root, full).replace(/\\/g, "/"), stat.mtimeMs);
+      } catch { /* best effort */ }
+    }
+  }
+  await walk(root);
+  return snapshot;
+}
+
+async function findFreshHomeFiles(root: string, baseline: HomeFileSnapshot, startedAt: number): Promise<string[]> {
+  const current = await snapshotHomeFiles(root);
+  return [...current.entries()]
+    .filter(([relative, mtime]) => !baseline.has(relative) || mtime >= startedAt - 1000)
+    .map(([relative]) => relative)
+    .sort();
+}
 
 // OpenCode-style doom-loop breaker: the model repeating the exact same tool
 // call is stuck, not working. Thrown from the stream consumer and converted
@@ -154,6 +212,64 @@ function tail(value: string | undefined, cap: number) {
   return value.length > cap ? `…${value.slice(-cap)}` : value;
 }
 
+// Memory entries are summaries, NOT transcripts: the full answer already
+// lives in chat history. Storing verbatim tails of long responses (e.g. a
+// 15-row table cut to its last 4 rows) misleads future runs into thinking
+// the fragment is the complete fact. These helpers collapse large tables
+// and truncate on line boundaries with an explicit marker.
+function compactTablesForMemory(text: string): string {
+  const lines = text.split(/\r?\n/);
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const isTableRow = /^\s*\|.*\|\s*$/.test(line);
+    if (isTableRow) {
+      let j = i;
+      while (j < lines.length && /^\s*\|.*\|\s*$/.test(lines[j])) j++;
+      const blockSize = j - i;
+      // Keep small tables verbatim; collapse large ones to a row-count note.
+      if (blockSize > 6) {
+        const header = lines[i].trim();
+        out.push(header);
+        out.push(`| …[table with ${blockSize - 2} more rows — see chat transcript for full data]… |`);
+        const last = lines[j - 1].trim();
+        if (last !== header) out.push(last);
+      } else {
+        for (let k = i; k < j; k++) out.push(lines[k]);
+      }
+      i = j;
+    } else {
+      out.push(line);
+      i++;
+    }
+  }
+  return out.join("\n");
+}
+
+function truncateOnLines(value: string, cap: number): string {
+  const compacted = compactTablesForMemory(value.trim());
+  if (compacted.length <= cap) return compacted;
+  const marker = "\n…[summary truncated — see chat transcript for full details]…\n";
+  const budget = cap - marker.length;
+  const headBudget = Math.floor(budget * 0.6);
+  const tailBudget = budget - headBudget;
+  let head = compacted.slice(0, headBudget);
+  const headBreak = head.lastIndexOf("\n");
+  if (headBreak > headBudget * 0.5) head = head.slice(0, headBreak);
+  let tailPart = compacted.slice(-tailBudget);
+  const tailBreak = tailPart.indexOf("\n");
+  if (tailBreak >= 0 && tailBreak < tailBudget * 0.5) tailPart = tailPart.slice(tailBreak + 1);
+  return `${head}${marker}${tailPart}`;
+}
+
+function firstMeaningfulLine(value: string, cap: number): string {
+  const compacted = compactTablesForMemory(value.trim());
+  const line = compacted.split(/\r?\n/).map((l) => l.trim()).find((l) => l && !/^\|?\s*:?-+:?/.test(l) && l !== "…") || "";
+  const flat = line.replace(/\s+/g, " ");
+  return flat.length > cap ? `${flat.slice(0, cap)}…` : flat;
+}
+
 // Usage accounting for streamed runs. Chunk-level extraction and per-invocation
 // deduplication live in StreamUsageTracker; totals must be summed across all
 // model invocations, not overwritten by the latest one.
@@ -182,19 +298,80 @@ class UsageAccumulator {
   }
 }
 
+export type PackageManagerName = "npm" | "pnpm" | "yarn" | "bun";
+export type PackageManager = { name: PackageManagerName; run: string; exec: string; install: string; testFile: (rel: string) => string };
+
+/**
+ * Detect the JS/TS package manager from explicit config first, then
+ * lockfiles. Order matters: pnpm-lock.yaml / yarn.lock / bun.lock[b] win
+ * over package-lock.json so monorepos with multiple lockfiles resolve to
+ * the most specific one present.
+ */
+export function detectPackageManager(projectRoot: string): PackageManager {
+  const fallback: PackageManager = {
+    name: "npm",
+    run: "npm run",
+    exec: "npx",
+    install: "npm install",
+    testFile: (rel: string) => `npm test -- ${rel}`,
+  };
+  try {
+    const root = path.resolve(projectRoot);
+    // Explicit override: .nexus/package-manager.json { "name": "pnpm" } or
+    // NEXUS_PACKAGE_MANAGER env (useful for tests / containers).
+    const envName = (process.env.NEXUS_PACKAGE_MANAGER || "").toLowerCase();
+    const overridePath = path.join(root, ".nexus", "package-manager.json");
+    let override: string | null = null;
+    if (existsSync(overridePath)) {
+      try {
+        override = String(JSON.parse(readFileSync(overridePath, "utf8"))?.name || "").toLowerCase();
+      } catch { /* ignore malformed override */ }
+    }
+    const pick = (name: string): PackageManager | null => {
+      if (name === "pnpm") return { name: "pnpm", run: "pnpm", exec: "pnpm exec", install: "pnpm install", testFile: (rel: string) => `pnpm test -- ${rel}` };
+      if (name === "yarn") return { name: "yarn", run: "yarn", exec: "yarn exec", install: "yarn install", testFile: (rel: string) => `yarn test -- ${rel}` };
+      if (name === "bun") return { name: "bun", run: "bun run", exec: "bunx", install: "bun install", testFile: (rel: string) => `bun test ${rel}` };
+      if (name === "npm") return fallback;
+      return null;
+    };
+    const fromEnv = envName ? pick(envName) : null;
+    if (fromEnv) return fromEnv;
+    const fromFile = override ? pick(override) : null;
+    if (fromFile) return fromFile;
+    // package.json packageManager field: "pnpm@9.1.0", "yarn@4", "bun@1".
+    const pkgPath = path.join(root, "package.json");
+    if (existsSync(pkgPath)) {
+      try {
+        const pmField = String(JSON.parse(readFileSync(pkgPath, "utf8"))?.packageManager || "").toLowerCase();
+        if (pmField.startsWith("pnpm")) return pick("pnpm")!;
+        if (pmField.startsWith("yarn")) return pick("yarn")!;
+        if (pmField.startsWith("bun")) return pick("bun")!;
+        if (pmField.startsWith("npm")) return fallback;
+      } catch { /* ignore */ }
+    }
+    if (existsSync(path.join(root, "pnpm-lock.yaml"))) return pick("pnpm")!;
+    if (existsSync(path.join(root, "yarn.lock"))) return pick("yarn")!;
+    if (existsSync(path.join(root, "bun.lockb")) || existsSync(path.join(root, "bun.lock"))) return pick("bun")!;
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export function pickVerificationCommand(projectRoot: string): string | null {
   try {
     const root = path.resolve(projectRoot);
+    const pm = detectPackageManager(root);
     const pkgPath = path.join(root, "package.json");
     if (existsSync(pkgPath)) {
       const scripts = JSON.parse(readFileSync(pkgPath, "utf8")).scripts ?? {};
       // Named typecheck scripts are the source of truth; `check` scripts often
       // cover more tsconfigs than a bare `tsc --noEmit` would (multiple
       // projects), so prefer them over running tsc directly.
-      if (typeof scripts.typecheck === "string") return "npm run typecheck";
-      if (typeof scripts.check === "string") return "npm run check";
-      if (existsSync(path.join(root, "tsconfig.json"))) return "tsc --noEmit";
-      if (typeof scripts.lint === "string") return "npm run lint";
+      if (typeof scripts.typecheck === "string") return `${pm.run} typecheck`;
+      if (typeof scripts.check === "string") return `${pm.run} check`;
+      if (existsSync(path.join(root, "tsconfig.json"))) return `${pm.exec} --no-install tsc --noEmit`;
+      if (typeof scripts.lint === "string") return `${pm.run} lint`;
     }
 
     if (existsSync(path.join(root, "Cargo.toml"))) return "cargo check";
@@ -273,6 +450,51 @@ export function pickVerificationCommands(projectRoot: string): string[] {
 }
 
 /**
+ * Finds package-local verification commands for changed files in a workspace.
+ * Commands use the package manager's prefix/filter mechanism so the caller
+ * can execute them from the repository root without changing process cwd.
+ */
+export function pickAffectedPackageCommands(projectRoot: string, modifiedFiles: string[]): string[] {
+  try {
+    const root = path.resolve(projectRoot);
+    const pm = detectPackageManager(root);
+    const commands: string[] = [];
+    const seen = new Set<string>();
+    for (const modified of modifiedFiles) {
+      let directory = path.dirname(path.resolve(root, modified));
+      while (directory.startsWith(root) && directory !== path.dirname(root)) {
+        const packagePath = path.join(directory, "package.json");
+        if (existsSync(packagePath)) {
+          const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
+          const relative = path.relative(root, directory).replace(/\\/g, "/") || ".";
+          const scripts = pkg?.scripts || {};
+          for (const name of ["check", "typecheck", "build", "test"]) {
+            if (typeof scripts[name] !== "string") continue;
+            const command = relative === "."
+              ? `${pm.run} ${name}`
+              : pm.name === "pnpm"
+                ? `pnpm --dir "${relative}" run ${name}`
+                : pm.name === "yarn"
+                  ? `yarn --cwd "${relative}" run ${name}`
+                  : pm.name === "bun"
+                    ? `bun --cwd "${relative}" run ${name}`
+                    : `npm --prefix "${relative}" run ${name}`;
+            if (!seen.has(command)) { seen.add(command); commands.push(command); }
+            break;
+          }
+          break;
+        }
+        directory = path.dirname(directory);
+      }
+      if (commands.length >= 8) break;
+    }
+    return commands.slice(0, 8);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Opencode-style fast path: for small diffs, lint only the changed files
  * instead of typechecking the whole project. Returns null when no fast
  * scoped check applies (caller falls back to pickVerificationCommand).
@@ -281,13 +503,14 @@ export function pickFileScopedVerification(projectRoot: string, modifiedFiles: s
   try {
     if (!modifiedFiles.length || modifiedFiles.length > 5) return null;
     const root = path.resolve(projectRoot);
+    const pm = detectPackageManager(root);
     const quoted = modifiedFiles.map((f) => `"${f.replace(/"/g, "")}"`).join(" ");
     const pkgPath = path.join(root, "package.json");
     if (existsSync(pkgPath)) {
       const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
       const devDeps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
       const hasEslint = Boolean(devDeps.eslint || typeof pkg.scripts?.lint === "string");
-      if (hasEslint) return `npx eslint ${quoted}`;
+      if (hasEslint) return `${pm.exec} eslint ${quoted}`;
       return null;
     }
     // Python-only change with a ruff config: lint just the touched files.
@@ -307,6 +530,7 @@ export function pickFileScopedVerification(projectRoot: string, modifiedFiles: s
 export function findTargetedTests(projectRoot: string, modifiedFiles: string[]): string | null {
   try {
     const root = path.resolve(projectRoot);
+    const pm = detectPackageManager(root);
     const hasPackageJson = existsSync(path.join(root, "package.json"));
     let hasTestScript = false;
     if (hasPackageJson) {
@@ -344,7 +568,7 @@ export function findTargetedTests(projectRoot: string, modifiedFiles: string[]):
       for (const cand of candidates) {
         if (existsSync(cand)) {
           const rel = path.relative(root, cand).replace(/\\/g, "/");
-          if (hasTestScript) return `npm test -- ${rel}`;
+          if (hasTestScript) return pm.testFile(rel);
           if (parsed.ext === ".py") return `pytest ${rel}`;
           if (parsed.ext === ".rs") return `cargo test ${parsed.name}`;
           if (parsed.ext === ".go") return `go test ./${path.dirname(rel)}`;
@@ -420,6 +644,48 @@ export function extractSkillNameFromPath(filePath: string): string | null {
   if (skillsMatch && !/^SKILL$/i.test(skillsMatch[1])) return skillsMatch[1];
 
   return null;
+}
+
+/**
+ * Skill names already loaded in this run, derived from tool-call history.
+ * Used in repair/resume feedback so the model is told exactly which skills
+ * need no re-reading (the middleware enforces the same at execution time).
+ */
+export function loadedSkillNamesFromMessages(messages: any[]): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  const scanArgs = (args: unknown) => {
+    if (!args || typeof args !== "object") return;
+    const a = args as Record<string, unknown>;
+    const file = String(a.file_path || a.filePath || a.file || a.path || "");
+    if (!file) return;
+    const skill = extractSkillNameFromPath(file);
+    if (skill && !seen.has(skill.toLowerCase())) {
+      seen.add(skill.toLowerCase());
+      names.push(skill);
+    }
+  };
+  for (const message of messages || []) {
+    if (!message || typeof message !== "object") continue;
+    const direct = (message as { tool_calls?: unknown }).tool_calls;
+    if (Array.isArray(direct)) {
+      for (const call of direct) scanArgs((call as { args?: unknown })?.args);
+    }
+    const extra = (message as { additional_kwargs?: { tool_calls?: unknown } }).additional_kwargs?.tool_calls;
+    if (Array.isArray(extra)) {
+      for (const call of extra) {
+        const fnArgs = (call as { function?: { arguments?: unknown } })?.function?.arguments;
+        if (typeof fnArgs === "string") {
+          try {
+            scanArgs(JSON.parse(fnArgs));
+          } catch { /* ignore unparseable */ }
+        } else {
+          scanArgs((call as { args?: unknown })?.args);
+        }
+      }
+    }
+  }
+  return names;
 }
 
 export function describeToolCall(name: string, args: any): string {
@@ -667,6 +933,7 @@ const BUILD_TASK_PATTERN =
   /\b(build|building|rebuild|scaffold|scaffolding|bootstrap|bootstrapping|launch|launching|set\s+up\s+a\s+new)\b/i;
 const CREATE_PROJECT_PATTERN =
   /\b(create|creating|make|making|develop|developing|generate|generating|build|building|launch|launching|start)\b.{0,40}\b(app|application|website|site|platform|portal|hub|project|dashboard|chat\s*app|web\s*app)\b/i;
+const LANDING_PAGE_BUILD_PATTERN = /\b(build|create|make|develop|design|generate)\b.{0,80}\b(landing\s*page|marketing\s*page|homepage|portfolio\s*site)\b/i;
 // Deliverable builds (slides, docs, spreadsheets) are multi-step projects
 // even in one short sentence: read the skill, write a generator script,
 // run it, verify the file. Classifying them "simple" caps the run at ~3
@@ -677,6 +944,20 @@ const DOC_BUILD_PATTERN =
 // format keyword: research + write + save is multi-step, never a lookup.
 const DOC_WRITE_PATTERN =
   /\b(create|make|generate|write|draft)\b.{0,40}\b(report|document|memo|letter|resume|summary|writeup|write-up)\b/i;
+
+/**
+ * Pure document builds (slides/docs/sheets via local skills + write_file +
+ * execute) virtually never need user MCP servers — but every bound MCP tool
+ * (e.g. 26 GitHub tools) inflates each model call and slows flaky endpoints.
+ * Skip MCP only when the request shows no research/external-service intent.
+ */
+export function shouldSkipMcpForTask(request: string): boolean {
+  const text = request || "";
+  const isBuild = DOC_BUILD_PATTERN.test(text) || DOC_WRITE_PATTERN.test(text) || BUILD_TASK_PATTERN.test(text) || LANDING_PAGE_BUILD_PATTERN.test(text);
+  if (!isBuild) return false;
+  if (/\b(research|search(ing)?|find|latest|compare|gather|lookup|investigate|github|repos?|issues?|pull request|prs?|gists?|jira|notion|slack|drive|gmail)\b/i.test(text)) return false;
+  return true;
+}
 const WEB_TASK_PATTERN = /\b(localhost|127\.0\.0\.1|https?:\/\/|web ?(app|page|server)|browser|api .*(health|endpoint)|dev server)\b/i;
 // Edit verbs: the request wants the code changed, not explained.
 const EDIT_VERB_PATTERN =
@@ -697,7 +978,7 @@ export function classifyTaskComplexity(request: string): TaskComplexity {
     return "simple";
   }
   if (COMPLEX_TASK_PATTERN.test(text)) return "complex";
-  if (BUILD_TASK_PATTERN.test(text) || CREATE_PROJECT_PATTERN.test(text)) return "complex";
+  if (BUILD_TASK_PATTERN.test(text) || CREATE_PROJECT_PATTERN.test(text) || LANDING_PAGE_BUILD_PATTERN.test(text)) return "complex";
   if (DOC_BUILD_PATTERN.test(text)) return "complex";
   if (DOC_WRITE_PATTERN.test(text)) return "complex";
   // Debugging always needs reproduce + locate + fix + verify: never simple.
@@ -794,7 +1075,15 @@ export function isContinueRequest(request: string): boolean {
 // (user/assistant turns) cannot reconstruct tool state. Kept in memory for
 // speed and mirrored to disk (.nexus/run-checkpoints/) so "continue" also
 // survives an app restart, when the in-memory map is empty.
-export type RunCheckpoint = { messages: any[]; planItems: PlanItem[] | null };
+export type TaskLedger = {
+  updatedAt: string;
+  planItems: PlanItem[] | null;
+  completedSteps: string[];
+  lastDiagnostics: string[];
+  changedFiles: string[];
+  verification: "none" | "passed" | "failed" | "interrupted";
+};
+export type RunCheckpoint = { messages: any[]; planItems: PlanItem[] | null; ledger?: TaskLedger };
 const lastRunStore = new Map<string, RunCheckpoint>();
 
 export function getLastRunCheckpoint(sessionId: string | undefined): RunCheckpoint | null {
@@ -813,7 +1102,20 @@ function countToolCalls(messages: any[]): number {
 export function saveLastRunCheckpoint(sessionId: string | undefined, checkpoint: RunCheckpoint, telemetryRoot?: string): void {
   if (!sessionId) return;
   const messages = (checkpoint.messages || []).slice(-100);
-  const next = { messages, planItems: checkpoint.planItems ?? null };
+  const ledger = checkpoint.ledger ?? {
+    updatedAt: new Date().toISOString(),
+    planItems: checkpoint.planItems ?? null,
+    completedSteps: summarizeCompletedSteps(messages),
+    lastDiagnostics: messages
+      .filter((message: any) => message?.type === "tool" || message?.type === "human")
+      .map((message: any) => String(message?.content ?? ""))
+      .filter((text: string) => /error|failed|diagnostic|verification/i.test(text))
+      .slice(-8)
+      .map((text: string) => text.slice(-600)),
+    changedFiles: [],
+    verification: "none",
+  };
+  const next = { messages, planItems: checkpoint.planItems ?? null, ledger };
   // A run that did no tool work (pure Q&A) must not clobber the checkpoint
   // of the previous working run — otherwise a later "continue" would resume
   // from the small talk instead of the interrupted task.
@@ -874,6 +1176,14 @@ export async function persistLastRunCheckpoint(telemetryRoot: string, sessionId:
   const payload = {
     savedAt: new Date().toISOString(),
     planItems: checkpoint.planItems,
+    ledger: checkpoint.ledger ?? {
+      updatedAt: new Date().toISOString(),
+      planItems: checkpoint.planItems,
+      completedSteps: summarizeCompletedSteps(checkpoint.messages),
+      lastDiagnostics: [],
+      changedFiles: [],
+      verification: "none",
+    },
     messages: checkpoint.messages.slice(-80).map(serializeCheckpointMessage).filter(Boolean),
   };
   await fsPromises.writeFile(filePath, JSON.stringify(payload), "utf8");
@@ -901,10 +1211,10 @@ export async function loadLastRunCheckpoint(telemetryRoot: string, sessionId: st
   if (inMemory) return inMemory;
   try {
     const raw = await fsPromises.readFile(runCheckpointPath(telemetryRoot, sessionId), "utf8");
-    const parsed = JSON.parse(raw) as { planItems?: PlanItem[] | null; messages?: any[] };
+    const parsed = JSON.parse(raw) as { planItems?: PlanItem[] | null; messages?: any[]; ledger?: TaskLedger };
     const messages = (parsed.messages || []).map(reviveCheckpointMessage).filter(Boolean);
     if (!messages.length) return null;
-    const checkpoint = { messages: sanitizeResumeCheckpoint(messages), planItems: parsed.planItems ?? null };
+    const checkpoint = { messages: sanitizeResumeCheckpoint(messages), planItems: parsed.planItems ?? null, ledger: parsed.ledger };
     lastRunStore.set(sessionId, checkpoint);
     return checkpoint;
   } catch {
@@ -1000,13 +1310,21 @@ export function toolParameterNormalizationMiddleware() {
  * Repetition 3+: Blocks execution of the tool, returning an intervention ToolMessage directing the model
  *                to update its todo list and provide its final answer immediately.
  */
-export function loopPreventionMiddleware() {
+export function loopPreventionMiddleware(options: { general?: boolean; outputRequired?: boolean; beforeModify?: () => string | null } = {}) {
   let lastReadSig: string | null = null;
   let consecutiveCount = 0;
+  let researchCallCount = 0;
   const inspectionCounts = new Map<string, number>();
+  // SKILL.md content never changes mid-run: the first read loads it, every
+  // repeat is pure waste (observed as skill→plan→todos→repair→skill testing
+  // loops on slow endpoints). Track by skill NAME (not path) so virtual-path
+  // variants (/system-skills/x vs system-skills/x) can't dodge the guard.
+  const loadedSkills = new Set<string>();
 
   const isModifying = (name: string) => /^(write_file|edit_file|delete|apply_patch|execute)$/i.test(name);
   const isInspection = (name: string) => /^(read_file|read_file_range|grep_search|glob|ls|view_file|search_code|code_structure|code_symbol)$/i.test(name);
+  const isFileRead = (name: string) => /^(read_file|read_file_range)$/i.test(name);
+  const isResearchTool = (name: string) => /^(web_search|browser_fetch_api|browser_inspect|search_web|fetch_url)$/i.test(name);
 
   const normalizePath = (args: any) => {
     if (!args || typeof args !== "object") return "";
@@ -1022,10 +1340,52 @@ export function loopPreventionMiddleware() {
       const toolCallId = String(request.toolCall?.id ?? "");
 
       if (isModifying(toolName)) {
+        const gate = options.beforeModify?.();
+        if (gate) {
+          return new ToolMessage({
+            tool_call_id: toolCallId,
+            name: toolName,
+            status: "error",
+            content: gate,
+          });
+        }
         inspectionCounts.clear();
         lastReadSig = null;
         consecutiveCount = 0;
+        researchCallCount = 0;
         return handler(request);
+      }
+
+      if (options.general && options.outputRequired && isResearchTool(toolName)) {
+        researchCallCount++;
+        if (researchCallCount > 8) {
+          return new ToolMessage({
+            tool_call_id: toolCallId,
+            name: toolName,
+            content: "[SUPERVISOR INTERVENTION] The research budget for this task has been reached. Use the evidence already collected and take the next result-producing action. Do not perform another web search or page fetch unless it directly unblocks creation of the requested output.",
+          });
+        }
+      }
+
+      // Skill reads bypass the generic inspection counters (a plan/todos call
+      // in between would reset them): first read executes, repeats get a
+      // cached steer-forward instead of the file content.
+      if (isFileRead(toolName)) {
+        const skill = extractSkillNameFromPath(normalizePath(args));
+        if (skill) {
+          const key = skill.toLowerCase();
+          if (loadedSkills.has(key)) {
+            return new ToolMessage({
+              tool_call_id: toolCallId,
+              name: toolName,
+              status: "error",
+              content: `[SKILL ALREADY LOADED]: Skill '${skill}' is already loaded above — its instructions have not changed. Do NOT re-read any SKILL.md file. Proceed directly: write_file the generator script, execute it, verify the output with ls, then present the result.`,
+            });
+          }
+          const result = await handler(request);
+          loadedSkills.add(key);
+          return result;
+        }
       }
 
       if (isInspection(toolName)) {
@@ -1081,7 +1441,7 @@ function todayLine(): string {
   return `Today is ${long} (${now.toISOString().slice(0, 10)}).`;
 }
 
-function buildSystemPrompt(mode: AgentMode, projectRoot: string, providerLabel: string, modelName: string, memory: AgentMemoryContext, projectRulesSection: string = "", complexity: TaskComplexity = "complex", isNewProject = false, taskKind: AgentTaskKind = "code", repoMapSection: string = "") {
+function buildSystemPrompt(mode: AgentMode, projectRoot: string, providerLabel: string, modelName: string, memory: AgentMemoryContext, projectRulesSection: string = "", complexity: TaskComplexity = "complex", isNewProject = false, taskKind: AgentTaskKind = "code", repoMapSection: string = "", homeTaskContract: HomeTaskContract | null = null) {
   const today = todayLine();
   if (taskKind === "general") {
     let general = `You are Nexus Home, a helpful general-purpose assistant. Your workspace folder is exposed at the virtual root / — use paths relative to it (for example report.docx). Files you create land in the user's Nexus folder, where they can download them.
@@ -1091,30 +1451,40 @@ ${today} Anchor every relative time expression to it ("last decade", "this year"
 Project root on host (metadata only): ${projectRoot}
 Provider: ${providerLabel} / ${modelName}
 
-Project memory:
-${tail(memory.projectMemory, 2000) || "(empty)"}
+The virtual root / is the selected project root. Use relative workspace paths only. Do not invent or use alternate host paths such as C:\\nexus-landing, /nexus-landing, /workspace, or /repo, and never cd outside the selected workspace. Commands already run with the correct cwd. Do not use verbose/debug build flags unless the user explicitly asks for them.
 
-Session memory:
+Long-term memory (shared across ALL Home chats — user profile, preferences, recurring context):
+${tail(memory.projectMemory, 4000) || "(empty)"}
+
+Session memory (this chat only):
 ${tail(memory.sessionMemory, 3000) || "(empty)"}
 
 Working rules:
-- Answer chit-chat and simple questions directly with zero tool calls.
+- Answer chit-chat and simple questions directly with zero tool calls — EXCEPT memory saves below, which never count toward any tool budget.
+- Long-term memory stores enduring facts about the user, their role, communication style, and tool/format preferences across sessions.
+- Memory management: you have access to the manage_memory tool. When the user explicitly asks you to remember something ("remember that...", "keep in mind that...", "my preference is..."), or when they state an enduring personal preference, role, or project context, use manage_memory with action='remember' to persist it to long-term memory. Use action='forget' if they ask to remove or change a prior preference. Do NOT call manage_memory for temporary or transient chat trivia (e.g. "I am eating lunch").
+- Saving is YOUR job, never the user's: when someone tells you who they are (name, role, background, education, work, projects), call manage_memory yourself in the SAME run — never reply "tell me to save this and I will remember" or ask them to instruct you. Save first, then briefly confirm what you remembered (e.g. "Noted — I'll remember you're Amine, a master's student in data science & AI.").
+- Memories above are summaries, not transcripts: the full answers live in chat history. Never treat a memory fragment as complete data — re-read the chat or re-run the lookup for exact lists, tables, or numbers.
 - For research: use web_search first, then read the most promising pages with browser_fetch_api or browser_inspect before stating facts. Never invent current prices, versions, or news. For latest/current-year rankings or "best of" lists, verify with web_search and include the current year — never clip ranges to your training cutoff.
 - If the task involves a library, API, or technology you are unsure about — especially anything recently released — research it first: web_search, then read the official docs with browser_inspect. Never invent APIs, import paths, or options; pin the exact version you verified.
-- For documents: check the skills in your System Note first — a skill may describe exactly how to build the requested file (PDF, Word, PowerPoint, Excel, LaTeX, Markdown, etc.). Follow it: write a script (e.g. Python) with write_file and run it with execute, then verify the output file exists with ls. Once the deliverable is verified, delete the throwaway generator script with the delete tool so only the requested file(s) remain in the Nexus folder.
-- CRITICAL IN AUTO MODE: Do NOT stop after reading a skill or researching to announce your intent (e.g. never stop to say "Now I will write a script to generate the PDF"). Autonomously and immediately proceed with write_file, execute, verify with ls, and deliver the final result. Only conclude your response after the deliverable has been created and verified.
+    - For any request that asks you to create, prepare, produce, export, write, or transform something, treat the requested result as a completion contract. Decide what concrete output proves completion, create it in the workspace, inspect it, and only then finish.
+    - For documents and other artifacts: check the skills in your System Note first — a skill may describe exactly how to build the requested output. Follow it: write the needed draft or generator with write_file, run it with execute, inspect the result, and clean up only throwaway files after successful validation.
+    - CRITICAL IN AUTO MODE: Do NOT stop after reading a skill or researching to announce your intent. Once you have enough evidence to act, take the next concrete action that advances the requested result. Never conclude while a declared output is missing or uninspected.
 - If a command fails because a tool is missing (python, pip packages), install it or fall back to the closest format you CAN produce, and say so clearly.
 - Save finished deliverables with clear file names in the workspace root and end by naming the exact file(s) the user can download.
-- Be efficient: at most 3 exploration calls before acting. Keep answers concise.
+    - Be efficient: research only while it is producing new evidence. After research, switch to creating or transforming the requested result. Keep answers concise.
 - Skills listed in your instructions are mandatory pre-reads: if a skill covers the task, read its SKILL.md first via its exact given path. CRITICAL: SKILL.md contains private operational instructions for YOU, not text for the user. NEVER quote, echo, dump, or output the SKILL.md text, code samples, or numbered lines back to the user. Silently follow its instructions to produce the requested deliverable (e.g. write a generator script with write_file, execute it to create the file, verify it with ls, clean up the script, and deliver the final result). Never browse skill folders (ls/glob of .nexus/skills, /global-skills, /system-skills) to discover skills — the System Note already lists everything available to you.
 - If a skill ships helper scripts you must run, copy them into the workspace first with materialize_skill_files, then run them via the returned workspace-relative paths with execute (skill folders are read-only and outside the run directory).
 - Additional MCP tools (if listed in your tools) come from user-configured MCP servers; prefer them for the capabilities they expose (e.g. GitHub issues and PRs, search, APIs, external systems) instead of reimplementing with shell commands. When GitHub MCP tools are available, never ask the user for their GitHub username — the token already identifies them (see the authenticated-user note, or call get_me). To list the user's own repositories: call get_me, then search_repositories with the query 'user:<login>'. Use the login verbatim — exact spelling, no spaces, never the display name. If GitHub rejects the query with 422 on the user: qualifier, call get_me again and retry once with that exact login before reporting failure.
 - Never expose secrets.`;
     if (complexity === "simple") {
-      general += `\n\nEFFICIENCY MODE (simple task): answer in at most 3 tool calls. Do NOT create a todo list, do NOT delegate to subagents. If no file is needed, answer directly.`;
+      general += `\n\nEFFICIENCY MODE (simple task): answer in at most 3 tool calls. Do NOT create a todo list, do NOT delegate to subagents. If no file is needed, answer directly. manage_memory calls are exempt from the budget and must still fire when the user shares identity or preferences.`;
     }
     if (projectRulesSection) {
       general += `\n\n${projectRulesSection}`;
+    }
+    if (homeTaskContract?.expectsOutput) {
+      general += `\n\nTASK CONTRACT: This request asks for an observable result. Decide what output proves completion, create or update it in the workspace, inspect it, and do not finish with a promise or research summary alone.${homeTaskContract.needsResearch ? " Research is allowed, but switch to producing the result once the evidence is sufficient." : ""}`;
     }
     if (mode === "plan") return `${general}\n\nMODE: PLAN. Investigate and return a structured markdown plan. Writing, editing and command execution are disabled — read and search only.`;
     return `${general}\n\nMODE: ${mode === "auto" ? "AUTO. Work autonomously end to end: research, create, then verify the deliverable exists before finishing." : "ASK. Fulfil the request, keep it focused, and confirm the result before answering."}`;
@@ -1147,7 +1517,7 @@ Working rules:
 - Immutability & clean design: prefer pure functions and immutable data transforms over mutation. Keep functions small (<50 lines) and files focused (<800 lines). Never silently swallow errors in empty catch blocks.
 - Security-first: zero tolerance for hardcoded API keys, secrets, or credentials. Always parameterize queries against SQL injection and sanitize user inputs against XSS.
 - Test-driven development (TDD): for bug fixes or features, write or update tests alongside changes. Verify that tests pass.
-- Specialist subagents: use delegate_task for complex isolated tasks (e.g. 'architect' for system design, 'code-reviewer' for quality audits, 'security-reviewer' for vulnerability checks, 'tdd-guide' for test workflows, 'build-error-resolver' for compiler errors, 'refactor-cleaner' for dead code removal). Never delegate simple single-file edits or Q&A.
+- Specialist subagents: use delegate_task for complex isolated tasks (e.g. 'architect' for system design, 'code-reviewer' for quality audits, 'security-reviewer' for vulnerability checks, 'tdd-guide' for test workflows, 'build-error-resolver' for compiler errors, 'refactor-cleaner' for dead code removal). Never delegate simple single-file edits or Q&A. Keep write-capable delegation sequential; use read-only reviewers/researchers for parallel investigation.
 - Keep diffs minimal and focused; prefer editing existing files over rewriting them.
 - Only use the todo list for tasks with 3+ distinct steps. Skip it entirely for trivial tasks (single question, single-file fix, typo, rename).
 - Additional MCP tools (if listed in your tools) come from user-configured MCP servers; prefer them for the capabilities they expose (e.g. search, APIs, external systems). When GitHub MCP tools are available, never ask the user for their GitHub username — the token already identifies them (see the authenticated-user note, or call get_me). To list the user's own repositories: call get_me, then search_repositories with the query 'user:<login>'. Use the login verbatim — exact spelling, no spaces, never the display name. If GitHub rejects the query with 422 on the user: qualifier, call get_me again and retry once with that exact login before reporting failure.
@@ -1215,11 +1585,17 @@ export async function runProjectAgent(options: {
   taskKind?: AgentTaskKind;
   /** Agent mode for skill scoping ("home" | "code" | "notebook"). Omit = all skills eligible. */
   skillsMode?: SkillMode;
+  /** Callback when the agent updates shared Home long-term memory via manage_memory. */
+  onHomeMemoryUpdate?: (newMemory: string) => void | Promise<void>;
+  /** Blocking clarifying-question handler: return the user's answers or null to best-guess. */
+  onUserQuestion?: (questions: Array<{ header: string; question: string; options: string[] }>) => Promise<string | null>;
 }) {
-  const { projectRoot, telemetryRoot, sessionId, request, images, attachments, attachmentDocs, importableAttachments, settings, memory, history, mode, agentBackend, onEvent, isCancelled } = options;
+  const { projectRoot, telemetryRoot, sessionId, request, images, attachments, attachmentDocs, importableAttachments, settings, memory, history, mode, agentBackend, onEvent, isCancelled, onHomeMemoryUpdate, onUserQuestion } = options;
   const { resumeMessages, resumePlanItems, resumeNote, skillsMode } = options;
   const taskKind: AgentTaskKind = options.taskKind ?? "code";
   const isGeneral = taskKind === "general";
+  const homeTaskContract = isGeneral ? inferHomeTaskContract(request) : null;
+  const codeTaskContract = isGeneral ? null : inferCodeTaskContract(request);
   const targetTelemetryRoot = telemetryRoot || projectRoot;
   const signal = sessionId ? getRunAbortSignal(sessionId) : undefined;
   const emit = (type: AgentEvent["type"], text: string, items?: PlanItem[], usage?: AgentUsage, subagent?: SubagentItem, artifact?: ArtifactItem, detail?: string) => {
@@ -1267,7 +1643,9 @@ export async function runProjectAgent(options: {
   // Setup I/O (MCP servers, project rules, skills config, repo map) is
   // independent — fetch in parallel instead of serially.
   const [mcpResult, rulesResult, skillsConfig, repoMapSection] = await Promise.all([
-    withSetupTimeout(getMcpTools(), 20000, "MCP servers").then(
+    ((isGeneral || shouldSkipMcpForTask(request) || (taskKind === "code" && !/\b(github|repository|repositories|issue|pull request|slack|notion|web search|latest|research|external)\b/i.test(`${request} ${resumeNote || ""}`)))
+      ? Promise.resolve({ tools: [], serverNames: [] })
+      : withSetupTimeout(getMcpTools(), 20000, "MCP servers")).then(
       (r) => ({ ok: true as const, tools: r.tools, serverNames: r.serverNames }),
       (error: unknown) => ({ ok: false as const, error }),
     ),
@@ -1276,7 +1654,12 @@ export async function runProjectAgent(options: {
     // Code runs get a symbol-outline map so the model orients without
     // re-listing the tree every task. Home/doc runs skip it (a documents
     // folder has no useful symbols). Never fails the run.
-    (isGeneral ? Promise.resolve("") : getRepoMapSection(projectRoot).catch(() => "")),
+    (isGeneral
+      ? Promise.resolve("")
+      : Promise.all([
+        getRepoMapSection(projectRoot, request).catch(() => ""),
+        getProjectIndexSection(projectRoot, request).catch(() => ""),
+      ]).then((sections) => sections.filter(Boolean).join("\n\n"))),
   ]);
 
   let mcpTools: any[] = [];
@@ -1298,6 +1681,13 @@ export async function runProjectAgent(options: {
   // may mutate files or external systems, so none can be safely exposed while
   // the agent is only supposed to investigate and plan.
   if (mode === "plan") mcpTools = [];
+  // Pure document builds run on local skills + write_file/execute: binding
+  // dozens of unrelated MCP tools only bloats context and destabilizes slow
+  // endpoints. Research-flavored builds keep MCP (see shouldSkipMcpForTask).
+  else if (shouldSkipMcpForTask(request) && mcpTools.length) {
+    mcpTools = [];
+    emit("status", "Skipping MCP tools for document build — local skills suffice.");
+  }
   // GitHub identity pre-resolution: a token-backed GitHub MCP server already
   // identifies the user, so the model must never ask for a username. Call the
   // server's get_me tool once (read-only) and hand the login to the run as
@@ -1368,12 +1758,19 @@ export async function runProjectAgent(options: {
   // recommended, and skills scoped to other modes are explicitly off-limits.
   let skillNote: string | null = null;
   let eligibleSkillCatalog: SkillInfo[] = [];
+  let selectedSkillCatalog: SkillInfo[] = [];
   if (skillsConfig.enabled) {
     try {
       const fullCatalog = [...(await listSkills(projectRoot)), ...(await listSystemSkills().catch(() => []))];
       const catalog = skillsMode ? fullCatalog.filter((s) => skillAppliesToMode(s, skillsMode)) : fullCatalog;
       eligibleSkillCatalog = catalog;
       const recs = recommendSkills(catalog, request, 3);
+      // The framework parses every directory passed in `skills`. Passing the
+      // complete catalog makes unrelated skills part of every run and means a
+      // malformed/unsupported frontmatter file can fail an otherwise
+      // unrelated task. Keep the full catalog available for matching, but
+      // mount only the skills selected for this request.
+      selectedSkillCatalog = recs;
       const offLimits = skillsMode ? fullCatalog.filter((s) => !skillAppliesToMode(s, skillsMode)) : [];
       const offUser = offLimits.filter((s) => s.source !== "system");
       const offSystemCount = offLimits.length - offUser.length;
@@ -1398,13 +1795,22 @@ export async function runProjectAgent(options: {
   // clashes (system < global < project). skillDirVirtualPath is backend-safe:
   // global/system resolve through the composite mounts, project through the
   // workspace backend.
-  const skillDirs = eligibleSkillCatalog
+  const skillDirs = selectedSkillCatalog
     .slice()
     .sort((a, b) => SKILL_SOURCE_PRIORITY[b.source] - SKILL_SOURCE_PRIORITY[a.source])
     .map(skillDirVirtualPath);
 
   const allCodeTools = createCodeIntelligenceTools(projectRoot);
   const wantsBrowser = isWebTask(request);
+  let homeResearchToolCalls = 0;
+  const beforeHomeResearch = () => {
+    if (!isGeneral || !homeTaskContract?.expectsOutput) return null;
+    homeResearchToolCalls++;
+    if (homeResearchToolCalls > 8) {
+      return "[SUPERVISOR INTERVENTION] The research budget for this task has been reached. Use the evidence already collected and take the next result-producing action. Do not perform another web search or page fetch unless it directly unblocks creation of the requested output.";
+    }
+    return null;
+  };
   // Home general runs always get the browser + free web search: research is
   // core to that mode, not an edge case.
   const browserTools = wantsBrowser || isGeneral
@@ -1413,6 +1819,7 @@ export async function runProjectAgent(options: {
           inspect: (url) => agentBrowserService.inspect(url, { sessionId, scope: isGeneral ? "home" : "code" }),
           act: (input) => agentBrowserService.act(input, projectRoot, { sessionId, scope: isGeneral ? "home" : "code" }),
         },
+        beforeRead: beforeHomeResearch,
       })
     : [];
   // Browser actions and non-GET API calls can mutate external state. Plan mode
@@ -1425,6 +1832,7 @@ export async function runProjectAgent(options: {
   // researching unfamiliar or recently-released libraries beats hallucinating
   // their APIs. Every search is mirrored into the built-in browser.
   const webSearchTools = createWebSearchTools({
+    beforeSearch: beforeHomeResearch,
     // Mirror every search into the built-in browser so it is visible there
     // (Watching follows it live, otherwise the follow banner shows it).
     // Fire-and-forget: results come from the search API, never the mirror.
@@ -1452,12 +1860,25 @@ export async function runProjectAgent(options: {
   const editTools = mode === "plan" ? [] : createEditTools(projectRoot, { attachedImages: attachments, attachedFiles: importableAttachments ?? attachments });
   // Skill helper scripts run through the workspace: plan mode stays read-only.
   const skillFilesTools = mode === "plan" || !skillsConfig.enabled ? [] : [createSkillFilesTool(eligibleSkillCatalog, projectRoot)];
-  const questionTool = createQuestionTool((questions) => {
+  const questionTool = createQuestionTool(async (questions) => {
     emit("status", `Clarifying questions: ${questions.map((q) => q.header).join(", ")}`);
     if (trajectory) {
       void trajectory.log({ source: "MODEL", type: "STATUS", content: questions.map((q) => `${q.header}: ${q.question}`).join("\n") });
     }
+    if (onUserQuestion) {
+      try {
+        return await onUserQuestion(questions);
+      } catch {
+        return null;
+      }
+    }
+    return null;
   });
+  let codePlanReady = Boolean(resumePlanItems?.length);
+  const requiresCodePlan = !isGeneral && mode !== "plan" && effectiveComplexity === "complex" && Boolean(codeTaskContract?.expectsChanges);
+  const beforeCodeModify = () => requiresCodePlan && !codePlanReady
+    ? "[PHASE GATE] This is a complex change request and no execution plan exists yet. Create a concrete todo plan with write_todos first, then implement the first item. Do not edit files before the plan is recorded."
+    : null;
   const subagentTool = createSubagentDelegationTool({
     projectRoot,
     provider,
@@ -1474,21 +1895,75 @@ export async function runProjectAgent(options: {
     runId: sessionId,
   });
 
+  const homeMemoryTool = isGeneral
+    ? [
+        createHomeMemoryTool({
+          onRemember: async (category, fact) => {
+            memory.projectMemory = addMemoryFact(memory.projectMemory, category, fact);
+            await onHomeMemoryUpdate?.(memory.projectMemory);
+            emit("status", `Saved to long-term memory: ${fact}`);
+          },
+          onForget: async (query) => {
+            memory.projectMemory = removeMemoryFact(memory.projectMemory, query);
+            await onHomeMemoryUpdate?.(memory.projectMemory);
+            emit("status", `Removed from long-term memory: ${query}`);
+          },
+        }),
+      ]
+    : [];
+
   const deepAgent = await createDeepAgent({
     model: llm,
     backend: compositeBackend as any,
     middleware: isSimple
-      ? [toolParameterNormalizationMiddleware(), loopPreventionMiddleware()]
-      : [toolParameterNormalizationMiddleware(), loopPreventionMiddleware(), todoListMiddleware()],
+      ? [toolParameterNormalizationMiddleware(), loopPreventionMiddleware({ general: isGeneral, outputRequired: Boolean(homeTaskContract?.expectsOutput), beforeModify: beforeCodeModify })]
+      : [toolParameterNormalizationMiddleware(), loopPreventionMiddleware({ general: isGeneral, outputRequired: Boolean(homeTaskContract?.expectsOutput), beforeModify: beforeCodeModify }), todoListMiddleware()],
     tools: isSimple
-      ? [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...mcpTools]
-      : [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, subagentTool, ...mcpTools],
+      ? [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...homeMemoryTool, ...mcpTools]
+      : [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...homeMemoryTool, subagentTool, ...mcpTools],
     skills: skillDirs,
-    systemPrompt: buildSystemPrompt(mode, projectRoot, provider.label, modelName, memory, rulesResult.combinedPromptSection, effectiveComplexity, isNewProject, taskKind, repoMapSection),
+    // Relevance-ranked memory for the prompt: profile/preferences always in,
+    // facts and recent activity filtered to the current request so unrelated
+    // history never crowds out working context. manage_memory above keeps
+    // operating on the FULL memory — only the prompt copy is sliced.
+    systemPrompt: buildSystemPrompt(
+      mode,
+      projectRoot,
+      provider.label,
+      modelName,
+      isGeneral && memory.projectMemory
+        ? { projectMemory: selectRelevantHomeMemory(memory.projectMemory, request, 2000), sessionMemory: memory.sessionMemory }
+        : memory,
+      rulesResult.combinedPromptSection,
+      effectiveComplexity,
+      isNewProject,
+      taskKind,
+      repoMapSection,
+      homeTaskContract
+    ),
   });
 
-  // Apply context compaction on history
-  const compactedHistory = compactHistory(history);
+  // Context compaction: simple tasks (greetings, single lookups) answer from
+  // recent turns with the cheap heuristic — a model summarization call here
+  // would add a silent ≤20s stall before the first token. Complex runs get
+  // the model-backed summary with a visible status line instead of a gap.
+  let compactedHistory;
+  if (isSimple) {
+    compactedHistory = compactHistory(history, 3000);
+  } else {
+    if (history.filter((t) => t.role !== "event").length > 6) {
+      emit("status", "Summarizing long history…");
+    }
+    compactedHistory = await compactHistoryWithModel(history, async (prompt) => {
+      try {
+        const res: any = await llm.invoke(prompt);
+        const text = typeof res?.content === "string" ? res.content : Array.isArray(res?.content) ? res.content.map((p: any) => (typeof p === "string" ? p : p?.text || "")).join("\n") : String(res?.content || res?.text || "");
+        return text;
+      } catch {
+        throw new Error("summarizer failed");
+      }
+    }).catch(() => compactHistory(history));
+  }
   const priorMessages = compactedHistory.map((turn) =>
     turn.role === "assistant"
       ? new AIMessage(tail(turn.text, HISTORY_CHAR_CAP))
@@ -1556,6 +2031,11 @@ export async function runProjectAgent(options: {
   // Doom-loop tracker: consecutive identical tool-call signatures.
   let lastToolSig: string | null = null;
   let toolRepeatCount = 0;
+  // Generic Home supervisor signals. These do not classify the task; they
+  // detect whether the run is making observable progress toward its contract.
+  let homeReadOnlyStreak = 0;
+  let homeActionRepeatCount = 0;
+  let homeLastActionSig: string | null = null;
   let lastActiveToolName: string | null = null;
   let lastActiveToolSkill: string | null = null;
   // Latest workspace diff, filled by verify and reused for the walkthrough
@@ -1567,9 +2047,40 @@ export async function runProjectAgent(options: {
   // see the stale dirty diff, fail typecheck on the OLD breakage, and go
   // into repair mode on the previous task instead of answering.
   const runStartMs = Date.now();
+  let homeJournal: HomeTaskJournal | null = null;
+  let homeJournalWrite = Promise.resolve();
+  const queueHomeJournalWrite = (next: HomeTaskJournal) => {
+    homeJournal = next;
+    if (!isGeneral) return;
+    homeJournalWrite = homeJournalWrite
+      .then(() => saveHomeTaskJournal(projectRoot, next))
+      .catch(() => undefined);
+  };
+  if (isGeneral && sessionId && homeTaskContract) {
+    homeJournal = createHomeTaskJournal({
+      sessionId,
+      goal: request,
+      expectsOutput: homeTaskContract.expectsOutput,
+      needsResearch: homeTaskContract.needsResearch,
+    });
+    queueHomeJournalWrite(homeJournal);
+  }
+  let codeJournal: CodeTaskJournal | null = null;
+  let codeJournalWrite = Promise.resolve();
+  const queueCodeJournalWrite = (next: CodeTaskJournal) => {
+    codeJournal = next;
+    if (isGeneral || !sessionId) return;
+    codeJournalWrite = codeJournalWrite
+      .then(() => saveCodeTaskJournal(projectRoot, next))
+      .catch(() => undefined);
+  };
+  if (!isGeneral && sessionId) {
+    const previous = hasResume ? await loadCodeTaskJournal(projectRoot, sessionId) : null;
+    queueCodeJournalWrite(createCodeTaskJournal({ sessionId, goal: request, mode, resume: previous }));
+  }
   const diffFingerprint = (d: { path: string; additions: number; deletions: number }) => `${d.additions}/${d.deletions}`;
   const initialDiff = new Map<string, string>();
-  const initialHomeFiles = new Set<string>();
+  let initialHomeFiles: HomeFileSnapshot = new Map();
   if (!isGeneral) {
     try {
       const before = await getWorkspaceDiffFiles(projectRoot);
@@ -1577,10 +2088,7 @@ export async function runProjectAgent(options: {
     } catch { /* baseline is best-effort; verify falls back to full diff */ }
   } else {
     try {
-      const entries = await fsPromises.readdir(projectRoot, { withFileTypes: true });
-      for (const d of entries) {
-        if (d.isFile()) initialHomeFiles.add(d.name);
-      }
+      initialHomeFiles = await snapshotHomeFiles(projectRoot);
     } catch { /* baseline is best-effort */ }
   }
 
@@ -1593,8 +2101,15 @@ export async function runProjectAgent(options: {
   // countdown starts over. Mid-stream failures keep the checkpoint they
   // reached, so each retry resumes instead of restarting the task.
   const progress = createProgressTracker();
+  let toolCallCount = 0;
   const withAgentRetry = <T>(operation: () => Promise<T>): Promise<T> =>
     withRateLimitRetry(operation, {
+      // A Home research run must not spend several retry windows replaying the
+      // same long browse sequence. Preserve the checkpoint and surface a
+      // resumable failure quickly instead of silently consuming 20+ minutes.
+      maxAttempts: isGeneral ? 2 : undefined,
+      maxProgressResets: isGeneral ? 0 : undefined,
+      baseDelayMs: isGeneral ? 5_000 : undefined,
       signal,
       prepareAttempt: () => {
         if (isCancelled() || signal?.aborted) throw new RunCancelledError();
@@ -1625,7 +2140,11 @@ export async function runProjectAgent(options: {
       const ledgerNotice = ledger.length
         ? `\nSteps already DONE (never repeat these — their results are above):\n${ledger.map((s) => `- ${s}`).join("\n")}`
         : "";
-      const resumeNotice = `[System Note: Stream was resumed after pause/interruption. All preceding tool executions and results are recorded above and already complete.${planNotice}${ledgerNotice}\n\nIMPORTANT: Do NOT restart from the beginning, do NOT re-create the todo list from scratch, and do NOT repeat already completed tool actions. If builds and code are in place, mark remaining in-progress todos completed and output your final response immediately.]`;
+      const resumedSkills = loadedSkillNamesFromMessages(runMessages);
+      const skillsNotice = resumedSkills.length
+        ? `\nSkills already loaded this run (do NOT re-read any SKILL.md — act on the instructions above): ${resumedSkills.join(", ")}`
+        : "";
+      const resumeNotice = `[System Note: Stream was resumed after pause/interruption. All preceding tool executions and results are recorded above and already complete.${planNotice}${ledgerNotice}${skillsNotice}\n\nIMPORTANT: Do NOT restart from the beginning, do NOT re-create the todo list from scratch, and do NOT repeat already completed tool actions. If builds and code are in place, mark remaining in-progress todos completed and output your final response immediately.]`;
       messagesToStream = [...runMessages, new HumanMessage(resumeNotice)];
     }
 
@@ -1648,6 +2167,7 @@ export async function runProjectAgent(options: {
             for (const message of delta?.messages ?? []) {
               if (Array.isArray(message?.tool_calls)) {
                 for (const call of message.tool_calls) {
+                  toolCallCount++;
                   const name = call?.name || "tool";
                   lastActiveToolName = name;
                   if (name === "read_file" || name === "read_file_range") {
@@ -1660,6 +2180,10 @@ export async function runProjectAgent(options: {
                     const items = planItemsFromArgs(call.args);
                     if (items) {
                       lastPlanItems = items;
+                      if (!isGeneral) {
+                        codePlanReady = items.length > 0;
+                        if (codeJournal) queueCodeJournalWrite(recordCodeTaskPlan(codeJournal, items));
+                      }
                       emit("plan", "Working plan", items);
                     }
                     continue;
@@ -1689,6 +2213,21 @@ export async function runProjectAgent(options: {
                   if (toolRepeatCount >= 6) {
                     throw new DoomLoopError(name, summary || "identical arguments");
                   }
+                  if (isGeneral) {
+                    const readOnlyAction = /search|browser|fetch|inspect|read|skill|outline|passage|list/i.test(name);
+                    if (sig === homeLastActionSig) homeActionRepeatCount++;
+                    else {
+                      homeLastActionSig = sig;
+                      homeActionRepeatCount = 1;
+                    }
+                    homeReadOnlyStreak = readOnlyAction ? homeReadOnlyStreak + 1 : 0;
+                    if (homeReadOnlyStreak === 7 && homeTaskContract?.expectsOutput) {
+                      emit("status", "Supervisor · research/read-only streak detected; the next action must advance the requested result");
+                    }
+                    if (homeActionRepeatCount === 3 && homeTaskContract?.expectsOutput) {
+                      emit("status", "Supervisor · the same action is repeating; change approach or produce an intermediate result");
+                    }
+                  }
                   emit("tool", desc);
                   if (trajectory) {
                     void trajectory.log({ source: "TOOL", type: "TOOL_CALL", content: desc, tool_calls: [{ name, args: call.args }] });
@@ -1705,7 +2244,47 @@ export async function runProjectAgent(options: {
                   ? `Skill loaded: ${lastActiveToolSkill} ✓`
                   : `${message.name || lastActiveToolName || "tool"} ✓`;
                 emit("tool", doneLabel, undefined, undefined, undefined, undefined, excerpt || undefined);
+                if (isGeneral && homeJournal) {
+                  const toolName = String(message.name || lastActiveToolName || "tool");
+                  const phase: HomeTaskPhase = /search|browser|fetch|inspect|read|skill/i.test(toolName)
+                    ? "research"
+                    : /write|edit|execute|delete|patch|create/i.test(toolName)
+                      ? "execution"
+                      : /list|stat|validate|check|test/i.test(toolName)
+                        ? "validation"
+                        : homeJournal.phase;
+                  const readOnlyAction = /search|browser|fetch|inspect|read|skill|outline|passage|list/i.test(toolName);
+                  const next = recordHomeTaskAction(homeJournal, {
+                    tool: toolName,
+                    summary: doneLabel,
+                    result: excerpt || undefined,
+                    progressed: !readOnlyAction || homeReadOnlyStreak < 7,
+                    phase,
+                  });
+                  queueHomeJournalWrite(next);
+                }
+                if (!isGeneral && codeJournal) {
+                  const toolName = String(message.name || lastActiveToolName || "tool");
+                  const phase: CodeTaskPhase = /test|check|diagnostic|lint|build|verify|format/i.test(toolName)
+                    ? "verification"
+                    : /write|edit|execute|delete|patch|create|move/i.test(toolName)
+                      ? "implementation"
+                      : codeJournal.phase === "verification" || codeJournal.phase === "review"
+                        ? codeJournal.phase
+                        : "planning";
+                  const readOnlyAction = !/write|edit|execute|delete|patch|create|move|test|check|diagnostic|lint|build|verify|format/i.test(toolName);
+                  queueCodeJournalWrite(recordCodeTaskAction(codeJournal, {
+                    tool: toolName,
+                    summary: doneLabel,
+                    result: excerpt || undefined,
+                    progressed: !readOnlyAction,
+                    phase,
+                  }));
+                }
                 progress.noteToolResult();
+                if (isGeneral && sessionId) {
+                  saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
+                }
                 if (trajectory) {
                   void trajectory.log({ source: "TOOL", type: "TOOL_RESULT", content: `${message.name || lastActiveToolName || "tool"} finished` });
                 }
@@ -1768,60 +2347,59 @@ export async function runProjectAgent(options: {
     .addNode("verify", async (state: any) => {
       if (isCancelled() || signal?.aborted) throw new RunCancelledError();
 
-      // Home general runs produce documents/deliverables, not code projects —
-      // verify that the requested file (PDF, docx, etc.) was actually created.
+      if (!isGeneral && codeJournal) {
+        queueCodeJournalWrite(recordCodeTaskAction(codeJournal, {
+          tool: "supervisor",
+          summary: "Entering verification phase",
+          progressed: true,
+          phase: "verification",
+        }));
+      }
+
+      // Home general runs do not have repository checks. Enforce the generic
+      // output contract inferred from the request instead. The model decides
+      // what the output should be; the runtime checks observable progress.
       if (isGeneral) {
         const currentRepairs = Number(state.repairs) || 0;
         const maxRepairs = MAX_REPAIRS[mode] ?? 1;
-        const wantsDeliverable =
-          DOC_BUILD_PATTERN.test(request) ||
-          DOC_WRITE_PATTERN.test(request) ||
-          /\b(create|make|generate|build|write|produce|export|save)\b.{0,40}\b(file|pdf|docx?|pptx?|xlsx?|presentation|document|report|script|chart|diagram|csv)\b/i.test(request);
-
-        let freshFiles: string[] = [];
-        try {
-          const currentFiles = await fsPromises.readdir(projectRoot, { withFileTypes: true });
-          for (const f of currentFiles) {
-            if (f.isFile() && !initialHomeFiles.has(f.name)) {
-              freshFiles.push(f.name);
-            }
-          }
-        } catch { /* best effort */ }
-
-        if (freshFiles.length === 0) {
-          try {
-            const currentFiles = await fsPromises.readdir(projectRoot, { withFileTypes: true });
-            for (const f of currentFiles) {
-              if (f.isFile()) {
-                const stat = await fsPromises.stat(path.join(projectRoot, f.name));
-                if (stat.mtimeMs >= runStartMs) {
-                  freshFiles.push(f.name);
-                }
-              }
-            }
-          } catch { /* best effort */ }
-        }
-
-        const deliverableExtensions = /\.(pdf|docx?|pptx?|xlsx?|html|md|png|jpg|svg|py|json|csv|txt)$/i;
-        const createdDeliverable = freshFiles.some((name) => deliverableExtensions.test(name));
+        const wantsDeliverable = Boolean(homeTaskContract?.expectsOutput);
+        const freshFiles = wantsDeliverable
+          ? await findFreshHomeFiles(projectRoot, initialHomeFiles, runStartMs)
+          : [];
+        const createdDeliverable = freshFiles.length > 0;
+        const artifactCandidates = selectHomeArtifactCandidates(freshFiles);
+        const artifactChecks = artifactCandidates.length
+          ? await validateHomeArtifacts(projectRoot, artifactCandidates)
+          : [];
+        const invalidArtifacts = artifactChecks.filter((check) => !check.valid);
+        const validatedDeliverable = createdDeliverable && invalidArtifacts.length === 0;
         const conversationalPromise = /\b(let me|i will|now i'll|i am going to|i'll now|going to write|next step is to)\b.{0,50}\b(write|create|generate|run|execute|build)\b/i.test(state.response || "");
 
-        if (wantsDeliverable && !createdDeliverable && (conversationalPromise || currentRepairs < maxRepairs)) {
+        if (wantsDeliverable && (!createdDeliverable || !validatedDeliverable) && (conversationalPromise || currentRepairs < maxRepairs)) {
           if (currentRepairs < maxRepairs) {
-            emit("tool", "Verification · Deliverable check failed (no output file created yet)");
+            const validationNote = invalidArtifacts.length
+              ? ` Output validation failed: ${invalidArtifacts.map((check) => `${check.path} (${check.error || "invalid"})`).join(", ")}.`
+              : " No new workspace output was created.";
+            emit("tool", `Verification · output check failed.${validationNote}`);
+            const failedSkills = loadedSkillNamesFromMessages(runMessages);
+            const failedSkillsNote = failedSkills.length
+              ? ` Skills already loaded this run — do NOT re-read any SKILL.md (${failedSkills.join(", ")}): go straight to write_file + execute.`
+              : "";
             return {
               verification: "failed",
-              verifyFeedback: `You promised or were asked to create a deliverable (such as a PDF, document, or report), but no new file was generated in the workspace. You are in AUTO mode: do NOT stop to talk or narrate future steps. Immediately write the code/script using write_file or execute the required commands to generate the actual file, verify that it was created with ls, and then present the result to the user.`,
+              verifyFeedback: `The request has an observable output contract, but the output is missing or failed validation.${validationNote} You are in AUTO mode: do NOT stop to talk or narrate future steps.${homeReadOnlyStreak >= 7 ? " The supervisor detected a prolonged read-only/research streak. Change strategy now and use the evidence already collected." : ""}${failedSkillsNote} Create or repair the requested result now, then inspect the created path and confirm it is readable. Do not perform another research/read-only action unless it is required to unblock creation.`,
             };
           }
         }
 
-        if (createdDeliverable) {
+        if (validatedDeliverable) {
           emit("tool", `Verification passed · Deliverable created: ${freshFiles.join(", ")}`);
           return { verification: "passed" };
         }
 
-        return { verification: "none" };
+        return wantsDeliverable
+          ? { verification: "failed" }
+          : { verification: "none" };
       }
 
       const currentRepairs = Number(state.repairs) || 0;
@@ -1836,13 +2414,37 @@ export async function runProjectAgent(options: {
       lastDiffFiles = diffFiles;
       const runDiff = diffFiles.filter((d) => initialDiff.get(d.path) !== diffFingerprint(d));
       if (runDiff.length === 0) {
+        if (codeTaskContract?.expectsChanges && mode !== "plan" && currentRepairs < maxRepairs) {
+          emit("tool", "Verification · implementation required before completion");
+          if (codeJournal) {
+            queueCodeJournalWrite(recordCodeTaskAction(codeJournal, {
+              tool: "supervisor",
+              summary: "Blocked completion because the requested change has not been implemented",
+              progressed: false,
+              phase: "implementation",
+            }));
+          }
+          return {
+            verification: "failed",
+            repairs: currentRepairs + 1,
+            verifyFeedback: `The request asks for a repository change, but this run has not changed any files. Do not finish with an explanation or plan. Implement the smallest correct change now, then run the appropriate verification. If the request is genuinely blocked, state the exact blocker instead of claiming completion.`,
+          };
+        }
         return { verification: "none" };
       }
       const changedPaths = runDiff.map((d) => d.path);
+      const unfinishedPlan = Boolean(lastPlanItems?.some((item) => item.status !== "completed"));
       // Docs/assets-only diffs never need a typecheck: running a 30s+
       // `npm run check` for a README edit is pure "takes time, does nothing".
       const CODE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|py|go|rs|java|kt|c|cpp|h|hpp|cs|rb|php|swift|vue|svelte)$/i;
       if (!changedPaths.some((p) => CODE_EXT.test(p))) {
+        if (codeTaskContract?.expectsChanges && unfinishedPlan && currentRepairs < maxRepairs) {
+          return {
+            verification: "failed",
+            repairs: currentRepairs + 1,
+            verifyFeedback: "The current work unit changed files successfully, but the execution plan still has unfinished items. Continue with the next planned unit and update the todo plan before finishing.",
+          };
+        }
         return { verification: "passed" };
       }
 
@@ -1875,34 +2477,89 @@ export async function runProjectAgent(options: {
       let staticCommand: string | null = null;
       {
         const root = path.resolve(projectRoot);
+        const pm = detectPackageManager(root);
         const scaffolded = changedPaths.includes("package.json") && !existsSync(path.join(root, "node_modules"));
         if (scaffolded) {
-          emit("status", "Installing dependencies for the new project (npm install)");
-          const installResult = await runCommand("npm install");
+          emit("status", `Installing dependencies for the new project (${pm.install})`);
+          const installResult = await runCommand(pm.install);
           if (isCancelled() || signal?.aborted) throw new RunCancelledError();
           const installOutput = String((installResult as any)?.output ?? "").trim();
           if ((installResult as any)?.exitCode !== 0) {
-            emit("tool", "Verification failed · npm install");
+            emit("tool", `Verification failed · ${pm.install}`);
             if (currentRepairs < maxRepairs && installOutput) {
               return {
                 repairs: currentRepairs + 1,
-                verifyFeedback: `npm install failed (self-healing repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${extractDiagnosticFeedback(installOutput)}\n\nFix the dependency setup (package.json, registry access, Node version), then summarize what you changed.`,
+                verifyFeedback: `${pm.install} failed (self-healing repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${extractDiagnosticFeedback(installOutput)}\n\nFix the dependency setup (package.json, registry access, Node version), then summarize what you changed.`,
               };
             }
             return { verification: "failed" };
           }
-          emit("tool", "Verification passed · npm install");
+          emit("tool", `Verification passed · ${pm.install}`);
           try {
             const scripts = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).scripts ?? {};
-            if (typeof scripts.build === "string") staticCommand = "npm run build";
+            if (typeof scripts.build === "string") staticCommand = `${pm.run} build`;
           } catch { /* fall through to default selection */ }
         }
       }
 
       // 1. Static/build checks. Projects may override the heuristic with
       // .nexus/verification.json or package.json.nexus.verification.commands.
-      const configuredCommands = staticCommand ? [staticCommand] : pickVerificationCommands(projectRoot);
-      for (const verificationCommand of configuredCommands) {
+      // P1: run them in parallel (cap 4) instead of serial fail-fast so a
+      // typecheck + lint + test trio reports all failures in one repair pass.
+      const affectedCommands = pickAffectedPackageCommands(projectRoot, changedPaths);
+      const configuredCommands = staticCommand
+        ? [staticCommand]
+        : affectedCommands.length ? affectedCommands : pickVerificationCommands(projectRoot);
+      const pickFormatterCommand = ((): string | null => {
+        try {
+          const root = path.resolve(projectRoot);
+          const pkg = existsSync(path.join(root, "package.json"))
+            ? JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"))
+            : null;
+          const deps = { ...(pkg?.dependencies ?? {}), ...(pkg?.devDependencies ?? {}) };
+          if (!deps.prettier && typeof pkg?.scripts?.format !== "string") return null;
+          if (!changedPaths.some((p) => /\.(ts|tsx|js|jsx|mjs|cjs|json|css|md)$/i.test(p))) return null;
+          const pmInner = detectPackageManager(root);
+          if (typeof pkg?.scripts?.format === "string" && /check/i.test(String(pkg.scripts.format))) return `${pmInner.run} format`;
+          if (deps.prettier) return `${pmInner.exec} prettier --check ${changedPaths.filter((p) => /\.(ts|tsx|js|jsx|mjs|cjs|json|css|md)$/i.test(p)).slice(0, 5).map((f) => `"${f.replace(/"/g, "")}"`).join(" ")}`;
+          return null;
+        } catch {
+          return null;
+        }
+      })();
+      const verifyBatch = [...configuredCommands.slice(0, 4)];
+      if (pickFormatterCommand && !verifyBatch.includes(pickFormatterCommand)) verifyBatch.push(pickFormatterCommand);
+      if (verifyBatch.length > 1) {
+        emit("status", `Verifying changes (${verifyBatch.length} checks in parallel)`);
+        const settled = await Promise.allSettled(verifyBatch.map((cmd) => runCommand(cmd)));
+        const failures: Array<{ command: string; output: string }> = [];
+        settled.forEach((entry, index) => {
+          const command = verifyBatch[index];
+          if (isCancelled() || signal?.aborted) throw new RunCancelledError();
+          if (entry.status === "rejected") {
+            failures.push({ command, output: String((entry.reason as Error)?.message || entry.reason) });
+            emit("tool", `Verification failed · ${command}`);
+          } else {
+            const output = String((entry.value as any)?.output ?? "").trim();
+            if ((entry.value as any)?.exitCode !== 0) {
+              failures.push({ command, output });
+              emit("tool", `Verification failed · ${command}`, undefined, undefined, undefined, undefined, extractDiagnosticFeedback(output));
+            } else {
+              emit("tool", `Verification passed · ${command}`);
+            }
+          }
+        });
+        if (failures.length > 0) {
+          const combined = failures.map((f) => `### ${f.command}\n${extractDiagnosticFeedback(f.output)}`).join("\n\n").slice(0, VERIFY_OUTPUT_CAP);
+          if (currentRepairs < maxRepairs) {
+            return {
+              repairs: currentRepairs + 1,
+              verifyFeedback: `Parallel verification failed (${failures.length}/${verifyBatch.length}, repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${combined}\n\nFix these failures with minimal, focused changes, then summarize what you changed.`,
+            };
+          }
+          return { verification: "failed" };
+        }
+      } else for (const verificationCommand of configuredCommands) {
         emit("status", `Verifying changes with \`${verificationCommand}\``);
         const result = await runCommand(verificationCommand);
         if (isCancelled() || signal?.aborted) throw new RunCancelledError();
@@ -1940,7 +2597,68 @@ export async function runProjectAgent(options: {
         emit("tool", `Targeted test passed · ${targetTestCmd}`);
       }
 
-      return { verification: configuredCommands.length || scoped || targetTestCmd ? "passed" : "none" };
+      // Auto mode gets one bounded, read-only review after verification and
+      // before completion. Blocking findings return the task to implementation.
+      if (mode === "auto" && codeTaskContract?.expectsChanges && currentRepairs < maxRepairs) {
+        emit("status", "Reviewing the completed work with a read-only reviewer…");
+        if (codeJournal) {
+          queueCodeJournalWrite(recordCodeTaskAction(codeJournal, {
+            tool: "code-reviewer",
+            summary: `Reviewing ${changedPaths.length} changed file${changedPaths.length === 1 ? "" : "s"}`,
+            progressed: true,
+            phase: "review",
+            changedFiles: changedPaths,
+          }));
+        }
+        const review = await executeSubagentTask({
+          role: "code-reviewer",
+          task: `Review only this run's changes. Changed paths:\n${changedPaths.slice(0, 40).join("\n")}\n\nCheck correctness, regressions, error handling, security, and incomplete acceptance criteria. Return findings prioritized as CRITICAL, HIGH, MEDIUM, or LOW. If there are no blocking issues, say so clearly. Do not edit files.`,
+          projectRoot,
+          provider,
+          modelName,
+          projectRecord: { id: "current", name: "current", root: projectRoot },
+          mcpTools: [],
+          skills: skillDirs,
+          skillsBackend: compositeBackend,
+          onEvent: (subEvent) => {
+            usage.addSubagent(subEvent.subagent.usage);
+            emit("subagent", subEvent.type === "subagent_start" ? "Delegated read-only code review" : subEvent.type === "subagent_finish" ? "Read-only code review completed" : "Code reviewer working…", undefined, undefined, subEvent.subagent);
+          },
+          isCancelled,
+          runId: sessionId,
+        });
+        const blockingFindings = review.match(/\b(CRITICAL|HIGH)\b[\s\S]{0,1200}/gi) || [];
+        if (blockingFindings.length > 0) {
+          return {
+            verification: "failed",
+            repairs: currentRepairs + 1,
+            verifyFeedback: `The read-only code review found blocking findings. Fix them before finishing:\n\n${blockingFindings.slice(0, 6).join("\n\n")}\n\nRe-run verification after the fixes.`,
+          };
+        }
+      }
+
+      if (codeTaskContract?.expectsChanges && unfinishedPlan && currentRepairs < maxRepairs) {
+        const remaining = lastPlanItems!
+          .filter((item) => item.status !== "completed")
+          .slice(0, 8)
+          .map((item) => `- ${item.content} (${item.status})`)
+          .join("\n");
+        emit("tool", "Verification · work remains in the execution plan");
+        if (codeJournal) {
+          queueCodeJournalWrite(recordCodeTaskAction(codeJournal, {
+            tool: "supervisor",
+            summary: "Verification passed for the current work unit; continuing with unfinished plan items",
+            progressed: true,
+            phase: "implementation",
+          }));
+        }
+        return {
+          verification: "failed",
+          repairs: currentRepairs + 1,
+          verifyFeedback: `The current work unit passed verification, but the execution plan is not complete. Continue with the next unfinished work unit instead of finishing early. Remaining plan items:\n${remaining}\n\nUpdate the todo plan as each unit is completed, then verify again.`,
+        };
+      }
+      return { verification: verifyBatch.length || scoped || targetTestCmd ? "passed" : "none" };
     })
     .addEdge(START, "deep_agent")
     .addConditionalEdges("deep_agent", () => (mode === "plan" ? "end" : "verify"), { verify: "verify", end: END })
@@ -1999,23 +2717,77 @@ export async function runProjectAgent(options: {
       const partial = retryIsDoom
         ? `I got stuck repeating the same ${doomTool} call without making progress, so I stopped instead of looping forever. Progress is checkpointed — say "continue" and I will resume with a different approach.${planSummary}`
         : `I hit the step budget before finishing. Progress is checkpointed — say "continue" and I will resume from where I stopped instead of restarting.${planSummary}`;
-      emit("error", retryIsDoom ? `Stuck repeating ${doomTool} — stopped to avoid an infinite loop. Say "continue" to resume differently.` : `Step budget reached (${outerLimit} steps). Progress saved — say "continue" to resume.`);
+      emit("error", retryIsDoom ? `Stuck repeating ${doomTool} — stopped to avoid an infinite loop after ${toolCallCount} tool calls. Say "continue" to resume differently.` : `Step budget reached (${outerLimit} graph steps; ${toolCallCount} tool calls). Progress saved — say "continue" to resume.`);
       if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: retryIsDoom ? `Doom-loop breaker fired on ${doomTool}; checkpoint saved for resume.` : `Recursion limit hit at ${outerLimit}; checkpoint saved for resume.` });
       const partialUsage = usage.finalize(modelName, estimatedFallbackInputTokens, 0);
       return {
         response: partial,
         verification: "interrupted",
-        memoryEntry: `Task: ${request}\nOutcome: ${retryIsDoom ? `interrupted in a repeated-${doomTool} loop` : "interrupted at step budget"}; resumable via continue.\nVerification: interrupted`,
+        memoryEntry: `Task: ${tail(request, 200)} | Result: ${retryIsDoom ? `interrupted in a repeated-${doomTool} loop` : "interrupted at step budget"}; resumable via continue. (Details in chat transcript.)`,
         usage: partialUsage,
         artifact: undefined,
         projectMemoryLogEntry: `Interrupted work (${new Date().toISOString().slice(0, 10)}): ${tail(request, 200)}`,
+        memoryCandidates: [] as MemoryCandidate[],
         interrupted: true as const,
       };
     }
   }
+  // Never let final prose override an unmet Home output contract. A failed
+  // run can still be resumed, but it must be reported as incomplete.
+  const homeFreshFiles = isGeneral && homeTaskContract?.expectsOutput
+    ? await findFreshHomeFiles(projectRoot, initialHomeFiles, runStartMs)
+    : [];
+  const homeArtifactChecks = homeFreshFiles.length
+    ? await validateHomeArtifacts(projectRoot, selectHomeArtifactCandidates(homeFreshFiles))
+    : [];
+  const homeInvalidArtifacts = homeArtifactChecks.filter((check) => !check.valid);
+  if (isGeneral && homeTaskContract?.expectsOutput && result?.verification === "failed") {
+    const freshFiles = homeFreshFiles;
+    if (freshFiles.length === 0 || homeInvalidArtifacts.length > 0) {
+      const detail = freshFiles.length === 0
+        ? "No new workspace artifact was created."
+        : `Output validation failed: ${homeInvalidArtifacts.map((check) => `${check.path} (${check.error || "invalid"})`).join(", ")}.`;
+      result.response = `I could not complete the requested output in this run. ${detail} The work is checkpointed; say "continue" to resume from the last completed step.`;
+      emit("error", `Home task incomplete · ${detail}`);
+    }
+  }
+  if (homeJournal) {
+    const journalWithOutputs = homeFreshFiles.length
+      ? recordHomeTaskAction(homeJournal, {
+          tool: "workspace",
+          summary: `Detected ${homeFreshFiles.length} output file${homeFreshFiles.length === 1 ? "" : "s"}`,
+          progressed: true,
+          phase: "validation",
+          outputs: homeFreshFiles,
+        })
+      : homeJournal;
+    const status = result?.verification === "failed"
+      ? "failed"
+      : result?.verification === "interrupted"
+        ? "interrupted"
+        : "completed";
+    queueHomeJournalWrite(finishHomeTaskJournal(journalWithOutputs, status, status === "completed" ? "complete" : "blocked"));
+    await homeJournalWrite;
+  }
+  if (codeJournal) {
+    queueCodeJournalWrite(finishCodeTaskJournal(codeJournal, result?.verification === "failed" ? "failed" : "completed"));
+    await codeJournalWrite;
+  }
   // Checkpoint the completed run so a follow-up "continue" can build on the
   // full tool history, not just the text transcript.
-  saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
+  const ledgerFiles = (lastDiffFiles || []).map((entry: any) => String(entry?.path || entry?.file || "")).filter(Boolean);
+  saveLastRunCheckpoint(sessionId, {
+    messages: sanitizeResumeCheckpoint(runMessages),
+    planItems: lastPlanItems,
+    ledger: {
+      updatedAt: new Date().toISOString(),
+      planItems: lastPlanItems,
+      completedSteps: summarizeCompletedSteps(runMessages),
+      lastDiagnostics: [String(result?.response || "")].filter((text) => /error|failed|blocked|verification/i.test(text)).slice(-4),
+      changedFiles: ledgerFiles,
+      verification: result?.verification === "passed" || result?.verification === "failed" || result?.verification === "interrupted" ? result.verification : "none",
+    },
+  }, targetTelemetryRoot);
   // When no provider reported usage metadata, fall back to character-based
   // estimates for the streamed text so token counts are never zero.
   const fallbackOutputTokens = unaccountedOutputChars > 0 ? Math.max(1, estimateTokens("x".repeat(unaccountedOutputChars))) : 0;
@@ -2056,12 +2828,47 @@ export async function runProjectAgent(options: {
     } catch { /* ignore artifact save errors */ }
   }
 
+  // Semantic candidates for Home long-term memory: one cheap extraction call
+  // proposing durable profile/preference/fact items. Transient data (tables,
+  // lists, numbers) is filtered by parseCandidateFacts. Best-effort, never
+  // fails the run; main auto-applies them with a visible notice (the user
+  // can forget any item in the Memory tab).
+  let memoryCandidates: MemoryCandidate[] = [];
+  if (isGeneral && mode !== "plan") {
+    try {
+      const responseText = String(result.response || "");
+      const requestText = String(request || "").trim();
+      if (shouldExtractMemory(requestText, responseText)) {
+        const extractPrompt =
+          `Extract durable long-term memory candidates from this assistant turn. ` +
+          `Return JSON ONLY: {"candidates":[{"category":"profile|preference|fact|context","fact":"..."}]}. ` +
+          `Rules: at most 3 candidates; each fact one sentence, 8-200 chars, enduring (identity, role, lasting preference, stable personal fact, ongoing project goal). ` +
+          `NEVER include transient data: greetings, tables, lists, counts, URLs, file names, numbers from tool output, or anything already answered in full. ` +
+          `Return {"candidates":[]} when nothing is worth remembering.\n\n` +
+          `User: ${requestText.slice(0, 800)}\nAssistant: ${responseText.slice(0, 2500)}`;
+        const raw: any = await Promise.race([
+          Promise.resolve(llm.invoke(extractPrompt)),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("memory extract timeout")), 20000)),
+        ]);
+        const content = typeof raw?.content === "string"
+          ? raw.content
+          : Array.isArray(raw?.content)
+            ? raw.content.map((p: any) => (typeof p === "string" ? p : p?.text || "")).join("\n")
+            : String(raw?.content || raw?.text || "");
+        memoryCandidates = parseCandidateFacts(content);
+      }
+    } catch { /* extraction is best-effort */ }
+  }
+
   return {
+    // Session memory is a compact pointer, NOT a transcript copy: the full
+    // answer lives in chat history. Tables/lists are never duplicated here.
     response: result.response as string,
     verification: (result.verification as string) || "none",
-    memoryEntry: `Task: ${request}\nOutcome: ${tail(result.response, MEMORY_ENTRY_CAP)}\nVerification: ${(result.verification as string) || "none"}`,
+    memoryEntry: `Task: ${tail(request, 200)} | Result: ${firstMeaningfulLine(result.response as string, 160)} | Verification: ${(result.verification as string) || "none"} (details in chat transcript)`,
     usage: finalUsage,
     artifact,
-    projectMemoryLogEntry: `Recent work (${new Date().toISOString().slice(0, 10)}): ${tail(request, 200)}`,
+    projectMemoryLogEntry: `Recent work (${new Date().toISOString().slice(0, 10)}): ${tail(request, 200)} → ${firstMeaningfulLine(result.response as string, 200)}`,
+    memoryCandidates,
   };
 }

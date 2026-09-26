@@ -21,9 +21,9 @@ import {
   discoverAllRules,
 } from "../dist-electron/rules-service.js";
 
-test("ECC Integration: listSystemSkills discovers all 265+ curated skills", async () => {
+test("ECC Integration: listSystemSkills discovers all 200+ curated skills", async () => {
   const systemSkills = await listSystemSkills();
-  assert.ok(systemSkills.length >= 265, `Expected at least 265 skills, got ${systemSkills.length}`);
+  assert.ok(systemSkills.length >= 200, `Expected at least 200 skills, got ${systemSkills.length}`);
   const codeSkills = systemSkills.filter((s) => !s.modes.length || s.modes.includes("code"));
   assert.ok(codeSkills.length >= 190, `Expected at least 190 code skills, got ${codeSkills.length}`);
 

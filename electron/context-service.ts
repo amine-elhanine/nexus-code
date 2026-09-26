@@ -104,8 +104,7 @@ export class StreamUsageTracker {
 export function compactHistory(
   turns: Array<{ role: "user" | "assistant" | "event"; text: string; kind?: string }>,
   maxTokens = 8000
-): CompactTurn[] {
-  if (!turns || turns.length === 0) return [];
+): CompactTurn[] {  if (!turns || turns.length === 0) return [];
 
   const budget = Math.max(64, Math.floor(maxTokens));
   const enforceBudget = (items: CompactTurn[]): CompactTurn[] => {
@@ -124,6 +123,7 @@ export function compactHistory(
 
   // Filter to just user and assistant turns
   const validTurns = turns.filter((t) => t.role === "user" || t.role === "assistant");
+  const durableEvents = turns.filter((t) => t.role === "event" && ["tool", "error", "plan", "status"].includes(t.kind || ""));
   if (validTurns.length <= 4) {
     return enforceBudget(validTurns.map((t) => ({ role: t.role as "user" | "assistant", text: t.text })));
   }
@@ -137,20 +137,33 @@ export function compactHistory(
   const compactedOlder: CompactTurn[] = [];
   const summaryBullets: string[] = [];
 
+  const excerpt = (text: string, cap: number) => {
+    if (text.length <= cap) return text.replace(/\r?\n/g, " ");
+    const head = Math.floor(cap * 0.65);
+    return `${text.slice(0, head)} … ${text.slice(-Math.floor(cap * 0.35))}`.replace(/\r?\n/g, " ");
+  };
+
   for (const turn of olderTurns) {
     const turnTokens = estimateTokens(turn.text);
 
     // If turn is very large (e.g. large file dump or tool output), compress it
     if (turnTokens > 500) {
-      const snippet = turn.text.slice(0, 300).replace(/\r?\n/g, " ");
+      const snippet = excerpt(turn.text, 520);
       summaryBullets.push(`${turn.role === "user" ? "User requested" : "Assistant performed"}: ${snippet}… [collapsed ${turnTokens} tokens]`);
     } else if (currentTokens + turnTokens < maxTokens) {
       compactedOlder.push({ role: turn.role as "user" | "assistant", text: turn.text });
       currentTokens += turnTokens;
     } else {
-      const snippet = turn.text.slice(0, 150).replace(/\r?\n/g, " ");
+      const snippet = excerpt(turn.text, 280);
       summaryBullets.push(`${turn.role === "user" ? "User" : "Assistant"}: ${snippet}…`);
     }
+  }
+
+  // Tool results and diagnostics are not conversation turns, but they often
+  // contain the exact failure or verification state needed to continue a
+  // large task. Preserve compact excerpts instead of dropping them entirely.
+  for (const event of durableEvents.slice(-12)) {
+    summaryBullets.push(`${event.kind}: ${excerpt(event.text, 360)}`);
   }
 
   const result: CompactTurn[] = [];
@@ -170,4 +183,52 @@ export function compactHistory(
   result.push(...recentTurns.map((t) => ({ role: t.role as "user" | "assistant", text: t.text })));
 
   return enforceBudget(result);
+}
+
+/**
+ * P1: model-backed compaction. When older history is large, a single cheap
+ * summarization call preserves decisions/facts far better than first-N-chars
+ * truncation. Best-effort with timeout — any failure falls back to
+ * compactHistory() so runs never stall on summarization.
+ */
+export async function compactHistoryWithModel(
+  turns: Array<{ role: "user" | "assistant" | "event"; text: string; kind?: string }>,
+  summarize: (prompt: string) => Promise<string>,
+  maxTokens = 8000
+): Promise<CompactTurn[]> {
+  try {
+    const validTurns = (turns || []).filter((t) => t.role === "user" || t.role === "assistant");
+    if (validTurns.length <= 6) return compactHistory(turns, maxTokens);
+    const olderTurns = validTurns.slice(0, -4);
+    const olderTokens = olderTurns.reduce((sum, t) => sum + estimateTokens(t.text), 0);
+    // Small histories don't need a model call.
+    if (olderTokens < 6000) return compactHistory(turns, maxTokens);
+    const input = olderTurns
+      .map((t) => `${t.role === "user" ? "User" : "Assistant"}: ${t.text.length > 2600 ? `${t.text.slice(0, 1700)} … ${t.text.slice(-900)}` : t.text}`)
+      .join("\n\n")
+      .slice(0, 24000);
+    const prompt =
+      `Summarize this coding-session history into short durable bullets (decisions, files changed, errors seen, current goal). ` +
+      `Omit verbatim code dumps and tool noise. Max 20 bullets, each one line.\n\n${input}`;
+    const timed = await Promise.race([
+      Promise.resolve(summarize(prompt)),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 20000)),
+    ]);
+    if (typeof timed !== "string" || !timed.trim()) return compactHistory(turns, maxTokens);
+    const recentTurns = validTurns.slice(-4).map((t) => ({ role: t.role as "user" | "assistant", text: t.text }));
+    const summaryTurn: CompactTurn = {
+      role: "user",
+      text: `[Prior Conversation Summary — model-generated]\n${timed.trim().slice(0, 4000)}`,
+    };
+    const ackTurn: CompactTurn = {
+      role: "assistant",
+      text: "Understood. I have context on our previous discussion and will proceed accordingly.",
+    };
+    const compacted = [summaryTurn, ackTurn, ...recentTurns];
+    // Model summaries are useful but still untrusted output; enforce the same
+    // hard budget as the deterministic path before handing history to a model.
+    return compactHistory(compacted, maxTokens);
+  } catch {
+    return compactHistory(turns, maxTokens);
+  }
 }

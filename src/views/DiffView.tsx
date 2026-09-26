@@ -82,14 +82,26 @@ export function DiffLineView({
   );
 }
 
-export function DiffPatch({ patch }: { patch: string }) {
+export function DiffPatch({ patch, filePath, onRevertHunk }: { patch: string; filePath?: string; onRevertHunk?: (filePath: string, hunkHeader: string) => void }) {
   const rows = parseDiffPatch(patch);
   const rendered: ReactNode[] = [];
+  let currentHunk: string | null = null;
   rows.forEach((row, index) => {
     if (row.kind === "hunk") {
+      currentHunk = row.text || null;
+      const header = currentHunk;
       rendered.push(
         <div className="diff-hunk-row" key={`${index}-hunk`}>
-          {row.text}
+          <span>{row.text}</span>
+          {filePath && header && onRevertHunk && (
+            <button
+              className="diff-hunk-discard"
+              onClick={() => onRevertHunk(filePath, header)}
+              title="Discard only this hunk, keep the rest of the file"
+            >
+              Discard hunk
+            </button>
+          )}
         </div>
       );
     } else if (row.kind === "context") {
@@ -115,6 +127,7 @@ export function DiffView({
   onRevertFile,
   onRevertAll,
   onInspectFile,
+  onRevertHunk,
 }: {
   diff: WorkspaceDiffFile[];
   checkpointId?: string;
@@ -124,6 +137,7 @@ export function DiffView({
   onRevertFile: (path: string) => void;
   onRevertAll: () => void;
   onInspectFile?: (file: WorkspaceDiffFile) => void;
+  onRevertHunk?: (path: string, hunkHeader: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const toggle = (file: string) =>
@@ -209,7 +223,7 @@ export function DiffView({
               </i>
               {expanded.has(file.path) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             </button>
-            {expanded.has(file.path) && <DiffPatch patch={file.patch} />}
+            {expanded.has(file.path) && <DiffPatch patch={file.patch} filePath={file.path} onRevertHunk={onRevertHunk} />}
           </div>
         ))}
         {!diff.length && (

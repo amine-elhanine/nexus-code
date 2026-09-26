@@ -139,6 +139,13 @@ export function cleanTerminalOutput(raw: string): string {
   let cleaned = raw.replace(/\r\n/g, "\n");
   // Collapse carriage returns that overwrite current line (spinners/progress)
   cleaned = cleaned.replace(/[^\n\r]*\r/g, "");
+  // Some verbose build tools print their full environment. Keep that noise
+  // and credential-like assignments out of model context.
+  cleaned = cleaned
+    .split("\n")
+    .filter((line) => !/^\s*[A-Z][A-Z0-9_]*(?:\s*:\s*|=\s*)['"]?(?:[A-Za-z]:\\|https?:\/\/|\\\\|[A-Za-z0-9_./-]{12,})/.test(line))
+    .map((line) => line.replace(/((?:api[_-]?key|token|secret|password|authorization)\s*[:=]\s*)[^,\s}\]]+/ig, "$1[REDACTED]"))
+    .join("\n");
   // Collapse runs of 3+ blank lines
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
   return cleaned;
@@ -155,6 +162,18 @@ export function capModelOutput(output: string): { output: string; truncated: boo
   };
 }
 
+function commandLeavesProjectRoot(projectRoot: string, command: string): boolean {
+  const root = path.resolve(projectRoot).toLowerCase();
+  const matches = [...command.matchAll(/(?:^|[&|])\s*(?:cd|pushd)\s+["']?([^"'&|]+)["']?/gi)];
+  for (const match of matches) {
+    const target = match[1].trim();
+    if (!/^(?:[a-z]:[\\/]|\\\\|\/)/i.test(target)) continue;
+    const resolved = path.resolve(target).toLowerCase();
+    if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) return true;
+  }
+  return false;
+}
+
 export async function executeCommand(projectRoot: string, command: string, options: { timeoutSeconds?: number; runId?: string; requireApproval?: boolean } = {}): Promise<CommandResult> {
   const state = stateFor(options.runId);
   if (state.cancelled || state.abortController.signal.aborted) {
@@ -162,6 +181,9 @@ export async function executeCommand(projectRoot: string, command: string, optio
   }
   const trimmed = command.trim();
   if (!trimmed) return { output: "Command is empty.", exitCode: 1, truncated: false };
+  if (commandLeavesProjectRoot(projectRoot, trimmed)) {
+    return { output: "Command blocked: do not cd outside the selected project workspace. Commands already run with the correct project cwd; use relative paths instead.", exitCode: 1, truncated: false };
+  }
   const policy = await readCommandPolicy(projectRoot);
   if (isDeniedCommand(trimmed) || classifyCommand(trimmed, policy) === "deny") return { output: "Command blocked by permission policy (destructive pattern).", exitCode: 1, truncated: false };
   if (options.requireApproval && classifyCommand(trimmed, policy) === "ask") {

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef } from "react";
 import { Terminal as XTerminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { Terminal, RefreshCw, Trash2, Play, GitBranch, CheckCircle2 } from "lucide-react";
+import { Terminal, RefreshCw, Trash2, Play, GitBranch, CheckCircle2, Copy } from "lucide-react";
 import { detectStack } from "../../utils/stack.js";
 
 interface XTermViewProps {
@@ -64,6 +64,18 @@ export const XTermView: React.FC<XTermViewProps> = ({ projectRoot, files = [] })
     term.open(containerRef.current);
     fitAddon.fit();
 
+    // xterm reserves Ctrl+C for the shell even when text is selected. Make
+    // the familiar desktop shortcut copy a selection, while preserving
+    // interrupt semantics when there is no selection.
+    term.attachCustomKeyEventHandler((event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c" && term.hasSelection()) {
+        void navigator.clipboard?.writeText(term.getSelection());
+        term.clearSelection();
+        return false;
+      }
+      return true;
+    });
+
     termRef.current = term;
     fitAddonRef.current = fitAddon;
 
@@ -123,6 +135,13 @@ export const XTermView: React.FC<XTermViewProps> = ({ projectRoot, files = [] })
     termRef.current?.clear();
   };
 
+  const copySelection = async () => {
+    const selection = termRef.current?.getSelection() || "";
+    if (!selection) return;
+    await navigator.clipboard?.writeText(selection);
+    termRef.current?.clearSelection();
+  };
+
   return (
     <div className="xterm-view-wrapper">
       <div className="xterm-toolbar">
@@ -153,6 +172,10 @@ export const XTermView: React.FC<XTermViewProps> = ({ projectRoot, files = [] })
           <button className="xterm-btn" onClick={clearTerminal} title="Clear screen">
             <Trash2 size={12} />
             <span>Clear</span>
+          </button>
+          <button className="xterm-btn" onClick={() => void copySelection()} title="Copy selected text">
+            <Copy size={12} />
+            <span>Copy</span>
           </button>
           <button className="xterm-btn" onClick={restartShell} title="Restart terminal process">
             <RefreshCw size={12} />

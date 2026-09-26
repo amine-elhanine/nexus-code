@@ -60,11 +60,13 @@ export function MemoryEditor({
   description,
   value,
   onChange,
+  placeholder,
 }: {
   label: string;
   description: string;
   value: string;
   onChange: (value: string) => void;
+  placeholder?: string;
 }) {
   return (
     <div className="memory-card">
@@ -78,7 +80,7 @@ export function MemoryEditor({
       <textarea
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        placeholder="No memory written yet…"
+        placeholder={placeholder || "No memory written yet…"}
       />
     </div>
   );

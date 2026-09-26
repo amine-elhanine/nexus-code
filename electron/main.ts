@@ -10,17 +10,17 @@ const execFileAsync = promisify(execFile);
 import { runProjectAgent, RunCancelledError, clearLastRunCheckpoint, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint, summarizeCompletedSteps, type AgentMode, type AgentSettings, type AgentEvent, type HistoryInput } from "./agent-service.js";
 import { PROVIDERS, fetchRemoteModels } from "./providers.js";
 import {
-  appendHomeSessionMessages, appendSessionMessages, createHomeSession, createSession, deleteHomeSession, deleteProject, deleteSession, getHomeSession, getProject, getSession,
+  appendHomeSessionMessages, appendSessionMessages, createHomeSession, createSession, deleteHomeSession, deleteProject, deleteSession, getHomeMemory, getHomeSession, getProject, getSession,
   getSkillsConfig, listEmbeddingProviders, listHomeSessions, listMcpServers, listProjects, listProviders, listSessions,
-  removeEmbeddingProvider, removeMcpServer, removeProvider, saveSkillsConfig, updateHomeSession, updateProjectMemory,
+  removeEmbeddingProvider, removeMcpServer, removeProvider, saveSkillsConfig, updateHomeMemory, updateHomeSession, updateProjectMemory,
   updateSession, upsertEmbeddingProvider, upsertMcpServer, upsertProject, upsertProvider, getAppSettings, saveAppSettings, getNotebookParserConfig, saveNotebookParserConfig, type EmbeddingProviderConfig,
-  type McpServerConfig, type ProviderConfig, type ChatAttachment
+  type McpServerConfig, type ProviderConfig, type ChatAttachment, listHomeMemoryPending, removeHomeMemoryPending
 } from "./store.js";
 import { HOME_PROJECT_ID, cleanupHomeGeneratorScripts, downloadHomeFile, ensureHomeDir, listHomeFiles, listHomeSessionFiles, openHomeFolder, readHomeFile, recordHomeRunFiles, removeSessionFromManifest } from "./home-service.js";
 import { testMcpServer } from "./mcp-service.js";
 import { createSkill, deleteSkill, ensureSkillSourceDirs, importSkill, listAllSkills, listSkills, openSkillsFolder, readSkillContent, setSkillModes } from "./skills-service.js";
 import { beginCommandRun, cancelCommandRun, endCommandRun, isCommandRunCancelled, runProjectCommand, getAgentBackend } from "./command-service.js";
-import { createWorkspaceCheckpoint, deleteWorkspaceCheckpoint, getWorkspaceDiffFiles, restoreWorkspaceCheckpoint, revertAllWorkspaceChanges, revertWorkspaceFile } from "./diff-service.js";
+import { createWorkspaceCheckpoint, deleteWorkspaceCheckpoint, getWorkspaceDiffFiles, restoreWorkspaceCheckpoint, revertAllWorkspaceChanges, revertWorkspaceFile, revertWorkspaceHunk } from "./diff-service.js";
 import { getWorkspaceGit, listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./project-tools.js";
 import {
   createSessionWorktree, getSessionWorktree, mergeWorktreeToMain, discardSessionWorktree,
@@ -45,6 +45,7 @@ import { getNotebookEmbeddingConfig, saveNotebookEmbeddingConfig, testEmbeddingE
 import { answerNotebookQuestion, getChunkPassage, hybridRetrieve } from "./notebook-rag.js";
 import { enqueueIngest, onNotebookJobProgress, recoverInterruptedJobs, reindexSessionFromLibrary, retrySource } from "./notebook-jobs.js";
 import { sessionOutline } from "./notebook-library.js";
+import { recordDeliverable, isSubstantiveHomeTask, parseHomeMemory, addMemoryFact } from "./home-memory-service.js";
 
 protocol.registerSchemesAsPrivileged([
   { scheme: "nexus-attachment", privileges: { standard: true, secure: true, supportFetchAPI: true } }
@@ -283,6 +284,38 @@ app.whenReady().then(async () => {
   ipcMain.handle("window:isMaximized", () => mainWindow?.isMaximized() ?? false);
   ipcMain.handle("command:approval", (_event, payload: { id: string; decision: "once" | "session" | "deny" }) => resolveCommandApproval(payload.id, payload.decision));
 
+  // Blocking clarifying questions (ask_user): the agent waits for the user.
+  // Renderer shows a modal via "question:request" and resolves via
+  // "question:resolve". Timeout / cancel falls back to best-guess (null).
+  const pendingUserQuestions = new Map<string, (answer: string | null) => void>();
+  ipcMain.handle("question:resolve", (_event, payload: { id: string; answers?: Record<string, string> | null; cancelled?: boolean }) => {
+    const resolve = pendingUserQuestions.get(payload.id);
+    if (!resolve) return false;
+    pendingUserQuestions.delete(payload.id);
+    if (payload.cancelled || !payload.answers) resolve(null);
+    else {
+      const text = Object.entries(payload.answers)
+        .map(([header, value]) => `${header}: ${value}`)
+        .join("\n")
+        .slice(0, 2000);
+      resolve(text || null);
+    }
+    return true;
+  });
+  const askUserBlocking = (sessionId: string, questions: Array<{ header: string; question: string; options: string[] }>): Promise<string | null> => {
+    const id = `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    mainWindow?.webContents.send("question:request", { id, sessionId, questions });
+    return new Promise<string | null>((resolve) => {
+      pendingUserQuestions.set(id, resolve);
+      setTimeout(() => {
+        if (pendingUserQuestions.has(id)) {
+          pendingUserQuestions.delete(id);
+          resolve(null);
+        }
+      }, 120000);
+    });
+  };
+
   // Two fully separate browser sessions — Home and Code share nothing
   // (cookies, storage, cache, logins). Each mode's visible tabs and the
   // agent's hidden webview for that mode all live in the same partition.
@@ -369,6 +402,30 @@ app.whenReady().then(async () => {
   ipcMain.handle("home:readFile", (_event, relativePath: string) => readHomeFile(relativePath));
   ipcMain.handle("home:download", (_event, relativePath: string) => downloadHomeFile(relativePath));
   ipcMain.handle("home:openFolder", () => openHomeFolder());
+  ipcMain.handle("home:memory:get", () => getHomeMemory());
+  ipcMain.handle("home:memory:update", (_event, memory: string) => updateHomeMemory(memory));
+  ipcMain.handle("home:memory:structured", async () => {
+    const [memory, pending] = await Promise.all([getHomeMemory(), listHomeMemoryPending()]);
+    return { structure: parseHomeMemory(memory), pending };
+  });
+  ipcMain.handle("home:memory:pending:resolve", async (_event, payload: { id: string; accept: boolean }) => {
+    const pending = await listHomeMemoryPending();
+    const item = pending.find((p) => p.id === payload.id);
+    if (!item) return { structure: parseHomeMemory(await getHomeMemory()), pending };
+    await removeHomeMemoryPending(payload.id);
+    if (payload.accept) {
+      const current = await getHomeMemory();
+      const cat = ["profile", "preference", "fact", "context"].includes(item.category) ? item.category : "fact";
+      await updateHomeMemory(addMemoryFact(current, cat as "profile" | "preference" | "fact" | "context", item.fact));
+    }
+    return { structure: parseHomeMemory(await getHomeMemory()), pending: await listHomeMemoryPending() };
+  });
+  ipcMain.handle("home:memory:fact:remove", async (_event, payload: { category: string; fact: string }) => {
+    const { removeMemoryFact } = await import("./home-memory-service.js");
+    const current = await getHomeMemory();
+    await updateHomeMemory(removeMemoryFact(current, payload.fact || ""));
+    return parseHomeMemory(await getHomeMemory());
+  });
 
   // Notebook (NotebookLM-style isolated RAG): each notebook owns its sources,
   // vector index and conversations. Retrieval never crosses notebook boundaries.
@@ -869,6 +926,11 @@ app.whenReady().then(async () => {
     const wt = activeSessionId ? await getSessionWorktree(root, activeSessionId) : null;
     return revertWorkspaceFile(wt?.worktreePath || root, file);
   });
+  ipcMain.handle("workspace:revert-hunk", async (_event, file: string, hunkHeader: string) => {
+    const root = requireRoot();
+    const wt = activeSessionId ? await getSessionWorktree(root, activeSessionId) : null;
+    return revertWorkspaceHunk(wt?.worktreePath || root, file, hunkHeader);
+  });
   ipcMain.handle("workspace:revert-all", async () => {
     const root = requireRoot();
     const wt = activeSessionId ? await getSessionWorktree(root, activeSessionId) : null;
@@ -912,6 +974,11 @@ app.whenReady().then(async () => {
   ipcMain.handle("worktree:merge", async (_event, sessionId: string, commitMessage?: string) => {
     const root = requireRoot();
     return mergeWorktreeToMain(root, sessionId, commitMessage);
+  });
+  ipcMain.handle("worktree:abort-merge", async () => {
+    const root = requireRoot();
+    const { abortWorktreeMerge } = await import("./worktree-service.js");
+    return abortWorktreeMerge(root);
   });
   ipcMain.handle("worktree:discard", async (_event, sessionId: string) => {
     const root = requireRoot();
@@ -1250,6 +1317,7 @@ app.whenReady().then(async () => {
           resumeMessages: stored?.messages ?? null,
           resumePlanItems: stored?.planItems ?? null,
           resumeNote,
+          onUserQuestion: (questions) => askUserBlocking(sessionId, questions),
           onEvent: (event) => {
             // Token chunks stay ephemeral (streaming display only); everything
             // else is captured for the persisted transcript.
@@ -1352,6 +1420,21 @@ app.whenReady().then(async () => {
     const session = await getHomeSession(sessionId);
     if (!session) throw new Error("Home session not found.");
     const homeRoot = await ensureHomeDir();
+
+    // Same guard as agent:run — a second submit (e.g. Enter pressed while the
+    // first run is still in silent setup) must not start a twin agent that
+    // interleaves transcripts and clobbers checkpoints/memory.
+    if (activeRunSessions.has(sessionId)) {
+      if (isCommandRunCancelled(sessionId)) {
+        const waitStart = Date.now();
+        while (activeRunSessions.has(sessionId) && Date.now() - waitStart < 1000) {
+          await new Promise((r) => setTimeout(r, 25));
+        }
+      }
+      if (activeRunSessions.has(sessionId)) {
+        throw new Error("An agent run is already in progress in this session.");
+      }
+    }
 
     activeRunSessions.add(sessionId);
     beginCommandRun(sessionId);
@@ -1456,6 +1539,9 @@ app.whenReady().then(async () => {
       const backendRecord = { id: "home", name: "Home", root: homeRoot, createdAt: "", updatedAt: "", memory: "", sessions: [] };
       emitFor(sessionId, { type: "status", text: "Starting Home Assistant…" });
       const { backend } = await getAgentBackend(backendRecord, { readOnly: false, runId: sessionId });
+      // Shared cross-chat memory (ChatGPT-style). Loaded fresh per run so
+      // concurrent chats never clobber each other on save (re-read below).
+      const homeMemoryAtStart = await getHomeMemory().catch(() => "");
 
       await appendHomeSessionMessages(sessionId, [
         { role: "user", text: payload.request, images: payload.images, attachments: payload.attachments, createdAt: new Date().toISOString() }
@@ -1482,7 +1568,7 @@ app.whenReady().then(async () => {
             apiKey: provider.apiKey,
             baseUrl: provider.baseUrl,
           },
-          memory: { projectMemory: "", sessionMemory: session.memory },
+          memory: { projectMemory: homeMemoryAtStart, sessionMemory: session.memory },
           history,
           mode: "auto",
           agentBackend: backend,
@@ -1490,7 +1576,10 @@ app.whenReady().then(async () => {
           resumePlanItems: stored?.planItems ?? null,
           resumeNote,
           onEvent: (event) => {
-            if (event.type !== "token") {
+            // Token chunks stay ephemeral; assistant/usage are persisted once
+            // as the final message below (with usage attached) — pushing them
+            // here too would store every answer twice and double history size.
+            if (event.type !== "token" && event.type !== "assistant" && event.type !== "usage") {
               transcript.items.push({
                 role: "event",
                 text: event.text,
@@ -1499,12 +1588,18 @@ app.whenReady().then(async () => {
                 plan: event.items,
                 subagent: event.subagent,
                 artifact: event.artifact,
-                usage: event.type === "usage" ? undefined : event.usage,
+                usage: event.usage,
                 detail: event.detail,
               });
             }
             emit(event);
           },
+          onHomeMemoryUpdate: async (newMemory: string) => {
+            try {
+              await updateHomeMemory(newMemory);
+            } catch { /* best effort */ }
+          },
+          onUserQuestion: (questions) => askUserBlocking(sessionId, questions),
           isCancelled: () => isCommandRunCancelled(sessionId),
         });
       } catch (error) {
@@ -1520,11 +1615,15 @@ app.whenReady().then(async () => {
           return stopText;
         }
         const errorText = error instanceof Error ? error.message : String(error);
+        const checkpoint = getLastRunCheckpoint(sessionId) ?? await loadLastRunCheckpoint(homeRoot, sessionId);
+        const userError = checkpoint?.messages?.length
+          ? `Home run paused after an error (${errorText}). Progress was checkpointed; say "continue" to resume without restarting completed work.`
+          : errorText;
         await appendHomeSessionMessages(sessionId, [
           ...transcript.items,
-          { role: "event", kind: "error", text: `Home run failed: ${errorText}`, createdAt: new Date().toISOString() },
+          { role: "event", kind: "error", text: `Home run failed: ${userError}`, createdAt: new Date().toISOString() },
         ]);
-        emitFor(sessionId, { type: "error", text: `Home run failed: ${errorText}` });
+        emitFor(sessionId, { type: "error", text: `Home run failed: ${userError}` });
         throw error;
       }
 
@@ -1533,11 +1632,12 @@ app.whenReady().then(async () => {
         { role: "assistant", text: result.response, createdAt: new Date().toISOString(), usage: result.usage },
       ]);
 
+      let deletedScripts: string[] = [];
       try {
-        const deleted = await cleanupHomeGeneratorScripts(runStartMs, payload.request || "");
-        if (deleted.length) {
+        deletedScripts = await cleanupHomeGeneratorScripts(runStartMs, payload.request || "");
+        if (deletedScripts.length) {
           await appendHomeSessionMessages(sessionId, [
-            { role: "event", kind: "tool", text: `Cleaned up generator script${deleted.length === 1 ? "" : "s"}: ${deleted.join(", ")}`, createdAt: new Date().toISOString() },
+            { role: "event", kind: "tool", text: `Cleaned up generator script${deletedScripts.length === 1 ? "" : "s"}: ${deletedScripts.join(", ")}`, createdAt: new Date().toISOString() },
           ]);
         }
         await recordHomeRunFiles(sessionId, runStartMs, result.response);
@@ -1547,6 +1647,44 @@ app.whenReady().then(async () => {
       await updateHomeSession(sessionId, {
         memory: nextSessionMemory.slice(-4000),
       });
+      // Roll the shared Home memory forward only for substantive deliverables (capped at 5).
+      // Session memory stays a compact pointer — the transcript is the source of truth.
+      try {
+        const latestHomeMemory = await getHomeMemory().catch(() => homeMemoryAtStart);
+        const hasFiles = deletedScripts.length > 0 || (result.artifact != null);
+        if (isSubstantiveHomeTask(payload.request || "", result.response || "", hasFiles)) {
+          const nextHomeMemory = recordDeliverable(latestHomeMemory, payload.request || "", result.response || "", sessionId);
+          await updateHomeMemory(nextHomeMemory);
+        }
+        // Semantic memory auto-applies (ChatGPT-style "Memory updated"): the
+        // extraction filter already drops transient data, candidates dedupe
+        // against existing facts, and anything wrong can be forgotten in the
+        // Memory tab. A review queue would silently strand identity facts.
+        const candidates = (result as unknown as { memoryCandidates?: Array<{ category: string; fact: string }> }).memoryCandidates || [];
+        if (candidates.length) {
+          const latest = await getHomeMemory().catch(() => homeMemoryAtStart);
+          const current = parseHomeMemory(latest);
+          const known = new Set(
+            [...current.profile, ...current.preferences, ...current.facts, ...current.context].map((f) => f.toLowerCase())
+          );
+          const validCats = ["profile", "preference", "fact", "context"];
+          let merged = latest;
+          const saved: string[] = [];
+          for (const cand of candidates.slice(0, 3)) {
+            const fact = String(cand.fact || "").trim().slice(0, 200);
+            if (!fact || known.has(fact.toLowerCase())) continue;
+            const cat = validCats.includes(cand.category) ? cand.category : "fact";
+            merged = addMemoryFact(merged, cat as "profile" | "preference" | "fact" | "context", fact);
+            known.add(fact.toLowerCase());
+            saved.push(fact);
+          }
+          if (saved.length) {
+            await updateHomeMemory(merged);
+            const shown = saved.join("; ").slice(0, 220);
+            emitFor(sessionId, { type: "status", text: `Saved to memory: ${shown} — manage it in the Memory tab.` });
+          }
+        }
+      } catch { /* memory is best-effort */ }
 
       return result.response;
     } finally {
