@@ -92,13 +92,13 @@ export async function getProjectIndexSection(projectRoot: string, task = "") {
     for (const dependency of item.dependencies) {
       const dependents = reverseDependencies.get(dependency) || [];
       dependents.push(file);
-    reverseDependencies.set(dependency, dependents);
+      reverseDependencies.set(dependency, dependents);
+    }
   }
   try {
     await fs.mkdir(path.join(root, ".nexus"), { recursive: true });
     await fs.writeFile(indexPath(root), JSON.stringify({ version: 1, files: next }), "utf8");
   } catch { /* index is an optimization; never fail an agent run */ }
-  }
   const wanted = terms(task);
   const directRanked = Object.entries(next)
     .map(([file, item]) => ({ file, item, points: score(file, item, wanted) }))

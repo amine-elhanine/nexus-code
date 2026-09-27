@@ -95,6 +95,7 @@ async function pump(): Promise<void> {
       running.add(key);
       void runIngestJob(job.notebookId, job.sourceId)
         .catch((error) => {
+          if (error instanceof SourceDeletedError) return; // expected on delete-during-ingest
           console.warn(`[notebook] ingest job failed for ${key}:`, error instanceof Error ? error.message : error);
         })
         .finally(() => {
@@ -105,6 +106,19 @@ async function pump(): Promise<void> {
   } finally {
     pumping = false;
   }
+}
+
+/** Raised when the source/notebook was deleted while its job was running —
+ *  the job must abort instead of re-creating the deleted data. */
+export class SourceDeletedError extends Error {
+  constructor() {
+    super("Source was deleted while its ingestion job was running.");
+    this.name = "SourceDeletedError";
+  }
+}
+
+async function assertSourceExists(notebookId: string, sourceId: string): Promise<void> {
+  if (!(await getNotebookSource(notebookId, sourceId))) throw new SourceDeletedError();
 }
 
 /** Indexable text: chunk body + heading path + key terms (+ synth questions).
@@ -175,7 +189,9 @@ export async function runIngestJob(notebookId: string, sourceId: string): Promis
       chars: parsed.markdown.length,
     });
 
-    // 3-4. Clean boilerplate, extract deterministic structure.
+    // 3-4. Clean boilerplate, extract deterministic structure. (The source may
+    // have been deleted mid-parse — re-check before writing anything new.)
+    await assertSourceExists(notebookId, sourceId);
     await setStatus(notebookId, sourceId, "chunking");
     const { cleaned } = cleanMarkdown(parsed.markdown);
     const rawSections = extractStructure(cleaned, filename.replace(/\.[^.]+$/, ""));
@@ -224,6 +240,7 @@ export async function runIngestJob(notebookId: string, sourceId: string): Promis
     for (const section of sections) {
       section.chunkIds = chunks.filter((c) => c.sectionId === section.id).map((c) => c.id);
     }
+    await assertSourceExists(notebookId, sourceId);
     await replaceFileEntries(
       root,
       { id: sourceId, sessionId: notebookId, filename: source.filename, fingerprint, parser: parsed.parser, sectionIds: sections.map((s) => s.id), chunkCount: chunks.length, updatedAt: new Date().toISOString() },
@@ -245,6 +262,7 @@ export async function runIngestJob(notebookId: string, sourceId: string): Promis
     }
 
     // 7. Embed + upsert into the per-session vector partition (delete-first).
+    await assertSourceExists(notebookId, sourceId);
     await setStatus(notebookId, sourceId, "indexing", { chunks: chunks.length });
     const sectionTerms = new Map(sections.map((s) => [s.id, s.keyTerms]));
     const indexable = chunks.map((c) => indexableChunkText(c, sectionTerms.get(c.sectionId) || [], c.synthQuestions));

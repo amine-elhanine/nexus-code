@@ -238,7 +238,7 @@ class AgentBrowserService {
     await this.ensureSettings();
     const scope = this.scopeOf(meta);
     const targetUrl = this.normalizeUrl(rawUrl);
-    const loaded = await this.request({ kind: "load", url: targetUrl }, scope, 25000);
+    const loaded = await this.request({ kind: "load", url: targetUrl }, scope, 20000);
     if (!loaded.ok) throw new Error(loaded.error || `Could not load ${targetUrl}.`);
     this.lastUrl = loaded.url || targetUrl;
     this.report(this.lastUrl, !this.headless, meta?.sessionId, scope);
@@ -252,7 +252,7 @@ class AgentBrowserService {
     const scope = this.scopeOf(meta);
     const targetUrl = this.normalizeUrl(rawUrl);
     const startTime = Date.now();
-    const loaded = await this.request({ kind: "load", url: targetUrl }, scope, 25000);
+    const loaded = await this.request({ kind: "load", url: targetUrl }, scope, 20000);
     if (!loaded.ok) throw new Error(loaded.error || `Could not load ${targetUrl}.`);
     this.lastUrl = loaded.url || targetUrl;
     this.report(this.lastUrl, !this.headless, meta?.sessionId, scope);
@@ -315,7 +315,7 @@ class AgentBrowserService {
       }
       case "navigate": {
         const targetUrl = this.normalizeUrl(input.url || "");
-        const loaded = await this.request({ kind: "load", url: targetUrl }, scope, 25000);
+        const loaded = await this.request({ kind: "load", url: targetUrl }, scope, 20000);
         if (!loaded.ok) throw new Error(loaded.error || `Could not load ${targetUrl}.`);
         this.lastUrl = loaded.url || targetUrl;
         this.report(this.lastUrl, !this.headless, meta?.sessionId, scope);
@@ -429,7 +429,7 @@ class AgentBrowserService {
         return `Rendered text of ${this.lastUrl || "the page"}:\n----------------------------------------\n${res.text}\n----------------------------------------`;
       }
       case "screenshot": {
-        const shot = await this.request({ kind: "shot" }, scope, 25000);
+        const shot = await this.request({ kind: "shot" }, scope, 20000);
         if (!shot.ok) throw new Error(shot.error || "Screenshot failed.");
         if (!shot.dataUrl) throw new Error("Screenshot came back empty.");
         const base64 = shot.dataUrl.includes(",") ? shot.dataUrl.split(",")[1] : shot.dataUrl;

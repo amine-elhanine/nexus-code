@@ -365,7 +365,10 @@ export class DaemonService {
     await this.stopDaemon(id);
     active.logs.push(`\n--- Restarting ${active.info.name} ---\n`);
     this.spawnProcess(active);
-    return true;
+    // Spawn failures surface asynchronously via the error event; the only
+    // synchronous signal is pid being unset, so report that honestly instead
+    // of always claiming success.
+    return typeof active.info.pid === "number";
   }
 
   // Removes a service from the list. A still-running process is stopped

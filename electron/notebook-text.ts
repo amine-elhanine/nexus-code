@@ -443,23 +443,39 @@ export function gateDecision(query: string, bestSemantic: number, retrievedTexts
 
 // ---- Context composition (bounded, deduped) ----
 
-export function composeContextBlock(
+/**
+ * Like composeContextBlock but also returns which input chunk indices were
+ * kept. [Sn] markers are numbered contiguously over KEPT chunks only, so the
+ * markers the model sees line up with the final citation list — previously a
+ * deduped-dropped or over-budget chunk left a gap and every later marker
+ * pointed one passage off.
+ */
+export function composeContextBlockIndexed(
   chunks: Array<{ headingPath: string[]; text: string; summary?: string }>,
   maxChars = 12000
-): string {
+): { block: string; keptIndices: number[] } {
   const seen = new Set<string>();
   const parts: string[] = [];
+  const keptIndices: number[] = [];
   let used = 0;
   chunks.forEach((chunk, i) => {
     const key = sha256Hex(chunk.text).slice(0, 16);
     if (seen.has(key)) return;
     seen.add(key);
-    const head = `[S${i + 1}] ${(chunk.headingPath || []).join(" › ") || "Document"}`;
+    const head = `[S${keptIndices.length + 1}] ${(chunk.headingPath || []).join(" › ") || "Document"}`;
     const summary = chunk.summary ? `\nSection summary: ${chunk.summary}` : "";
     const block = `${head}\n${chunk.text.slice(0, 1800)}${summary}`;
     if (used + block.length > maxChars && parts.length > 0) return;
     parts.push(block);
+    keptIndices.push(i);
     used += block.length;
   });
-  return parts.join("\n\n");
+  return { block: parts.join("\n\n"), keptIndices };
+}
+
+export function composeContextBlock(
+  chunks: Array<{ headingPath: string[]; text: string; summary?: string }>,
+  maxChars = 12000
+): string {
+  return composeContextBlockIndexed(chunks, maxChars).block;
 }

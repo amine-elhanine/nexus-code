@@ -65,7 +65,7 @@ const nexusApi = {
   createWorktree: (sessionId: string) => invoke("worktree:create", sessionId),
   getWorktreeStatus: (sessionId: string) => invoke("worktree:status", sessionId),
   mergeWorktree: (sessionId: string, commitMessage?: string) => invoke("worktree:merge", sessionId, commitMessage),
-  abortWorktreeMerge: () => invoke("worktree:abort-merge"),
+  abortWorktreeMerge: (sessionId?: string) => invoke("worktree:abort-merge", sessionId),
   discardWorktree: (sessionId: string) => invoke("worktree:discard", sessionId),
   getWorktreeDiff: (sessionId: string) => invoke("worktree:diff", sessionId),
 
@@ -165,7 +165,6 @@ const nexusApi = {
   getHomeMemory: () => invoke("home:memory:get"),
   updateHomeMemory: (memory: string) => invoke("home:memory:update", memory),
   getHomeMemoryStructured: () => invoke("home:memory:structured"),
-  resolveHomeMemoryPending: (id: string, accept: boolean) => invoke("home:memory:pending:resolve", { id, accept }),
   removeHomeMemoryFact: (category: string, fact: string) => invoke("home:memory:fact:remove", { category, fact }),
   readHomeFile: (relativePath: string) => invoke("home:readFile", relativePath),
   downloadHomeFile: (relativePath: string) => invoke("home:download", relativePath),

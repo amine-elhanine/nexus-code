@@ -26,7 +26,7 @@ import { RunCancelledError, getRunAbortSignal } from "./command-service.js";
 import { createHomeMemoryTool, addMemoryFact, removeMemoryFact, selectRelevantHomeMemory, parseCandidateFacts, shouldExtractMemory, type MemoryCandidate } from "./home-memory-service.js";
 import { createHomeTaskJournal, finishHomeTaskJournal, recordHomeTaskAction, saveHomeTaskJournal, type HomeTaskJournal, type HomeTaskPhase } from "./home-task-service.js";
 import { selectHomeArtifactCandidates, validateHomeArtifacts } from "./home-artifact-service.js";
-import { createCodeTaskJournal, finishCodeTaskJournal, inferCodeTaskContract, loadCodeTaskJournal, recordCodeTaskAction, recordCodeTaskPlan, saveCodeTaskJournal, type CodeTaskContract, type CodeTaskJournal, type CodeTaskPhase } from "./code-task-service.js";
+import { createCodeTaskJournal, finishCodeTaskJournal, inferCodeTaskContract, loadCodeTaskJournal, parseBlockingReviewFindings, recordCodeTaskAction, recordCodeTaskPlan, saveCodeTaskJournal, type CodeTaskContract, type CodeTaskJournal, type CodeTaskPhase } from "./code-task-service.js";
 import type { ProviderConfig } from "./store.js";
 
 export type AgentMode = "plan" | "ask" | "auto";
@@ -47,7 +47,7 @@ export type HistoryInput = AgentTurn | HistoryEventItem;
 export type AgentSettings = { provider?: ProviderConfig; model?: string; apiKey?: string; baseUrl?: string };
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
 export type AgentEvent = {
-  type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact";
+  type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact" | "stream-reset";
   sessionId: string;
   text: string;
   timestamp: string;
@@ -1475,7 +1475,6 @@ Working rules:
     - Be efficient: research only while it is producing new evidence. After research, switch to creating or transforming the requested result. Keep answers concise.
 - Skills listed in your instructions are mandatory pre-reads: if a skill covers the task, read its SKILL.md first via its exact given path. CRITICAL: SKILL.md contains private operational instructions for YOU, not text for the user. NEVER quote, echo, dump, or output the SKILL.md text, code samples, or numbered lines back to the user. Silently follow its instructions to produce the requested deliverable (e.g. write a generator script with write_file, execute it to create the file, verify it with ls, clean up the script, and deliver the final result). Never browse skill folders (ls/glob of .nexus/skills, /global-skills, /system-skills) to discover skills — the System Note already lists everything available to you.
 - If a skill ships helper scripts you must run, copy them into the workspace first with materialize_skill_files, then run them via the returned workspace-relative paths with execute (skill folders are read-only and outside the run directory).
-- Additional MCP tools (if listed in your tools) come from user-configured MCP servers; prefer them for the capabilities they expose (e.g. GitHub issues and PRs, search, APIs, external systems) instead of reimplementing with shell commands. When GitHub MCP tools are available, never ask the user for their GitHub username — the token already identifies them (see the authenticated-user note, or call get_me). To list the user's own repositories: call get_me, then search_repositories with the query 'user:<login>'. Use the login verbatim — exact spelling, no spaces, never the display name. If GitHub rejects the query with 422 on the user: qualifier, call get_me again and retry once with that exact login before reporting failure.
 - Never expose secrets.`;
     if (complexity === "simple") {
       general += `\n\nEFFICIENCY MODE (simple task): answer in at most 3 tool calls. Do NOT create a todo list, do NOT delegate to subagents. If no file is needed, answer directly. manage_memory calls are exempt from the budget and must still fire when the user shares identity or preferences.`;
@@ -1586,7 +1585,7 @@ export async function runProjectAgent(options: {
   /** Agent mode for skill scoping ("home" | "code" | "notebook"). Omit = all skills eligible. */
   skillsMode?: SkillMode;
   /** Callback when the agent updates shared Home long-term memory via manage_memory. */
-  onHomeMemoryUpdate?: (newMemory: string) => void | Promise<void>;
+  onHomeMemoryUpdate?: (mutate: (current: string) => string) => void | Promise<unknown>;
   /** Blocking clarifying-question handler: return the user's answers or null to best-guess. */
   onUserQuestion?: (questions: Array<{ header: string; question: string; options: string[] }>) => Promise<string | null>;
 }) {
@@ -1644,9 +1643,9 @@ export async function runProjectAgent(options: {
   // independent — fetch in parallel instead of serially.
   const [mcpResult, rulesResult, skillsConfig, repoMapSection] = await Promise.all([
     ((isGeneral || shouldSkipMcpForTask(request) || (taskKind === "code" && !/\b(github|repository|repositories|issue|pull request|slack|notion|web search|latest|research|external)\b/i.test(`${request} ${resumeNote || ""}`)))
-      ? Promise.resolve({ tools: [], serverNames: [] })
+      ? Promise.resolve({ tools: [], serverNames: [], warnings: undefined })
       : withSetupTimeout(getMcpTools(), 20000, "MCP servers")).then(
-      (r) => ({ ok: true as const, tools: r.tools, serverNames: r.serverNames }),
+      (r) => ({ ok: true as const, tools: r.tools, serverNames: r.serverNames, warnings: r.warnings }),
       (error: unknown) => ({ ok: false as const, error }),
     ),
     (isGeneral ? Promise.resolve({ hasRules: false, ruleFiles: [], combinedPromptSection: "" }) : discoverAllRules(projectRoot)),
@@ -1665,6 +1664,11 @@ export async function runProjectAgent(options: {
   let mcpTools: any[] = [];
   if (mcpResult.ok) {
     mcpTools = mcpResult.tools;
+    // Per-server isolation: name the servers that could not be reached so
+    // the user knows which tools are missing instead of losing them silently.
+    for (const warning of mcpResult.warnings || []) {
+      emit("status", `MCP server unreachable — its tools are disabled for this run (${warning})`);
+    }
     if (mcpResult.tools.length) {
       // Name the bound tools so the model (and the user in the activity feed)
       // can see exactly which MCP capabilities this run has. Capped: a server
@@ -1898,15 +1902,21 @@ export async function runProjectAgent(options: {
   const homeMemoryTool = isGeneral
     ? [
         createHomeMemoryTool({
+          // The mutate callback re-reads the shared memory inside the store's
+          // serialized mutation queue — a run-start snapshot wholesale-
+          // replaced by a parallel chat would erase this chat's facts.
           onRemember: async (category, fact) => {
-            memory.projectMemory = addMemoryFact(memory.projectMemory, category, fact);
-            await onHomeMemoryUpdate?.(memory.projectMemory);
+            await onHomeMemoryUpdate?.((current) => addMemoryFact(current, category, fact));
             emit("status", `Saved to long-term memory: ${fact}`);
           },
           onForget: async (query) => {
-            memory.projectMemory = removeMemoryFact(memory.projectMemory, query);
-            await onHomeMemoryUpdate?.(memory.projectMemory);
-            emit("status", `Removed from long-term memory: ${query}`);
+            let removed = false;
+            await onHomeMemoryUpdate?.((current) => {
+              const next = removeMemoryFact(current, query);
+              removed = next !== current;
+              return next;
+            });
+            emit("status", removed ? `Removed from long-term memory: ${query}` : `No long-term memory item matched "${query}".`);
           },
         }),
       ]
@@ -2078,6 +2088,20 @@ export async function runProjectAgent(options: {
     const previous = hasResume ? await loadCodeTaskJournal(projectRoot, sessionId) : null;
     queueCodeJournalWrite(createCodeTaskJournal({ sessionId, goal: request, mode, resume: previous }));
   }
+  // Terminal journal states must be written however the run ends:
+  // cancel/doom/step-budget → interrupted, unexpected crash → failed,
+  // repairs exhausted with failing verification → blocked (finish site).
+  const finishRunJournals = async (status: "interrupted" | "failed" | "blocked" | "completed") => {
+    if (homeJournal) {
+      homeJournal = finishHomeTaskJournal(homeJournal, status, status === "completed" ? "complete" : "blocked");
+      queueHomeJournalWrite(homeJournal);
+    }
+    if (codeJournal) {
+      codeJournal = finishCodeTaskJournal(codeJournal, status);
+      queueCodeJournalWrite(codeJournal);
+    }
+    await Promise.all([homeJournalWrite, codeJournalWrite]).catch(() => undefined);
+  };
   const diffFingerprint = (d: { path: string; additions: number; deletions: number }) => `${d.additions}/${d.deletions}`;
   const initialDiff = new Map<string, string>();
   let initialHomeFiles: HomeFileSnapshot = new Map();
@@ -2125,6 +2149,10 @@ export async function runProjectAgent(options: {
 
   const consumeStream = async () => {
     retryCount++;
+    // A mid-stream retry legitimately re-issues the pruned trailing tool
+    // call, so the doom-loop signature must not accumulate across attempts.
+    lastToolSig = null;
+    toolRepeatCount = 0;
     let finalMessages: any[] = [];
     progress.beginAttempt(runMessages.length);
 
@@ -2405,6 +2433,18 @@ export async function runProjectAgent(options: {
       const currentRepairs = Number(state.repairs) || 0;
       const maxRepairs = MAX_REPAIRS[mode] ?? 1;
 
+      // A denied or timed-out approval is a UI permission decision, not a
+      // code problem: report skipped checks instead of sending the model
+      // into "fix the dependency setup" repair loops over exit code 126.
+      let anyCheckRan = false;
+      const deniedCommands: string[] = [];
+      const skipIfApprovalDenied = (command: string, res: any): boolean => {
+        if (!res?.approvalDenied) return false;
+        deniedCommands.push(command);
+        emit("tool", `Verification skipped · \`${command}\` was not approved`);
+        return true;
+      };
+
       // Diff-first, scoped to THIS run: compare against the baseline taken
       // before the agent worked. Files the run didn't touch (e.g. broken
       // edits left by an earlier interrupted run) must not trigger a
@@ -2414,7 +2454,7 @@ export async function runProjectAgent(options: {
       lastDiffFiles = diffFiles;
       const runDiff = diffFiles.filter((d) => initialDiff.get(d.path) !== diffFingerprint(d));
       if (runDiff.length === 0) {
-        if (codeTaskContract?.expectsChanges && mode !== "plan" && currentRepairs < maxRepairs) {
+        if (codeTaskContract?.expectsChanges && mode !== "plan" && currentRepairs < 1 && currentRepairs < maxRepairs) {
           emit("tool", "Verification · implementation required before completion");
           if (codeJournal) {
             queueCodeJournalWrite(recordCodeTaskAction(codeJournal, {
@@ -2427,7 +2467,7 @@ export async function runProjectAgent(options: {
           return {
             verification: "failed",
             repairs: currentRepairs + 1,
-            verifyFeedback: `The request asks for a repository change, but this run has not changed any files. Do not finish with an explanation or plan. Implement the smallest correct change now, then run the appropriate verification. If the request is genuinely blocked, state the exact blocker instead of claiming completion.`,
+            verifyFeedback: `The request asks for a repository change, but this run has not changed any files. Do not finish with an explanation or plan. Implement the smallest correct change now, then run the appropriate verification. If the request is genuinely blocked, state the exact blocker instead of claiming completion. This reminder is sent once — after it, an honest blocker explanation is accepted as the final answer.`,
           };
         }
         return { verification: "none" };
@@ -2457,7 +2497,7 @@ export async function runProjectAgent(options: {
         const scopedResult = await runCommand(scoped);
         if (isCancelled() || signal?.aborted) throw new RunCancelledError();
         const scopedOutput = String((scopedResult as any)?.output ?? "").trim();
-        if ((scopedResult as any)?.exitCode !== 0) {
+        if ((scopedResult as any)?.exitCode !== 0 && !skipIfApprovalDenied(scoped, scopedResult)) {
           emit("tool", `Verification failed · ${scoped}`, undefined, undefined, undefined, undefined, extractDiagnosticFeedback(scopedOutput));
           if (currentRepairs < maxRepairs && scopedOutput) {
             return {
@@ -2467,8 +2507,11 @@ export async function runProjectAgent(options: {
           }
           return { verification: "failed" };
         }
-        emit("tool", `Verification passed · ${scoped}`);
-        if (isSimple) return { verification: "passed" };
+        if (!(scopedResult as any)?.approvalDenied) {
+          anyCheckRan = true;
+          emit("tool", `Verification passed · ${scoped}`);
+          if (isSimple) return { verification: "passed" };
+        }
       }
 
       // Fresh scaffold: package.json appeared and dependencies were never
@@ -2485,6 +2528,11 @@ export async function runProjectAgent(options: {
           if (isCancelled() || signal?.aborted) throw new RunCancelledError();
           const installOutput = String((installResult as any)?.output ?? "").trim();
           if ((installResult as any)?.exitCode !== 0) {
+            if (skipIfApprovalDenied(pm.install, installResult)) {
+              // Without dependencies nothing downstream can run: end the
+              // verification honestly instead of failing.
+              return { verification: "none" };
+            }
             emit("tool", `Verification failed · ${pm.install}`);
             if (currentRepairs < maxRepairs && installOutput) {
               return {
@@ -2494,6 +2542,7 @@ export async function runProjectAgent(options: {
             }
             return { verification: "failed" };
           }
+          anyCheckRan = true;
           emit("tool", `Verification passed · ${pm.install}`);
           try {
             const scripts = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).scripts ?? {};
@@ -2542,9 +2591,11 @@ export async function runProjectAgent(options: {
           } else {
             const output = String((entry.value as any)?.output ?? "").trim();
             if ((entry.value as any)?.exitCode !== 0) {
+              if (skipIfApprovalDenied(command, entry.value)) return;
               failures.push({ command, output });
               emit("tool", `Verification failed · ${command}`, undefined, undefined, undefined, undefined, extractDiagnosticFeedback(output));
             } else {
+              anyCheckRan = true;
               emit("tool", `Verification passed · ${command}`);
             }
           }
@@ -2559,12 +2610,14 @@ export async function runProjectAgent(options: {
           }
           return { verification: "failed" };
         }
+        if (deniedCommands.length && !anyCheckRan) return { verification: "none" };
       } else for (const verificationCommand of configuredCommands) {
         emit("status", `Verifying changes with \`${verificationCommand}\``);
         const result = await runCommand(verificationCommand);
         if (isCancelled() || signal?.aborted) throw new RunCancelledError();
         const output = String((result as any)?.output ?? "").trim();
         if ((result as any)?.exitCode !== 0) {
+          if (skipIfApprovalDenied(verificationCommand, result)) continue;
           emit("tool", `Verification failed · ${verificationCommand}`, undefined, undefined, undefined, undefined, extractDiagnosticFeedback(output));
           if (currentRepairs < maxRepairs && output) {
             return {
@@ -2574,6 +2627,7 @@ export async function runProjectAgent(options: {
           }
           return { verification: "failed" };
         }
+        anyCheckRan = true;
         emit("tool", `Verification passed · ${verificationCommand}`);
       }
 
@@ -2585,16 +2639,22 @@ export async function runProjectAgent(options: {
         if (isCancelled() || signal?.aborted) throw new RunCancelledError();
         const testOutput = String((testResult as any)?.output ?? "").trim();
         if ((testResult as any)?.exitCode !== 0) {
-          emit("tool", `Targeted test failed · ${targetTestCmd}`, undefined, undefined, undefined, undefined, extractDiagnosticFeedback(testOutput));
-          if (currentRepairs < maxRepairs && testOutput) {
-            return {
-              repairs: currentRepairs + 1,
-              verifyFeedback: `Targeted test \`${targetTestCmd}\` failed (self-healing repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${extractDiagnosticFeedback(testOutput)}\n\nFix the code to pass this test.`,
-            };
+          if (skipIfApprovalDenied(targetTestCmd, testResult)) {
+            // Skipped, not failed — approval is a user decision.
+          } else {
+            emit("tool", `Targeted test failed · ${targetTestCmd}`, undefined, undefined, undefined, undefined, extractDiagnosticFeedback(testOutput));
+            if (currentRepairs < maxRepairs && testOutput) {
+              return {
+                repairs: currentRepairs + 1,
+                verifyFeedback: `Targeted test \`${targetTestCmd}\` failed (self-healing repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${extractDiagnosticFeedback(testOutput)}\n\nFix the code to pass this test.`,
+              };
+            }
+            return { verification: "failed" };
           }
-          return { verification: "failed" };
+        } else {
+          anyCheckRan = true;
+          emit("tool", `Targeted test passed · ${targetTestCmd}`);
         }
-        emit("tool", `Targeted test passed · ${targetTestCmd}`);
       }
 
       // Auto mode gets one bounded, read-only review after verification and
@@ -2612,7 +2672,7 @@ export async function runProjectAgent(options: {
         }
         const review = await executeSubagentTask({
           role: "code-reviewer",
-          task: `Review only this run's changes. Changed paths:\n${changedPaths.slice(0, 40).join("\n")}\n\nCheck correctness, regressions, error handling, security, and incomplete acceptance criteria. Return findings prioritized as CRITICAL, HIGH, MEDIUM, or LOW. If there are no blocking issues, say so clearly. Do not edit files.`,
+          task: `Review only this run's changes. Changed paths:\n${changedPaths.slice(0, 40).join("\n")}\n\nCheck correctness, regressions, error handling, security, and incomplete acceptance criteria. Report each finding on its own line in exactly this format:\nSEVERITY | path | issue\nwhere SEVERITY is CRITICAL, HIGH, MEDIUM, or LOW. If there are no blocking issues, reply with exactly "No blocking findings." Do not edit files.`,
           projectRoot,
           provider,
           modelName,
@@ -2627,7 +2687,10 @@ export async function runProjectAgent(options: {
           isCancelled,
           runId: sessionId,
         });
-        const blockingFindings = review.match(/\b(CRITICAL|HIGH)\b[\s\S]{0,1200}/gi) || [];
+        // Only explicitly formatted finding lines count as blocking (parser
+        // unit-tested in code-task.test.mjs). A bare "CRITICAL"/"HIGH"
+        // mention in prose must not trigger a repair loop.
+        const blockingFindings = parseBlockingReviewFindings(review);
         if (blockingFindings.length > 0) {
           return {
             verification: "failed",
@@ -2658,6 +2721,10 @@ export async function runProjectAgent(options: {
           verifyFeedback: `The current work unit passed verification, but the execution plan is not complete. Continue with the next unfinished work unit instead of finishing early. Remaining plan items:\n${remaining}\n\nUpdate the todo plan as each unit is completed, then verify again.`,
         };
       }
+      if (deniedCommands.length && !anyCheckRan) {
+        emit("status", `Verification skipped — approval was denied for: ${deniedCommands.join(", ")}`);
+        return { verification: "none" };
+      }
       return { verification: verifyBatch.length || scoped || targetTestCmd ? "passed" : "none" };
     })
     .addEdge(START, "deep_agent")
@@ -2677,6 +2744,7 @@ export async function runProjectAgent(options: {
     const isCancel = error instanceof RunCancelledError || (error as any)?.name === "AbortError" || isCancelled() || signal?.aborted;
     if (isCancel) {
       saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
+      await finishRunJournals("interrupted");
       throw new RunCancelledError();
     }
     const isDoom = error instanceof DoomLoopError || (error as any)?.name === "DoomLoopError";
@@ -2702,14 +2770,22 @@ export async function runProjectAgent(options: {
         error = retryError;
         if (error instanceof RunCancelledError || (error as any)?.name === "AbortError" || isCancelled() || signal?.aborted) {
           saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
+          await finishRunJournals("interrupted");
           throw new RunCancelledError();
         }
       }
     }
     if (result === undefined) {
       const retryIsDoom = error instanceof DoomLoopError || (error as any)?.name === "DoomLoopError";
-      if (!isRecursionLimitError(error) && !retryIsDoom) throw error;
+      if (!isRecursionLimitError(error) && !retryIsDoom) {
+        // Unexpected run failure: still checkpoint so "continue" resumes THIS
+        // task instead of a stale one, and record the journals as failed.
+        saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
+        await finishRunJournals("failed");
+        throw error;
+      }
       saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
+      await finishRunJournals("interrupted");
       const planSummary = lastPlanItems?.length
         ? `\n\nWorking plan so far:\n${lastPlanItems.map((p) => `- [${p.status === "completed" ? "x" : " "}] ${p.content} (${p.status})`).join("\n")}`
         : "";
@@ -2762,7 +2838,7 @@ export async function runProjectAgent(options: {
         })
       : homeJournal;
     const status = result?.verification === "failed"
-      ? "failed"
+      ? "blocked"
       : result?.verification === "interrupted"
         ? "interrupted"
         : "completed";
@@ -2770,7 +2846,9 @@ export async function runProjectAgent(options: {
     await homeJournalWrite;
   }
   if (codeJournal) {
-    queueCodeJournalWrite(finishCodeTaskJournal(codeJournal, result?.verification === "failed" ? "failed" : "completed"));
+    // Repairs exhausted with verification still failing = blocked on human
+    // input, not a crash. Hard failures write "failed" via finishRunJournals.
+    queueCodeJournalWrite(finishCodeTaskJournal(codeJournal, result?.verification === "failed" ? "blocked" : "completed"));
     await codeJournalWrite;
   }
   // Checkpoint the completed run so a follow-up "continue" can build on the

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, RefreshCw, Globe, X, MessageSquare, Play, Plus, Bot } from "lucide-react";
-import { CHROME_DESKTOP_UA } from "./IntegratedBrowserView.js";
+import { CHROME_DESKTOP_UA } from "./ua.js";
 
 type MiniWebview = {
   loadURL: (url: string) => Promise<void>;

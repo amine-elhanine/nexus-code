@@ -1,6 +1,7 @@
 import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { writeFileAtomic, withFileLock } from "./atomic-write.js";
 
 const electronRequire = createRequire(import.meta.url);
 type ElectronShim = {
@@ -24,6 +25,9 @@ export const HOME_PROJECT_ID = "home";
 // general assistant creates (documents, spreadsheets, slides, LaTeX, notes)
 // land here, and the user downloads/copies them wherever they want.
 export function getHomeRoot(): string {
+  // Test/CI override: lets the Home workspace be pointed at a scratch dir.
+  const configured = process.env.NEXUS_HOME_ROOT;
+  if (configured) return path.resolve(configured);
   const docs = (() => {
     try {
       const app = electronMod().app;
@@ -102,24 +106,25 @@ export async function saveHomeManifest(manifest: HomeManifest): Promise<void> {
   const root = await ensureHomeDir();
   const file = path.join(root, MANIFEST_REL_PATH);
   try {
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.writeFile(file, JSON.stringify(manifest, null, 2), "utf8");
+    await writeFileAtomic(file, JSON.stringify(manifest, null, 2));
   } catch { /* best effort */ }
+}
+
+// Manifest mutations are load→modify→save cycles on one shared file; two
+// chats finishing at once would otherwise lose entries to a stale snapshot.
+function mutateHomeManifest<T>(fn: (manifest: HomeManifest) => T): Promise<T> {
+  return withFileLock("home-manifest", async () => fn(await loadHomeManifest()));
 }
 
 export async function recordHomeFilesOwnedBySession(sessionId: string, relativePaths: string[]): Promise<void> {
   if (!sessionId || !relativePaths.length) return;
-  const manifest = await loadHomeManifest();
-  let changed = false;
-  const now = new Date().toISOString();
-  for (const p of relativePaths) {
-    const normalized = p.replace(/\\/g, "/");
-    manifest[normalized] = { sessionId, updatedAt: now };
-    changed = true;
-  }
-  if (changed) {
-    await saveHomeManifest(manifest);
-  }
+  await mutateHomeManifest((manifest) => {
+    const now = new Date().toISOString();
+    for (const p of relativePaths) {
+      manifest[p.replace(/\\/g, "/")] = { sessionId, updatedAt: now };
+    }
+    return manifest;
+  }).then((manifest) => saveHomeManifest(manifest));
 }
 
 export async function recordHomeRunFiles(sessionId: string, runStartMs: number, responseText = ""): Promise<string[]> {
@@ -142,17 +147,12 @@ export async function recordHomeRunFiles(sessionId: string, runStartMs: number, 
 }
 
 export async function removeSessionFromManifest(sessionId: string): Promise<void> {
-  const manifest = await loadHomeManifest();
-  let changed = false;
-  for (const [key, entry] of Object.entries(manifest)) {
-    if (entry.sessionId === sessionId) {
-      delete manifest[key];
-      changed = true;
+  await mutateHomeManifest((manifest) => {
+    for (const [key, entry] of Object.entries(manifest)) {
+      if (entry.sessionId === sessionId) delete manifest[key];
     }
-  }
-  if (changed) {
-    await saveHomeManifest(manifest);
-  }
+    return manifest;
+  }).then((manifest) => saveHomeManifest(manifest));
 }
 
 export type SessionInfoForAttribution = {
@@ -210,6 +210,9 @@ export async function listHomeSessionFiles(
     }
 
     // 3. Activity proximity matching: which session was active when the file was modified?
+    // Display-only heuristic: proximity guesses are NOT persisted into the
+    // manifest (a wrong guess would become durable ownership that file
+    // deletion trusts) and do not count for delete-with-chat decisions.
     const mtime = new Date(file.modified).getTime();
     if (!Number.isNaN(mtime)) {
       let bestSessionId: string | null = null;
@@ -244,8 +247,6 @@ export async function listHomeSessionFiles(
       }
 
       if (bestSessionId) {
-        manifest[file.path] = { sessionId: bestSessionId, updatedAt: new Date().toISOString() };
-        manifestDirty = true;
         return bestSessionId === sessionId;
       }
     }
@@ -261,6 +262,31 @@ export async function listHomeSessionFiles(
   }
 
   return owned;
+}
+
+// Deletion uses ONLY high-confidence ownership: explicit manifest entries
+// (transcript mentions get promoted there during display resolution) plus a
+// direct transcript mention by THIS session. Proximity guesses and the
+// oldest-session fallback are display heuristics — deleting on them could
+// remove the user's own pre-existing files that the agent never touched.
+export async function listHomeSessionFilesForDeletion(
+  sessionId: string,
+  sessions: SessionInfoForAttribution[]
+): Promise<HomeFileEntry[]> {
+  if (!sessionId || !sessions.length) return [];
+  const target = sessions.find((s) => s.id === sessionId);
+  if (!target) return [];
+  const all = await listHomeFiles();
+  if (!all.length) return [];
+  const manifest = await loadHomeManifest();
+  return all.filter((file) => {
+    const manifestEntry = manifest[file.path] || manifest[file.name];
+    if (manifestEntry?.sessionId) return manifestEntry.sessionId === sessionId;
+    for (const m of target.messages || []) {
+      if (m.text && (m.text.includes(file.name) || m.text.includes(file.path))) return true;
+    }
+    return false;
+  });
 }
 
 // Download = save dialog, then copy. Returns the chosen destination or null

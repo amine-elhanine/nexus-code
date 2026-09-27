@@ -8,7 +8,7 @@
   "author": "L7A9 <aminet312003@gmail.com>",
   "repository": {
     "type": "git",
-    "url": "https://github.com/L7A9/nexus-code.git"
+    "url": "https://github.com/amine-elhanine/nexus-code.git"
   },
   "scripts": {
     "dev": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron . --dev\"",
@@ -17,7 +17,7 @@
     "start": "electron .",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
     "test": "npm run build:electron && electron test/sandbox-and-agent.test.mjs",
-    "test:unit": "npm run build:electron && node test/rate-limit.test.mjs && node test/checkpoint-resume.test.mjs && node test/loop-prevention.test.mjs && node test/home-memory.test.mjs && node test/skill-archive.test.mjs && node test/ecc-integration.test.mjs && node test/large-project-index.test.mjs",
+    "test:unit": "npm run build:electron && node test/rate-limit.test.mjs && node test/checkpoint-resume.test.mjs && node test/loop-prevention.test.mjs && node test/home-memory.test.mjs && node test/skill-archive.test.mjs && node test/ecc-integration.test.mjs && node test/large-project-index.test.mjs && node test/code-task.test.mjs && node test/home-task.test.mjs && node test/home-artifact.test.mjs && node test/home-isolation.test.mjs && node test/home-session-files.test.mjs && node test/fix-regressions.test.mjs",
     "test:notebook": "npm run build:electron && node test/notebook-text.test.mjs && node test/notebook-parse.test.mjs && node test/notebook-library.test.mjs && node test/notebook-pipeline.test.mjs && node test/notebook-agentic.test.mjs && node test/notebook-evidence.test.mjs && node test/notebook-vectors-sqlite.test.mjs",
     "dist": "npm run build && electron-builder",
     "dist:dir": "npm run build && electron-builder --dir"
@@ -28,7 +28,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "L7A9",
+        "owner": "amine-elhanine",
         "repo": "nexus"
       }
     ],

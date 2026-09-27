@@ -393,9 +393,12 @@ function validateSkillPathAllowed(skillPath: string, projectRoot?: string | null
   const sysRoot = path.resolve(systemSkillsDir());
 
   const isInsideGlobal = resolved === globalRoot || resolved.startsWith(`${globalRoot}${path.sep}`);
+  // Project skills only exist relative to a REAL project root. The old
+  // no-project fallback (a regex over the whole path) accepted any directory
+  // shaped like `.nexus/skills` anywhere on disk.
   const isInsideProject = projectRootResolved
     ? (resolved === projectRootResolved || resolved.startsWith(`${projectRootResolved}${path.sep}`))
-    : /[\\/](\.deepagents|\.nexus|\.forgepilot)[\\/]skills([\\/]|$)/i.test(resolved);
+    : false;
   // Legacy project skills remain readable/deletable, never writable.
   const isInsideLegacy = legacyRootResolved
     ? (resolved === legacyRootResolved || resolved.startsWith(`${legacyRootResolved}${path.sep}`))

@@ -152,7 +152,6 @@ type HomeMemoryStructureProp = {
   recentDeliverables: Array<{ date: string; summary: string; sessionId?: string }>;
   customNotes?: string;
 };
-type HomeMemoryPendingProp = { id: string; category: string; fact: string; source: string; createdAt: string };
 
 function MemoryFactList({
   items,
@@ -186,19 +185,15 @@ function MemoryFactList({
 
 function HomeMemoryPanel({
   structure,
-  pending,
   sessionMemory,
   sessionTitle,
-  onResolvePending,
   onRemoveFact,
   onClearSession,
   onOpenChat,
 }: {
   structure: HomeMemoryStructureProp;
-  pending: HomeMemoryPendingProp[];
   sessionMemory: string;
   sessionTitle?: string;
-  onResolvePending: (id: string, accept: boolean) => void;
   onRemoveFact: (category: string, fact: string) => void;
   onClearSession: () => void;
   onOpenChat?: (sessionId: string) => void;
@@ -206,36 +201,6 @@ function HomeMemoryPanel({
   const durableCount = structure.profile.length + structure.preferences.length + structure.facts.length + structure.context.length;
   return (
     <div className="context-tab-body">
-      {pending.length > 0 && (
-        <div className="context-section">
-          <div className="context-section-title">
-            <span>SUGGESTED ({pending.length})</span>
-            <small>REVIEW</small>
-          </div>
-          <p style={{ color: "#687588", fontSize: "11px", lineHeight: 1.5, margin: "0 0 8px" }}>
-            The agent proposed these from recent chats. Nothing is saved until you accept it.
-          </p>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {pending.map((p) => (
-              <div key={p.id} className="home-file-row" style={{ alignItems: "flex-start" }} title={p.source ? `From: ${p.source}` : undefined}>
-                <Sparkles size={13} style={{ flex: "none", marginTop: 2, color: "var(--nexus-green)" }} />
-                <div className="home-file-info">
-                  <span className="home-file-name" style={{ whiteSpace: "normal" }}>{p.fact}</span>
-                  <small>{p.category}{p.source ? ` · from “${p.source.slice(0, 60)}”` : ""}</small>
-                </div>
-                <div style={{ display: "flex", gap: 4, flex: "none" }}>
-                  <button className="pane-action" onClick={() => onResolvePending(p.id, true)} title="Save to long-term memory">
-                    <Check size={13} />
-                  </button>
-                  <button className="pane-action" onClick={() => onResolvePending(p.id, false)} title="Dismiss">
-                    <X size={13} />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
       <div className="context-section">
         <div className="context-section-title">
           <span>REMEMBERED ({durableCount})</span>
@@ -1262,7 +1227,7 @@ function App() {
                 onClick={() => { setHomeSideTab("memory"); void home.refreshHomeMemory(); }}
                 title="Long-term memory shared across all Home chats"
               >
-                <Brain size={12} /> Memory{home.homePending.length > 0 ? ` (${home.homePending.length})` : ""}
+                <Brain size={12} /> Memory
               </button>
             </div>
             {homeSideTab === "session" && (
@@ -1291,7 +1256,6 @@ function App() {
                 <button onClick={() => { setHomeSideTab("memory"); void home.refreshHomeMemory(); }}><ChevronRight size={13} /></button>
               </div>
               <MemoryRow label="Remembered" value={String(home.homeStructure.profile.length + home.homeStructure.preferences.length + home.homeStructure.facts.length + home.homeStructure.context.length)} />
-              {home.homePending.length > 0 && <MemoryRow label="Suggested" value={`${home.homePending.length} to review`} />}
               <MemoryRow label="Session notes" value={home.activeSession?.memory ? "Updated" : "Empty"} />
             </div>
             <div className="context-section">
@@ -1367,10 +1331,8 @@ function App() {
             {homeSideTab === "memory" && (
               <HomeMemoryPanel
                 structure={home.homeStructure}
-                pending={home.homePending}
                 sessionMemory={home.activeSession?.memory || ""}
                 sessionTitle={home.activeSession?.title}
-                onResolvePending={(id, accept) => void home.resolvePending(id, accept)}
                 onRemoveFact={(category, fact) => void home.removeFact(category, fact)}
                 onClearSession={() => void home.clearSessionMemory()}
                 onOpenChat={(sessionId) => void home.selectChat(sessionId)}

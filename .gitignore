@@ -8,4 +8,6 @@ release
 .DS_Store
 *.log
 .zcode
-
+.zcodeignore
+.nexus-data/
+landing_page/

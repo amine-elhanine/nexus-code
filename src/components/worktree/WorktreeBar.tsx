@@ -49,7 +49,7 @@ export const WorktreeBar: React.FC<WorktreeBarProps> = ({
 
   const handleAbortMerge = async () => {
     try {
-      await (api as unknown as { abortWorktreeMerge: () => Promise<boolean> }).abortWorktreeMerge();
+      await (api as unknown as { abortWorktreeMerge: (sessionId?: string) => Promise<boolean> }).abortWorktreeMerge(sessionId);
       setConflictFiles([]);
       setMergeStatus("Merge aborted — worktree kept intact.");
     } catch (err) {
@@ -65,6 +65,8 @@ export const WorktreeBar: React.FC<WorktreeBarProps> = ({
       if (ok) {
         onDiscardSuccess?.();
       }
+    } catch (err) {
+      setMergeStatus(`Discard failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setDiscarding(false);
     }
@@ -113,15 +115,6 @@ export const WorktreeBar: React.FC<WorktreeBarProps> = ({
         </div>
       </div>
 
-      {showConfirmDiscard && (
-        <div className="modal-layer confirm-layer" onClick={() => setShowConfirmDiscard(false)}>
-          <div className="modal-card confirm-card" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-card-head" style={{ marginBottom: "10px" }}>
-              <div>
-                <span className="view-kicker" style={{ color: "var(--red)" }}>CONFIRM ACTION</span>
-                <h2 style={{ fontSize: "16px", margin: "6px 0 4px" }}>Discard Worktree</h2>
-      </div>
-
       {conflictFiles.length > 0 && (
         <div className="worktree-conflicts" style={{ padding: "8px 12px", fontSize: "11px", color: "#f0a35e" }}>
           <strong style={{ display: "flex", alignItems: "center", gap: 6 }}><AlertCircle size={13} /> Conflicting files ({conflictFiles.length}) — resolve in Editor, then Merge again or Abort:</strong>
@@ -133,6 +126,15 @@ export const WorktreeBar: React.FC<WorktreeBarProps> = ({
           {conflictFiles.length > 20 && <small>…and {conflictFiles.length - 20} more</small>}
         </div>
       )}
+
+      {showConfirmDiscard && (
+        <div className="modal-layer confirm-layer" onClick={() => setShowConfirmDiscard(false)}>
+          <div className="modal-card confirm-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-card-head" style={{ marginBottom: "10px" }}>
+              <div>
+                <span className="view-kicker" style={{ color: "var(--red)" }}>CONFIRM ACTION</span>
+                <h2 style={{ fontSize: "16px", margin: "6px 0 4px" }}>Discard Worktree</h2>
+              </div>
             </div>
             <p style={{ color: "#a6b2c2", fontSize: "11px", lineHeight: "1.5", margin: "0 0 18px" }}>
               Are you sure you want to discard this isolated worktree and all its changes? This action cannot be undone.

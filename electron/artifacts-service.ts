@@ -1,5 +1,6 @@
 import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
+import { writeFileAtomic } from "./atomic-write.js";
 
 export type ArtifactStatus = "draft" | "pending_approval" | "approved" | "completed" | "rejected";
 
@@ -46,7 +47,7 @@ export async function saveArtifact(
   const filePath = path.join(dir, safeFilename);
   const now = new Date().toISOString();
 
-  await fs.writeFile(filePath, content, "utf8");
+  await writeFileAtomic(filePath, content);
 
   // Save sidecar metadata JSON
   const metaPath = path.join(dir, `${safeFilename}.meta.json`);
@@ -72,7 +73,7 @@ export async function saveArtifact(
     }
   } catch { /* ignore */ }
 
-  await fs.writeFile(metaPath, JSON.stringify(artifact, null, 2), "utf8");
+  await writeFileAtomic(metaPath, JSON.stringify(artifact, null, 2));
   return artifact;
 }
 

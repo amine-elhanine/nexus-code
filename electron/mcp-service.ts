@@ -3,10 +3,22 @@ import { listMcpServers, onMcpConfigChanged, type McpServerConfig } from "./stor
 
 // One MCP client is kept warm per config fingerprint so agent runs reuse live
 // connections; any config change (or disable) drops the cache and the next run
-// reconnects from scratch.
-type McpCache = { fingerprint: string; client: MultiServerMCPClient; toolCount: number } | null;
+// reconnects from scratch. When the aggregated client fails (one dead server
+// fails getTools for every server), degrade to per-server clients and keep
+// only the healthy servers' tools.
+type IsolatedServer = { name: string; client: MultiServerMCPClient; tools: any[] };
+type McpCache = { fingerprint: string; client: MultiServerMCPClient | null; toolCount: number; isolated?: IsolatedServer[] } | null;
 let cache: McpCache = null;
-onMcpConfigChanged(() => { void cache?.client.close().catch(() => {}); cache = null; });
+
+async function closeCache() {
+  if (!cache) return;
+  await cache.client?.close().catch(() => {});
+  for (const entry of cache.isolated ?? []) {
+    await entry.client.close().catch(() => {});
+  }
+  cache = null;
+}
+onMcpConfigChanged(() => { void closeCache(); });
 
 function connectionFor(server: McpServerConfig): Record<string, unknown> | null {
   if (server.transport === "stdio") {
@@ -29,18 +41,48 @@ function clientConfigFor(servers: McpServerConfig[]) {
   return config;
 }
 
-export async function getMcpTools(): Promise<{ tools: any[]; serverNames: string[] }> {
+export async function getMcpTools(): Promise<{ tools: any[]; serverNames: string[]; warnings?: string[] }> {
   const servers = (await listMcpServers()).filter((server) => server.enabled);
   const mark = fingerprint(servers);
-  if (cache && cache.fingerprint === mark) return { tools: await cache.client.getTools(), serverNames: servers.map((server) => server.name) };
-  if (cache) await cache.client.close().catch(() => {});
-  cache = null;
+  if (cache && cache.fingerprint === mark) {
+    if (cache.isolated) {
+      return { tools: cache.isolated.flatMap((entry) => entry.tools), serverNames: cache.isolated.map((entry) => entry.name) };
+    }
+    if (cache.client) return { tools: await cache.client.getTools(), serverNames: servers.map((server) => server.name) };
+  }
+  await closeCache();
   const config = clientConfigFor(servers);
   if (!Object.keys(config).length) return { tools: [], serverNames: [] };
   const client = new MultiServerMCPClient(config as never);
-  const tools = await client.getTools();
-  cache = { fingerprint: mark, client, toolCount: tools.length };
-  return { tools, serverNames: servers.map((server) => server.name) };
+  try {
+    const tools = await client.getTools();
+    cache = { fingerprint: mark, client, toolCount: tools.length };
+    return { tools, serverNames: servers.map((server) => server.name) };
+  } catch {
+    // One unreachable server must not cost the run every MCP tool: retry per
+    // server and keep only the healthy connections.
+    await client.close().catch(() => {});
+    const tools: any[] = [];
+    const healthy: string[] = [];
+    const warnings: string[] = [];
+    const isolated: IsolatedServer[] = [];
+    for (const server of servers) {
+      const singleConfig = clientConfigFor([server]);
+      if (!Object.keys(singleConfig).length) continue;
+      const single = new MultiServerMCPClient(singleConfig as never);
+      try {
+        const serverTools = await single.getTools();
+        tools.push(...serverTools);
+        healthy.push(server.name || server.id);
+        isolated.push({ name: server.name || server.id, client: single, tools: serverTools });
+      } catch (error) {
+        await single.close().catch(() => {});
+        warnings.push(`${server.name || server.id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (isolated.length) cache = { fingerprint: mark, client: null, toolCount: tools.length, isolated };
+    return { tools, serverNames: healthy, warnings: warnings.length ? warnings : undefined };
+  }
 }
 
 export type McpTestResult = { ok: boolean; tools: string[]; error?: string };

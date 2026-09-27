@@ -280,8 +280,11 @@ function normalizeAll(vectors: number[][]): number[][] {
   });
 }
 
-export async function embedQuery(text: string, indexEmbeddingModel?: string): Promise<{ vector: number[]; model: string; remote: boolean }> {
-  void indexEmbeddingModel;
+export async function embedQuery(text: string, indexEmbeddingModel?: string): Promise<{ vector: number[]; model: string; remote: boolean; modelMismatch?: boolean }> {
   const { vectors, model, remote } = await embedTexts([text]);
-  return { vector: vectors[0], model, remote };
+  // A provider changed after indexing silently zeroes semantic scores (dim
+  // mismatch) or yields garbage (same dims, different space). Detect it so
+  // the caller can rebuild the partition instead of degrading quietly.
+  const modelMismatch = Boolean(indexEmbeddingModel) && indexEmbeddingModel !== "none" && indexEmbeddingModel !== model;
+  return { vector: vectors[0], model, remote, modelMismatch };
 }

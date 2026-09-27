@@ -21,6 +21,7 @@ import {
 import { notebookSessionDir, saveNotebookNote, type NotebookSourceCitation, type NotebookAgentStep } from "./notebook-store.js";
 import {
   composeContextBlock,
+  composeContextBlockIndexed,
   gateDecision,
   isSessionWideAsk,
   notebookTokens,
@@ -40,6 +41,7 @@ export type NotebookRagOptions = {
   instructions?: string;
   rerank?: { enabled: boolean; providerId?: string; model?: string };
   onToken?: (delta: string) => void;
+  onStreamReset?: () => void;
   onStatus?: (text: string) => void;
   onTool?: (name: string, summary: string, detail?: string) => void;
   onStep?: (step: NotebookAgentStep) => void;
@@ -197,12 +199,30 @@ function reciprocalRankFusion(ranks: number[][], k = 60): number[] {
   return fused;
 }
 
+// Query-time embedding drift: the partition was built with a different
+// embedding model than the current settings. Semantic scores silently become
+// 0 or garbage — rebuild the partition from the relational library (no
+// re-parse) once per notebook; lexical retrieval still serves this query.
+const driftReindexed = new Set<string>();
+async function handleEmbeddingDrift(notebookId: string, indexModel: string): Promise<void> {
+  if (driftReindexed.has(notebookId)) return;
+  driftReindexed.add(notebookId);
+  console.warn(`[notebook] embedding model changed since indexing (index: ${indexModel}) — rebuilding vectors from library.`);
+  try {
+    const { reindexSessionFromLibrary } = await import("./notebook-jobs.js");
+    await reindexSessionFromLibrary(notebookId);
+  } catch (error) {
+    console.warn("[notebook] drift reindex failed:", error instanceof Error ? error.message : error);
+    driftReindexed.delete(notebookId);
+  }
+}
+
 export async function hybridRetrieve(
   notebookId: string,
   query: string,
   topK = 8,
   fileIds?: string[]
-): Promise<{ results: RetrievedChunk[]; embeddingModel: string; dims: number }> {
+): Promise<{ results: RetrievedChunk[]; embeddingModel: string; dims: number; embeddingModelMismatch?: boolean }> {
   const root = notebookSessionDir(notebookId);
   const lib = await loadLibrary(root, notebookId);
   const scope = fileIds?.length ? new Set(fileIds) : null;
@@ -212,7 +232,8 @@ export async function hybridRetrieve(
   const partition = await loadVectors(root, notebookId);
   if (!corpus.length) return { results: [], embeddingModel: partition.embeddingModel || "none", dims: partition.dims || 0 };
 
-  const { vector: queryVec } = await embedQuery(query, partition.embeddingModel || undefined);
+  const { vector: queryVec, modelMismatch } = await embedQuery(query, partition.embeddingModel || undefined);
+  if (modelMismatch) void handleEmbeddingDrift(notebookId, partition.embeddingModel || "none");
   const semantic = corpus.map((c) => {
     const vec = partition.vectors[c.id];
     return vec && vec.length === queryVec.length ? cosine(queryVec, vec) : 0;
@@ -298,7 +319,7 @@ export async function hybridRetrieve(
     };
   });
   ranked.sort((a, b) => b.final - a.final);
-  return { results: ranked.slice(0, Math.max(1, topK)), embeddingModel: partition.embeddingModel || "none", dims: partition.dims || 0 };
+  return { results: ranked.slice(0, Math.max(1, topK)), embeddingModel: partition.embeddingModel || "none", dims: partition.dims || 0, embeddingModelMismatch: modelMismatch };
 }
 
 // Generative outputs (quiz, flashcards, mindmap, summary, study plan, full
@@ -456,6 +477,8 @@ type NotebookAgentRun = {
   dims: number;
   steps: NotebookAgentStep[];
   evaluation?: { groundedness: number; verdict: "grounded" | "partial" | "ungrounded"; issues: string[] };
+  /** True when agent tokens already reached the renderer (fallback must reset). */
+  streamedTokens?: boolean;
 };
 
 /**
@@ -489,10 +512,30 @@ async function runNotebookAgent(
     if (isCancelled()) throw new CancelledError();
   };
 
-  const selected = new Map<string, RetrievedChunk>();
+  // Run-level citation registry: every retrieved chunk keeps ONE global [Sn]
+  // number for the whole run, assigned in first-seen order. The previous
+  // per-call numbering plus a score-resorted renumbering of the final list
+  // made "[S3]" in the answer point at a different passage in the displayed
+  // citation list.
+  const citationRegistry: RetrievedChunk[] = [];
+  const citationIndexByChunk = new Map<string, number>();
+  const MAX_REGISTERED_CITATIONS = 30;
+  const registerCitation = (item: RetrievedChunk): number | null => {
+    const existing = citationIndexByChunk.get(item.chunkId);
+    if (existing !== undefined) return existing;
+    if (citationRegistry.length >= MAX_REGISTERED_CITATIONS) return null;
+    citationIndexByChunk.set(item.chunkId, citationRegistry.length + 1);
+    citationRegistry.push(item);
+    return citationRegistry.length;
+  };
   const executedSteps: NotebookAgentStep[] = [];
   let embeddingModel = "";
   let dims = 0;
+  let streamedTokens = false;
+  const trackedOnToken = (delta: string) => {
+    streamedTokens = true;
+    options.onToken?.(delta);
+  };
 
   options.onStatus?.("Planning research & analyzing question…");
 
@@ -503,7 +546,6 @@ async function runNotebookAgent(
     const found = await hybridRetrieve(notebookId, cleanQuery, Math.min(Math.max(topK || 8, 4), 24), fileIds?.length ? fileIds : options.fileIds);
     embeddingModel = found.embeddingModel;
     dims = found.dims;
-    for (const item of found.results) selected.set(item.chunkId, item);
     const uniqueSources = [...new Set(found.results.map((r) => r.sourceName))];
     const detail = found.results.length > 0
       ? `Retrieved ${found.results.length} passage(s) from ${uniqueSources.join(", ")}`
@@ -518,14 +560,19 @@ async function runNotebookAgent(
     executedSteps.push(step);
     options.onStep?.(step);
     options.onTool?.("search_notebook_sources", `Search: "${cleanQuery}"`, detail);
-    return JSON.stringify(found.results.map((item, index) => ({
-      citation: `[S${index + 1}]`,
-      chunkId: item.chunkId,
-      source: item.sourceName,
-      heading: item.headingPath.join(" › "),
-      score: Number(item.final.toFixed(4)),
-      text: item.text.slice(0, 5000),
-    })));
+    return JSON.stringify(found.results.map((item) => {
+      const citationIndex = registerCitation(item);
+      return {
+        // Global, run-stable citation number — the same chunk keeps the same
+        // [Sn] across every search call in this run.
+        citation: citationIndex != null ? `[S${citationIndex}]` : "[unregistered]",
+        chunkId: item.chunkId,
+        source: item.sourceName,
+        heading: item.headingPath.join(" › "),
+        score: Number(item.final.toFixed(4)),
+        text: item.text.slice(0, 5000),
+      };
+    }));
   }, {
     name: "search_notebook_sources",
     description: "Search uploaded notebook sources with hybrid semantic + lexical retrieval. Break complex questions into focused sub-queries and call this tool multiple times as needed.",
@@ -539,7 +586,6 @@ async function runNotebookAgent(
     const overview = await hybridRetrieve(notebookId, "main topics overview concepts themes", 24, options.fileIds);
     embeddingModel = overview.embeddingModel;
     dims = overview.dims;
-    for (const item of overview.results) selected.set(item.chunkId, item);
     const detail = `${outline.length} file(s), ${outline.reduce((sum, d) => sum + d.sectionCount, 0)} sections`;
     const step: NotebookAgentStep = {
       id: `step-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -624,7 +670,7 @@ async function runNotebookAgent(
       notebookId,
       title: title.trim(),
       content: content.trim(),
-      citations: toCitations([...selected.values()].slice(0, 10)),
+      citations: toCitations(citationRegistry.slice(0, 10)),
     });
     const step: NotebookAgentStep = {
       id: `step-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -803,7 +849,7 @@ Notebook terms: ${summary.terms.slice(0, 40).join(", ") || "(none)"}${options.in
             const hasToolCalls = Boolean((chunk as any)?.tool_call_chunks?.length || (chunk as any)?.tool_calls?.length);
             if (isAi && !hasToolCalls) {
               const delta = chunkTextContent(chunk);
-              if (delta) options.onToken?.(delta);
+              if (delta) trackedOnToken(delta);
             }
           }
         }
@@ -822,12 +868,20 @@ Notebook terms: ${summary.terms.slice(0, 40).join(", ") || "(none)"}${options.in
 
     const result = await graph.invoke({ messages: initial });
     const answer = String((result as any).answer || "").trim();
-    if (!answer) return null;
+    if (!answer) {
+      if (streamedTokens) options.onStreamReset?.();
+      return null;
+    }
 
-    // Generative outputs keep broad coverage (up to 24 cited passages);
-    // focused questions keep the tight top-12 slice.
-    const keep = isGenerativeOutputRequest(question) ? 24 : 12;
-    const ranked = [...selected.values()].sort((a, b) => b.final - a.final).slice(0, keep);
+    // Final citations come straight from the registry in registration order —
+    // no re-scoring, no renumbering — so every [Sn] the model cited matches
+    // the passage displayed at position n. Make sure the list is long enough
+    // to include the highest marker the answer actually used.
+    const citedMarkerNums = (answer.match(/\[S(\d+)\]/g) || []).map((m) => parseInt(m.slice(2, -1), 10)).filter((n) => Number.isFinite(n));
+    const maxCited = citedMarkerNums.length ? Math.max(...citedMarkerNums) : 0;
+    const baseKeep = isGenerativeOutputRequest(question) ? 24 : 12;
+    const keep = Math.min(citationRegistry.length, Math.max(baseKeep, Math.min(maxCited, citationRegistry.length)));
+    const ranked = citationRegistry.slice(0, keep);
     const sources = toCitations(ranked);
     await registerAgentDeliverables(notebookId, workspace, runStartMs, question, answer, sources);
 
@@ -853,10 +907,14 @@ Notebook terms: ${summary.terms.slice(0, 40).join(", ") || "(none)"}${options.in
       dims,
       steps: executedSteps,
       evaluation,
+      streamedTokens,
     };
   } catch (error) {
     if (error instanceof CancelledError) throw error;
     console.warn("[notebook] agent loop unavailable; using grounded fallback:", error instanceof Error ? error.message : error);
+    // The agent may already have streamed a partial answer — reset the
+    // renderer's stream buffer so the fallback answer replaces it.
+    if (streamedTokens) options.onStreamReset?.();
     return null;
   }
 }
@@ -954,6 +1012,9 @@ export async function answerNotebookQuestion(
       dims: agentResult.dims,
     };
   }
+  // Falling back after the agent already streamed tokens: reset the stream so
+  // the deterministic answer replaces the partial one instead of appending.
+  if (agentResult?.streamedTokens) options.onStreamReset?.();
 
   // 1. Route cheap-first.
   let action: RouteAction = "retrieve";
@@ -1037,10 +1098,11 @@ export async function answerNotebookQuestion(
         }
       }
     }
-    const context = composeContextBlock(
+    const composedOutline = composeContextBlockIndexed(
       repChunks.map((c) => ({ headingPath: [c.sourceName, ...c.headingPath], text: c.text })),
       20000
     );
+    const context = composedOutline.block;
     const historyBlock = history.slice(-6).map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.text.slice(0, 500)}`).join("\n");
   const { text: answer, fallbackModel } = await generateAnswer(
       `${analystSystem()}\n${options.instructions ? `NOTEBOOK-SPECIFIC INSTRUCTIONS (follow only when compatible with source grounding):\n${options.instructions}` : ""}`,
@@ -1048,7 +1110,9 @@ export async function answerNotebookQuestion(
       options,
       options.onToken
     );
-    const sources = toCitations(repChunks);
+    // Cite only the chunks the composed context actually showed the model —
+    // markers in the context and entries in the citation list stay aligned.
+    const sources = toCitations(composedOutline.keptIndices.map((i) => repChunks[i]));
     return {
       answer,
       sources,
@@ -1123,7 +1187,8 @@ export async function answerNotebookQuestion(
       summary: r.summary,
     });
   }
-  const context = composeContextBlock(expanded, generative ? 20000 : 12000);
+  const composed = composeContextBlockIndexed(expanded, generative ? 20000 : 12000);
+  const context = composed.block;
   const historyBlock = history.slice(-6).map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.text.slice(0, 500)}`).join("\n");
   const { text: answer, fallbackModel } = await generateAnswer(
     `${analystSystem()}\n${options.instructions ? `NOTEBOOK-SPECIFIC INSTRUCTIONS (follow only when compatible with source grounding):\n${options.instructions}` : ""}`,
@@ -1131,7 +1196,7 @@ export async function answerNotebookQuestion(
     options,
     options.onToken
   );
-  const sources = toCitations(top);
+  const sources = toCitations(composed.keptIndices.map((i) => top[i]));
   return {
     answer,
     sources,

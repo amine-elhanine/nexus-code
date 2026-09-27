@@ -176,7 +176,8 @@ export async function mergeWorktreeToMain(
       const { stdout } = await execFileAsync("git", ["status", "--porcelain=v1"], { cwd: root, maxBuffer: 1_000_000 });
       return stdout
         .split(/\r?\n/)
-        .filter((line) => /^[AU]{2} /.test(line) || line.startsWith("UU ") || line.startsWith("AA ") || line.startsWith("DD "))
+        // All six porcelain conflict codes: UU AA DD AU UA DU UD.
+        .filter((line) => /^(UU|AA|DD|AU|UA|DU|UD) /.test(line))
         .map((line) => line.slice(3).trim())
         .filter(Boolean);
     } catch {

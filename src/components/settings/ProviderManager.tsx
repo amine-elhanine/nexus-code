@@ -213,7 +213,9 @@ export function ProviderManager({
                 <span className="provider-logo">{provider.label.slice(0, 1)}</span>
                 <div>
                   <strong>{provider.label}</strong>
-                  <small>{provider.models.length} models · {provider.apiKey ? "key configured" : "local"}</small>
+                  <small>
+                    {provider.models.length} models · {provider.apiKey ? "key configured" : provider.keyNeedsReentry ? "key needs re-entry (could not be decrypted)" : "local"}
+                  </small>
                 </div>
               </div>
               <div className="provider-card-actions">

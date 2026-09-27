@@ -18,7 +18,6 @@ export type HomeMemoryStructureView = {
   recentDeliverables: Array<{ date: string; summary: string; sessionId?: string }>;
   customNotes?: string;
 };
-export type HomeMemoryPendingView = { id: string; category: string; fact: string; source: string; createdAt: string };
 
 export function sortHomeSessions(list: SessionRecord[]): SessionRecord[] {
   return [...list].sort((a, b) => {
@@ -37,7 +36,6 @@ export function useHomeController(enabled = true) {
   const [homeMemory, setHomeMemory] = useState("");
   const emptyStructure: HomeMemoryStructureView = { profile: [], preferences: [], facts: [], context: [], recentDeliverables: [] };
   const [homeStructure, setHomeStructure] = useState<HomeMemoryStructureView>(emptyStructure);
-  const [homePending, setHomePending] = useState<HomeMemoryPendingView[]>([]);
   const [homeFiles, setHomeFiles] = useState<HomeFile[]>([]);
   const [homeSessionFiles, setHomeSessionFiles] = useState<HomeFile[]>([]);
   const [draft, setDraft] = useState("");
@@ -105,9 +103,8 @@ export function useHomeController(enabled = true) {
       /* memory is best-effort */
     }
     try {
-      const detailed = await (api as unknown as { getHomeMemoryStructured?: () => Promise<{ structure: HomeMemoryStructureView; pending: HomeMemoryPendingView[] }> }).getHomeMemoryStructured?.();
+      const detailed = await (api as unknown as { getHomeMemoryStructured?: () => Promise<{ structure: HomeMemoryStructureView }> }).getHomeMemoryStructured?.();
       if (detailed?.structure) setHomeStructure(detailed.structure);
-      if (detailed?.pending) setHomePending(detailed.pending);
     } catch {
       /* structured view is best-effort */
     }
@@ -130,7 +127,7 @@ export function useHomeController(enabled = true) {
       api.listHomeSessions().catch(() => []),
       api.listHomeFiles().catch(() => []),
       (api as unknown as { getHomeMemory?: () => Promise<string> }).getHomeMemory?.().catch(() => ""),
-      (api as unknown as { getHomeMemoryStructured?: () => Promise<{ structure: HomeMemoryStructureView; pending: HomeMemoryPendingView[] }> }).getHomeMemoryStructured?.().catch(() => null),
+      (api as unknown as { getHomeMemoryStructured?: () => Promise<{ structure: HomeMemoryStructureView }> }).getHomeMemoryStructured?.().catch(() => null),
     ]).then(([homeInfo, sessionList, files, memory, detailed]) => {
       if (!mounted) return;
       if (homeInfo?.root) setHomeRoot(homeInfo.root);
@@ -139,7 +136,6 @@ export function useHomeController(enabled = true) {
       if (files) setHomeFiles(files);
       if (typeof memory === "string") setHomeMemory(memory);
       if (detailed?.structure) setHomeStructure(detailed.structure);
-      if (detailed?.pending) setHomePending(detailed.pending);
       if (sorted.length > 0) {
         setActiveSession(sorted[0]);
         void refreshSessionFiles(sorted[0].id);
@@ -379,10 +375,11 @@ export function useHomeController(enabled = true) {
         });
         const fresh = await api.activateHomeSession(sessionId);
         if (fresh) {
-          // Same never-clobber rule as the event path: a lagging fetch must
-          // not drop the locally folded answer.
+          // Same never-clobber AND never-hijack rule as the event path: if
+          // the user switched to another chat while this run finished, the
+          // completed session must not yank the view back.
           setActiveSession((prev) => {
-            if (!prev || prev.id !== fresh.id) return fresh;
+            if (!prev || prev.id !== fresh.id) return prev;
             const serverMessages = (fresh.messages || []) as ChatItem[];
             if (serverMessages.length < prev.messages.length) return prev;
             return fresh;
@@ -448,20 +445,6 @@ export function useHomeController(enabled = true) {
     refreshHomeMemory,
     saveHomeMemory,
     homeStructure,
-    homePending,
-    resolvePending: async (id: string, accept: boolean) => {
-      try {
-        const result = await (api as unknown as { resolveHomeMemoryPending: (id: string, accept: boolean) => Promise<{ structure: HomeMemoryStructureView; pending: HomeMemoryPendingView[] }> }).resolveHomeMemoryPending(id, accept);
-        if (result?.structure) {
-          setHomeStructure(result.structure);
-          // Keep raw string in sync for legacy consumers.
-          void refreshHomeMemory();
-        }
-        if (result?.pending) setHomePending(result.pending);
-      } catch (error) {
-        console.error("Failed to resolve memory suggestion", error);
-      }
-    },
     removeFact: async (category: string, fact: string) => {
       try {
         const structure = await (api as unknown as { removeHomeMemoryFact: (c: string, f: string) => Promise<HomeMemoryStructureView> }).removeHomeMemoryFact(category, fact);

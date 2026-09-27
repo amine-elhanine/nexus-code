@@ -2,6 +2,7 @@ import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import { scrubSecretEnv } from "./child-env.js";
 
 export interface TerminalSession {
   id: string;
@@ -79,7 +80,7 @@ class TerminalService {
         child = spawn(runtime.command, [hostScriptPath()], {
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
-          env: { ...process.env, ...runtime.env },
+          env: { ...scrubSecretEnv(), ...runtime.env },
         });
       } catch {
         resolve(null);
@@ -200,7 +201,7 @@ class TerminalService {
     const shellArgs = isWindows ? ["/Q"] : ["-i"];
     const proc = spawn(shell, shellArgs, {
       cwd,
-      env: { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" },
+      env: { ...scrubSecretEnv(), TERM: "xterm-256color", COLORTERM: "truecolor" },
       stdio: ["pipe", "pipe", "pipe"],
     });
     const entry: SessionEntry = { id, cwd, mode: "pipes", cols: 80, rows: 24, alive: true, onData, proc };

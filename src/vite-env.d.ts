@@ -163,8 +163,7 @@ export interface NexusApi {
   listHomeSessionFiles: (sessionId: string) => Promise<Array<{ path: string; name: string; size: number; modified: string }>>;
   getHomeMemory: () => Promise<string>;
   updateHomeMemory: (memory: string) => Promise<string>;
-  getHomeMemoryStructured: () => Promise<{ structure: { profile: string[]; preferences: string[]; facts: string[]; context: string[]; recentDeliverables: Array<{ date: string; summary: string; sessionId?: string }>; customNotes?: string }; pending: Array<{ id: string; category: string; fact: string; source: string; createdAt: string }> }>;
-  resolveHomeMemoryPending: (id: string, accept: boolean) => Promise<{ structure: { profile: string[]; preferences: string[]; facts: string[]; context: string[]; recentDeliverables: Array<{ date: string; summary: string; sessionId?: string }>; customNotes?: string }; pending: Array<{ id: string; category: string; fact: string; source: string; createdAt: string }> }>;
+  getHomeMemoryStructured: () => Promise<{ structure: { profile: string[]; preferences: string[]; facts: string[]; context: string[]; recentDeliverables: Array<{ date: string; summary: string; sessionId?: string }>; customNotes?: string } }>;
   removeHomeMemoryFact: (category: string, fact: string) => Promise<{ profile: string[]; preferences: string[]; facts: string[]; context: string[]; recentDeliverables: Array<{ date: string; summary: string; sessionId?: string }>; customNotes?: string }>;
   readHomeFile: (relativePath: string) => Promise<{ name: string; path: string; size: number; base64: string }>;
   downloadHomeFile: (relativePath: string) => Promise<string | null>;
