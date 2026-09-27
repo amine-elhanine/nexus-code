@@ -258,18 +258,21 @@ export function addMemoryFact(
 }
 
 /**
- * Removes a fact matching a query substring from memory.
+ * Removes a fact from memory. Matches the exact fact only: a substring match
+ * turned "forget Paris" into deleting "Paris-based projects" and truncating
+ * deliverable summaries that merely mentioned the word.
  */
 export function removeMemoryFact(raw: string, query: string): string {
   const struct = parseHomeMemory(raw);
   const target = query.toLowerCase().trim();
   if (!target) return raw;
 
-  struct.profile = struct.profile.filter((p) => !p.toLowerCase().includes(target));
-  struct.preferences = struct.preferences.filter((p) => !p.toLowerCase().includes(target));
-  struct.facts = struct.facts.filter((f) => !f.toLowerCase().includes(target));
-  struct.context = struct.context.filter((c) => !c.toLowerCase().includes(target));
-  struct.recentDeliverables = struct.recentDeliverables.filter((d) => !d.summary.toLowerCase().includes(target));
+  const isTarget = (item: string) => item.toLowerCase().trim() === target;
+  struct.profile = struct.profile.filter((p) => !isTarget(p));
+  struct.preferences = struct.preferences.filter((p) => !isTarget(p));
+  struct.facts = struct.facts.filter((f) => !isTarget(f));
+  struct.context = struct.context.filter((c) => !isTarget(c));
+  struct.recentDeliverables = struct.recentDeliverables.filter((d) => !isTarget(d.summary));
 
   return formatHomeMemory(struct);
 }
@@ -351,7 +354,8 @@ export function selectRelevantHomeMemory(raw: string, request: string, budgetCha
     .sort((a, b) => b.score - a.score);
   const topFacts = rankedFacts.filter((f) => f.score > 0).map((f) => `- ${f.text}`);
   const fallbackFacts = query.size === 0 ? rankedFacts.slice(0, 5).map((f) => `- ${f.text}`) : [];
-  push("## Remembered Facts", [...topFacts, ...fallbackFacts].slice(0, 10));
+  const shownFacts = [...topFacts, ...fallbackFacts].slice(0, 10);
+  push("## Remembered Facts", shownFacts);
 
   const rankedDeliverables = struct.recentDeliverables
     .map((d) => ({ d, score: score(d.summary) }))
@@ -362,9 +366,10 @@ export function selectRelevantHomeMemory(raw: string, request: string, budgetCha
     .map((r) => `- [${r.d.date}] ${r.d.summary}`);
   push("## Recent Deliverables", topDeliverables);
 
+  // Count only tracked categories as hidden: profile/preference bullets also
+  // render as "- " lines and previously inflated the "[+N more]" figure.
   const totalFacts = struct.facts.length + struct.context.length;
-  const shownFacts = (sections.join("\n").match(/^- /gm) || []).length;
-  const hidden = Math.max(0, totalFacts + struct.recentDeliverables.length - shownFacts);
+  const hidden = Math.max(0, totalFacts - shownFacts.length + struct.recentDeliverables.length - topDeliverables.length);
   const out = sections.join("\n\n").trim();
   if (!out) return "";
   return hidden > 0 ? `${out}\n\n[+${hidden} more memorized item(s) not shown — ask to recall a specific topic]` : out;

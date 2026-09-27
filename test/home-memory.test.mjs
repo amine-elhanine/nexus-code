@@ -89,7 +89,9 @@ await test("removeMemoryFact removes matching facts across categories", () => {
 - Prefers TypeScript
 - Prefers dark mode
 `;
-  memory = removeMemoryFact(memory, "dark mode");
+  // Exact-fact match: a partial query ("dark mode") must NOT delete the
+  // whole "Prefers dark mode" entry anymore.
+  memory = removeMemoryFact(memory, "Prefers dark mode");
   const parsed = parseHomeMemory(memory);
   assert.equal(parsed.preferences.length, 1);
   assert.equal(parsed.preferences[0], "Prefers TypeScript");
@@ -156,10 +158,13 @@ await test("remembered facts round-trip separately from project context", () => 
   assert.equal(parsed.context.length, 1);
   assert.ok(memory.includes("## Remembered Facts"));
   assert.ok(memory.includes("## Project Context"));
-  const without = removeMemoryFact(memory, "L7A9");
+  const without = removeMemoryFact(memory, "GitHub login is L7A9");
   const reparsed = parseHomeMemory(without);
   assert.equal(reparsed.facts.length, 0);
   assert.equal(reparsed.context.length, 1);
+  // A partial query removes nothing (exact-match semantics).
+  const afterPartial = removeMemoryFact(memory, "L7A9");
+  assert.equal(parseHomeMemory(afterPartial).facts.length, 1);
 });
 
 await test("recordDeliverable keeps the originating chat session", () => {

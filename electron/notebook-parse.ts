@@ -139,9 +139,12 @@ function parseHtml(buffer: Buffer): ParsedDocument {
   });
   const cleanInline = (s: string) =>
     s.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/\s+/g, " ").trim();
-  // Document-order walk over the tags we care about.
+  // Document-order walk over the tags we care about. The capture runs to the
+  // NEXT block boundary (not just to the next "<"), so text inside inline
+  // markup — `<p>Hello <b>world</b> end</p>` — is kept; cleanInline strips
+  // the tags afterwards.
   const parts: string[] = [];
-  const walkRe = /<(h[1-6]|p|li|div|br|tr)[^>]*>([^<]*)/gi;
+  const walkRe = /<(h[1-6]|p|li|div|br|tr)[^>]*>([\s\S]*?)(?=<\/?(?:h[1-6]|p|li|div|br|tr|table|tbody|thead|ul|ol|dl|section|article)[\s>/]|<\/(?:h[1-6]|p|li|div|tr)>|\s*$)/gi;
   let wm: RegExpExecArray | null;
   while ((wm = walkRe.exec(html))) {
     const tag = wm[1].toLowerCase();

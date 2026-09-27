@@ -69,6 +69,10 @@ export function useAppController() {
   const liveEventsRef = useRef<Record<string, ChatItem[]>>({});
   const activeSessionRef = useRef<SessionRecord | null>(null);
   activeSessionRef.current = activeSession ?? null;
+  // Same pattern for the project: the mount-only event subscription below
+  // must read the current project, not the mount-time one.
+  const activeProjectRef = useRef<ProjectRecord | null>(null);
+  activeProjectRef.current = activeProject ?? null;
   const [view, setView] = useState<AppView>("chat");
   const [mode, setMode] = useState("Ask");
   const [showSessions, setShowSessions] = useState(true);
@@ -180,7 +184,7 @@ export function useAppController() {
             : { role: "event", kind: "error", text: event.text, createdAt: event.timestamp || nowIso() };
           return { ...current, messages: [...base, ...logItems, finalItem] };
         });
-        void api.listSessions(activeProject?.id || "").then((fresh) => {
+        void api.listSessions(activeProjectRef.current?.id || "").then((fresh) => {
           if (!fresh) return;
           setSessions(sortSessionsByUpdatedAt(fresh as unknown as SessionRecord[]));
           const freshCurrent = (fresh as unknown as SessionRecord[]).find((s) => s.id === targetSessionId);
@@ -242,7 +246,6 @@ export function useAppController() {
   }
 
   async function loadWorkspace() {
-    resetWorkspace();
     try {
       const paths = await api.listWorkspace();
       const mapped = paths.map((p) => ({
@@ -250,8 +253,25 @@ export function useAppController() {
         kind: p.endsWith("/") ? ("folder" as const) : ("file" as const),
       }));
       setFiles(mapped);
-      const first = mapped.find((item) => item.kind === "file");
-      if (first) await openFile(first.path);
+      // Reloads happen after agent runs, undos and reverts. Keep the user's
+      // editor intact: retain open tabs and the active file, re-reading its
+      // content from disk so agent edits surface — unless the buffer has
+      // unsaved edits, which win. Only fall back to the first file when
+      // nothing valid is open. Project switches reset explicitly via
+      // resetWorkspace() before calling this.
+      setOpenFiles((current) => current.filter((file) => mapped.some((entry) => entry.path === file && entry.kind === "file")));
+      if (activeFile && mapped.some((entry) => entry.path === activeFile && entry.kind === "file")) {
+        if (!dirty) {
+          try {
+            const result = await api.readFile(activeFile);
+            setFileContent(result.content);
+            setSavedContent(result.content);
+          } catch { /* keep the current buffer */ }
+        }
+      } else {
+        const first = mapped.find((item) => item.kind === "file");
+        if (first) await openFile(first.path);
+      }
       await loadGit();
       // Keep the Undo button / diff counts truthful right after (re)load.
       try {
@@ -526,8 +546,9 @@ export function useAppController() {
       });
       setStreamingText("");
       const log = liveEventsRef.current[session.id] || [];
-      delete liveEventsRef.current[session.id];
-      setLiveEvents(liveEventsRef.current);
+      const { [session.id]: _dropped, ...rest } = liveEventsRef.current;
+      liveEventsRef.current = rest;
+      setLiveEvents(rest);
       setActiveSession((current) =>
         current && current.id === session.id
           ? {

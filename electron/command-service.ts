@@ -127,7 +127,7 @@ function runProcess(shell: string, args: string[], options: { cwd: string; env?:
   });
 }
 
-export type CommandResult = { output: string; exitCode: number; truncated: boolean };
+export type CommandResult = { output: string; exitCode: number; truncated: boolean; approvalDenied?: boolean };
 
 // Opencode parity: agent tool outputs must never flood context. A bare
 // `npm run check` or recursive listing can be megabytes — cap what returns
@@ -189,7 +189,7 @@ export async function executeCommand(projectRoot: string, command: string, optio
   if (options.requireApproval && classifyCommand(trimmed, policy) === "ask") {
     const decision = await requestCommandApproval({ runId: options.runId, approvalKey: approvalKey(trimmed), command: trimmed, cwd: path.resolve(projectRoot), reason: "This command can change dependencies, Git history, remote state, or execute downloaded code." });
     if (state.cancelled || state.abortController.signal.aborted) throw new RunCancelledError();
-    if (decision === "deny") return { output: "Command denied or approval timed out.", exitCode: 126, truncated: false };
+    if (decision === "deny") return { output: "Command denied or approval timed out.", exitCode: 126, truncated: false, approvalDenied: true };
   }
 
   const shell = process.platform === "win32" ? (process.env.ComSpec || "cmd.exe") : "/bin/sh";

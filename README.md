@@ -1,272 +1,227 @@
+<div align="center">
+
+<img src="public/icon.png" width="96" alt="Nexus logo" />
+
 # Nexus
 
-Nexus is a desktop autonomous AI agent built with Electron + React + TypeScript. It combines **LangChain** (models and tools), **LangGraph** (deterministic outer workflow) and **DeepAgents** (long-running agentic loop, planning, project context).
+**The autonomous AI agent for your desktop — Code it. Draft it. Prove it.**
 
-The app has **three equal modes** in one window (topbar tabs `Home | Code | Notebook`):
+A coding agent for any repo, a general assistant that ships real documents, and a grounded research
+notebook — one native desktop app.
 
-| Mode | Needs a project? | What it does |
-| --- | --- | --- |
-| **Home** | No — built-in folder `~/Documents/Nexus` | Everyday assistant: chat, web research, writes Word / Excel / PowerPoint / LaTeX / Markdown files with preview + download. |
-| **Code** | Yes — any local repository | Coding agent: Plan/Ask/Auto loop that edits code, runs typecheck + targeted tests, repairs failures, with diff review, worktrees and rollback. |
-| **Notebook** | No — its own notebook library | Grounded Q&A over your documents (PDF, DOCX, XLSX, PPTX, CSV, LaTeX) plus YouTube transcripts and website crawls: hybrid retrieval, citations, groundedness verdicts, saved notes. |
+Windows 10 / 11 (NSIS + Portable) — macOS & Linux planned
 
-All three share providers (15), streaming + token/cost display, attachments, voice dictation, browser, MCP/Skills and auto-updates. Code is the only mode with repo verification, diffs and worktrees; Home is the only mode with the Nexus folder; Notebook is the only mode with sources/chunks/citations.
+![Electron](https://img.shields.io/badge/Electron-44-47848F?logo=electron&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-7-3178C6?logo=typescript&logoColor=white)
+![LangGraph](https://img.shields.io/badge/LangGraph-1.x-1C3C3C)
+![DeepAgents](https://img.shields.io/badge/DeepAgents-1.x-34d399)
 
----
+**[Download the latest release](https://github.com/amine-elhanine/nexus/releases/latest)** ·
+**[Landing page](landing_page/index.html)**
 
-## Mode 1 — Home (general assistant)
-
-No repository needed. The Home area is a built-in project rooted at `~/Documents/Nexus` (`electron/home-service.ts`, `HOME_PROJECT_ID = "home"`).
-
-### What you can do
-
-- **Chat + research**: ask anything, `Search the web for …` via keyless DuckDuckGo Lite `web_search` / `web_fetch` (8 results, 12 s timeout, best-effort scrape).
-- **One-click starters** (`src/views/HomeView.tsx` → `SUGGESTIONS`): `Write a Word report (.docx)`, `Build a presentation (.pptx)`, `Make a spreadsheet (.xlsx)`, `Research the web` — each pre-fills the prompt.
-- **Documents the agent really builds**: Word (`.docx` via `docx-preview` round-trip), PowerPoint (`.pptx` via `@aiden0z/pptx-renderer`), Excel (`.xlsx` via `xlsx`), PDF, Markdown, LaTeX (KaTeX rendering in chat). The agent typically generates them via a throwaway script (e.g. `generate_report.py`) — see cleanup below.
-- **Nested output**: files can land in subfolders; the file list walks recursively (latest 200, newest first).
-
-### Nexus folder mechanics (the details that matter)
-
-- **Ownership per chat**: every file belongs to exactly one session — the most recent session created at/before the file's mtime (60 s tolerance; predated files go to the earliest session). Works even when the file was produced indirectly by `execute`, where tool args never name the output (`listHomeSessionFiles`).
-- **Session files vs all files**: right sidebar `Artifacts` tab shows only this chat's files; `Session` tab shows the folder summary + counts. Header has `Files` (open folder in OS) and `New chat`.
-- **Preview + download**: `FilePreviewModal` reads via `home:readFile` (30 MB cap — larger files degrade to “download instead”); `downloadHomeFile` opens a save dialog and copies out. Path-escape checked (`Path escapes the Home folder`).
-- **Generator cleanup** (`cleanupHomeGeneratorScripts`): after a run that produced a fresh deliverable (docx/xlsx/pptx/pdf/…), throwaway generator scripts (`.py/.js/.ts/.sh/.ps1/.bat/…` created during the run) are deleted automatically — unless you explicitly asked for code/scripts (`CODE_REQUEST_PATTERN`).
-- **Agent loop**: same DeepAgents loop with `taskKind: "general"` — document-oriented system prompt, **no code-project verification** (no typecheck/test gate), doom-loop breaker and rate-limit resume still apply.
-- **Composer**: textarea (Enter to send), paperclip attach (images, PDF, Word, Excel, PowerPoint, TeX, text — `ATTACHMENT_ACCEPT`), image chips with preview + remove, model picker, per-session token/cost pill (`Session: 12.4k tokens ~$0.0231`, `—` when pricing unknown).
-- **Transcript**: user/assistant bubbles + collapsed `ActivityGroupView` tool steps, sticky-to-bottom unless you're reading history, `RichMarkdown` (KaTeX + Mermaid).
-
-### Home files in code
-
-- Backend: `electron/home-service.ts` (`getHomeRoot`, `ensureHomeDir`, `listHomeFiles`, `listHomeSessionFiles`, `downloadHomeFile`, `openHomeFolder`, `cleanupHomeGeneratorScripts`, `readHomeFile`).
-- Frontend: `src/views/HomeView.tsx`, `src/components/home/FilePreviewModal.tsx`, `AttachmentPreviewModal.tsx`, `src/state/useAppController.ts` (`homeRoot`, `homeFiles`, `homeSessionFiles`, `createHomeSession`, `refreshHomeFiles`).
+</div>
 
 ---
 
-## Mode 2 — Code (coding agent)
-
-Open any local repo. Center toggles **Agent chat ↔ Editor** (Monaco, multi-tab, dirty tracking); right pane tabs: `Session | Files | Browser | Term | Diff | Memory`.
-
-### Agentic loop with repair pass
-
-Every run executes `START → brief → deep_agent → verify → (repair) → END` (`electron/agent-service.ts`):
-
-- **`brief`** — session context, compacted history excerpt (4 000 chars), active-mode announcement.
-- **`deep_agent`** — DeepAgents + todo-list middleware + project/session memory + repo-map symbol outline + rules + skills + MCP + subagents (`researcher | tester | coder` with real `usage_metadata`) + file tools + `apply_patch` + clarification tool + browser tools + web search.
-- **`verify`** — static check (`npm run typecheck` > `npm run check` > `tsc --noEmit` > `npm run lint` > `cargo check` > `go vet` > `ruff check`) + targeted tests (`findTargetedTests`; JS/TS returns `null`, never `node <file>`). Failures are fed back with the full transcript kept for a targeted repair.
-- **Plan skips verify** (`MAX_REPAIRS = 0`). **Resume**: bounded retries with exponential backoff honoring `Retry-After`; resume from last complete superstep. **Doom-loop breaker** aborts exact-repeat tool calls.
-
-| Mode | Budget (`recursionLimit`) | Repairs | Behavior |
-| --- | --- | --- | --- |
-| **Plan** | 40 | 0 | Strict read-only backend. Inspects + writes a detailed plan, zero edits. |
-| **Ask** | 100 | 1 | Standard: implement, verify once, summarize. |
-| **Auto** | 150 | 3 | Extended autonomous: plan → implement → verify → auto-repair. |
-
-Fast path for single-lookup/single-edit tasks: 50 supersteps. Switch via the `Plan/Ask/Auto` selector or slash commands `/plan`, `/ask`, `/auto`, `/review` (+ project `.nexus/commands/*.md`, `.forgepilot/commands` fallback, `{{input}}` / `{{activeFile}}` placeholders, `/` popup, `@file` mention autocomplete with 8-file fuzzy list).
-
-### Review safety net: checkpoints, diff, worktrees
-
-- **Snapshots before every run** on disk: `.nexus/checkpoints/<id>.json` (+ `.nexus/run-checkpoints/` for resume). Survive restarts. **Undo run** card restores the exact pre-run tree; unknown/expired id → explicit error, never a silent mass-revert.
-- **Diff tab** (`workspace:diff`): `git diff HEAD` in one pass (numstat + unified, `--no-renames`), per-file `+/−`, status codes, `MonacoDiffModal` inspect (original = `git show HEAD:<path>`, patch-parse fallback for untracked files), per-file `revertFile`, `Discard all`. Telemetry (`.nexus/`, `.forgepilot/`, `.deepagents/`, `.git/`) always excluded.
-- **Opt-in worktrees**: per-session isolated tree at `.forgepilot/worktrees/<session-id>`, branch `forgepilot/session-<session-id>`. `WorktreeBar`: **Merge to Main / Discard** (confirm modal, not `window.confirm`). Telemetry (trajectories, artifacts, run checkpoints) stays in the real root so discard never loses history.
-- **Memory**: project memory (shared across sessions) vs session memory (local); agent appends after runs; edited in `MemoryView`. **Project rules** auto-injected from `.cursorrules`, `AGENT.md`, `AGENTS.md`, `CLAUDE.md`, `.windsurfrules`, `.nexus/rules` (`.forgepilot/rules` fallback), viewable in `ProjectRulesModal`.
-- **Artifacts & trajectory**: deliverables in `.nexus/artifacts/` (`draft | pending_approval | approved | completed | rejected`, approve-and-execute re-submits the plan in Auto); full JSONL transcripts in `.nexus/trajectories/` (`USER|MODEL|TOOL|SYSTEM`), readable from the UI.
-- **Composer note** (honest): “Nexus runs real commands and edits files in this workspace — review the Diff tab before keeping changes.”
-
-### Terminal, daemons, browser (Code scope)
-
-- **Real PTY** (`electron/pty-host.cjs` + `@homebridge/node-pty-prebuilt-multiarch`, JSON-lines `spawn/write/resize/kill` → `ready/data/exit/error` under system Node; Electron can't load native PTYs in-process). PTY-first with piped-shell fallback, generation-guarded teardown, `terminal:resize` from xterm FitAddon (`XTermView`).
-- **Services manager** (`DaemonsModal`): start/watch/stop dev servers (Vite, Next, APIs), log buffers, live port detection (`localhost:5173`, `port 3000`) → open in built-in browser.
-- **Browser** (partition `persist:browser-code`, never host cookies): sidebar webview (back/forward/reload in place, `openExternal` for outside links) + hidden agent executor (`AgentBrowserHost`, same partition). Agent tools: `browser_inspect` / `browser_fetch_api` (manual capped redirect walk, `http(s)` only) + `browser_act` (element snapshots `e3…`, click, React-compatible fill, keys, scroll, navigate, screenshots to `.nexus/browser/`). **Headless / Watching** toggle — Watching makes the sidebar follow the agent live.
-
-### Code files in code
-
-- Backend: `agent-service.ts`, `command-service.ts`, `permissions.ts`, `approval-service.ts`, `context-service.ts`, `rate-limit.ts`, `subagent-service.ts`, `code-tools.ts`, `project-tools.ts`, `edit-tools.ts`, `repo-map-service.ts`, `rules-service.ts`, `custom-commands-service.ts`, `diff-service.ts`, `worktree-service.ts`, `artifacts-service.ts`, `trajectory-service.ts`, `terminal-service.ts` + `pty-host.cjs`, `daemon-service.ts`, `browser-service.ts` + `browser-tool.ts`.
-- Frontend: `src/views/AgentView.tsx` (+ `ModelSelect`), `DiffView.tsx`, `MemoryView.tsx`, `components/editor/MonacoEditorView.tsx`, `terminal/XTermView.tsx`, `browser/SidebarBrowser.tsx` + `IntegratedBrowserView.tsx` + `AgentBrowserHost.tsx`, `diff/MonacoDiffModal.tsx`, `worktree/WorktreeBar.tsx`, `chat/` (`ChatMessageItem`, `PlanCard`, `SubagentCard`, `ArtifactCard`, `SlashCommandPopup`), `rules/ProjectRulesModal.tsx`, `artifacts/ArtifactViewer.tsx`, `daemons/DaemonsModal.tsx`.
+Nexus is a **desktop autonomous agent** built with **Electron + React + TypeScript**. It combines
+**LangChain** (models and tools), **LangGraph** (deterministic outer workflow, checkpoints,
+verify/repair supervision) and **DeepAgents** (long-running agentic loop, planning, filesystem
+backend). Everything runs on your machine: your keys, your models (including local Ollama), your
+data in local storage — no Nexus cloud in the middle.
 
 ---
 
-## Mode 3 — Notebook (grounded Q&A over your documents)
+## The three modes
 
-NotebookLM-style research desk with its own 3-pane layout **inside the view** (sources | chat | studio-notes); the app-level context pane stays hidden (`src/views/NotebookView.tsx`; state in `src/state/useNotebookController.ts`).
+Nexus's top bar switches between three product surfaces. They share providers, skills, MCP,
+browser, streaming with token/cost metering, and auto-update.
 
-### Library model
+| Mode | What it is | Workspace |
+|---|---|---|
+| **Home** | General assistant — chat, research the web, create Word / Excel / PowerPoint / PDF / LaTeX / Markdown deliverables | Built-in project rooted at `Documents/Nexus` |
+| **Code** | Coding agent for any repository — Plan / Ask / Auto loop, diffs, checkpoints, worktrees, terminal | Any folder you open |
+| **Notebook** | NotebookLM-style grounded Q&A over your documents, YouTube videos and web pages — with citations and a groundedness gate | Isolated per-session libraries |
 
-- **Multiple notebooks** (`notebook:list|create|rename|delete`): each has sources, chats, notes, custom instructions, stats. Sessions-first: never auto-enters — you click a session.
-- **Chats per notebook** (`notebook:chats|createChat|deleteChat`): independent conversations with own streaming tokens (`streamByChat`), working steps (`stepsByChat`), citations, evaluations and retrieval metadata. Transcript export to Markdown (`# Notebook — Chat` + `## You / ## Notebook` + `**Sources:** [S1] …`).
-- **Notes / Studio** (`notebook:notes:list|save|delete`): save any passage or answer as a cited note (`title + content + citations`), persisted per notebook.
-- **Instructions**: per-notebook custom system instructions (`notebook:settings:get|save`), editable inline, applied to every answer.
+### Home — general assistant
 
-### Ingest pipeline (async job queue)
+- One-click starters: **Write a Word report · Build a presentation · Make a spreadsheet · Research the web**.
+- Real document generation (docx / pptx / xlsx / pdf / md / LaTeX) — not snippets; deliverable files are picked, validated by magic bytes and shown as **artifacts**.
+- **Structured long-term memory**: User profile / Preferences / Facts / Project context, injected by relevance into every chat — say *"remember…"* or manage facts with per-fact **Forget** buttons.
+- Files the agent creates land in the Nexus folder with preview, download and per-session ownership.
 
-Status per source (`NotebookSourceStatus`): `uploaded → parsing → chunking → indexing → ready`, or `failed` with error text. UI badges: `queued / parsing… / chunking… / indexing… / ready / failed` with spinner; auto-poll every 3 s while anything is pending; manual refresh, per-source delete / re-index, global re-index-all (`notebook:reindexSource`, `notebook:reindexAll`).
+### Code — coding agent
 
-- **File upload** (`notebook:pickFiles` / drag-and-drop): PDF, DOCX, XLSX, PPTX (slides), CSV, TeX (+ plain text/markdown). Reports `parser`, `pageCount`, `chars`, `chunks`, `fingerprint`.
-- **Link imports** (no API key, same ingest pipeline after fetch):
-  - **YouTube** (`notebook:importYouTube`, `electron/notebook-youtube.ts`): paste a watch / youtu.be / embed / shorts / live URL (or bare 11-char id) — the public caption track is fetched as WebVTT and stored as timestamped (`[mm:ss]`) Markdown. Videos without captions (private / region-blocked / caption-less) fail with a friendly error.
-  - **Website** (`notebook:importWebsite`, `electron/notebook-web.ts`): paste one `http(s)` URL — the start page plus a bounded same-origin BFS crawl (page/depth caps) is combined into a single source document. Plain HTTP fetch only, so heavily JS-rendered pages may come back thin (flagged per page instead of silently stored).
-- **Chunking** (`electron/notebook-text.ts`, pure core): `cleanMarkdown`, section-aware `chunkSections`, `sha256Hex`/`uuid5` ids, upload validation, groundedness gate. Covered by `test/notebook-text.test.mjs` + `notebook-parse.test.mjs`.
-- **Library store** (`electron/notebook-library.ts`): relational JSON (`LibraryDocument/Section/Chunk`) + vector partition, neighbor expansion (prev/next chunk), `sessionOutline`, session summary/digest (`topics + updatedAt`).
-- **Jobs** (`electron/notebook-jobs.ts`): `enqueueIngest → parse → chunk → embed → index`, with `retrySource`, `reindexSessionFromLibrary`, `recoverInterruptedJobs` after restart. Covered by `notebook-pipeline.test.mjs` + `notebook-library.test.mjs`.
-- **Stats** (`notebook:stats`): sources, ready sources, chunks, sections, embedding model + dims, entities, conversations, digest.
+- **Plan / Ask / Auto** control: Plan is hard read-only (no writes, no shell, no MCP), Ask is interactive, Auto runs end-to-end with self-repair.
+- **Verify-and-repair loop**: after every run a diff-first verification supervisor checks what the agent changed — typecheck/test cascades for code runs, output contracts for deliverables — and feeds failures back for repair (up to 3 repairs in Ask, 5 in Auto).
+- **Multi-level undo**: file snapshots + 20-deep checkpoints; **Undo run** / restore, **per-hunk diff discard**, and Nexus-only commit reset that never touches your own commits.
+- **Isolated git worktrees**: run a session in its own worktree + branch (`.forgepilot/worktrees/<session>`), then **Merge to Main**, **Discard**, or **Abort merge** with a conflict resolver.
+- **Real tooling**: Monaco editor, xterm.js PTY terminal (out-of-process PTY host), background **daemon manager** (dev servers with live logs, status and port detection), repo map + persistent project index, `@`-file mentions, image attachments (paste, file, PDF, Office).
+- **Rules & memory**: reads `.cursorrules`, `AGENTS.md`, `CLAUDE.md`, `AGENT.md`, `.windsurfrules` and `.nexus` rules; project + session memory the agent appends to after runs.
+- Code journals: planning / implementation / verification / review phases with run history.
 
-### Agentic RAG Loop + Grounding (cited, self-reflective)
+### Notebook — grounded research
 
-- **Agentic Multi-Hop Retrieval** (`electron/notebook-rag.ts` → `runNotebookAgent`): Driven by a LangGraph + DeepAgent loop. Rather than a naive single-shot lookup, the agent plans queries, breaks complex or comparative questions into focused sub-queries, iteratively calls `search_notebook_sources`, inspects table of contents via `inspect_notebook_outline`, and reads context windows with `read_notebook_passage`.
-- **Self-RAG Reflection** (`evaluate_evidence`): The agent evaluates whether retrieved evidence is sufficient to answer faithfully without hallucinating. If gaps remain, it reformulates the query and retrieves again before generating the final response.
-- **Studio Generative Desk** (`electron/notebook-documents.ts`, `notebook-quiz.ts`, `notebook-flashcards.ts`, `notebook-mindmaps.ts`, `notebook-summaries.ts`): Built-in output suite generated directly from in-scope source evidence:
-  - **Reports** (`.docx` / `.pdf`): Structured executive briefs, sections, and key findings.
-  - **Slide Decks** (`.pptx`): Clean presentation decks designed with callouts and bullet highlights.
-  - **Interactive Quizzes**: Multiple-choice, True/False, or mixed knowledge checks with instant feedback in `QuizPlayerModal`.
-  - **Study Flashcards**: Key term and concept cards playable in `FlashcardPlayerModal`.
-  - **Interactive Mind Maps**: Hierarchical visual topic exploration using interactive diagrams in `MindmapViewerModal`.
-  - **Structured Summaries**: Overview, section-by-section breakdown, and key takeaways.
-- **Studio Note Integration** (`save_note_to_studio`): The agent can save key takeaways, study guides, and flashcards directly into Studio notes upon user request.
-- **Interactive Research Trail in UI**: Real-time feedback during search and a persistent, collapsible **Agentic Research Trail** accordion in the chat item showing each query executed, passages retrieved, and evidence checks.
-- **Citations on every answer** (`NotebookCitation`): `[S1]` numbered refs with `sourceId`, `sourceName`, `chunkId`, `heading`, `excerpt` (400 chars), `snippet`, `score`. Clicking a citation opens the passage modal at that exact chunk.
-- **Groundedness verdict** (`NotebookEvaluation`): `grounded / partial / ungrounded` + score + `issues[]`; chat-level average shown in the header (`evals: n, avg: x/10`). Refusals and fallback-model usage flagged in `metadata` (`routing`, `topScore`, `refused`, `fallbackModel`).
-- **Source scoping**: per-source include/exclude toggles (`excludedIds`; empty = all files), `resetScope`, scoped ids sent with every query. Scope chips + counts in the sources pane.
-- **Passage viewer** (`SourcePassageModal`, `notebook:passage`): full chunk text + prev/next context + section summary + heading path; one-click agent actions: `explain` (define terms, stay grounded), `simplify` (plain language), `compare` (agreements/differences/uncertainty across sources), `quiz` (one question at a time), `save` (to Studio notes).
-- **Embeddings, pluggable** (`electron/notebook-embeddings.ts`): `openai | ollama | gemini | cohere` (`notebook:embedding-providers`, save/remove/test), `embedQuery`, plus a **local offline fallback** so the notebook works with no embedding key. Model + dims recorded in stats and every answer (`embeddingModel`, `dims`).
-- **Flags** (`electron/notebook-flags.ts`, `NEXUS_NOTEBOOK_*=0|1`): `LLM_ROUTER` (default on — structured-output routing, heuristics fallback), `SESSION_DIGEST` (default on — outline + topics when all files ready), `SYNTH_QUESTIONS` / `CLOUD_PARSER` / `LLM_RERANK` (default off). Base pipeline never depends on a flagged path.
-
-### Notebook files in code
-
-- Backend: `electron/notebook-store.ts` (CRUD + `importSourceBuffer`/`pickAndImportSourceFiles`), `notebook-parse.ts`, `notebook-text.ts`, `notebook-library.ts`, `notebook-embeddings.ts`, `notebook-jobs.ts`, `notebook-rag.ts`, `notebook-documents.ts`, `notebook-quiz.ts`, `notebook-flashcards.ts`, `notebook-mindmaps.ts`, `notebook-summaries.ts`, `notebook-flags.ts`, `notebook-youtube.ts` (keyless transcript fetch), `notebook-web.ts` (same-origin crawl).
-- Frontend: `src/views/NotebookView.tsx`, `src/components/notebook/SourcePassageModal.tsx`, `DocumentViewerModal.tsx`, `QuizPlayerModal.tsx`, `FlashcardPlayerModal.tsx`, `MindmapViewerModal.tsx`, `src/state/useNotebookController.ts`.
-- Tests: `npm run test:notebook` (text, parse, library, pipeline, agentic RAG).
+- **Sources**: PDF, PPTX, DOCX, TXT/MD, CSV, TeX, images — plus **YouTube** transcripts and **web page** import. Live ingestion pipeline (`queued → parsing → chunking → indexing → ready`) with crash recovery.
+- **Chat with citations**: hybrid retrieval (dense SQLite vectors + BM25 + structural signals, with an offline local fallback when no embedding provider is configured), agentic multi-hop search, clickable **[S1]-style citations** that open the exact passage, and a retrieval trace per answer.
+- **Groundedness gate**: every answer gets a 0–10 **groundedness score** and verdict (grounded / partial / ungrounded). When your files don't cover the question, Nexus **refuses rather than guesses**.
+- **Studio**: one click generates **reports (DOCX/PDF), presentations (PPTX), quizzes (graded, with sources), flashcards, mind maps and summaries** — all built from cited passages of your sources.
 
 ---
 
-## Shared systems (all three modes)
+## Feature highlights
 
-### Command execution model (no sandbox — read this)
+- **15 LLM providers, bring-your-own-key**: OpenAI, Anthropic, Google Gemini, Mistral, Groq, xAI, OpenRouter, DeepSeek, OpenCode Zen, Together AI, Fireworks, Azure OpenAI, AWS Bedrock, **local Ollama**, and any OpenAI-compatible endpoint (with live model discovery).
+- **MCP native**: Model Context Protocol servers over **stdio / HTTP / SSE**, warm reconnects, per-server fault isolation (one dead server doesn't drop the rest), connection tester, secrets encrypted at rest.
+- **Skills system**: **53 bundled skills** (12 all-purpose, 31 code, 10 home) mounted read-only; bring your own via `SKILL.md` at project (`.nexus/skills`) or global scope, with per-mode scoping and zip import. Skills are recommended per request, not force-fed.
+- **38 slash commands** built in (`/plan`, `/auto`, `/review`, `/test`, `/security`, `/pr`, `build-fix`, per-stack sets for React/Python/Rust/Go/…), plus user-defined commands with scope and forced mode.
+- **68 specialist subagents** (architect, planner, code-reviewer, security-reviewer, TDD guide, per-language reviewers/build-fixers, …) spawned as nested deep agents — capped at 3 per run, 1 mutating.
+- **122 coding rule packs** across 22 language/framework categories, layered with your project rules.
+- **Built-in agent browser**: hidden webviews (separate persistent profiles per mode) with rendered-page inspection, SSRF-safe API fetching and `browser_act` actions grounded by element refs — watch it live or let it work headless.
+- **Transparent metering**: live streaming, per-message token usage and estimated cost, plan cards, subagent cards, collapsible activity feeds, JSONL trajectory transcripts.
+- **9 themes** (7 dark + 2 light), DM Sans / DM Mono type system, emerald brand identity.
+- **Auto-update** via GitHub Releases (electron-updater) with in-app download progress pill.
 
-Commands run **directly on your machine with your user privileges**. No container or VM isolation:
+## Architecture
 
-- **Deny backstop** (`electron/permissions.ts`): catastrophic patterns never run (`rm -rf /`, `rm -rf ~`, `mkfs`, `dd … of=/dev/`, fork bombs, `shutdown/reboot`, `format`, `diskpart`, shadow-copy deletion, `bcdedit`, `reg delete`, recursive deletes of drive roots/profiles, `net user /add`, …). A backstop against agent mistakes, not a boundary.
-- **Ask gate** (`classifyCommand` + modal **Deny / Allow for run / Allow once**): `git push|reset|clean|rebase`, dependency mutations (`npm|pnpm|yarn|pip|cargo install|add|remove`), `curl … | sh|bash`, `Invoke-WebRequest/iwr/irm`. Project policy via `.nexus/permissions.json` or `package.json#nexus.permissions`.
-- **Per-run cancellation**: each run owns its children; Stop kills only that run (`taskkill /T /F` on Windows). Daemons + terminals killed on `before-quit`. **Daemon env scrubbed** (structural vars like `PATH` only). **Keys encrypted at rest** (`safeStorage`: DPAPI / Keychain / libsecret).
-- Need isolation → run Nexus in a dedicated VM/container.
-
-### Providers, MCP, Skills (shared)
-
-- **15 providers** (`electron/providers.ts` → `PROVIDERS`): `openai`, `anthropic`, `google` (Gemini), `mistral`, `groq`, `xai`, `openrouter`, `ollama` (`http://127.0.0.1:11434`), `deepseek`, `opencode-zen` gateway, `together`, `fireworks`, `azure`, `bedrock`, `custom` (any OpenAI-compatible `baseUrl`). Per-model `chat | responses | messages` overrides; Zen sends `x-opencode-*` headers. Env fallback per provider (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `OLLAMA_BASE_URL`, …). Unknown/local pricing → cost shows `—` (`formatCost`).
-- **MCP** (`mcp-service.ts`): `stdio | http | sse`, cached client per config fingerprint, save/test UI. Runs with your privileges.
-- **Skills** (`skills-service.ts`): global (`userData/skills`) + project (`.nexus/skills`, legacy `.deepagents/skills` read-only), path-confined list/read/import/create/delete, per-run recommendation, global on/off toggle. Includes **260+ curated system skills** distributed across `system-skills/{code, home, notebook, all}`.
-- **System Commands & Agents**:
-  - **Scoped slash commands** (`custom-commands-service.ts`): built-in and directory-based commands under `system-commands/{code, home, notebook}` automatically routed to matching workspace modes.
-  - **Specialized agent personas** (`electron/system-agents/`): 68 expert personas (architect, security reviewer, planner, code reviewer, build resolver, etc.) with preconfigured tool access and guidance.
-- **Web search for all**: Home research + Code/Notebook context via the same DuckDuckGo Lite tools.
-- **Themes** (`src/state/theme.ts`): 8 themes (Nexus Emerald default, Midnight Ocean, Grape Nebula, Ember Sunset, Crimson Rose, Lagoon Teal, Moss Citrus, Daylight Paper light), persisted as `nexus-theme`.
-
----
-
-## Installation
-
-Requires Node 20+ and `npm`. On Windows with restricted `.ps1` execution, use the `.cmd` binaries:
-
-```powershell
-npm.cmd install
+```
+                 ┌────────────────────────────────────────────────┐
+ brief ──▶ PLAN  │  deep agent (DeepAgents)                       │
+                 │   ├ planning + todos (complex tasks)           │
+                 │   ├ tools: files · apply_patch · shell ·       │
+                 │   │        repo-map/code tools · browser ·     │
+                 │   │        web search · memory · MCP ·         │
+                 │   │        subagents · ask_user                │
+                 │   └ skills mounted per request                 │
+                 └───────────────────────┬────────────────────────┘
+                                         ▼
+                              VERIFY (LangGraph node)
+                              diff-first, scoped to this run
+                              typecheck / tests / output contract
+                                         │  failed?
+                              REPAIR ◀───┘  (Ask ≤3, Auto ≤5)
+                                         │
+                                         ▼
+                                   END (+ checkpoint, journal, memory)
 ```
 
-Then connect providers from the **Providers** modal (paste a key or point at local Ollama). Env fallback:
+| Mode | Recursion budget | Auto-repairs |
+|---|---|---|
+| Plan | 40 | 0 (read-only) |
+| Ask | 100 | 3 |
+| Auto | 150 | 5 |
 
-| Variable | Role | Default |
-| --- | --- | --- |
-| `OPENAI_API_KEY` | OpenAI key | None |
-| `OPENAI_BASE_URL` | OpenAI-compatible endpoint | Standard OpenAI endpoint |
-| `OPENAI_MODEL` | Default model | `gpt-4.1-mini` |
+Simple tasks take a fast path (50 supersteps). Long histories are compacted (heuristic or
+model-backed summarization); provider rate limits are retried with bounded exponential backoff and
+resumable checkpoints; a doom-loop breaker stops repeated identical tool calls. Prompt caching is
+used for Anthropic models. Every run ends with a checkpoint you can resume ("continue") without
+repeating completed steps.
 
-Each provider respects its own env key too (see `electron/providers.ts`).
+**Stack**: Electron 44 · React 19 · TypeScript · Vite · Monaco · xterm.js · LangChain 1.x ·
+LangGraph 1.x · DeepAgents 1.x · SQLite (notebook vectors) · electron-builder + electron-updater.
 
----
+## Security & approvals (read this)
 
-## Useful commands
+Nexus executes real commands and edits real files — by design. Its safety model is **approvals +
+deny-backstop + encryption**, not a sandbox:
 
-- **Typecheck (both projects)**:
-  ```powershell
-  npm.cmd run check
-  ```
-- **Integration suite (agent + workspace)**:
-  ```powershell
-  npm.cmd test
-  ```
-- **Unit tests (rate-limit, checkpoint-resume)**:
-  ```powershell
-  npm.cmd run test:unit
-  ```
-- **Notebook pipeline tests (text, parse, library, pipeline)**:
-  ```powershell
-  npm.cmd run test:notebook
-  ```
-- **Dev mode**:
-  ```powershell
-  npm.cmd run dev
-  ```
-- **Production bundle + run**:
-  ```powershell
-  npm.cmd run build
-  npm.cmd start
-  ```
-- **Packaging (installers in `release/`)**:
-  ```powershell
-  npm.cmd run dist
-  npm.cmd run dist:dir
-  ```
+- **Approval gates**: risky commands open a modal with **Deny / Allow once / Allow for session** (120 s timeout defaults to deny). Ask-class heuristics cover `git push/reset/clean/rebase`, package installs, `curl | sh`, PowerShell downloads.
+- **Deny backstop**: ~25 hardcoded destructive patterns are always refused (`rm -rf /`, `mkfs`, `dd of=/dev/…`, fork bombs, diskpart/format, registry deletes, user adds, …).
+- **Custom policy**: `.nexus/permissions.json` or `package.json → nexus.permissions` with allow/ask/deny glob lists.
+- **Plan mode is hard read-only** — writes, edits, deletes, shell and MCP are all refused.
+- **Secrets encrypted at rest** with Electron safeStorage (DPAPI on Windows, Keychain on macOS, libsecret on Linux). Child processes never inherit secrets: terminal env is scrubbed, daemons run with a strict structural allowlist.
+- **No telemetry leaves your machine**; transcripts are local JSONL. External links open in your system browser.
 
----
+Honest limitations: shell command execution is allow-by-default outside the ask/deny classes; treat the approval model as guardrails, not isolation.
 
-## Publish an update (auto-update)
+## Data & storage
 
-Launch-time check (installed builds only) via `electron-updater` against public `L7A9/nexus` releases (`build.publish`). Badge in topbar → auto-download → click to restart. Settings → Updates for manual check.
+| What | Where |
+|---|---|
+| App state (projects, sessions, providers, MCP, settings) | `%APPDATA%/nexus/nexus-state.json` (secrets safeStorage-encrypted) |
+| Project index, checkpoints, artifacts, browser shots, trajectories | `<project>/.nexus/` |
+| Session worktrees | `<project>/.forgepilot/worktrees/` |
+| Home deliverables | `Documents/Nexus` |
+| Skills (project) | `<project>/.nexus/skills/` |
 
-```powershell
-# 1. Bump version in package.json (e.g. 0.3.6)
-# 2. Build + publish (latest.yml included):
-$env:GH_TOKEN = "github_pat_..."
-npm.cmd run dist -- --publish always
+## Getting started
+
+**Prerequisites**: Node.js 20+, npm. Windows-first (NSIS Setup + Portable); macOS DMG and Linux AppImage targets are configured.
+
+```bash
+# install (on restricted PowerShell, use npm.cmd)
+npm install
+
+# run in dev (Vite + Electron, hot reload)
+npm run dev
+
+# typecheck renderer + main
+npm run check
+
+# tests
+npm test              # Electron integration suite (sandbox + agent)
+npm run test:unit     # 13 unit suites (rate limit, checkpoints, loop prevention, memory, …)
+npm run test:notebook # 7 notebook suites (~264 assertions on the deterministic core)
+
+# production build + run
+npm run build
+npm start
+
+# package installers into release/
+npm run dist          # or: npm run dist:dir
 ```
 
-Notes: only NSIS Setup self-updates (Portable re-downloads); dev runs just report local version (`NEXUS_UPDATE_DEV=1` + `dev-app-update.yml` for real-flow testing); targets Windows (`nsis`, `portable`), macOS (`dmg`), Linux (`AppImage`).
+**Download prebuilt binaries**: see [GitHub Releases](https://github.com/amine-elhanine/nexus/releases/latest) — `Nexus Setup <version>.exe` (auto-updating NSIS installer), `Nexus <version> Portable.exe`, DMG and AppImage targets. Only the NSIS install self-updates; Portable re-downloads.
 
----
+**Publish an update**: bump `version` in `package.json`, then `GH_TOKEN=<github_pat> npm run dist -- --publish always` (publishes to the releases repo `amine-elhanine/nexus`, including `latest.yml`; source lives at `amine-elhanine/nexus-code`). For testing the update flow in dev: `NEXUS_UPDATE_DEV=1` + `dev-app-update.yml`.
+
+### Optional environment variables
+
+Every provider can also be configured in-app (Settings → AI Providers); keys are encrypted at rest. Env vars are supported for zero-UI setups:
+
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `MISTRAL_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `OPENCODE_API_KEY`, `TOGETHER_AI_API_KEY`, `FIREWORKS_API_KEY`, `AZURE_OPENAI_API_KEY`, `AWS_ACCESS_KEY_ID`, `CUSTOM_API_KEY`, `OLLAMA_BASE_URL` (default `http://127.0.0.1:11434`), plus `OPENAI_BASE_URL` / `OPENAI_MODEL` overrides and `NEXUS_HOME_ROOT` (Home workspace override, used by tests). Notebook feature flags live in `electron/notebook-flags.ts` (`NEXUS_NOTEBOOK_*`).
 
 ## Project structure
 
-- `electron/` — backend and system services.
-  - `main.ts` — lifecycle, window, IPC, `nexus-attachment://`, browser partitions (`persist:browser-home`, `persist:browser-code`), Home/notebook bootstrap, `agent:run` orchestration.
-  - `agent-service.ts` — LangGraph (`brief → deep_agent → verify → repair`), `AgentMode plan|ask|auto` (40/100/150, repairs 0/1/3), `AgentTaskKind code|general`, transcript-preserving repair, usage.
-  - `command-service.ts` / `permissions.ts` / `approval-service.ts` — direct execution, per-run cancel, `deny|ask|allow`, approval bridge. No sandbox.
-  - `context-service.ts` / `rate-limit.ts` / `subagent-service.ts` — tokens + compaction, backoff + `Retry-After` resume, researcher/tester/coder delegation.
-  - `code-tools.ts` / `project-tools.ts` / `edit-tools.ts` / `repo-map-service.ts` — symbols, path-safe I/O, `apply_patch`, clarification tool, cached outline.
-  - `rules-service.ts` / `custom-commands-service.ts` / `skills-service.ts` — rules, slash commands (`/plan /ask /auto /review` + project), `SKILL.md` library.
-  - `diff-service.ts` / `worktree-service.ts` — one-pass `git diff HEAD` + reverts + `.nexus/checkpoints/`; `.forgepilot/worktrees/` + `forgepilot/session-*`.
-  - `artifacts-service.ts` / `trajectory-service.ts` — `.nexus/artifacts/` deliverables, `.nexus/trajectories/` JSONL.
-  - `terminal-service.ts` + `pty-host.cjs` — out-of-process PTY + piped fallback.
-  - `daemon-service.ts` / `browser-service.ts` / `browser-tool.ts` / `websearch-tool.ts` / `mcp-service.ts` — dev servers, hidden webviews + act/inspect/fetch, DDG search, cached MCP.
-  - `home-service.ts` — `home` project: `getHomeRoot/ensureHomeDir/listHomeFiles/listHomeSessionFiles/downloadHomeFile/openHomeFolder/cleanupHomeGeneratorScripts/readHomeFile`.
-  - `notebook-store.ts` / `notebook-parse.ts` / `notebook-text.ts` / `notebook-library.ts` / `notebook-embeddings.ts` / `notebook-jobs.ts` / `notebook-rag.ts` / `notebook-flags.ts` / `notebook-youtube.ts` / `notebook-web.ts` — full RAG stack (see Mode 3).
-  - `providers.ts` (15 defs + endpoint resolution + Zen headers), `repo-service.ts` (git detect/init), `store.ts` (`nexus-state.json` + `forgepilot-state.json` fallback, `safeStorage`), `updater-service.ts` (`idle|checking|up-to-date|available|downloading|downloaded|error`), `preload.cts` (`window.nexus` + legacy `window.forgepilot`).
-- `src/` — React frontend.
-  - `App.tsx` — shell: `Home|Code|Notebook` tabs, session pane, workspace, resizable context pane (220–600 px, `nexus-context-width`), modals, hidden `AgentBrowserHost`.
-  - `state/useAppController.ts` — projects/sessions/providers/runs, per-area drafts + attachments, files/diff/terminals/daemons IPC, `enterHome/enterCode/enterNotebook`.
-  - `state/useNotebookController.ts` — notebooks/sources/chats/notes/instructions/passages/embeddings (see Mode 3).
-  - `views/` — `HomeView` (chat + Nexus folder), `AgentView` (Plan/Ask/Auto + mentions + slash + worktree + artifacts), `NotebookView` (sources/chat/studio), `DiffView` (split patch + revert), `MemoryView` (project vs session).
-  - `components/` — `chat/` (message/activity/plan/subagent/artifact/slash/voice), `browser/`, `terminal/` (xterm), `editor/` (Monaco), `diff/`, `daemons/`, `worktree/`, `rules/`, `artifacts/`, `home/` (preview + attachment modals), `notebook/` (passage modal), `settings/` (providers/MCP/skills), `common/` (logo, window controls, KaTeX/Mermaid markdown).
-  - `modals/` — `ProviderModal`, `McpModal`, `SkillsModal`, `SettingsModal` (incl. Updates), `ProjectPickerModal`, `ConfirmModal`.
-  - `types.ts` — contracts: sessions, providers, MCP, skills, `Notebook*` RAG (sources, citations, evaluations, passages, embeddings), updater, …
-- `landingPage/` — static site with always-latest Releases wiring (`app.js` → `L7A9/nexus`, exact Setup/Portable asset URLs, releases-page fallback) and screenshots for Home / Code / Notebook.
-- `test/` — `sandbox-and-agent.test.mjs` (integration), `rate-limit` + `checkpoint-resume` (unit), `notebook-text/parse/library/pipeline` (RAG).
-- `docs/` — `fix-plan.md` (historical implementation record), findings notes for execution model + UI.
+```
+electron/                 main process (NodeNext TS → dist-electron/)
+  main.ts                 window, lifecycle, 159 IPC handlers, single-instance lock
+  agent-service.ts        the brain: system prompt, deep agent graph, verify/repair, streaming
+  providers.ts            15 provider profiles + model factory
+  command-service.ts      shell execution, permission policy, approval flow, filesystem backend
+  code-tools.ts / edit-tools.ts / repo-map-service.ts / project-index-service.ts
+  diff-service.ts         git diff + per-file/per-hunk revert + Nexus-only commit reset
+  worktree-service.ts     per-session git worktree isolation, merge/abort/discard
+  checkpoint + journal: code-task-service.ts, artifacts-service.ts, trajectory-service.ts
+  terminal-service.ts + pty-host.cjs   out-of-process PTY host (xterm.js frontend)
+  daemon-service.ts       long-running processes with logs, status, port detection
+  browser-service.ts      hidden-webview agent browser (inspect / act / fetch_api)
+  home-service.ts / home-memory-service.ts / home-task-service.ts / home-artifact-service.ts
+  notebook-*.ts           grounded RAG core: parse, text, embeddings, SQLite vectors, RAG,
+                          documents, quiz, flashcards, mindmaps, summaries, jobs, store
+  mcp-service.ts          MCP client (stdio/http/sse) with fault isolation
+  skills-service.ts       skill discovery, mounting, zip import
+  store.ts                encrypted-at-rest JSON state (safeStorage)
+  permissions.ts / approval-service.ts  deny backstop + ask gates + approval modals
+  system-skills/ system-commands/ system-agents/ system-rules/  bundled content
+src/                      renderer (React 19 + Vite)
+  App.tsx                 shell: title bar, tabs, panes, modals
+  state/                  useAppController (Code) · useHomeController · useNotebookController · theme
+  views/                  AgentView · HomeView · NotebookView · DiffView · MemoryView
+  components/             chat, editor (Monaco), terminal (xterm), diff, worktree, browser,
+                          notebook studio, settings (providers/MCP/skills), daemons, …
+  styles.css              design system (emerald/dark, DM Sans + DM Mono) + 9 themes
+landing_page/             static marketing site (no build step; GitHub-Releases-aware)
+test/                     21 test suites (Electron integration + unit + notebook)
+```
 
-`forgepilot` is legacy-only: `window.forgepilot` bridge, `forgepilot-state.json` fallback, `.forgepilot/` worktree/rules/commands fallbacks, `forgepilot/session-*` branches. Product name: **Nexus**.
+> **Legacy note**: Nexus was previously "Forgepilot". Legacy paths (`window.forgepilot` preload alias, `forgepilot-state.json`, `.forgepilot/` worktrees) are still supported for backward compatibility.
+
+## License
+
+No license has been published yet — all rights reserved by the author until one is added.
 
 ---
 
-## Technical references
-
-- [LangChain JS](https://docs.langchain.com/oss/javascript/langchain/overview)
-- [LangGraph JS](https://docs.langchain.com/oss/javascript/langgraph/quickstart)
-- [DeepAgents JS](https://docs.langchain.com/oss/javascript/deepagents/overview)
-
-Built with Electron + LangChain + LangGraph + DeepAgents.
+Built with **Electron + LangChain + LangGraph + DeepAgents**. · Author **amine-elhanine** ·
+References: [LangChain JS](https://js.langchain.com) · [LangGraph JS](https://langchain-ai.github.io/langgraphjs) · [DeepAgents JS](https://github.com/langchain-ai/deepagents) · [MCP](https://modelcontextprotocol.io)

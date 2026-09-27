@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { writeFileAtomic } from "./atomic-write.js";
 
 export type HomeTaskPhase = "planning" | "research" | "execution" | "validation" | "complete" | "blocked";
 export type HomeTaskStatus = "active" | "completed" | "interrupted" | "blocked" | "failed";
@@ -72,9 +73,7 @@ export async function loadHomeTaskJournal(root: string, sessionId: string): Prom
 }
 
 export async function saveHomeTaskJournal(root: string, journal: HomeTaskJournal): Promise<void> {
-  const file = homeTaskJournalPath(root, journal.sessionId);
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, JSON.stringify(journal, null, 2), "utf8");
+  await writeFileAtomic(homeTaskJournalPath(root, journal.sessionId), JSON.stringify(journal, null, 2));
 }
 
 export function recordHomeTaskAction(

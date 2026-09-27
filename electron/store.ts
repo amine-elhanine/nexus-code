@@ -22,7 +22,7 @@ function electronMod(): ElectronShim {
 
 import type { SubagentItem } from "./subagent-service.js";
 
-export type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[]; modelEndpoints?: Partial<Record<string, ChatEndpointKind>> };
+export type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[]; modelEndpoints?: Partial<Record<string, ChatEndpointKind>>; /** Set at load when the stored ciphertext could not be decrypted on this machine. Never persisted. */ keyNeedsReentry?: boolean };
 // Wire protocol a model speaks. Providers default to chat completions,
 // except Anthropic-native which defaults to messages. A per-model entry
 // overrides the default — e.g. gateways like OpenCode Zen serve different
@@ -57,9 +57,8 @@ export type NotebookParserConfig = {
 export type ProjectRecord = { id: string; name: string; root: string; createdAt: string; updatedAt: string; memory: string; sessions: SessionRecord[] };
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
 export type ChatAttachment = { url: string; name: string; mimeType: string; size: number };
-export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; checkpointIds?: string[]; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; subagent?: SubagentItem; artifact?: unknown; detail?: string }>; model?: { providerId: string; model: string } };
-export type HomeMemoryPending = { id: string; category: string; fact: string; source: string; createdAt: string };
-type PersistedState = { projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; appSettings?: AppSettings; notebookParser?: NotebookParserConfig; homeSessions?: SessionRecord[]; homeMemory?: string; homeMemoryPending?: HomeMemoryPending[] };
+export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; checkpointIds?: string[]; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact" | "stream-reset"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; subagent?: SubagentItem; artifact?: unknown; detail?: string }>; model?: { providerId: string; model: string } };
+type PersistedState = { projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; appSettings?: AppSettings; notebookParser?: NotebookParserConfig; homeSessions?: SessionRecord[]; homeMemory?: string };
 
 let cache: PersistedState | null = null;
 
@@ -89,14 +88,27 @@ function uid(prefix: string) { return `${prefix}_${Date.now().toString(36)}_${Ma
 // Values without the prefix are legacy plaintext keys, transparently re-encrypted
 // the next time anything is persisted.
 const ENCRYPTED_PREFIX = "safeStorage:v1:";
+// Values that could not be decrypted on this machine keep their original
+// ciphertext on disk (keyed by track id) instead of being overwritten with ""
+// by the next persist — the key stays recoverable on the machine that
+// encrypted it, and the entry is replaced as soon as the user re-enters one.
+const failedCiphertext = new Map<string, string>();
+/** Drop preserved ciphertexts (called when the user re-enters a secret). */
+function clearFailedSecrets(prefix: string) {
+  for (const key of [...failedCiphertext.keys()]) {
+    if (key.startsWith(prefix)) failedCiphertext.delete(key);
+  }
+}
+const SECRET_MASK = "********";
 function encryptSecret(value: string) {
   if (!value || value.startsWith(ENCRYPTED_PREFIX)) return value;
   try { const ss = electronMod().safeStorage; if (ss?.isEncryptionAvailable?.()) return ENCRYPTED_PREFIX + ss.encryptString(value).toString("base64"); } catch { /* fall through to plaintext */ }
   return value;
 }
-function decryptSecret(value: string) {
-  if (!value) return "";
-  if (!value.startsWith(ENCRYPTED_PREFIX)) return value;
+function decryptSecret(value: string, trackKey?: string) {
+  if (!value) { lastDecryptFailed = false; return ""; }
+  if (!value.startsWith(ENCRYPTED_PREFIX)) { lastDecryptFailed = false; return value; }
+  lastDecryptFailed = false;
   try {
     const ss = electronMod().safeStorage;
     if (ss?.isEncryptionAvailable?.()) {
@@ -105,11 +117,17 @@ function decryptSecret(value: string) {
   } catch {
     // Encrypted on a different machine/domain/user profile — the key is
     // unrecoverable here. Log loudly instead of failing silently so the user
-    // knows to re-enter the key in Providers.
-    console.warn("[nexus] An API key could not be decrypted on this machine (it was encrypted elsewhere). Re-enter it in Providers.");
+    // knows to re-enter the key, and keep the ciphertext so a persist on this
+    // machine cannot destroy it.
+    if (trackKey) failedCiphertext.set(trackKey, value);
+    lastDecryptFailed = true;
+    console.warn("[nexus] An API key could not be decrypted on this machine (it was encrypted elsewhere). Re-enter it in the relevant settings.");
   }
   return "";
 }
+// Set by the most recent decryptSecret call: lets callers mark the record the
+// failed key belonged to (single-threaded, read immediately after the call).
+let lastDecryptFailed = false;
 
 export function calculateSessionUsage(messages: SessionRecord["messages"]): AgentUsage {
   let inputTokens = 0;
@@ -168,12 +186,28 @@ async function ensureLoaded(): Promise<PersistedState> {
     cache.embeddingProviders = cache.embeddingProviders || [];
     cache.homeSessions = cache.homeSessions || [];
     cache.providers.forEach((provider) => {
-      provider.apiKey = decryptSecret(provider.apiKey);
+      delete provider.keyNeedsReentry;
+      provider.apiKey = decryptSecret(provider.apiKey, `provider:${provider.id}`);
+      if (lastDecryptFailed) provider.keyNeedsReentry = true;
     });
     cache.embeddingProviders.forEach((provider) => {
-      provider.apiKey = decryptSecret(provider.apiKey);
+      provider.apiKey = decryptSecret(provider.apiKey, `emb:${provider.id}`);
     });
-    if (cache.notebookParser) cache.notebookParser.apiKey = decryptSecret(cache.notebookParser.apiKey);
+    if (cache.notebookParser) cache.notebookParser.apiKey = decryptSecret(cache.notebookParser.apiKey, "parser");
+    // MCP credentials (env vars, auth headers) are encrypted at rest too —
+    // headers routinely carry `Authorization: Bearer …`.
+    (cache.mcpServers || []).forEach((server) => {
+      if (server.env) {
+        for (const [key, value] of Object.entries(server.env)) {
+          server.env[key] = decryptSecret(value, `mcp:${server.id}:env:${key}`);
+        }
+      }
+      if (server.headers) {
+        for (const [key, value] of Object.entries(server.headers)) {
+          server.headers[key] = decryptSecret(value, `mcp:${server.id}:headers:${key}`);
+        }
+      }
+    });
     cache.projects.forEach((project) => {
       project.sessions = project.sessions || [];
       sortSessionsInPlace(project.sessions);
@@ -214,6 +248,16 @@ async function ensureLoaded(): Promise<PersistedState> {
 
 async function persist() {
   if (!cache) return;
+  // Serialize writes: two concurrent mutations snapshot at different times,
+  // and without a mutex the older snapshot could land last and lose data.
+  const run = persistQueue.then(() => doPersist());
+  persistQueue = run.then(() => undefined, () => undefined);
+  await run;
+}
+let persistQueue: Promise<void> = Promise.resolve();
+
+async function doPersist() {
+  if (!cache) return;
   const target = statePath();
   await fs.mkdir(path.dirname(target), { recursive: true });
   cache.projects.forEach((p) => {
@@ -222,11 +266,21 @@ async function persist() {
   if (cache.homeSessions) {
     sortSessionsInPlace(cache.homeSessions);
   }
+  const keepOrEncrypt = (value: string, trackKey: string) => failedCiphertext.get(trackKey) ?? encryptSecret(value);
   const snapshot: PersistedState = {
     ...cache,
-    providers: (cache.providers || []).map((provider) => ({ ...provider, apiKey: encryptSecret(provider.apiKey) })),
-    embeddingProviders: (cache.embeddingProviders || []).map((provider) => ({ ...provider, apiKey: encryptSecret(provider.apiKey) })),
-    notebookParser: cache.notebookParser ? { ...cache.notebookParser, apiKey: encryptSecret(cache.notebookParser.apiKey) } : undefined,
+    providers: (cache.providers || []).map((provider) => ({ ...provider, apiKey: keepOrEncrypt(provider.apiKey, `provider:${provider.id}`), keyNeedsReentry: undefined })),
+    embeddingProviders: (cache.embeddingProviders || []).map((provider) => ({ ...provider, apiKey: keepOrEncrypt(provider.apiKey, `emb:${provider.id}`) })),
+    notebookParser: cache.notebookParser ? { ...cache.notebookParser, apiKey: keepOrEncrypt(cache.notebookParser.apiKey, "parser") } : undefined,
+    mcpServers: (cache.mcpServers || []).map((server) => ({
+      ...server,
+      env: server.env
+        ? Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, keepOrEncrypt(value, `mcp:${server.id}:env:${key}`)]))
+        : undefined,
+      headers: server.headers
+        ? Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, keepOrEncrypt(value, `mcp:${server.id}:headers:${key}`)]))
+        : undefined,
+    })),
   };
   // Never overwrite the live state file in place. A process termination or
   // power loss during writeFile could otherwise leave valid-looking but
@@ -432,35 +486,30 @@ export async function updateHomeMemory(memory: string): Promise<string> {
   await persist();
   return state.homeMemory;
 }
-export async function listHomeMemoryPending(): Promise<HomeMemoryPending[]> {
-  return (await ensureLoaded()).homeMemoryPending ?? [];
-}
-export async function addHomeMemoryPending(input: Omit<HomeMemoryPending, "id" | "createdAt"> & { id?: string }): Promise<HomeMemoryPending[]> {
-  const state = await ensureLoaded();
-  state.homeMemoryPending = state.homeMemoryPending ?? [];
-  const fact = input.fact.trim().slice(0, 200);
-  if (!fact) return state.homeMemoryPending;
-  const dupe = state.homeMemoryPending.some(
-    (p) => p.fact.toLowerCase() === fact.toLowerCase() || (p.category === input.category && p.fact.toLowerCase().includes(fact.toLowerCase()))
-  );
-  if (dupe) return state.homeMemoryPending;
-  state.homeMemoryPending.push({ id: input.id || uid("memcand"), category: input.category, fact, source: input.source.slice(0, 120), createdAt: new Date().toISOString() });
-  state.homeMemoryPending = state.homeMemoryPending.slice(-20);
-  await persist();
-  return state.homeMemoryPending;
-}
-export async function removeHomeMemoryPending(id: string): Promise<HomeMemoryPending[]> {
-  const state = await ensureLoaded();
-  state.homeMemoryPending = (state.homeMemoryPending ?? []).filter((p) => p.id !== id);
-  await persist();
-  return state.homeMemoryPending;
+// Home memory is shared by every Home chat, and chats can run in parallel.
+// Every mutation therefore goes through one serialized queue AND re-reads the
+// current memory inside it — a run-start snapshot wholesale-replaced here
+// would silently erase the facts a parallel chat just saved.
+let homeMemoryQueue: Promise<unknown> = Promise.resolve();
+export function mutateHomeMemory<T>(mutate: (current: string) => T): Promise<T> {
+  const run = homeMemoryQueue.then(async () => mutate(await getHomeMemory()));
+  homeMemoryQueue = run.then(() => undefined, () => undefined);
+  return run;
 }
 export async function listProviders() { return (await ensureLoaded()).providers; }
 export async function upsertProvider(input: Omit<ProviderConfig, "id"> & { id?: string }) {
   const state = await ensureLoaded();
   const existing = input.id ? state.providers.find((provider) => provider.id === input.id) : undefined;
-  if (existing) Object.assign(existing, input);
-  else state.providers.push({ ...input, id: uid("provider") });
+  let id: string;
+  if (existing) {
+    Object.assign(existing, input);
+    id = existing.id;
+  } else {
+    const created = { ...input, id: uid("provider") };
+    state.providers.push(created);
+    id = created.id;
+  }
+  if (input.apiKey && input.apiKey !== SECRET_MASK) clearFailedSecrets(`provider:${id}`);
   await persist();
   return state.providers;
 }
@@ -521,8 +570,20 @@ export async function deleteProject(projectId: string) {
 }
 
 export async function listMcpServers() { return (await ensureLoaded()).mcpServers ?? []; }
+/** Renderer-facing view: env/header secrets are masked like provider keys. */
+export async function listMcpServersMasked() {
+  return (await ensureLoaded()).mcpServers?.map((server) => ({
+    ...server,
+    env: server.env ? Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, value ? SECRET_MASK : ""])) : undefined,
+    headers: server.headers ? Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, value ? SECRET_MASK : ""])) : undefined,
+  })) ?? [];
+}
 export async function upsertMcpServer(input: Omit<McpServerConfig, "id"> & { id?: string }) {
   const state = await ensureLoaded();
+  const existing = input.id ? (state.mcpServers ?? []).find((server) => server.id === input.id) : undefined;
+  // The settings UI round-trips masked values; a mask means "keep what is
+  // stored" for that env var / header, exactly like provider API keys.
+  const resolveMasked = (value: string, oldValue?: string) => (value === SECRET_MASK && oldValue !== undefined ? oldValue : value);
   const config: McpServerConfig = {
     id: input.id || uid("mcp"),
     name: input.name.trim() || "MCP server",
@@ -530,14 +591,19 @@ export async function upsertMcpServer(input: Omit<McpServerConfig, "id"> & { id?
     transport: input.transport === "http" || input.transport === "sse" ? input.transport : "stdio",
     command: input.transport === "stdio" ? input.command?.trim() || "" : undefined,
     args: input.transport === "stdio" ? (input.args ?? []).map((arg) => arg.trim()).filter(Boolean) : undefined,
-    env: input.transport === "stdio" ? Object.fromEntries(Object.entries(input.env ?? {}).filter(([key, value]) => key.trim() && value.trim()).map(([key, value]) => [key.trim(), value.trim()])) : undefined,
+    env: input.transport === "stdio"
+      ? Object.fromEntries(Object.entries(input.env ?? {}).filter(([key, value]) => key.trim() && value.trim()).map(([key, value]) => [key.trim(), resolveMasked(value.trim(), existing?.env?.[key.trim()])]))
+      : undefined,
     url: input.transport !== "stdio" ? input.url?.trim() || "" : undefined,
-    headers: input.transport !== "stdio" ? Object.fromEntries(Object.entries(input.headers ?? {}).filter(([key, value]) => key.trim() && value.trim()).map(([key, value]) => [key.trim(), value.trim()])) : undefined,
+    headers: input.transport !== "stdio"
+      ? Object.fromEntries(Object.entries(input.headers ?? {}).filter(([key, value]) => key.trim() && value.trim()).map(([key, value]) => [key.trim(), resolveMasked(value.trim(), existing?.headers?.[key.trim()])]))
+      : undefined,
   };
   if (config.transport === "stdio" && !config.command) throw new Error("Stdio MCP servers need a command to launch.");
   if (config.transport !== "stdio" && !/^https?:\/\//i.test(config.url || "")) throw new Error("Remote MCP servers need a valid http(s) URL.");
   state.mcpServers = (state.mcpServers ?? []).filter((server) => server.id !== config.id);
   state.mcpServers.push(config);
+  clearFailedSecrets(`mcp:${config.id}:`);
   await persist();
   invalidateMcpClientCache();
   return state.mcpServers;
@@ -578,6 +644,7 @@ export async function saveNotebookParserConfig(input: Partial<NotebookParserConf
     timeoutSeconds: Math.max(30, Math.min(3600, Number(input.timeoutSeconds || current.timeoutSeconds) || 600)),
     apiKey: input.apiKey ?? current.apiKey,
   };
+  if (state.notebookParser.apiKey && state.notebookParser.apiKey !== SECRET_MASK) clearFailedSecrets("parser");
   await persist();
   return state.notebookParser;
 }

@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { validateUpload } from "./notebook-text.js";
+import { writeFileAtomic, withFileLock } from "./atomic-write.js";
 
 // Lazy Electron access: under plain node (unit tests) require("electron")
 // resolves to the binary path string, so property access safely falls back
@@ -142,8 +143,18 @@ async function readJson<T>(file: string, fallback: T): Promise<T> {
   }
 }
 async function writeJson(file: string, value: unknown) {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, JSON.stringify(value, null, 2), "utf8");
+  // Atomic (temp + rename) and serialized per file: a crash mid-write must
+  // not truncate the store, and concurrent read-modify-write cycles must not
+  // lose updates to a stale snapshot.
+  await withFileLock(file, () => writeFileAtomic(file, JSON.stringify(value, null, 2)));
+}
+/** Locked read-modify-write: the mutation runs while holding the file lock. */
+async function mutateJson<T>(file: string, fallback: T, mutate: (current: T) => T): Promise<T> {
+  return withFileLock(file, async () => {
+    const next = mutate(await readJson<T>(file, fallback));
+    await writeFileAtomic(file, JSON.stringify(next, null, 2));
+    return next;
+  });
 }
 
 // ---- Notebooks CRUD (isolated per notebook id) ----
@@ -185,27 +196,30 @@ export async function listNotebookNotes(notebookId: string): Promise<NotebookNot
 }
 
 export async function saveNotebookNote(input: Omit<NotebookNote, "id" | "createdAt" | "updatedAt"> & { id?: string }): Promise<NotebookNote> {
-  const notes = await listNotebookNotes(input.notebookId);
-  const existing = input.id ? notes.find((note) => note.id === input.id) : undefined;
   const now = new Date().toISOString();
   const note: NotebookNote = {
-    id: existing?.id || uid("note"),
+    id: input.id || uid("note"),
     notebookId: input.notebookId,
     title: input.title.trim().slice(0, 160) || "Untitled note",
     content: input.content.slice(0, 100_000),
     citations: input.citations.slice(0, 100),
-    createdAt: existing?.createdAt || now,
+    createdAt: now,
     updatedAt: now,
   };
-  const next = existing ? notes.map((item) => (item.id === note.id ? note : item)) : [note, ...notes];
-  await writeJson(notesPath(input.notebookId), next);
+  await mutateJson<NotebookNote[]>(notesPath(input.notebookId), [], (notes) => {
+    const existing = notes.find((item) => item.id === note.id);
+    if (existing) {
+      note.createdAt = existing.createdAt;
+      note.updatedAt = now;
+    }
+    return existing ? notes.map((item) => (item.id === note.id ? note : item)) : [note, ...notes];
+  });
   await touchNotebook(input.notebookId);
   return note;
 }
 
 export async function deleteNotebookNote(notebookId: string, noteId: string): Promise<NotebookNote[]> {
-  const next = (await listNotebookNotes(notebookId)).filter((note) => note.id !== noteId);
-  await writeJson(notesPath(notebookId), next);
+  const next = await mutateJson<NotebookNote[]>(notesPath(notebookId), [], (notes) => notes.filter((note) => note.id !== noteId));
   await touchNotebook(notebookId);
   return next;
 }
@@ -278,7 +292,6 @@ export async function importSourceBuffer(notebookId: string, filename: string, b
   const safe = path.basename(filename).slice(0, 120) || "upload.txt";
   const check = validateUpload(safe, buffer.length);
   if (!check.ok) throw new Error(check.error);
-  const sources = await readJson<NotebookSource[]>(sourcesPath(notebookId), []);
   const now = new Date().toISOString();
   const record: NotebookSource = {
     id: uid("source"),
@@ -291,8 +304,7 @@ export async function importSourceBuffer(notebookId: string, filename: string, b
     createdAt: now,
     updatedAt: now,
   };
-  sources.unshift(record);
-  await writeJson(sourcesPath(notebookId), sources);
+  await mutateJson<NotebookSource[]>(sourcesPath(notebookId), [], (sources) => [record, ...sources]);
   await fs.mkdir(rawDir(notebookId), { recursive: true });
   await fs.writeFile(path.join(rawDir(notebookId), `${record.id}.orig`), buffer);
   await touchNotebook(notebookId);
@@ -317,25 +329,28 @@ export async function readParsedMarkdown(notebookId: string, sourceId: string): 
 }
 
 export async function updateSourceStatus(notebookId: string, sourceId: string, patch: Partial<NotebookSource>): Promise<void> {
-  const sources = await readJson<NotebookSource[]>(sourcesPath(notebookId), []);
-  const s = sources.find((x) => x.id === sourceId);
-  if (!s) return;
-  Object.assign(s, patch, { updatedAt: new Date().toISOString() });
-  await writeJson(sourcesPath(notebookId), sources);
+  await mutateJson<NotebookSource[]>(sourcesPath(notebookId), [], (sources) => {
+    const s = sources.find((x) => x.id === sourceId);
+    if (s) Object.assign(s, patch, { updatedAt: new Date().toISOString() });
+    return sources;
+  });
 }
 
 /** Bump session activity so the list stays ordered by last activity. */
 export async function touchNotebook(notebookId: string): Promise<void> {
-  const all = await readJson<NotebookMeta[]>(metaPath(), []);
-  const nb = all.find((n) => n.id === notebookId);
-  if (!nb) return;
-  nb.updatedAt = new Date().toISOString();
-  await writeJson(metaPath(), all);
+  await mutateJson<NotebookMeta[]>(metaPath(), [], (all) => {
+    const nb = all.find((n) => n.id === notebookId);
+    if (nb) nb.updatedAt = new Date().toISOString();
+    return all;
+  });
 }
 
 export async function deleteNotebookSource(notebookId: string, sourceId: string): Promise<{ sources: NotebookSource[] }> {
-  const sources = (await readJson<NotebookSource[]>(sourcesPath(notebookId), [])).filter((s) => s.id !== sourceId);
-  await writeJson(sourcesPath(notebookId), sources);
+  const sources = await mutateJson<NotebookSource[]>(
+    sourcesPath(notebookId),
+    [],
+    (list) => list.filter((s) => s.id !== sourceId)
+  );
   // Raw bytes + parsed markdown + relational + vector data: everything derived
   // from this file goes; remaining files are untouched.
   for (const suffix of [".orig", ".md", ".txt"]) {
@@ -372,18 +387,14 @@ export async function listNotebookChats(notebookId: string): Promise<NotebookCha
 }
 
 export async function createNotebookChat(notebookId: string, title = "New conversation"): Promise<NotebookChat> {
-  const chats = await readJson<NotebookChat[]>(chatsPath(notebookId), []);
   const now = new Date().toISOString();
   const chat: NotebookChat = { id: uid("nbchat"), notebookId, title, createdAt: now, updatedAt: now, messages: [] };
-  chats.unshift(chat);
-  await writeJson(chatsPath(notebookId), chats);
+  await mutateJson<NotebookChat[]>(chatsPath(notebookId), [], (chats) => [chat, ...chats]);
   return chat;
 }
 
 export async function deleteNotebookChat(notebookId: string, chatId: string): Promise<NotebookChat[]> {
-  const chats = (await readJson<NotebookChat[]>(chatsPath(notebookId), [])).filter((c) => c.id !== chatId);
-  await writeJson(chatsPath(notebookId), chats);
-  return chats;
+  return mutateJson<NotebookChat[]>(chatsPath(notebookId), [], (chats) => chats.filter((c) => c.id !== chatId));
 }
 
 export async function appendNotebookMessage(notebookId: string, chatId: string, message: NotebookChatMessage): Promise<NotebookChat> {
@@ -391,19 +402,22 @@ export async function appendNotebookMessage(notebookId: string, chatId: string, 
 }
 
 export async function appendNotebookMessages(notebookId: string, chatId: string, messages: NotebookChatMessage[]): Promise<NotebookChat> {
-  const chats = await readJson<NotebookChat[]>(chatsPath(notebookId), []);
-  const chat = chats.find((c) => c.id === chatId);
-  if (!chat) throw new Error("Conversation not found.");
-  for (const message of messages) {
-    if (!message.id) message.id = uid("msg");
-    chat.messages.push(message);
-  }
-  chat.updatedAt = new Date().toISOString();
-  const firstUser = chat.messages.find((m) => m.role === "user");
-  if (firstUser && (chat.title === "New conversation" || !chat.title)) {
-    chat.title = firstUser.text.slice(0, 60) || "Conversation";
-  }
-  await writeJson(chatsPath(notebookId), chats);
+  const chat = await withFileLock(chatsPath(notebookId), async () => {
+    const chats = await readJson<NotebookChat[]>(chatsPath(notebookId), []);
+    const target = chats.find((c) => c.id === chatId);
+    if (!target) throw new Error("Conversation not found.");
+    for (const message of messages) {
+      if (!message.id) message.id = uid("msg");
+      target.messages.push(message);
+    }
+    target.updatedAt = new Date().toISOString();
+    const firstUser = target.messages.find((m) => m.role === "user");
+    if (firstUser && (target.title === "New conversation" || !target.title)) {
+      target.title = firstUser.text.slice(0, 60) || "Conversation";
+    }
+    await writeFileAtomic(chatsPath(notebookId), JSON.stringify(chats, null, 2));
+    return target;
+  });
   await touchNotebook(notebookId);
   return chat;
 }

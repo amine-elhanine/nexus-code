@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import { CHROME_DESKTOP_UA } from "./IntegratedBrowserView.js";
+import { CHROME_DESKTOP_UA } from "./ua.js";
 
 type BridgeRequest = { id: string; scope?: string; kind: string; url?: string; js?: string; keyCode?: string };
 type BridgeReply = { ok: boolean; url?: string; title?: string; value?: unknown; dataUrl?: string; width?: number; height?: number; error?: string };
@@ -71,7 +71,7 @@ export const AgentBrowserHost: React.FC = () => {
         switch (req.kind) {
           case "load": {
             if (!req.url) return { ok: false, error: "No URL to load." };
-            const gate = waitFor(wv, ["did-finish-load"], 18000);
+            const gate = waitFor(wv, ["did-finish-load"], 20000);
             void wv.loadURL(req.url).catch(() => {});
             await gate;
             await settle();

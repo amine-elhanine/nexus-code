@@ -72,7 +72,10 @@ export function QuizPlayerModal({ quiz, onClose }: { quiz: NotebookQuiz; onClose
                           justifyContent: "flex-start",
                           textAlign: "left",
                           borderColor: isCorrect ? "#3fb950" : selected && finished ? "#f85149" : selected ? "var(--nexus-green)" : undefined,
-                          background: !finished && selected ? "var(--accent-soft)" : undefined,
+                          // Var + fallback: the selected state must stay visible
+                          // even if --accent-soft ever goes missing again.
+                          background: !finished && selected ? "var(--accent-soft, rgba(52, 211, 153, 0.16))" : undefined,
+                          color: !finished && selected ? "var(--nexus-bright)" : undefined,
                           opacity: finished && !selected && !isCorrect ? 0.75 : 1,
                         }}
                       >
@@ -97,7 +100,8 @@ export function QuizPlayerModal({ quiz, onClose }: { quiz: NotebookQuiz; onClose
                         className="home-suggestion"
                         style={{
                           borderColor: isCorrect ? "#3fb950" : selected && finished ? "#f85149" : selected ? "var(--nexus-green)" : undefined,
-                          background: !finished && selected ? "var(--accent-soft)" : undefined,
+                          background: !finished && selected ? "var(--accent-soft, rgba(52, 211, 153, 0.16))" : undefined,
+                          color: !finished && selected ? "var(--nexus-bright)" : undefined,
                         }}
                       >
                         {v ? "True" : "False"}
@@ -110,7 +114,13 @@ export function QuizPlayerModal({ quiz, onClose }: { quiz: NotebookQuiz; onClose
               {finished && (
                 <div style={{ marginTop: 8 }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: graded ? "#3fb950" : "#f85149" }}>
-                    {graded ? "Correct" : `Wrong — correct answer: ${q.type === "mcq" ? `${String.fromCharCode(65 + (q.correctIndex || 0))}. ${(q.options || [])[q.correctIndex || 0]}` : q.correctBoolean ? "True" : "False"}`}
+                    {graded
+                      ? "Correct"
+                      : `Wrong — correct answer: ${q.type === "mcq"
+                        ? (typeof q.correctIndex === "number" && (q.options || [])[q.correctIndex] != null
+                          ? `${String.fromCharCode(65 + q.correctIndex)}. ${(q.options || [])[q.correctIndex]}`
+                          : "(answer key missing for this question)")
+                        : q.correctBoolean ? "True" : "False"}`}
                   </div>
                   <div style={{ fontSize: 12, opacity: 0.9, marginTop: 4 }}>{q.explanation}</div>
                   {!!q.citations.length && (

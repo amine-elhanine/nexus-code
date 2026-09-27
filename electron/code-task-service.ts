@@ -136,3 +136,16 @@ export function finishCodeTaskJournal(journal: CodeTaskJournal, status: CodeTask
     completedAt: new Date().toISOString(),
   };
 }
+
+/**
+ * Parses blocking findings out of the auto-mode code-reviewer's reply. Only
+ * explicitly formatted finding lines (`SEVERITY | path | issue`) count; a bare
+ * "CRITICAL"/"HIGH" mention in prose — e.g. "No CRITICAL or HIGH findings" —
+ * must not trigger a repair loop.
+ */
+export function parseBlockingReviewFindings(review: string): string[] {
+  return String(review || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^(CRITICAL|HIGH)\s*\|/i.test(line));
+}

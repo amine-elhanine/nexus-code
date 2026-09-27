@@ -14,9 +14,11 @@ import {
   getSkillsConfig, listEmbeddingProviders, listHomeSessions, listMcpServers, listProjects, listProviders, listSessions,
   removeEmbeddingProvider, removeMcpServer, removeProvider, saveSkillsConfig, updateHomeMemory, updateHomeSession, updateProjectMemory,
   updateSession, upsertEmbeddingProvider, upsertMcpServer, upsertProject, upsertProvider, getAppSettings, saveAppSettings, getNotebookParserConfig, saveNotebookParserConfig, type EmbeddingProviderConfig,
-  type McpServerConfig, type ProviderConfig, type ChatAttachment, listHomeMemoryPending, removeHomeMemoryPending
+  type McpServerConfig, type ProviderConfig, type ChatAttachment, mutateHomeMemory, listMcpServersMasked
 } from "./store.js";
-import { HOME_PROJECT_ID, cleanupHomeGeneratorScripts, downloadHomeFile, ensureHomeDir, listHomeFiles, listHomeSessionFiles, openHomeFolder, readHomeFile, recordHomeRunFiles, removeSessionFromManifest } from "./home-service.js";
+import { HOME_PROJECT_ID, cleanupHomeGeneratorScripts, downloadHomeFile, ensureHomeDir, listHomeFiles, listHomeSessionFiles, listHomeSessionFilesForDeletion, openHomeFolder, readHomeFile, recordHomeRunFiles, removeSessionFromManifest } from "./home-service.js";
+import { homeTaskJournalPath } from "./home-task-service.js";
+import { codeTaskJournalPath } from "./code-task-service.js";
 import { testMcpServer } from "./mcp-service.js";
 import { createSkill, deleteSkill, ensureSkillSourceDirs, importSkill, listAllSkills, listSkills, openSkillsFolder, readSkillContent, setSkillModes } from "./skills-service.js";
 import { beginCommandRun, cancelCommandRun, endCommandRun, isCommandRunCancelled, runProjectCommand, getAgentBackend } from "./command-service.js";
@@ -50,6 +52,19 @@ import { recordDeliverable, isSubstantiveHomeTask, parseHomeMemory, addMemoryFac
 protocol.registerSchemesAsPrivileged([
   { scheme: "nexus-attachment", privileges: { standard: true, secure: true, supportFetchAPI: true } }
 ]);
+
+// Single instance: two app instances would concurrently rewrite
+// nexus-state.json and double-bind daemons/terminals/pty hosts.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let mainWindow: BrowserWindow | null = null;
@@ -90,6 +105,9 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: false,
       webviewTag: true,
+      // Required for the built-in Chromium PDF viewer: the Home and Notebook
+      // file previews render generated PDFs in an <iframe src="blob:…">.
+      plugins: true,
     },
   });
   const devMode = process.argv.includes("--dev") || Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -98,6 +116,17 @@ function createWindow() {
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url)) void shell.openExternal(url);
     return { action: "deny" };
+  });
+  // A top-level navigation away from the app shell is never legitimate —
+  // renderer XSS must not be able to pivot the window to a attacker page.
+  // The initial loadURL/loadFile does not fire this; user/link navigations do.
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    const allowed =
+      url.startsWith("file://") ||
+      url.startsWith("devtools://") ||
+      url.startsWith("nexus-attachment://") ||
+      /^https?:\/\/127\.0\.0\.1:5173/.test(url);
+    if (!allowed) event.preventDefault();
   });
   setApprovalNotifier((request) => mainWindow?.webContents.send("command:approval-request", request));
   onNotebookJobProgress((progress) => mainWindow?.webContents.send("notebook:progress", progress));
@@ -379,8 +408,11 @@ app.whenReady().then(async () => {
     const root = await ensureHomeDir();
     if (options?.deleteFiles && root) {
       try {
+        // Delete only high-confidence owned files: manifest entries and
+        // transcript mentions. Proximity/oldest-session guesses are
+        // display-only — deleting on them could remove the user's own files.
         const sessions = await listHomeSessions();
-        const owned = await listHomeSessionFiles(sessionId, sessions);
+        const owned = await listHomeSessionFilesForDeletion(sessionId, sessions);
         for (const file of owned) {
           const abs = path.resolve(root, file.path);
           if (abs === root || !abs.startsWith(`${root}${path.sep}`)) continue;
@@ -391,6 +423,13 @@ app.whenReady().then(async () => {
         await removeSessionFromManifest(sessionId);
       } catch { /* best effort */ }
     }
+    // Derived data cleanup: run checkpoints, trajectories, artifacts and task
+    // journals used to grow forever for Home sessions (only Code wired this).
+    try {
+      await deleteSessionTelemetry(root, sessionId);
+      await fs.rm(homeTaskJournalPath(root, sessionId), { force: true });
+      await fs.rm(codeTaskJournalPath(root, sessionId), { force: true });
+    } catch { /* best effort */ }
     await deleteHomeSession(sessionId);
     return { success: true };
   });
@@ -405,20 +444,8 @@ app.whenReady().then(async () => {
   ipcMain.handle("home:memory:get", () => getHomeMemory());
   ipcMain.handle("home:memory:update", (_event, memory: string) => updateHomeMemory(memory));
   ipcMain.handle("home:memory:structured", async () => {
-    const [memory, pending] = await Promise.all([getHomeMemory(), listHomeMemoryPending()]);
-    return { structure: parseHomeMemory(memory), pending };
-  });
-  ipcMain.handle("home:memory:pending:resolve", async (_event, payload: { id: string; accept: boolean }) => {
-    const pending = await listHomeMemoryPending();
-    const item = pending.find((p) => p.id === payload.id);
-    if (!item) return { structure: parseHomeMemory(await getHomeMemory()), pending };
-    await removeHomeMemoryPending(payload.id);
-    if (payload.accept) {
-      const current = await getHomeMemory();
-      const cat = ["profile", "preference", "fact", "context"].includes(item.category) ? item.category : "fact";
-      await updateHomeMemory(addMemoryFact(current, cat as "profile" | "preference" | "fact" | "context", item.fact));
-    }
-    return { structure: parseHomeMemory(await getHomeMemory()), pending: await listHomeMemoryPending() };
+    const memory = await getHomeMemory();
+    return { structure: parseHomeMemory(memory) };
   });
   ipcMain.handle("home:memory:fact:remove", async (_event, payload: { category: string; fact: string }) => {
     const { removeMemoryFact } = await import("./home-memory-service.js");
@@ -661,6 +688,7 @@ app.whenReady().then(async () => {
         isCancelled: () => isCommandRunCancelled(payload.chatId),
         onStatus: (text) => emitFor(payload.chatId, { type: "status", text }),
         onToken: (delta) => emitFor(payload.chatId, { type: "token", text: delta }),
+        onStreamReset: () => emitFor(payload.chatId, { type: "stream-reset", text: "" }),
         onTool: (name, summary, detail) => emitFor(payload.chatId, { type: "tool", text: summary || name, detail }),
       });
       const chat = await appendNotebookMessage(payload.notebookId, payload.chatId, {
@@ -799,7 +827,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("provider:remove", async (_event, providerId: string) => (await removeProvider(providerId)).map((provider) => ({ ...provider, apiKey: provider.apiKey ? "********" : "" })));
   ipcMain.handle("providers:fetch-models", async (_event, input: { baseUrl?: string; apiKey?: string }) => fetchRemoteModels(input?.baseUrl || "", input?.apiKey));
 
-  ipcMain.handle("mcp:list", () => listMcpServers());
+  ipcMain.handle("mcp:list", async () => listMcpServersMasked());
   ipcMain.handle("mcp:save", (_event, input: Omit<McpServerConfig, "id"> & { id?: string }) => upsertMcpServer(input));
   ipcMain.handle("mcp:remove", (_event, serverId: string) => removeMcpServer(serverId));
   ipcMain.handle("mcp:test", (_event, input: Omit<McpServerConfig, "id" | "enabled">) => testMcpServer(input));
@@ -836,8 +864,10 @@ app.whenReady().then(async () => {
 
   ipcMain.handle("settings:get", () => ({ ...settings, apiKey: settings.apiKey ? "********" : "" }));
   ipcMain.handle("settings:save", (_event, next: AgentSettings) => {
-    settings = { ...settings, ...next };
-    if (next.apiKey === "********") delete settings.apiKey;
+    const { apiKey, ...rest } = next;
+    // A masked round-trip means "keep the stored key" — deleting it here used
+    // to wipe the key on any unrelated settings change.
+    settings = { ...settings, ...rest, ...(apiKey === "********" ? {} : { apiKey }) };
     return { ...settings, apiKey: settings.apiKey ? "********" : "" };
   });
   ipcMain.handle("app-settings:get", () => getAppSettings());
@@ -975,9 +1005,15 @@ app.whenReady().then(async () => {
     const root = requireRoot();
     return mergeWorktreeToMain(root, sessionId, commitMessage);
   });
-  ipcMain.handle("worktree:abort-merge", async () => {
+  ipcMain.handle("worktree:abort-merge", async (_event, sessionId?: string) => {
     const root = requireRoot();
-    const { abortWorktreeMerge } = await import("./worktree-service.js");
+    const { abortWorktreeMerge, getSessionWorktree } = await import("./worktree-service.js");
+    // Only abort when the calling session actually owns a worktree here — a
+    // bare abort would also kill a merge the user started manually in a terminal.
+    if (sessionId) {
+      const wt = await getSessionWorktree(root, sessionId);
+      if (!wt?.worktreePath) return false;
+    }
     return abortWorktreeMerge(root);
   });
   ipcMain.handle("worktree:discard", async (_event, sessionId: string) => {
@@ -1594,11 +1630,7 @@ app.whenReady().then(async () => {
             }
             emit(event);
           },
-          onHomeMemoryUpdate: async (newMemory: string) => {
-            try {
-              await updateHomeMemory(newMemory);
-            } catch { /* best effort */ }
-          },
+          onHomeMemoryUpdate: (mutate) => mutateHomeMemory((current) => mutate(current)),
           onUserQuestion: (questions) => askUserBlocking(sessionId, questions),
           isCancelled: () => isCommandRunCancelled(sessionId),
         });
@@ -1649,12 +1681,12 @@ app.whenReady().then(async () => {
       });
       // Roll the shared Home memory forward only for substantive deliverables (capped at 5).
       // Session memory stays a compact pointer — the transcript is the source of truth.
+      // All writes go through the serialized mutate queue so a parallel chat's
+      // facts are merged, not overwritten.
       try {
-        const latestHomeMemory = await getHomeMemory().catch(() => homeMemoryAtStart);
         const hasFiles = deletedScripts.length > 0 || (result.artifact != null);
         if (isSubstantiveHomeTask(payload.request || "", result.response || "", hasFiles)) {
-          const nextHomeMemory = recordDeliverable(latestHomeMemory, payload.request || "", result.response || "", sessionId);
-          await updateHomeMemory(nextHomeMemory);
+          await mutateHomeMemory((current) => recordDeliverable(current, payload.request || "", result.response || "", sessionId));
         }
         // Semantic memory auto-applies (ChatGPT-style "Memory updated"): the
         // extraction filter already drops transient data, candidates dedupe
@@ -1662,24 +1694,25 @@ app.whenReady().then(async () => {
         // Memory tab. A review queue would silently strand identity facts.
         const candidates = (result as unknown as { memoryCandidates?: Array<{ category: string; fact: string }> }).memoryCandidates || [];
         if (candidates.length) {
-          const latest = await getHomeMemory().catch(() => homeMemoryAtStart);
-          const current = parseHomeMemory(latest);
-          const known = new Set(
-            [...current.profile, ...current.preferences, ...current.facts, ...current.context].map((f) => f.toLowerCase())
-          );
-          const validCats = ["profile", "preference", "fact", "context"];
-          let merged = latest;
-          const saved: string[] = [];
-          for (const cand of candidates.slice(0, 3)) {
-            const fact = String(cand.fact || "").trim().slice(0, 200);
-            if (!fact || known.has(fact.toLowerCase())) continue;
-            const cat = validCats.includes(cand.category) ? cand.category : "fact";
-            merged = addMemoryFact(merged, cat as "profile" | "preference" | "fact" | "context", fact);
-            known.add(fact.toLowerCase());
-            saved.push(fact);
-          }
+          const saved = await mutateHomeMemory((latest) => {
+            const current = parseHomeMemory(latest);
+            const known = new Set(
+              [...current.profile, ...current.preferences, ...current.facts, ...current.context].map((f) => f.toLowerCase())
+            );
+            const validCats = ["profile", "preference", "fact", "context"];
+            let merged = latest;
+            const applied: string[] = [];
+            for (const cand of candidates.slice(0, 3)) {
+              const fact = String(cand.fact || "").trim().slice(0, 200);
+              if (!fact || known.has(fact.toLowerCase())) continue;
+              const cat = validCats.includes(cand.category) ? cand.category : "fact";
+              merged = addMemoryFact(merged, cat as "profile" | "preference" | "fact" | "context", fact);
+              known.add(fact.toLowerCase());
+              applied.push(fact);
+            }
+            return applied;
+          });
           if (saved.length) {
-            await updateHomeMemory(merged);
             const shown = saved.join("; ").slice(0, 220);
             emitFor(sessionId, { type: "status", text: `Saved to memory: ${shown} — manage it in the Memory tab.` });
           }

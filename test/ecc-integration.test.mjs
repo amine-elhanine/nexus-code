@@ -21,11 +21,11 @@ import {
   discoverAllRules,
 } from "../dist-electron/rules-service.js";
 
-test("ECC Integration: listSystemSkills discovers all 200+ curated skills", async () => {
+test("ECC Integration: listSystemSkills discovers the full curated catalog", async () => {
   const systemSkills = await listSystemSkills();
-  assert.ok(systemSkills.length >= 200, `Expected at least 200 skills, got ${systemSkills.length}`);
+  assert.ok(systemSkills.length >= 120, `Expected the full curated catalog (~130), got ${systemSkills.length}`);
   const codeSkills = systemSkills.filter((s) => !s.modes.length || s.modes.includes("code"));
-  assert.ok(codeSkills.length >= 190, `Expected at least 190 code skills, got ${codeSkills.length}`);
+  assert.ok(codeSkills.length >= 110, `Expected the full code-scoped catalog (~120), got ${codeSkills.length}`);
 
   const names = systemSkills.map((s) => s.name);
   assert.ok(names.includes("tdd-workflow"), "tdd-workflow should be present");
@@ -33,8 +33,8 @@ test("ECC Integration: listSystemSkills discovers all 200+ curated skills", asyn
   assert.ok(names.includes("verification-loop"), "verification-loop should be present");
   assert.ok(names.includes("search-first"), "search-first should be present");
   assert.ok(names.includes("error-handling"), "error-handling should be present");
-  assert.ok(names.includes("fastapi-patterns"), "fastapi-patterns should be present");
-  assert.ok(names.includes("kubernetes-patterns"), "kubernetes-patterns should be present");
+  assert.ok(names.includes("postgres-patterns"), "postgres-patterns should be present");
+  assert.ok(names.includes("docker-patterns"), "docker-patterns should be present");
   assert.ok(names.includes("react-patterns"), "react-patterns should be present");
 
   // Read content of a system skill

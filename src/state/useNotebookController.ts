@@ -206,6 +206,13 @@ export function useNotebookController(enabled: boolean) {
         });
         return;
       }
+      if (event.type === "stream-reset") {
+        // The agent path bailed after streaming a partial answer and the
+        // grounded fallback is taking over — clear the buffer so the fallback
+        // answer replaces it instead of concatenating onto it.
+        setStreamByChat((prev) => (prev[id] ? { ...prev, [id]: "" } : prev));
+        return;
+      }
       if (event.type === "token") setStreamByChat((prev) => ({ ...prev, [id]: (prev[id] || "") + event.text }));
     });
   }, [enabled]);
