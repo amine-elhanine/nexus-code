@@ -1,6 +1,6 @@
 {
   "name": "nexus",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "description": "Nexus — Autonomous AI desktop agent: coding agent, general assistant and grounded notebook Q&A (Electron + LangChain + LangGraph + DeepAgents).",
   "main": "dist-electron/main.js",
