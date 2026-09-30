@@ -1,0 +1,20 @@
+<!-- Full Bleed Version: Bold White N on Dark Charcoal Squircle -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Full Bleed Squircle (512x512, rx = 115.2px) -->
+  <rect
+    x="0"
+    y="0"
+    width="512"
+    height="512"
+    rx="115.2"
+    ry="115.2"
+    fill="#171310"
+  />
+
+  <!-- The Bold Letter 'N' -->
+  <g fill="#FAF9F6">
+    <rect x="169" y="159" width="48" height="194" />
+    <rect x="295" y="159" width="48" height="194" />
+    <polygon points="169,159 217,159 343,353 295,353" />
+  </g>
+</svg>

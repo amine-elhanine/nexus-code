@@ -1,0 +1,25 @@
+<!-- Bold White N on Dark Charcoal Squircle (Enlarged N) -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Rounded Squircle Tile: 452x452 centered, rx = 101.7px (22.5%) -->
+  <rect
+    x="30"
+    y="30"
+    width="452"
+    height="452"
+    rx="101.7"
+    ry="101.7"
+    fill="#171310"
+  />
+
+  <!-- The Bold Letter 'N' (Enlarged to 61% of Tile Height) -->
+  <g fill="#FAF9F6">
+    <!-- Left Vertical Stem -->
+    <rect x="133" y="118" width="68" height="276" />
+
+    <!-- Right Vertical Stem -->
+    <rect x="311" y="118" width="68" height="276" />
+
+    <!-- Diagonal Bar -->
+    <polygon points="133,118 201,118 379,394 311,394" />
+  </g>
+</svg>

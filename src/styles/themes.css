@@ -20,6 +20,26 @@ html[data-theme="nexus"] {
   --accent-soft: rgba(52, 211, 153, 0.12);
 }
 
+html[data-theme="dark-white"] {
+  color-scheme: dark;
+  --bg: #101010;
+  --panel: #161616;
+  --panel2: #1e1e1e;
+  --line: #2a2a2a;
+  --line2: #383838;
+  --text: #ffffff;
+  --muted: #a3a3a3;
+  --faint: #5a5a5a;
+  --purple: #e5e5e5;
+  --green: #ffffff;
+  --orange: #e5aa64;
+  --red: #eb808a;
+  --nexus-green: #ffffff;
+  --nexus-bright: #ffffff;
+  --nexus-glow: rgba(255, 255, 255, 0.18);
+  --accent-soft: rgba(255, 255, 255, 0.08);
+}
+
 html[data-theme="midnight"] {
   color-scheme: dark;
   --bg: #060b16;
@@ -1399,6 +1419,103 @@ html[data-theme="alabaster"] .starter-prompts button:hover {
   color: var(--nexus-bright);
   background: var(--accent-soft);
 }
+
+/* --- Dark & White (Neutral Dark Grey & White) specific component overrides --- */
+html[data-theme="dark-white"] .primary {
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #101010;
+  font-weight: 600;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="dark-white"] .primary:hover {
+  background: #f0f0f0;
+  border-color: #ffffff;
+  color: #000000;
+  box-shadow: 0 0 16px rgba(255, 255, 255, 0.28);
+}
+
+html[data-theme="dark-white"] .primary-sm {
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #101010;
+  font-weight: 600;
+}
+
+html[data-theme="dark-white"] .primary-sm:hover,
+html[data-theme="dark-white"] .primary-sm.active {
+  background: #f0f0f0;
+  border-color: #ffffff;
+  color: #000000;
+}
+
+html[data-theme="dark-white"] .send-button {
+  background: #ffffff;
+  color: #101010;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="dark-white"] .send-button:hover:not(:disabled) {
+  background: #f0f0f0;
+  color: #000000;
+  box-shadow: 0 0 16px rgba(255, 255, 255, 0.3);
+}
+
+html[data-theme="dark-white"] .send-button:disabled {
+  background: var(--panel2);
+  color: var(--faint);
+  box-shadow: none;
+}
+
+html[data-theme="dark-white"] .theme-card.selected .theme-check {
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #101010;
+}
+
+html[data-theme="dark-white"] .terminal-command button {
+  background: var(--panel2);
+  color: #ffffff;
+}
+
+html[data-theme="dark-white"] .terminal-command button:hover {
+  background: var(--line2);
+  color: #ffffff;
+}
+
+html[data-theme="dark-white"] .chat-message.user .chat-message-text,
+html[data-theme="dark-white"] .chat-item.user .chat-text {
+  background: #1c1c1c;
+  border-color: #2e2e2e;
+  color: #ffffff;
+}
+
+html[data-theme="dark-white"] .chat-message-text.md code,
+html[data-theme="dark-white"] .md code,
+html[data-theme="dark-white"] .rich-markdown code {
+  background: #1c1c1c;
+  border-color: #2e2e2e;
+  color: #ffffff;
+}
+
+html[data-theme="dark-white"] .diff-box,
+html[data-theme="dark-white"] .terminal-box {
+  border-color: var(--line);
+  background: var(--bg);
+}
+
+html[data-theme="dark-white"] .diff-box-head {
+  background: var(--panel);
+  border-bottom-color: var(--line);
+  color: var(--muted);
+}
+
+html[data-theme="dark-white"] .daemon-add-form {
+  background: var(--bg);
+  border-bottom-color: var(--line);
+}
+
 
 
 

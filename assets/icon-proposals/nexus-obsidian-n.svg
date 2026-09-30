@@ -1,0 +1,41 @@
+<!-- Nexus Obsidian Edition: Enlarged Bold White N on Nexus Obsidian Chassis -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="nex-bg" cx="50%" cy="50%" r="70%">
+      <stop offset="0%" stop-color="#0f1622" />
+      <stop offset="100%" stop-color="#080a0f" />
+    </radialGradient>
+    <filter id="white-lift" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000000" flood-opacity="0.4" />
+    </filter>
+  </defs>
+
+  <!-- Centered Squircle with Transparent Margins -->
+  <rect
+    x="30"
+    y="30"
+    width="452"
+    height="452"
+    rx="101.7"
+    ry="101.7"
+    fill="url(#nex-bg)"
+  />
+  <rect
+    x="30.5"
+    y="30.5"
+    width="451"
+    height="451"
+    rx="101.2"
+    ry="101.2"
+    fill="none"
+    stroke="#1c2635"
+    stroke-width="1"
+  />
+
+  <!-- Enlarged Bold White 'N' -->
+  <g fill="#FFFFFF" filter="url(#white-lift)">
+    <rect x="133" y="118" width="68" height="276" />
+    <rect x="311" y="118" width="68" height="276" />
+    <polygon points="133,118 201,118 379,394 311,394" />
+  </g>
+</svg>

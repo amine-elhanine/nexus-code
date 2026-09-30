@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nexus — Enlarged 'N' App Icon</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #090c10;
+      --card-bg: #12161f;
+      --card-border: #1f2633;
+      --text: #f0f6fc;
+      --text-muted: #8b949e;
+      --accent: #34d399;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      padding: 40px 24px;
+      line-height: 1.5;
+    }
+    header {
+      max-width: 960px;
+      margin: 0 auto 36px;
+      text-align: center;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 12px;
+      background: rgba(52, 211, 153, 0.12);
+      border: 1px solid rgba(52, 211, 153, 0.3);
+      border-radius: 999px;
+      font-family: 'DM Mono', monospace;
+      font-size: 12px;
+      color: var(--accent);
+      margin-bottom: 12px;
+      letter-spacing: 0.5px;
+    }
+    h1 {
+      font-size: 32px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    p.subtitle {
+      color: var(--text-muted);
+      font-size: 15px;
+      max-width: 650px;
+      margin: 0 auto;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+      gap: 28px;
+      max-width: 960px;
+      margin: 36px auto 40px;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 20px;
+      padding: 28px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .tag {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--accent);
+      margin-bottom: 6px;
+    }
+    .card h2 {
+      font-size: 20px;
+      margin-bottom: 6px;
+      text-align: center;
+    }
+    .card p.desc {
+      color: var(--text-muted);
+      font-size: 13.5px;
+      text-align: center;
+      margin-bottom: 22px;
+    }
+    .icon-hero {
+      width: 240px;
+      height: 240px;
+      border-radius: 54px;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+      margin-bottom: 24px;
+    }
+    .scale-row {
+      width: 100%;
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 14px 10px;
+      display: flex;
+      justify-content: space-around;
+      align-items: flex-end;
+      margin-bottom: 16px;
+    }
+    .scale-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+    .scale-item img {
+      border-radius: 22.5%;
+    }
+    .scale-label {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+    .dock-sim {
+      width: 100%;
+      background: rgba(255, 255, 255, 0.04);
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 14px;
+      padding: 8px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+    }
+    .dock-sim .dummy {
+      width: 40px;
+      height: 40px;
+      border-radius: 9px;
+      background: #21262d;
+      opacity: 0.4;
+    }
+    .dock-sim .target {
+      width: 46px;
+      height: 46px;
+      border-radius: 10px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    }
+    .instructions {
+      max-width: 960px;
+      margin: 0 auto;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 24px;
+    }
+    .instructions h3 {
+      font-size: 18px;
+      margin-bottom: 12px;
+      color: var(--text);
+    }
+    .code-block {
+      background: #080a0f;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-family: 'DM Mono', monospace;
+      font-size: 13px;
+      color: var(--accent);
+      overflow-x: auto;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="badge">NEXUS PRODUCTION ASSET SUITE</div>
+    <h1>The Enlarged 'N' App Icon</h1>
+    <p class="subtitle">The letter N has been scaled up to 61% of the tile height for immediate recognition across desktop docks and taskbars.</p>
+  </header>
+
+  <div class="grid">
+
+    <!-- Version 1: Exact Match Enlarged -->
+    <div class="card">
+      <div class="tag">Exact Replication · Enlarged N</div>
+      <h2>Charcoal & Off-White</h2>
+      <p class="desc">Warm black squircle (<code>#171310</code>) with enlarged bold off-white (<code>#FAF9F6</code>) letter N and transparent margins.</p>
+      
+      <img class="icon-hero" src="exact-uploaded-n-256.png" alt="Exact Uploaded N Icon Enlarged" />
+
+      <div class="scale-row">
+        <div class="scale-item"><img src="exact-uploaded-n-64.png" width="64" height="64" alt="64px" /><span class="scale-label">64px</span></div>
+        <div class="scale-item"><img src="exact-uploaded-n-48.png" width="48" height="48" alt="48px" /><span class="scale-label">48px</span></div>
+        <div class="scale-item"><img src="exact-uploaded-n-32.png" width="32" height="32" alt="32px" /><span class="scale-label">32px</span></div>
+        <div class="scale-item"><img src="exact-uploaded-n-16.png" width="16" height="16" alt="16px" /><span class="scale-label">16px</span></div>
+      </div>
+
+      <div class="dock-sim">
+        <div class="dummy"></div>
+        <div class="dummy"></div>
+        <img class="target" src="exact-uploaded-n-48.png" alt="Dock Target" />
+        <div class="dummy"></div>
+        <div class="dummy"></div>
+      </div>
+    </div>
+
+    <!-- Version 2: Nexus Obsidian Theme Enlarged -->
+    <div class="card">
+      <div class="tag">Nexus App Theme · Enlarged N</div>
+      <h2>Obsidian & Pure White</h2>
+      <p class="desc">The enlarged bold letter N on Nexus's deep space obsidian (<code>#080A0F</code>) with subtle 1px border (<code>#1C2635</code>).</p>
+
+      <img class="icon-hero" src="nexus-obsidian-n-256.png" alt="Nexus Obsidian N Icon Enlarged" />
+
+      <div class="scale-row">
+        <div class="scale-item"><img src="nexus-obsidian-n-64.png" width="64" height="64" alt="64px" /><span class="scale-label">64px</span></div>
+        <div class="scale-item"><img src="nexus-obsidian-n-48.png" width="48" height="48" alt="48px" /><span class="scale-label">48px</span></div>
+        <div class="scale-item"><img src="nexus-obsidian-n-32.png" width="32" height="32" alt="32px" /><span class="scale-label">32px</span></div>
+        <div class="scale-item"><img src="nexus-obsidian-n-16.png" width="16" height="16" alt="16px" /><span class="scale-label">16px</span></div>
+      </div>
+
+      <div class="dock-sim">
+        <div class="dummy"></div>
+        <div class="dummy"></div>
+        <img class="target" src="nexus-obsidian-n-48.png" alt="Dock Target" />
+        <div class="dummy"></div>
+        <div class="dummy"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="instructions">
+    <h3>Quick Apply to Nexus App</h3>
+    <p style="color: var(--text-muted); font-size: 14px;">To set this enlarged icon as your active desktop app icon, run:</p>
+    <div class="code-block">
+      Copy-Item assets/icon-proposals/exact-uploaded-n.png build/icon.png -Force<br/>
+      Copy-Item assets/icon-proposals/exact-uploaded-n-256.png public/icon.png -Force<br/>
+      Copy-Item assets/icon-proposals/exact-uploaded-n-256.png public/favicon.png -Force<br/>
+      Copy-Item assets/icon-proposals/exact-uploaded-n.ico build/icon.ico -Force
+    </div>
+  </div>
+
+</body>
+</html>

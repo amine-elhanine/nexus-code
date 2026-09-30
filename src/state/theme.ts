@@ -10,9 +10,16 @@ export type AppTheme = {
 
 export const APP_THEMES: AppTheme[] = [
   {
+    id: "dark-white",
+    name: "Dark & White",
+    description: "Default neutral dark theme with crisp white accents.",
+    swatches: ["#101010", "#161616", "#ffffff", "#a3a3a3"],
+    accent: "#ffffff",
+  },
+  {
     id: "nexus",
     name: "Nexus Emerald",
-    description: "Default dark theme with emerald accents.",
+    description: "Emerald accents on a focused dark workspace.",
     swatches: ["#080a0f", "#0d1219", "#34d399", "#3ee695"],
     accent: "#34d399",
   },
@@ -74,7 +81,7 @@ export const APP_THEMES: AppTheme[] = [
   },
 ];
 
-export const DEFAULT_THEME_ID = "nexus";
+export const DEFAULT_THEME_ID = "dark-white";
 export const THEME_STORAGE_KEY = "nexus-theme";
 
 export function isValidThemeId(id: unknown): id is string {
