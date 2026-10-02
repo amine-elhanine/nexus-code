@@ -12,6 +12,7 @@ import { PROVIDERS, fetchRemoteModels } from "./providers.js";
 import {
   appendHomeSessionMessages, appendSessionMessages, createHomeSession, createSession, deleteHomeSession, deleteProject, deleteSession, getHomeMemory, getHomeSession, getProject, getSession,
   getSkillsConfig, listEmbeddingProviders, listHomeSessions, listMcpServers, listProjects, listProviders, listSessions,
+  isMaskedSecret,
   removeEmbeddingProvider, removeMcpServer, removeProvider, saveSkillsConfig, updateHomeMemory, updateHomeSession, updateProjectMemory,
   updateSession, upsertEmbeddingProvider, upsertMcpServer, upsertProject, upsertProvider, getAppSettings, saveAppSettings, getNotebookParserConfig, saveNotebookParserConfig, type EmbeddingProviderConfig,
   type McpServerConfig, type ProviderConfig, type ChatAttachment, mutateHomeMemory, listMcpServersMasked
@@ -438,6 +439,12 @@ app.whenReady().then(async () => {
     const sessions = await listHomeSessions();
     return listHomeSessionFiles(sessionId, sessions);
   });
+  // High-confidence ownership only (manifest + transcript mentions) — this is
+  // the list the "delete chat + files" dialog counts and deletes.
+  ipcMain.handle("home:sessionFiles:forDeletion", async (_event, sessionId: string) => {
+    const sessions = await listHomeSessions();
+    return listHomeSessionFilesForDeletion(sessionId, sessions);
+  });
   ipcMain.handle("home:readFile", (_event, relativePath: string) => readHomeFile(relativePath));
   ipcMain.handle("home:download", (_event, relativePath: string) => downloadHomeFile(relativePath));
   ipcMain.handle("home:openFolder", () => openHomeFolder());
@@ -736,7 +743,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("notebook:embedding-providers:list", async () => (await listEmbeddingProviders()).map((p) => ({ ...p, apiKey: p.apiKey ? "********" : "" })));
   ipcMain.handle("notebook:embedding-provider:save", async (_event, input: Omit<EmbeddingProviderConfig, "id"> & { id?: string }) => {
     const existing = input.id ? (await listEmbeddingProviders()).find((p) => p.id === input.id) : undefined;
-    const payload = { ...input, apiKey: input.apiKey === "********" ? existing?.apiKey || "" : input.apiKey };
+    const payload = { ...input, apiKey: isMaskedSecret(input.apiKey) ? existing?.apiKey || "" : input.apiKey };
     return (await upsertEmbeddingProvider(payload)).map((p) => ({ ...p, apiKey: p.apiKey ? "********" : "" }));
   });
   ipcMain.handle("notebook:embedding-provider:remove", async (_event, providerId: string) => (await removeEmbeddingProvider(providerId)).map((p) => ({ ...p, apiKey: p.apiKey ? "********" : "" })));
@@ -744,7 +751,7 @@ app.whenReady().then(async () => {
     let apiKey = input.apiKey || "";
     // Saved providers come back with a masked key — resolve the real one so
     // testing an existing entry doesn't authenticate with "********".
-    if (apiKey === "********" && input.id) {
+    if (isMaskedSecret(apiKey) && input.id) {
       apiKey = (await listEmbeddingProviders()).find((p) => p.id === input.id)?.apiKey || "";
     }
     return testEmbeddingEndpoint({ ...input, apiKey });
@@ -821,7 +828,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("providers:list", async () => (await listProviders()).map((provider) => ({ ...provider, apiKey: provider.apiKey ? "********" : "" })));
   ipcMain.handle("provider:save", async (_event, input: Omit<ProviderConfig, "id"> & { id?: string }) => {
     const existing = input.id ? (await listProviders()).find((provider) => provider.id === input.id) : undefined;
-    const payload = { ...input, apiKey: input.apiKey === "********" ? existing?.apiKey || "" : input.apiKey };
+    const payload = { ...input, apiKey: isMaskedSecret(input.apiKey) ? existing?.apiKey || "" : input.apiKey };
     return (await upsertProvider(payload)).map((provider) => ({ ...provider, apiKey: provider.apiKey ? "********" : "" }));
   });
   ipcMain.handle("provider:remove", async (_event, providerId: string) => (await removeProvider(providerId)).map((provider) => ({ ...provider, apiKey: provider.apiKey ? "********" : "" })));
@@ -867,7 +874,7 @@ app.whenReady().then(async () => {
     const { apiKey, ...rest } = next;
     // A masked round-trip means "keep the stored key" — deleting it here used
     // to wipe the key on any unrelated settings change.
-    settings = { ...settings, ...rest, ...(apiKey === "********" ? {} : { apiKey }) };
+    settings = { ...settings, ...rest, ...(isMaskedSecret(apiKey) ? {} : { apiKey }) };
     return { ...settings, apiKey: settings.apiKey ? "********" : "" };
   });
   ipcMain.handle("app-settings:get", () => getAppSettings());
@@ -878,7 +885,7 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("notebook:parser:save", async (_event, input: Parameters<typeof saveNotebookParserConfig>[0]) => {
     const existing = await getNotebookParserConfig();
-    const config = await saveNotebookParserConfig({ ...input, apiKey: input.apiKey === "********" ? existing.apiKey : input.apiKey });
+    const config = await saveNotebookParserConfig({ ...input, apiKey: isMaskedSecret(input.apiKey) ? existing.apiKey : input.apiKey });
     return { ...config, apiKey: config.apiKey ? "********" : "" };
   });
 
@@ -1694,14 +1701,17 @@ app.whenReady().then(async () => {
         // Memory tab. A review queue would silently strand identity facts.
         const candidates = (result as unknown as { memoryCandidates?: Array<{ category: string; fact: string }> }).memoryCandidates || [];
         if (candidates.length) {
-          const saved = await mutateHomeMemory((latest) => {
+          // The mutate returns the merged memory (persisted by mutateHomeMemory);
+          // applied facts are collected through the closure for the notice below.
+          let applied: string[] = [];
+          await mutateHomeMemory((latest) => {
             const current = parseHomeMemory(latest);
             const known = new Set(
               [...current.profile, ...current.preferences, ...current.facts, ...current.context].map((f) => f.toLowerCase())
             );
             const validCats = ["profile", "preference", "fact", "context"];
             let merged = latest;
-            const applied: string[] = [];
+            applied = [];
             for (const cand of candidates.slice(0, 3)) {
               const fact = String(cand.fact || "").trim().slice(0, 200);
               if (!fact || known.has(fact.toLowerCase())) continue;
@@ -1710,10 +1720,10 @@ app.whenReady().then(async () => {
               known.add(fact.toLowerCase());
               applied.push(fact);
             }
-            return applied;
+            return merged;
           });
-          if (saved.length) {
-            const shown = saved.join("; ").slice(0, 220);
+          if (applied.length) {
+            const shown = applied.join("; ").slice(0, 220);
             emitFor(sessionId, { type: "status", text: `Saved to memory: ${shown} — manage it in the Memory tab.` });
           }
         }

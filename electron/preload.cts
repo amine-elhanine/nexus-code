@@ -162,6 +162,7 @@ const nexusApi = {
   cancelHomeAgent: (sessionId?: string) => invoke("home:cancel", sessionId),
   listHomeFiles: () => invoke("home:files"),
   listHomeSessionFiles: (sessionId: string) => invoke("home:sessionFiles", sessionId),
+  listHomeSessionFilesForDeletion: (sessionId: string) => invoke("home:sessionFiles:forDeletion", sessionId),
   getHomeMemory: () => invoke("home:memory:get"),
   updateHomeMemory: (memory: string) => invoke("home:memory:update", memory),
   getHomeMemoryStructured: () => invoke("home:memory:structured"),

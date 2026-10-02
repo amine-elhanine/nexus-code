@@ -22,6 +22,8 @@ type ProviderFormState = {
   baseUrl: string;
   models: string[];
   modelEndpoints: Partial<Record<string, ChatEndpointKind>>;
+  /** Set on the edited provider when its stored key could not be decrypted. */
+  keyNeedsReentry?: boolean;
 };
 
 function emptyProviderForm(definitions: ProviderDefinition[]): ProviderFormState {
@@ -45,6 +47,7 @@ function formFromProvider(provider: ProviderConfig): ProviderFormState {
     baseUrl: provider.baseUrl || "",
     models: provider.models && provider.models.length ? [...provider.models] : [],
     modelEndpoints: { ...(provider.modelEndpoints || {}) },
+    keyNeedsReentry: provider.keyNeedsReentry,
   };
 }
 
@@ -214,7 +217,7 @@ export function ProviderManager({
                 <div>
                   <strong>{provider.label}</strong>
                   <small>
-                    {provider.models.length} models · {provider.apiKey ? "key configured" : provider.keyNeedsReentry ? "key needs re-entry (could not be decrypted)" : "local"}
+                    {provider.models.length} models · {provider.apiKey ? "key configured" : provider.keyNeedsReentry ? "key needs re-entry (could not be decrypted)" : provider.provider === "ollama" ? "local" : "no API key"}
                   </small>
                 </div>
               </div>
@@ -259,6 +262,16 @@ export function ProviderManager({
               placeholder={isCustom ? "Optional — only if your endpoint requires a key" : currentDef?.envKey || "Provider API key"}
             />
           </label>
+          {isEditing && form.keyNeedsReentry && (
+            <div style={{ margin: "-4px 0 6px 0", color: "var(--red)", fontSize: "11px" }}>
+              The stored key could not be decrypted on this machine — re-enter it to use this provider.
+            </div>
+          )}
+          {isEditing && !form.keyNeedsReentry && !form.apiKey && form.provider !== "ollama" && (
+            <div style={{ margin: "-4px 0 6px 0", color: "var(--red)", fontSize: "11px" }}>
+              No API key is stored for this connection — requests will fail until you enter one.
+            </div>
+          )}
           <label>
             Base URL <small>{isCustom ? "required" : "optional"}</small>
             <input

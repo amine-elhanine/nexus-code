@@ -112,8 +112,14 @@ export async function saveHomeManifest(manifest: HomeManifest): Promise<void> {
 
 // Manifest mutations are load→modify→save cycles on one shared file; two
 // chats finishing at once would otherwise lose entries to a stale snapshot.
-function mutateHomeManifest<T>(fn: (manifest: HomeManifest) => T): Promise<T> {
-  return withFileLock("home-manifest", async () => fn(await loadHomeManifest()));
+// The save happens INSIDE the lock: saving after release lets a stale
+// snapshot overwrite a concurrent mutation that landed in between.
+function mutateHomeManifest(fn: (manifest: HomeManifest) => HomeManifest | Promise<HomeManifest>): Promise<HomeManifest> {
+  return withFileLock("home-manifest", async () => {
+    const next = await fn(await loadHomeManifest());
+    await saveHomeManifest(next);
+    return next;
+  });
 }
 
 export async function recordHomeFilesOwnedBySession(sessionId: string, relativePaths: string[]): Promise<void> {
@@ -124,7 +130,7 @@ export async function recordHomeFilesOwnedBySession(sessionId: string, relativeP
       manifest[p.replace(/\\/g, "/")] = { sessionId, updatedAt: now };
     }
     return manifest;
-  }).then((manifest) => saveHomeManifest(manifest));
+  });
 }
 
 export async function recordHomeRunFiles(sessionId: string, runStartMs: number, responseText = ""): Promise<string[]> {
@@ -152,7 +158,7 @@ export async function removeSessionFromManifest(sessionId: string): Promise<void
       if (entry.sessionId === sessionId) delete manifest[key];
     }
     return manifest;
-  }).then((manifest) => saveHomeManifest(manifest));
+  });
 }
 
 export type SessionInfoForAttribution = {
@@ -179,7 +185,18 @@ export async function listHomeSessionFiles(
   if (!all.length) return [];
 
   const manifest = await loadHomeManifest();
-  let manifestDirty = false;
+
+  // Per-session joined transcript text: the cheap .includes prefilter runs
+  // against one string per session instead of every message for every file.
+  const sessionTexts = sessions.map((s) => ({
+    id: s.id,
+    text: (s.messages || []).map((m) => m.text || "").join("\n"),
+  }));
+
+  // Transcript mentions promote to durable ownership, but the write goes
+  // through the locked mutate (same as run attribution) — an unlocked
+  // load→save here could drop entries a concurrent run just recorded.
+  const promotions: Array<{ path: string; owner: string }> = [];
 
   const owned = all.filter((file) => {
     // 1. Explicit manifest assignment
@@ -191,21 +208,22 @@ export async function listHomeSessionFiles(
     // 2. Transcript message matching: does any session explicitly mention this file?
     let messageOwner: string | null = null;
     let newestMentionTime = -1;
-    for (const s of sessions) {
-      if (!s.messages?.length) continue;
-      for (const m of s.messages) {
-        if (m.text && (m.text.includes(file.name) || m.text.includes(file.path))) {
-          const t = new Date(m.createdAt || s.updatedAt || s.createdAt).getTime();
-          if (t > newestMentionTime) {
-            newestMentionTime = t;
-            messageOwner = s.id;
+    if (sessionTexts.some((s) => s.text.includes(file.name) || s.text.includes(file.path))) {
+      for (const s of sessions) {
+        if (!s.messages?.length) continue;
+        for (const m of s.messages) {
+          if (m.text && (m.text.includes(file.name) || m.text.includes(file.path))) {
+            const t = new Date(m.createdAt || s.updatedAt || s.createdAt).getTime();
+            if (t > newestMentionTime) {
+              newestMentionTime = t;
+              messageOwner = s.id;
+            }
           }
         }
       }
     }
     if (messageOwner) {
-      manifest[file.path] = { sessionId: messageOwner, updatedAt: new Date().toISOString() };
-      manifestDirty = true;
+      promotions.push({ path: file.path, owner: messageOwner });
       return messageOwner === sessionId;
     }
 
@@ -257,8 +275,19 @@ export async function listHomeSessionFiles(
     return fallbackOwner === sessionId;
   });
 
-  if (manifestDirty) {
-    void saveHomeManifest(manifest);
+  if (promotions.length) {
+    await mutateHomeManifest((current) => {
+      const now = new Date().toISOString();
+      for (const promo of promotions) {
+        const name = promo.path.split("/").pop() || promo.path;
+        // First writer wins: if a concurrent run claimed this file between
+        // our snapshot and this locked apply, that entry stays.
+        if (!current[promo.path] && !current[name]) {
+          current[promo.path] = { sessionId: promo.owner, updatedAt: now };
+        }
+      }
+      return current;
+    });
   }
 
   return owned;
@@ -279,13 +308,11 @@ export async function listHomeSessionFilesForDeletion(
   const all = await listHomeFiles();
   if (!all.length) return [];
   const manifest = await loadHomeManifest();
+  const targetText = (target.messages || []).map((m) => m.text || "").join("\n");
   return all.filter((file) => {
     const manifestEntry = manifest[file.path] || manifest[file.name];
     if (manifestEntry?.sessionId) return manifestEntry.sessionId === sessionId;
-    for (const m of target.messages || []) {
-      if (m.text && (m.text.includes(file.name) || m.text.includes(file.path))) return true;
-    }
-    return false;
+    return Boolean(targetText) && (targetText.includes(file.name) || targetText.includes(file.path));
   });
 }
 
@@ -324,7 +351,10 @@ export async function openHomeFolder(): Promise<void> {
 // Runs where the user explicitly asked for code/scripts are left untouched.
 const GENERATOR_EXTS = new Set(["py", "js", "mjs", "cjs", "ts", "sh", "ps1", "bat", "cmd", "rb", "pl"]);
 const DELIVERABLE_EXTS = new Set(["docx", "xlsx", "xls", "pptx", "ppsx", "pdf", "odt", "ods", "odp"]);
-const CODE_REQUEST_PATTERN = /\b(python|javascript|typescript|script|code|programme|\.py\b|\.js\b|\.ts\b|\.sh\b|powershell|batch)\b/i;
+// Script-as-deliverable intent: explicit script/code words or script file
+// extensions. Bare language names ("a presentation about Python") are topic
+// mentions, not code requests — they must not block generator cleanup.
+const CODE_REQUEST_PATTERN = /\b(script|programme|program|code|\.py\b|\.js\b|\.ts\b|\.sh\b|powershell|batch|bash)\b/i;
 
 export async function cleanupHomeGeneratorScripts(runStartMs: number, requestText = ""): Promise<string[]> {
   if (Number.isNaN(runStartMs)) return [];

@@ -18,6 +18,7 @@ import {
   composeContextBlock,
   composeContextBlockIndexed,
 } from "../dist-electron/notebook-text.js";
+import { isMaskedSecret } from "../dist-electron/store.js";
 
 test("review gate: prose mentions of CRITICAL/HIGH are not blocking findings", () => {
   assert.deepEqual(parseBlockingReviewFindings("No CRITICAL or HIGH findings."), []);
@@ -100,4 +101,20 @@ test("composeContextBlockIndexed respects the char budget and reports kept set",
   assert.ok(keptIndices.length < 40, "budget kept only a subset");
   const highest = Math.max(...[...block.matchAll(/\[S(\d+)\]/g)].map((m) => Number(m[1])));
   assert.equal(highest, keptIndices.length, "markers run contiguously to the kept count");
+});
+
+test("masked-secret detection: exact mask and stray-keystroke variants are masks, real keys are not", () => {
+  // The UI round-trips the exact mask; a masked save must keep the stored key.
+  assert.equal(isMaskedSecret("********"), true);
+  // A stray keystroke in the pre-filled password field must never be stored
+  // as if it were a freshly typed key (that silently destroyed real keys).
+  assert.equal(isMaskedSecret("********x"), true);
+  assert.equal(isMaskedSecret("*******"), true);
+  assert.equal(isMaskedSecret("*****x"), true);
+  assert.equal(isMaskedSecret("***"), true);
+  // Real keys never start with asterisks.
+  assert.equal(isMaskedSecret("sk-proj-abc123"), false);
+  assert.equal(isMaskedSecret(""), false);
+  assert.equal(isMaskedSecret(undefined), false);
+  assert.equal(isMaskedSecret(null), false);
 });

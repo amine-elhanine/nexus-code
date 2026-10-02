@@ -23,7 +23,7 @@ import { saveArtifact, type ArtifactItem } from "./artifacts-service.js";
 import { TrajectoryLogger } from "./trajectory-service.js";
 import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint } from "./rate-limit.js";
 import { RunCancelledError, getRunAbortSignal } from "./command-service.js";
-import { createHomeMemoryTool, addMemoryFact, removeMemoryFact, selectRelevantHomeMemory, parseCandidateFacts, shouldExtractMemory, type MemoryCandidate } from "./home-memory-service.js";
+import { createHomeMemoryTool, addMemoryFact, removeMemoryFactWithCount, selectRelevantHomeMemory, parseCandidateFacts, shouldExtractMemory, type MemoryCandidate } from "./home-memory-service.js";
 import { createHomeTaskJournal, finishHomeTaskJournal, recordHomeTaskAction, saveHomeTaskJournal, type HomeTaskJournal, type HomeTaskPhase } from "./home-task-service.js";
 import { selectHomeArtifactCandidates, validateHomeArtifacts } from "./home-artifact-service.js";
 import { createCodeTaskJournal, finishCodeTaskJournal, inferCodeTaskContract, loadCodeTaskJournal, parseBlockingReviewFindings, recordCodeTaskAction, recordCodeTaskPlan, saveCodeTaskJournal, type CodeTaskContract, type CodeTaskJournal, type CodeTaskPhase } from "./code-task-service.js";
@@ -82,11 +82,29 @@ export type HomeTaskContract = {
 
 export function inferHomeTaskContract(request: string): HomeTaskContract {
   const text = (request || "").trim();
+  // Polite wrappers ("can you create a report") are requests, not questions:
+  // strip them so the creation-verb test sees the actual instruction. Genuine
+  // interrogatives ("how do I…", "should I…") still never expect output.
+  const stripped = text.replace(/^\s*(?:please|can\s+you|could\s+you|would\s+you|will\s+you)\s+/i, "").trim();
+  // "I need to understand…" is intent, not a deliverable; "I need a report" is.
   const expectsOutput =
-    /\b(create|make|generate|build|write|draft|prepare|produce|export|save|deliver|develop|design|turn|convert|transform)\b/i.test(text) &&
-    !/^\s*(what|why|how|where|when|which|who|can|could|would|should)\b/i.test(text);
-  const needsResearch = /\b(research|read|docs?|documentation|investigate|look\s+up|find\s+out|compare|sources?|latest|current)\b/i.test(text);
+    /\b(create|make|generate|build|write|draft|prepare|produce|export|save|deliver|develop|design|turn|convert|transform|need|want|give\s+me)\b/i.test(stripped) &&
+    !/\b(?:need|want)\s+to\b/i.test(stripped) &&
+    !/^\s*(what|why|how|where|when|which|who|should)\b/i.test(stripped);
+  const needsResearch = /\b(research|read|docs?|documentation|investigate|look\s+up|find\s+out|compare|sources?|latest|current)\b/i.test(stripped);
   return { expectsOutput, needsResearch };
+}
+
+const HOME_FORMAT_NAMED_PATTERN =
+  /\.(docx|xlsx|pptx|ppsx|pdf|csv|odt|ods|odp|tex|txt|md)\b|\b(word|excel|powerpoint|ppt|spreadsheet|presentation|slides?|slide\s*deck|document|docs?\b|pdf|latex|resume|cv)\b/i;
+
+/**
+ * True when the request explicitly names a file format or document type.
+ * Such requests can never use the [[answer-in-chat]] escape: if the user
+ * named the format, a file IS the deliverable.
+ */
+export function homeRequestNamesFileFormat(request: string): boolean {
+  return HOME_FORMAT_NAMED_PATTERN.test(request || "");
 }
 
 type HomeFileSnapshot = Map<string, number>;
@@ -1460,12 +1478,40 @@ Session memory (this chat only):
 ${tail(memory.sessionMemory, 3000) || "(empty)"}
 
 Working rules:
+- Visual answers: when a visual would make the answer substantially easier to understand — a comparison, trend, process, hierarchy, timeline, distribution, plan, or spatial relationship — include one chart or diagram alongside the explanation, whatever the kind of question (research, explanation, how-to, analysis, planning). Prefer a chart over a markdown table of the same numbers when the shape matters more than the exact figures; keep prose or a table when a visual would add no clarity. Pick the matching fenced block and copy its syntax exactly, grounding every value in sources or tool output:
+    * Relationships, processes, hierarchies, timelines, flows → a mermaid block (flowchart/sequence/timeline syntax).
+    * Comparing values across a few categories → a bar block:
+      \`\`\`bar
+      title "Quarterly revenue"
+      y-axis "USD (millions)"
+      bar "Q1" 320
+      bar "Q2" 410
+      bar "Q3" 480
+      \`\`\`
+    * Trends over an ordered sequence (months, steps, versions) → a line block:
+      \`\`\`line
+      title "Monthly active users"
+      x-axis "Month"
+      y-axis "Users"
+      point "Jan" 1200
+      point "Feb" 1350
+      point "Mar" 1310
+      \`\`\`
+    * Correlation between two numeric variables → a scatter block (here x-axis/y-axis REQUIRE min max):
+      \`\`\`scatter
+      title "Study hours vs exam score"
+      x-axis "Hours" 0 12
+      y-axis "Score" 0 100
+      point "Ana" 4 71
+      \`\`\`
+  Keep labels to a few words and 3-8 data points. Do not force a visual when the data is sparse, incomparable, ambiguous, or a chart would add noise — clear prose alone is fine then. Never use ASCII art.
 - Answer chit-chat and simple questions directly with zero tool calls — EXCEPT memory saves below, which never count toward any tool budget.
 - Long-term memory stores enduring facts about the user, their role, communication style, and tool/format preferences across sessions.
 - Memory management: you have access to the manage_memory tool. When the user explicitly asks you to remember something ("remember that...", "keep in mind that...", "my preference is..."), or when they state an enduring personal preference, role, or project context, use manage_memory with action='remember' to persist it to long-term memory. Use action='forget' if they ask to remove or change a prior preference. Do NOT call manage_memory for temporary or transient chat trivia (e.g. "I am eating lunch").
 - Saving is YOUR job, never the user's: when someone tells you who they are (name, role, background, education, work, projects), call manage_memory yourself in the SAME run — never reply "tell me to save this and I will remember" or ask them to instruct you. Save first, then briefly confirm what you remembered (e.g. "Noted — I'll remember you're Amine, a master's student in data science & AI.").
 - Memories above are summaries, not transcripts: the full answers live in chat history. Never treat a memory fragment as complete data — re-read the chat or re-run the lookup for exact lists, tables, or numbers.
-- For research: use web_search first, then read the most promising pages with browser_fetch_api or browser_inspect before stating facts. Never invent current prices, versions, or news. For latest/current-year rankings or "best of" lists, verify with web_search and include the current year — never clip ranges to your training cutoff.
+- For research: use web_search first, then read the most promising pages with browser_fetch_api or browser_inspect before stating facts.
+- Knowledge freshness: your training data has a cutoff, so treat remembered facts about fast-moving things (model releases, versions, prices, rankings, benchmarks, news) as unverified hypotheses — "latest"/"current"/"best"/"now" answers must come from the web, not memory. Search with the freshness parameter (month or year) and current-year query terms, read the top pages, and check each page's publication date: prefer sources from the last 12 months and discard listicles older than the question's timeframe. Give volatile figures an explicit "as of <date>" marker, and if nothing recent enough can be verified, say so plainly ("I could only verify up to X — newer information may exist") instead of presenting stale data as current. Never invent current prices, versions, or news, and never clip ranges to your training cutoff.
 - If the task involves a library, API, or technology you are unsure about — especially anything recently released — research it first: web_search, then read the official docs with browser_inspect. Never invent APIs, import paths, or options; pin the exact version you verified.
     - For any request that asks you to create, prepare, produce, export, write, or transform something, treat the requested result as a completion contract. Decide what concrete output proves completion, create it in the workspace, inspect it, and only then finish.
     - For documents and other artifacts: check the skills in your System Note first — a skill may describe exactly how to build the requested output. Follow it: write the needed draft or generator with write_file, run it with execute, inspect the result, and clean up only throwaway files after successful validation.
@@ -1483,7 +1529,7 @@ Working rules:
       general += `\n\n${projectRulesSection}`;
     }
     if (homeTaskContract?.expectsOutput) {
-      general += `\n\nTASK CONTRACT: This request asks for an observable result. Decide what output proves completion, create or update it in the workspace, inspect it, and do not finish with a promise or research summary alone.${homeTaskContract.needsResearch ? " Research is allowed, but switch to producing the result once the evidence is sufficient." : ""}`;
+      general += `\n\nTASK CONTRACT: This request asks for an observable result. Decide what output proves completion, create or update it in the workspace, inspect it, and do not finish with a promise or research summary alone.${homeTaskContract.needsResearch ? " Research is allowed, but switch to producing the result once the evidence is sufficient." : ""} ESCAPE HATCH: only when the request is genuinely chat-shaped (a poem, story, explanation, email or letter text, brainstorm — and it names no file format or document type), you may instead deliver the complete answer directly in chat, ending your reply with the exact marker [[answer-in-chat]] on the final line. Never use the marker when a document, file, or export would be the natural deliverable, and never use it to avoid work you have not done.`;
     }
     if (mode === "plan") return `${general}\n\nMODE: PLAN. Investigate and return a structured markdown plan. Writing, editing and command execution are disabled — read and search only.`;
     return `${general}\n\nMODE: ${mode === "auto" ? "AUTO. Work autonomously end to end: research, create, then verify the deliverable exists before finishing." : "ASK. Fulfil the request, keep it focused, and confirm the result before answering."}`;
@@ -1910,13 +1956,14 @@ export async function runProjectAgent(options: {
             emit("status", `Saved to long-term memory: ${fact}`);
           },
           onForget: async (query) => {
-            let removed = false;
+            let removed = 0;
             await onHomeMemoryUpdate?.((current) => {
-              const next = removeMemoryFact(current, query);
-              removed = next !== current;
-              return next;
+              const { memory, removed: count } = removeMemoryFactWithCount(current, query);
+              removed = count;
+              return memory;
             });
             emit("status", removed ? `Removed from long-term memory: ${query}` : `No long-term memory item matched "${query}".`);
+            return removed;
           },
         }),
       ]
@@ -2401,6 +2448,22 @@ export async function runProjectAgent(options: {
           : [];
         const invalidArtifacts = artifactChecks.filter((check) => !check.valid);
         const validatedDeliverable = createdDeliverable && invalidArtifacts.length === 0;
+        // Chat-answer escape: a genuinely chat-shaped request (poem,
+        // explanation, email text) that names no file format may be answered
+        // directly in chat, marked with [[answer-in-chat]]. The model decides
+        // what the deliverable is; the sentinel + substance + no-named-format
+        // guardrails keep it from dodging real file work.
+        const responseTextTrimmed = String(state.response || "").trimEnd();
+        const chatAnswerDeclared =
+          wantsDeliverable &&
+          !createdDeliverable &&
+          !homeRequestNamesFileFormat(request) &&
+          responseTextTrimmed.length >= 200 &&
+          /\[\[answer-in-chat\]\]\s*$/i.test(responseTextTrimmed);
+        if (chatAnswerDeclared) {
+          emit("tool", "Verification passed · answered in chat (request names no file format)");
+          return { verification: "none" };
+        }
         const conversationalPromise = /\b(let me|i will|now i'll|i am going to|i'll now|going to write|next step is to)\b.{0,50}\b(write|create|generate|run|execute|build)\b/i.test(state.response || "");
 
         if (wantsDeliverable && (!createdDeliverable || !validatedDeliverable) && (conversationalPromise || currentRepairs < maxRepairs)) {
@@ -2807,6 +2870,11 @@ export async function runProjectAgent(options: {
         interrupted: true as const,
       };
     }
+  }
+  // The sentinel is routing information for the verifier, never user-facing
+  // content: strip it before the response reaches transcript, memory, or artifacts.
+  if (result?.response) {
+    result.response = String(result.response).replace(/\s*\[\[answer-in-chat\]\]\s*$/i, "");
   }
   // Never let final prose override an unmet Home output contract. A failed
   // run can still be resumed, but it must be reported as incomplete.

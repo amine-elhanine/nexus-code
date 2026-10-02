@@ -1,6 +1,6 @@
 import React, { useRef, useState } from "react";
 import { Bot, Coins, Terminal, Activity, X, Brain, Check, Copy, Loader2, ChevronDown, ChevronRight, FileText } from "lucide-react";
-import { renderMarkdown } from "../../markdown.js";
+import { RichMarkdown } from "../common/RichMarkdown.js";
 import { timeLabel } from "../../utils/format.js";
 import { isImageAttachment, formatAttachmentSize } from "../../utils/attachments.js";
 import { PlanCard } from "./PlanCard.js";
@@ -145,10 +145,7 @@ export function ChatItemView({
             ))}
         </div>
       )}
-      <div
-        className="chat-message-text md"
-        dangerouslySetInnerHTML={{ __html: renderMarkdown(message.text) }}
-      />
+      <RichMarkdown source={message.text} className="chat-message-text" />
       {message.role === "assistant" && Boolean(message.text?.trim()) && (
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
           <CopyTextButton text={message.text} />
@@ -295,10 +292,7 @@ export function StreamingAssistantMessage({ text }: { text: string }) {
         Nexus
         <time>{timeLabel(new Date().toISOString())}</time>
       </div>
-      <div
-        className="chat-message-text md"
-        dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
-      />
+      <RichMarkdown source={text} className="chat-message-text" />
     </div>
   );
 }

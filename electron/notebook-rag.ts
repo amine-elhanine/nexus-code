@@ -412,6 +412,7 @@ function analystSystem(): string {
 - Every factual claim must cite its source as [S1], [S2], etc.
 - If the sources do not contain the answer, say so plainly and state what IS in them.
 - Be direct and concise. No preamble, no tutoring tone.
+- When the sources contain numbers, trends, comparisons, shares, processes, structures, timelines, or plans, include one useful visual in a fenced mermaid block: use xychart-beta for numeric series, pie for shares, and flowchart TD or timeline for processes and histories. Keep every value source-grounded and cite the surrounding claims.
 - End with a "Sources" line listing [S1] heading, [S2] heading, ...`;
 }
 

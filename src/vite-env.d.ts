@@ -161,6 +161,7 @@ export interface NexusApi {
   cancelHomeAgent: (sessionId?: string) => Promise<boolean>;
   listHomeFiles: () => Promise<Array<{ path: string; name: string; size: number; modified: string }>>;
   listHomeSessionFiles: (sessionId: string) => Promise<Array<{ path: string; name: string; size: number; modified: string }>>;
+  listHomeSessionFilesForDeletion: (sessionId: string) => Promise<Array<{ path: string; name: string; size: number; modified: string }>>;
   getHomeMemory: () => Promise<string>;
   updateHomeMemory: (memory: string) => Promise<string>;
   getHomeMemoryStructured: () => Promise<{ structure: { profile: string[]; preferences: string[]; facts: string[]; context: string[]; recentDeliverables: Array<{ date: string; summary: string; sessionId?: string }>; customNotes?: string } }>;

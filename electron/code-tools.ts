@@ -463,7 +463,14 @@ export function createCodeIntelligenceTools(projectRoot: string) {
         return `Invalid regex pattern: ${err instanceof Error ? err.message : String(err)}`;
       }
 
-      const searchRoot = pathPrefix ? await safePath(projectRoot, pathPrefix) : path.resolve(projectRoot);
+      let searchRoot: string;
+      try {
+        searchRoot = pathPrefix ? await safePath(projectRoot, pathPrefix) : path.resolve(projectRoot);
+      } catch (error) {
+        // A model may occasionally pass a host-root path after web research.
+        // Keep the agent loop alive and let it retry with a workspace-relative path.
+        return `Search path rejected: ${error instanceof Error ? error.message : String(error)} Use a path relative to the selected project root, or omit pathPrefix to search the workspace.`;
+      }
       const fixedString = isRegex ? cleanQuery : cleanQuery.replace(/[.*+?^$+( )|[\]\\]/g, (c) => (c === "\n" ? "\\n" : `\\${c}`));
       let hits: GrepHit[] | null = pathPrefix
         ? null // git grep is root-wide; a scoped prefix goes straight to the walk

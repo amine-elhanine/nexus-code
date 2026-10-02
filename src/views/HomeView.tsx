@@ -59,9 +59,7 @@ export function HomeView({
   switchModel,
   onOpenProviders,
   sessionUsage,
-  homeFiles,
   homeRoot,
-  onRefreshFiles,
   onDownloadFile,
   onOpenFolder,
   onNewChat,
@@ -89,9 +87,7 @@ export function HomeView({
   switchModel: (providerId: string, model: string) => void;
   onOpenProviders: () => void;
   sessionUsage?: AgentUsage | null;
-  homeFiles: HomeFile[];
   homeRoot: string;
-  onRefreshFiles: () => void;
   onDownloadFile: (path: string) => void;
   onOpenFolder: () => void;
   onNewChat: () => void;

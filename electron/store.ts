@@ -100,6 +100,16 @@ function clearFailedSecrets(prefix: string) {
   }
 }
 const SECRET_MASK = "********";
+/**
+ * True when a secret coming from the renderer is the display mask rather than
+ * a real value — i.e. "keep whatever is stored". The mask check is deliberately
+ * loose: the UI round-trips the exact SECRET_MASK, but a stray keystroke in the
+ * pre-filled password field ("********x", "*******") must never be stored as
+ * if it were a freshly entered key, silently destroying the real one.
+ */
+export function isMaskedSecret(value: unknown): boolean {
+  return typeof value === "string" && value.startsWith("***");
+}
 function encryptSecret(value: string) {
   if (!value || value.startsWith(ENCRYPTED_PREFIX)) return value;
   try { const ss = electronMod().safeStorage; if (ss?.isEncryptionAvailable?.()) return ENCRYPTED_PREFIX + ss.encryptString(value).toString("base64"); } catch { /* fall through to plaintext */ }
@@ -489,10 +499,18 @@ export async function updateHomeMemory(memory: string): Promise<string> {
 // Home memory is shared by every Home chat, and chats can run in parallel.
 // Every mutation therefore goes through one serialized queue AND re-reads the
 // current memory inside it — a run-start snapshot wholesale-replaced here
-// would silently erase the facts a parallel chat just saved.
+// would silently erase the facts a parallel chat just saved. The callback
+// returns the full new memory, which is persisted before the queue moves on;
+// without the save below, tool-driven "remember"/"forget" and deliverable
+// recording only mutated a throwaway string.
 let homeMemoryQueue: Promise<unknown> = Promise.resolve();
-export function mutateHomeMemory<T>(mutate: (current: string) => T): Promise<T> {
-  const run = homeMemoryQueue.then(async () => mutate(await getHomeMemory()));
+export function mutateHomeMemory(mutate: (current: string) => string): Promise<string> {
+  const run = homeMemoryQueue.then(async () => {
+    const current = await getHomeMemory();
+    const next = mutate(current);
+    if (next !== current) await updateHomeMemory(next);
+    return next;
+  });
   homeMemoryQueue = run.then(() => undefined, () => undefined);
   return run;
 }

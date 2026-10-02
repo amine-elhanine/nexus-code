@@ -32,7 +32,7 @@ import { useAppController, sortSessionsByUpdatedAt } from "./state/useAppControl
 import { applyTheme } from "./state/theme.js";
 import { getSessionUsage, fileIcon } from "./utils/format.js";
 import { timeLabel } from "./utils/format.js";
-import type { ChatAttachment, UpdaterState } from "./types.js";
+import type { ChatAttachment, UpdaterState, SessionRecord } from "./types.js";
 import { formatCost, type FileEntry } from "./types.js";
 
 function FileRow({
@@ -380,6 +380,15 @@ function App() {
     : (activeSession?.title || "No session selected");
   const currentSessionUsage = getSessionUsage(activeSession);
   const [homePreviewPath, setHomePreviewPath] = useState<string | null>(null);
+  // Delete-chat confirmation: fetches the high-confidence owned-file list so
+  // the user can choose "delete chat" vs "delete chat + the files it created".
+  const [homeDeleteDialog, setHomeDeleteDialog] = useState<{ session: SessionRecord; ownedFiles: Array<{ path: string; name: string; size: number; modified: string }> } | null>(null);
+  function openHomeDeleteDialog(session: SessionRecord) {
+    const api = window.nexus || window.forgepilot;
+    api.listHomeSessionFilesForDeletion(session.id)
+      .catch(() => [])
+      .then((files) => setHomeDeleteDialog({ session, ownedFiles: files || [] }));
+  }
   const [attachmentPreview, setAttachmentPreview] = useState<ChatAttachment | null>(null);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingSessionTitle, setEditingSessionTitle] = useState("");
@@ -672,7 +681,7 @@ function App() {
                   onDraftChange={home.setEditingSessionTitle}
                   onCommit={home.commitRename}
                   onCancel={home.cancelRename}
-                  onDelete={() => void home.deleteChat(session.id)}
+                  onDelete={() => openHomeDeleteDialog(session)}
                 />
               ))}
               {!home.sessions.length && <div className="empty-pane">Start a new chat to begin.</div>}
@@ -917,9 +926,7 @@ function App() {
                 switchModel={(providerId, model) => void switchModel(providerId, model)}
                 onOpenProviders={() => setShowProviders(true)}
                 sessionUsage={home.sessionUsage}
-                homeFiles={home.homeFiles}
                 homeRoot={home.homeRoot}
-                onRefreshFiles={() => void home.refreshFiles()}
                 onDownloadFile={(relPath) => void api.downloadHomeFile(relPath)}
                 onOpenFolder={() => void api.openHomeFolder()}
                 onNewChat={() => void home.createChat()}
@@ -1440,6 +1447,36 @@ function App() {
           danger={confirmDialog.danger}
           onConfirm={confirmDialog.onConfirm}
           onCancel={() => setConfirmDialog(null)}
+        />
+      )}
+      {homeDeleteDialog && (
+        <ConfirmModal
+          title={`Delete "${homeDeleteDialog.session.title || "chat"}"?`}
+          message={
+            homeDeleteDialog.ownedFiles.length
+              ? `This chat created ${homeDeleteDialog.ownedFiles.length} file${homeDeleteDialog.ownedFiles.length === 1 ? "" : "s"} in your Nexus folder (${homeDeleteDialog.ownedFiles.slice(0, 5).map((f) => f.name).join(", ")}${homeDeleteDialog.ownedFiles.length > 5 ? ", …" : ""}). Choose whether to keep or delete them.`
+              : "The chat transcript will be removed. No files in your Nexus folder are owned by this chat."
+          }
+          confirmLabel="Delete chat"
+          secondaryAction={
+            homeDeleteDialog.ownedFiles.length
+              ? {
+                  label: `Delete chat + ${homeDeleteDialog.ownedFiles.length} file${homeDeleteDialog.ownedFiles.length === 1 ? "" : "s"}`,
+                  onConfirm: () => {
+                    const target = homeDeleteDialog;
+                    setHomeDeleteDialog(null);
+                    void home.deleteChat(target.session.id, { deleteFiles: true });
+                  },
+                }
+              : undefined
+          }
+          danger
+          onConfirm={() => {
+            const target = homeDeleteDialog;
+            setHomeDeleteDialog(null);
+            void home.deleteChat(target.session.id);
+          }}
+          onCancel={() => setHomeDeleteDialog(null)}
         />
       )}
       {approvalRequest && (
