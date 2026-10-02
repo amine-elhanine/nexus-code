@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { promises as fs, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { tool } from "@langchain/core/tools";
@@ -385,12 +385,34 @@ export async function openSkillsFolder(scope: "global" | "project", projectRoot:
   if (errorMessage) throw new Error(errorMessage);
 }
 
+// Canonical form of a path even when it does not exist yet: realpath the
+// deepest existing ancestor and re-join the remainder. Without this, Windows
+// 8.3 short names (C:\Users\RUNNER~1\...), junctions, and case differences
+// make two references to the SAME directory compare unequal and a legitimate
+// skill path gets rejected as a security violation.
+function canonicalPathExisting(target: string): string {
+  const resolved = path.resolve(target);
+  let probe = resolved;
+  const trailing: string[] = [];
+  for (;;) {
+    try {
+      const real = realpathSync(probe);
+      return trailing.length ? path.join(real, ...trailing) : real;
+    } catch {
+      const parent = path.dirname(probe);
+      if (parent === probe) return resolved; // nothing exists up to the drive root
+      trailing.unshift(path.basename(probe));
+      probe = parent;
+    }
+  }
+}
+
 function validateSkillPathAllowed(skillPath: string, projectRoot?: string | null, allowSystem = false): string {
-  const resolved = path.resolve(skillPath);
-  const globalRoot = path.resolve(globalSkillsDir());
-  const projectRootResolved = projectRoot ? path.resolve(projectSkillsDir(projectRoot)) : null;
-  const legacyRootResolved = projectRoot ? path.resolve(legacyProjectSkillsDir(projectRoot)) : null;
-  const sysRoot = path.resolve(systemSkillsDir());
+  const resolved = canonicalPathExisting(skillPath);
+  const globalRoot = canonicalPathExisting(globalSkillsDir());
+  const projectRootResolved = projectRoot ? canonicalPathExisting(projectSkillsDir(projectRoot)) : null;
+  const legacyRootResolved = projectRoot ? canonicalPathExisting(legacyProjectSkillsDir(projectRoot)) : null;
+  const sysRoot = canonicalPathExisting(systemSkillsDir());
 
   const isInsideGlobal = resolved === globalRoot || resolved.startsWith(`${globalRoot}${path.sep}`);
   // Project skills only exist relative to a REAL project root. The old
