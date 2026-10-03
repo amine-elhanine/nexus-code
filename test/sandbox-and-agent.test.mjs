@@ -133,8 +133,33 @@ app.whenReady().then(async () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  console.log('\n=== 3. Read-Only Backend Tests (Plan Mode) ===');
+  await test('Agent-run commands inherit a scrubbed environment (no secret-shaped vars)', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-env-'));
+    const scriptPath = path.join(tempDir, 'print-env.js');
+    await fs.writeFile(
+      scriptPath,
+      'process.stdout.write(JSON.stringify({ secret: process.env.NEXUS_TEST_API_KEY ?? null, plain: process.env.NEXUS_TEST_PLAINVAR ?? null }));',
+      'utf8'
+    );
+    process.env.NEXUS_TEST_API_KEY = 'sk-leak-should-not-pass';
+    process.env.NEXUS_TEST_PLAINVAR = 'passes-through';
 
+    try {
+      const project = await upsertProject({ id: 'test-env', name: 'env-test', root: tempDir });
+      // Fresh run state: the cancel test above leaves the shared state cancelled.
+      beginCommandRun();
+      const result = await runProjectCommand(project, `node "${scriptPath}"`);
+      const parsed = JSON.parse(result.output || '{}');
+      assert.equal(parsed.secret, null, 'secret-shaped env vars must not reach agent-run commands');
+      assert.equal(parsed.plain, 'passes-through', 'ordinary env vars still pass through');
+    } finally {
+      delete process.env.NEXUS_TEST_API_KEY;
+      delete process.env.NEXUS_TEST_PLAINVAR;
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n=== 3. Read-Only Backend Tests (Plan Mode) ===');
   await test('Read-only backend blocks write, edit, delete, and execute with descriptive message', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-readonly-'));
     const project = await upsertProject({ id: 'test-readonly', name: 'readonly-test', root: tempDir });

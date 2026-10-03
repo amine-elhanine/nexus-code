@@ -6,6 +6,7 @@ import { FilesystemBackend } from "deepagents";
 import { isDeniedCommand, classifyCommand } from "./permissions.js";
 import type { CommandPolicy } from "./permissions.js";
 import { requestCommandApproval } from "./approval-service.js";
+import { scrubSecretEnv } from "./child-env.js";
 import type { ProjectRecord } from "./store.js";
 
 const DEFAULT_COMMAND_TIMEOUT_SECONDS = 180;
@@ -197,8 +198,13 @@ export async function executeCommand(projectRoot: string, command: string, optio
   const appNodeModules = path.resolve(process.cwd(), "node_modules");
   const existingNodePath = process.env.NODE_PATH || "";
   const nodePath = [existingNodePath, appNodeModules].filter(Boolean).join(path.delimiter);
+  // Agent-run commands inherit the user environment MINUS secret-shaped
+  // variables — the same policy as the interactive terminal. A prompt-injected
+  // or confused model must not be able to leak API keys by echoing the
+  // environment; tools that legitimately need credentials should receive them
+  // via the daemon allowlist mechanism or explicit configuration.
   const env = {
-    ...process.env,
+    ...scrubSecretEnv(),
     CI: "true",
     DEBIAN_FRONTEND: "noninteractive",
     NONINTERACTIVE: "1",

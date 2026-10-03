@@ -1,4 +1,6 @@
 import { app } from "electron";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { createRequire } from "node:module";
 
 // electron-updater ships CJS without ESM named exports, and this codebase
@@ -9,6 +11,7 @@ const { autoUpdater } = require("electron-updater") as {
     autoDownload: boolean;
     autoInstallOnAppQuit: boolean;
     forceDevUpdateConfig: boolean;
+    publisherName?: string | string[];
     on: (event: string, listener: (...args: any[]) => void) => void;
     checkForUpdates: () => Promise<unknown>;
     quitAndInstall: (isSilent?: boolean, isForceRunAfter?: boolean) => void;
@@ -66,6 +69,17 @@ class UpdaterService {
     this.started = true;
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
+    // Update integrity: electron-updater always verifies each artifact's
+    // SHA512 against latest.yml. Signature pinning additionally locks updates
+    // to a specific code-signing certificate subject — but the shipped builds
+    // are UNSIGNED today, so an unconditional pin would reject every update.
+    // It activates the moment a publisher name is configured in package.json
+    // (build.nexus.publisherName); set that when signing is introduced.
+    try {
+      const pkg = JSON.parse(readFileSync(path.join(app.getAppPath(), "package.json"), "utf8"));
+      const publisherName = String(pkg?.build?.nexus?.publisherName || "").trim();
+      if (publisherName) autoUpdater.publisherName = publisherName;
+    } catch { /* pin unavailable — the SHA512 artifact check still applies */ }
     // Local testing only: NEXUS_UPDATE_DEV=1 makes dev runs read a
     // dev-app-update.yml next to package.json instead of refusing outright.
     if (!app.isPackaged && process.env.NEXUS_UPDATE_DEV === "1") {

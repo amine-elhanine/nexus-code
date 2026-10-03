@@ -129,6 +129,17 @@ function createWindow() {
       /^https?:\/\/127\.0\.0\.1:5173/.test(url);
     if (!allowed) event.preventDefault();
   });
+  // Any <webview> that attaches must be a plain content surface: strip the
+  // host preload and node access so a compromised renderer cannot grant a
+  // guest (or itself through the guest) Electron/node capabilities. The
+  // browser views are declared without preload, so this changes nothing for
+  // them — it closes the door on renderer-injected webview attributes.
+  mainWindow.webContents.on("will-attach-webview", (_event, webPreferences) => {
+    delete webPreferences.preload;
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+  });
   setApprovalNotifier((request) => mainWindow?.webContents.send("command:approval-request", request));
   onNotebookJobProgress((progress) => mainWindow?.webContents.send("notebook:progress", progress));
 }
