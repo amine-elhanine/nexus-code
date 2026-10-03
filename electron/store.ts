@@ -35,6 +35,7 @@ export type EmbeddingProviderConfig = { id: string; name: string; kind: Embeddin
 export type McpTransport = "stdio" | "http" | "sse";
 export type McpServerConfig = { id: string; name: string; enabled: boolean; transport: McpTransport; command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string> };
 export type SkillsConfig = { enabled: boolean };
+export type HooksConfig = { enabled: boolean };
 export type AppSettings = {
   browserHeadless?: boolean;
   notebookRerankEnabled?: boolean;
@@ -58,7 +59,7 @@ export type ProjectRecord = { id: string; name: string; root: string; createdAt:
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
 export type ChatAttachment = { url: string; name: string; mimeType: string; size: number };
 export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; checkpointIds?: string[]; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact" | "stream-reset"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; subagent?: SubagentItem; artifact?: unknown; detail?: string }>; model?: { providerId: string; model: string } };
-type PersistedState = { projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; appSettings?: AppSettings; notebookParser?: NotebookParserConfig; homeSessions?: SessionRecord[]; homeMemory?: string };
+type PersistedState = { projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; hooks?: HooksConfig; appSettings?: AppSettings; notebookParser?: NotebookParserConfig; homeSessions?: SessionRecord[]; homeMemory?: string };
 
 let cache: PersistedState | null = null;
 
@@ -635,6 +636,8 @@ export async function removeMcpServer(serverId: string) {
 }
 export async function getSkillsConfig(): Promise<SkillsConfig> { return { enabled: (await ensureLoaded()).skills?.enabled !== false }; }
 export async function saveSkillsConfig(input: SkillsConfig) { const state = await ensureLoaded(); state.skills = { enabled: input.enabled !== false }; await persist(); return state.skills; }
+export async function getHooksConfig(): Promise<HooksConfig> { return { enabled: (await ensureLoaded()).hooks?.enabled !== false }; }
+export async function saveHooksConfig(input: HooksConfig) { const state = await ensureLoaded(); state.hooks = { enabled: input.enabled !== false }; await persist(); return state.hooks; }
 export async function getAppSettings(): Promise<AppSettings> { return { ...(await ensureLoaded()).appSettings }; }
 export async function saveAppSettings(input: AppSettings) { const state = await ensureLoaded(); state.appSettings = { ...state.appSettings, ...input }; await persist(); return state.appSettings; }
 export async function getNotebookParserConfig(): Promise<NotebookParserConfig> {

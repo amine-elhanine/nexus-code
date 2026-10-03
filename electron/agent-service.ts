@@ -16,7 +16,8 @@ import { discoverAllRules, discoverProjectRules } from "./rules-service.js";
 import { createSubagentDelegationTool, executeSubagentTask, calculateAgentUsage, type SubagentItem } from "./subagent-service.js";
 import { getWorkspaceDiffFiles } from "./diff-service.js";
 import { getMcpTools } from "./mcp-service.js";
-import { getSkillsConfig } from "./store.js";
+import { getHooksConfig, getSkillsConfig } from "./store.js";
+import { createHooksMiddleware, dispatchHooks, discoverHooks } from "./hooks-service.js";
 import { GLOBAL_SKILLS_ROUTE, PROJECT_SKILLS_DIR, SKILL_SOURCE_PRIORITY, SYSTEM_SKILLS_ROUTE, buildSkillMounts, createSkillFilesTool, globalSkillsDir, listSkills, listSystemSkills, recommendSkills, skillAppliesToMode, skillDirVirtualPath, skillVirtualPath, systemSkillsDir, type SkillInfo, type SkillMode } from "./skills-service.js";
 import { compactHistory, compactHistoryWithModel, estimateTokens, StreamUsageTracker } from "./context-service.js";
 import { saveArtifact, type ArtifactItem } from "./artifacts-service.js";
@@ -601,6 +602,14 @@ export async function runProjectAgent(options: {
     .sort((a, b) => SKILL_SOURCE_PRIORITY[b.source] - SKILL_SOURCE_PRIORITY[a.source])
     .map(skillDirVirtualPath);
 
+  // Project hooks (.nexus/hooks.json) behind a global toggle: run:start/end,
+  // tool:before (deny-capable) / tool:after, verify:fail. Hook failures are
+  // reported, never fatal.
+  const hooks = (await getHooksConfig().catch(() => ({ enabled: true }))).enabled
+    ? await discoverHooks(projectRoot).catch(() => [])
+    : [];
+  const hooksMiddleware = hooks.length ? createHooksMiddleware({ projectRoot, hooks, runId: sessionId }) : null;
+
   const allCodeTools = createCodeIntelligenceTools(projectRoot);
   const wantsBrowser = isWebTask(request);
   let homeResearchToolCalls = 0;
@@ -723,9 +732,12 @@ export async function runProjectAgent(options: {
   const deepAgent = await createDeepAgent({
     model: llm,
     backend: compositeBackend as any,
-    middleware: isSimple
-      ? [toolParameterNormalizationMiddleware(), loopPreventionMiddleware({ general: isGeneral, outputRequired: Boolean(homeTaskContract?.expectsOutput), beforeModify: beforeCodeModify })]
-      : [toolParameterNormalizationMiddleware(), loopPreventionMiddleware({ general: isGeneral, outputRequired: Boolean(homeTaskContract?.expectsOutput), beforeModify: beforeCodeModify }), todoListMiddleware()],
+    middleware: [
+      toolParameterNormalizationMiddleware(),
+      loopPreventionMiddleware({ general: isGeneral, outputRequired: Boolean(homeTaskContract?.expectsOutput), beforeModify: beforeCodeModify }),
+      ...(isSimple ? [] : [todoListMiddleware()]),
+      ...(hooksMiddleware ? [hooksMiddleware] : []),
+    ],
     tools: isSimple
       ? [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...homeMemoryTool, ...mcpTools]
       : [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...homeMemoryTool, subagentTool, ...mcpTools],
@@ -1161,6 +1173,13 @@ export async function runProjectAgent(options: {
   const briefMsg = `Preparing context · ${history.length} prior turn${history.length === 1 ? "" : "s"} · ${mode} mode · ${effectiveComplexity}${hasResume ? " · resumed" : ""}`;
   emit("status", briefMsg);
   if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: briefMsg });
+
+  if (hooks.length) {
+    const startOutcome = await dispatchHooks(projectRoot, hooks, "run:start", { request, mode, projectRoot, runId: sessionId }).catch(() => null);
+    if (startOutcome && !startOutcome.ok) {
+      emit("status", `run:start hook failed (exit ${startOutcome.exitCode ?? "timeout"}): ${startOutcome.output.slice(0, 200)}`);
+    }
+  }
 
   const graph = new StateGraph(AgentState as any)
     .addNode("deep_agent", async (state: any) => {
@@ -1610,6 +1629,7 @@ export async function runProjectAgent(options: {
       emit("error", retryIsDoom ? `Stuck repeating ${doomTool} — stopped to avoid an infinite loop after ${toolCallCount} tool calls. Say "continue" to resume differently.` : `Step budget reached (${outerLimit} graph steps; ${toolCallCount} tool calls). Progress saved — say "continue" to resume.`);
       if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: retryIsDoom ? `Doom-loop breaker fired on ${doomTool}; checkpoint saved for resume.` : `Recursion limit hit at ${outerLimit}; checkpoint saved for resume.` });
       const partialUsage = usage.finalize(modelName, estimatedFallbackInputTokens, 0);
+      if (hooks.length) void dispatchHooks(projectRoot, hooks, "run:end", { request, mode, projectRoot, runId: sessionId, verification: "interrupted" }).catch(() => undefined);
       return {
         response: partial,
         verification: "interrupted",
@@ -1691,6 +1711,15 @@ export async function runProjectAgent(options: {
   const finalUsage = usage.finalize(modelName, estimatedFallbackInputTokens, fallbackOutputTokens);
   emit("assistant", result.response, undefined, finalUsage);
   emit("usage", `Token usage · ${finalUsage.totalTokens} tokens${finalUsage.estimatedCost == null ? "" : ` (~$${finalUsage.estimatedCost})`}`, undefined, finalUsage);
+
+  if (hooks.length) {
+    const hookEvent = result?.verification === "failed" ? "verify:fail" : "run:end";
+    void dispatchHooks(projectRoot, hooks, hookEvent, {
+      request, mode, projectRoot, runId: sessionId,
+      verification: result?.verification ?? "none",
+      response: tail(String(result?.response ?? ""), 2000),
+    }).catch(() => undefined);
+  }
 
   if (trajectory) {
     await trajectory.log({ source: "MODEL", type: "PLANNER_RESPONSE", content: result.response, usage: finalUsage });

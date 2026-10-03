@@ -11,9 +11,9 @@ import { runProjectAgent, RunCancelledError, clearLastRunCheckpoint, isContinueR
 import { PROVIDERS, fetchRemoteModels } from "./providers.js";
 import {
   appendHomeSessionMessages, appendSessionMessages, createHomeSession, createSession, deleteHomeSession, deleteProject, deleteSession, getHomeMemory, getHomeSession, getProject, getSession,
-  getSkillsConfig, listEmbeddingProviders, listHomeSessions, listMcpServers, listProjects, listProviders, listSessions,
+  getHooksConfig, getSkillsConfig, listEmbeddingProviders, listHomeSessions, listMcpServers, listProjects, listProviders, listSessions,
   isMaskedSecret,
-  removeEmbeddingProvider, removeMcpServer, removeProvider, saveSkillsConfig, updateHomeMemory, updateHomeSession, updateProjectMemory,
+  removeEmbeddingProvider, removeMcpServer, removeProvider, saveHooksConfig, saveSkillsConfig, updateHomeMemory, updateHomeSession, updateProjectMemory,
   updateSession, upsertEmbeddingProvider, upsertMcpServer, upsertProject, upsertProvider, getAppSettings, saveAppSettings, getNotebookParserConfig, saveNotebookParserConfig, type EmbeddingProviderConfig,
   type McpServerConfig, type ProviderConfig, type ChatAttachment, mutateHomeMemory, listMcpServersMasked
 } from "./store.js";
@@ -850,6 +850,8 @@ app.whenReady().then(async () => {
   ipcMain.handle("mcp:remove", (_event, serverId: string) => removeMcpServer(serverId));
   ipcMain.handle("mcp:test", (_event, input: Omit<McpServerConfig, "id" | "enabled">) => testMcpServer(input));
 
+  ipcMain.handle("hooks:config:get", () => getHooksConfig());
+  ipcMain.handle("hooks:config:save", (_event, config: { enabled: boolean }) => saveHooksConfig(config));
   ipcMain.handle("skills:config:get", () => getSkillsConfig());
   ipcMain.handle("skills:config:save", (_event, config: { enabled: boolean }) => saveSkillsConfig(config));
   ipcMain.handle("skills:list", async () => {
