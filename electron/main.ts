@@ -104,7 +104,10 @@ function createWindow() {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      // Renderer sandbox canary: NEXUS_SANDBOX=1 opts into Chromium's sandbox.
+      // Default stays off until a release cycle validates every preload/native
+      // interaction with it on (flip the default once verified).
+      sandbox: process.env.NEXUS_SANDBOX === "1",
       webviewTag: true,
       // Required for the built-in Chromium PDF viewer: the Home and Notebook
       // file previews render generated PDFs in an <iframe src="blob:…">.
@@ -802,6 +805,18 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle("sessions:list", (_event, projectId: string) => listSessions(projectId));
+  ipcMain.handle("sessions:export", async (_event, sessionId: string) => {
+    if (!sessionId) throw new Error("No active session.");
+    for (const project of await listProjects()) {
+      const session = project.sessions.find((s) => s.id === sessionId);
+      if (!session) continue;
+      const { exportSessionHtml } = await import("./session-export.js");
+      const file = await exportSessionHtml(session, project.name, path.join(app.getPath("userData"), "exports"));
+      shell.showItemInFolder(file);
+      return file;
+    }
+    throw new Error("Session not found.");
+  });
   ipcMain.handle("session:create", async (_event, projectId: string, title?: string) => {
     const session = await createSession(projectId, title);
     activeProjectId = projectId; activeSessionId = session.id;

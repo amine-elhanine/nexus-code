@@ -10,6 +10,7 @@ import path from "node:path";
 import { createMiddleware } from "langchain";
 import { ToolMessage } from "@langchain/core/messages";
 import { scrubSecretEnv } from "./child-env.js";
+import { pluginHookFiles } from "./plugins-service.js";
 
 export type HookEventName = "run:start" | "run:end" | "tool:before" | "tool:after" | "verify:fail";
 
@@ -55,12 +56,14 @@ export function parseHooksConfig(content: string): HookConfig[] {
 
 /** Reads <projectRoot>/.nexus/hooks.json. Missing/malformed → no hooks. */
 export async function discoverHooks(projectRoot: string): Promise<HookConfig[]> {
-  try {
-    const content = await readFile(path.join(path.resolve(projectRoot), HOOKS_FILE), "utf8");
-    return parseHooksConfig(content);
-  } catch {
-    return [];
+  const files = [path.join(path.resolve(projectRoot), HOOKS_FILE), ...(await pluginHookFiles(projectRoot).catch(() => []))];
+  const hooks: HookConfig[] = [];
+  for (const file of files) {
+    try {
+      hooks.push(...parseHooksConfig(await readFile(file, "utf8")));
+    } catch { /* missing or malformed file contributes nothing */ }
   }
+  return hooks;
 }
 
 export type HookOutcome = { ok: boolean; exitCode: number | null; output: string; timedOut: boolean };

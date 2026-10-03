@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
-  Coins, Sparkles, GitBranch, RotateCcw, Check, FileCode2,
+  Coins, Sparkles, GitBranch, RotateCcw, Check, FileCode2, FileDown,
   Paperclip, FileText, Plus, Square, ArrowUp, ShieldCheck, ChevronDown, X,
   Bug, Code2, CheckCircle2,
 } from "lucide-react";
@@ -502,6 +502,19 @@ export function AgentView({
               </span>
               <span className="cost">{formatCost(sessionUsage.estimatedCost)}</span>
             </span>
+          )}
+          {activeSessionId && typeof (api as unknown as { exportSession?: unknown })?.exportSession === "function" && (
+            <button
+              type="button"
+              className="session-usage-pill"
+              title="Export this session as a standalone HTML file"
+              onClick={() => {
+                void ((api as unknown as { exportSession: (id: string) => Promise<string> }).exportSession(activeSessionId)).catch(() => undefined);
+              }}
+            >
+              <FileDown size={12} />
+              <span>Export</span>
+            </button>
           )}
           <span className="local-badge">
             <span /> Local

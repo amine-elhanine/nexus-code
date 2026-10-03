@@ -28,6 +28,7 @@ const nexusApi = {
   saveMcpServer: (server: unknown) => invoke("mcp:save", server),
   removeMcpServer: (serverId: string) => invoke("mcp:remove", serverId),
   testMcpServer: (server: unknown) => invoke("mcp:test", server),
+  exportSession: (sessionId: string) => invoke("sessions:export", sessionId),
   getHooksConfig: () => invoke("hooks:config:get"),
   saveHooksConfig: (config: unknown) => invoke("hooks:config:save", config),
   getSkillsConfig: () => invoke("skills:config:get"),

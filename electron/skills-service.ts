@@ -6,6 +6,7 @@ import electronPkg from "electron";
 const app = (electronPkg as any)?.app || (electronPkg as any)?.default?.app;
 const shell = (electronPkg as any)?.shell || (electronPkg as any)?.default?.shell;
 import { z } from "zod";
+import { pluginSkillDirs } from "./plugins-service.js";
 
 // Skills are plain folders containing a SKILL.md (name + description frontmatter,
 // instructions below). Per-project skills live inside the repository; the global
@@ -164,6 +165,10 @@ export async function listSkills(projectRoot?: string | null): Promise<SkillInfo
   if (projectRoot) {
     roots.push({ root: projectSkillsDir(projectRoot), scope: "project" });
     roots.push({ root: legacyProjectSkillsDir(projectRoot), scope: "project" });
+    // Plugin-contributed skills (.nexus/plugins/<name>/skills/<skill>).
+    for (const dir of await pluginSkillDirs(projectRoot).catch(() => [])) {
+      roots.push({ root: dir, scope: "project" });
+    }
   }
   for (const { root, scope } of roots) {
     let entries: string[] = [];

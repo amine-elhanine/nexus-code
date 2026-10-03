@@ -54,6 +54,7 @@ export interface NexusApi {
   saveMcpServer: (server: Partial<McpServerConfig> & { name: string; transport: McpTransport }) => Promise<McpServerConfig[]>;
   removeMcpServer: (serverId: string) => Promise<McpServerConfig[]>;
   testMcpServer: (server: Partial<McpServerConfig>) => Promise<McpTestResult>;
+  exportSession: (sessionId: string) => Promise<string>;
   getHooksConfig: () => Promise<{ enabled: boolean }>;
   saveHooksConfig: (config: { enabled: boolean }) => Promise<{ enabled: boolean }>;
   getSkillsConfig: () => Promise<{ enabled: boolean }>;
