@@ -38,6 +38,8 @@ export type SkillsConfig = { enabled: boolean };
 export type HooksConfig = { enabled: boolean };
 export type AppSettings = {
   browserHeadless?: boolean;
+  /** Opt-in edit approval for Code runs: "ask" gates every file mutation behind the approval UI. */
+  editPolicy?: "auto" | "ask";
   notebookRerankEnabled?: boolean;
   notebookRerankProviderId?: string;
   notebookRerankModel?: string;

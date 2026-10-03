@@ -145,3 +145,5 @@ await test('parseSymbolsFromCode routes to AST when warm and never throws on mal
   const malformed = parseSymbolsWithTreeSitterSync('def (:\n  pass', 'broken.py');
   assert.ok(Array.isArray(malformed) || malformed === null, 'malformed code returns symbols or null, never throws');
 });
+
+if (failed > 0) process.exitCode = 1;

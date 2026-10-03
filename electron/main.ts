@@ -14,7 +14,7 @@ import {
   getHooksConfig, getSkillsConfig, listEmbeddingProviders, listHomeSessions, listMcpServers, listProjects, listProviders, listSessions,
   isMaskedSecret,
   removeEmbeddingProvider, removeMcpServer, removeProvider, saveHooksConfig, saveSkillsConfig, updateHomeMemory, updateHomeSession, updateProjectMemory,
-  updateSession, upsertEmbeddingProvider, upsertMcpServer, upsertProject, upsertProvider, getAppSettings, saveAppSettings, getNotebookParserConfig, saveNotebookParserConfig, type EmbeddingProviderConfig,
+  updateSession, upsertEmbeddingProvider, upsertMcpServer, upsertProject, upsertProvider, getAppSettings, saveAppSettings, getNotebookParserConfig, saveNotebookParserConfig, type AppSettings, type EmbeddingProviderConfig,
   type McpServerConfig, type ProviderConfig, type ChatAttachment, mutateHomeMemory, listMcpServersMasked
 } from "./store.js";
 import { HOME_PROJECT_ID, cleanupHomeGeneratorScripts, downloadHomeFile, ensureHomeDir, listHomeFiles, listHomeSessionFiles, listHomeSessionFilesForDeletion, openHomeFolder, readHomeFile, recordHomeRunFiles, removeSessionFromManifest } from "./home-service.js";
@@ -1284,7 +1284,8 @@ app.whenReady().then(async () => {
 
       const backendRecord = { ...project, root: executionRoot };
       emitFor(sessionId, { type: "status", text: "Preparing workspace…" });
-      const { backend } = await getAgentBackend(backendRecord, { readOnly: mode === "plan", runId: sessionId });
+      const editPolicy = (await getAppSettings().catch(() => ({}) as AppSettings)).editPolicy === "ask" ? "ask" : "auto";
+      const { backend } = await getAgentBackend(backendRecord, { readOnly: mode === "plan", runId: sessionId, editPolicy });
       // Undo-ready baseline: HEAD before the run + file snapshot. Best-effort
       // so non-git projects still run (their Undo simply no-ops).
       let preRunHead: string | null = null;
@@ -1370,6 +1371,7 @@ app.whenReady().then(async () => {
           history,
           mode,
           agentBackend: backend,
+          editPolicy,
           resumeMessages: stored?.messages ?? null,
           resumePlanItems: stored?.planItems ?? null,
           resumeNote,

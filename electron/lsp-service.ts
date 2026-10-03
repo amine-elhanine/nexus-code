@@ -374,6 +374,7 @@ class LspServer {
 
 const servers = new Map<string, LspServer>();
 const unavailable = new Set<string>();
+const failedStarts = new Map<string, number>();
 
 function serverKey(projectRoot: string, language: LspLanguage): string {
   return `${language}:${path.resolve(projectRoot).toLowerCase()}`;
@@ -382,6 +383,13 @@ function serverKey(projectRoot: string, language: LspLanguage): string {
 async function getLspServer(projectRoot: string, language: LspLanguage): Promise<LspServer | null> {
   const key = serverKey(projectRoot, language);
   if (unavailable.has(key)) return null;
+  const noteFailure = () => {
+    const attempts = (failedStarts.get(key) ?? 0) + 1;
+    failedStarts.set(key, attempts);
+    // Two-strike: one slow cold start (AV scan, cold npx) must not disable a
+    // language for the whole session, but repeated failures stop retry storms.
+    if (attempts >= 2) unavailable.add(key);
+  };
   let server = servers.get(key);
   if (!server) {
     server = new LspServer(language, projectRoot);
@@ -389,14 +397,15 @@ async function getLspServer(projectRoot: string, language: LspLanguage): Promise
     const ok = await server.whenReady;
     if (!ok) {
       servers.delete(key);
-      unavailable.add(key);
+      noteFailure();
       return null;
     }
+    failedStarts.delete(key);
   } else {
     const ok = await server.whenReady;
     if (!ok) {
       servers.delete(key);
-      unavailable.add(key);
+      noteFailure();
       return null;
     }
     server.touch();

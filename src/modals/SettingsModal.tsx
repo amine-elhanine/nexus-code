@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Eye, EyeOff, KeyRound, FolderOpen, ChevronRight, Globe, Puzzle, Server, Terminal, Download, RefreshCw, Loader2, Check, BookOpen, Plus, Settings2, Trash2, X, Palette, FileText } from "lucide-react";
+import { Eye, EyeOff, KeyRound, FolderOpen, ChevronRight, Globe, Puzzle, Server, Terminal, Download, RefreshCw, Loader2, Check, BookOpen, Plus, Settings2, Trash2, X, Palette, FileText, Shield, ShieldCheck } from "lucide-react";
 import { Modal } from "../components/common/Modal.js";
 import { Toggle } from "../components/common/Toggle.js";
 import { ProviderManager } from "../components/settings/ProviderManager.js";
@@ -45,6 +45,8 @@ export function SettingsModal({
   const [themeId, setThemeId] = useState(() => getStoredThemeId());
   const [themeNote, setThemeNote] = useState("");
   const [headless, setHeadless] = useState(true);
+  const [editPolicy, setEditPolicy] = useState<"auto" | "ask">("auto");
+  const [editPolicyNote, setEditPolicyNote] = useState("");
   const [rerankEnabled, setRerankEnabled] = useState(false);
   const [rerankProviderId, setRerankProviderId] = useState("");
   const [rerankModel, setRerankModel] = useState("");
@@ -84,8 +86,9 @@ export function SettingsModal({
   }, []);
 
   useEffect(() => {
-    const typed = api as unknown as { getAppSettings?: () => Promise<{ notebookRerankEnabled?: boolean; notebookRerankProviderId?: string; notebookRerankModel?: string; notebookVisionEnabled?: boolean; notebookVisionProviderId?: string; notebookVisionModel?: string; theme?: string }> };
+    const typed = api as unknown as { getAppSettings?: () => Promise<{ notebookRerankEnabled?: boolean; notebookRerankProviderId?: string; notebookRerankModel?: string; notebookVisionEnabled?: boolean; notebookVisionProviderId?: string; notebookVisionModel?: string; theme?: string; editPolicy?: string }> };
     typed.getAppSettings?.().then((value) => {
+      setEditPolicy(value.editPolicy === "ask" ? "ask" : "auto");
       setRerankEnabled(Boolean(value.notebookRerankEnabled));
       setRerankProviderId(value.notebookRerankProviderId || "");
       setRerankModel(value.notebookRerankModel || "");
@@ -154,6 +157,18 @@ export function SettingsModal({
       setParserNote(parserEnabled && parserProvider === "llamaparse" ? "Saved. New notebook files will be parsed with LlamaParse." : "Saved. Local parsing is active.");
     } catch (error) {
       setParserNote(error instanceof Error ? error.message : "Could not save parser settings.");
+    }
+  }
+
+  async function saveEditPolicy(next: "auto" | "ask") {
+    setEditPolicy(next);
+    const typed = api as unknown as { saveAppSettings?: (value: unknown) => Promise<unknown> };
+    if (typeof typed.saveAppSettings !== "function") return;
+    try {
+      await typed.saveAppSettings({ editPolicy: next });
+      setEditPolicyNote(next === "ask" ? "Saved. Code runs will pause for your approval before changing files." : "Saved. Code runs change files without pausing.");
+    } catch (error) {
+      setEditPolicyNote(error instanceof Error ? error.message : "Could not save edit approval setting.");
     }
   }
 
@@ -561,6 +576,43 @@ export function SettingsModal({
                 <Globe size={12} />
                 <span>Same switch lives in the Browser tab toolbar. Follow the agent with the Follow banner there.</span>
               </div>
+            </div>
+          )}
+
+          {section === "browser" && (
+            <div className="setting-card">
+              <div className="setting-row">
+                <span className="setting-icon">{editPolicy === "ask" ? <ShieldCheck size={14} /> : <Shield size={14} />}</span>
+                <div className="setting-text">
+                  <strong>Edit approval</strong>
+                  <small>
+                    {editPolicy === "ask"
+                      ? "Every file change in Code runs waits for your confirmation."
+                      : "The agent changes files directly — Undo and diffs still cover you."}
+                  </small>
+                </div>
+              </div>
+              <div className="seg" role="group" aria-label="Edit approval">
+                <button
+                  type="button"
+                  className={editPolicy === "ask" ? "active" : ""}
+                  onClick={() => void saveEditPolicy("ask")}
+                >
+                  <ShieldCheck size={12} /> Ask first
+                </button>
+                <button
+                  type="button"
+                  className={editPolicy === "auto" ? "active" : ""}
+                  onClick={() => void saveEditPolicy("auto")}
+                >
+                  <Shield size={12} /> Auto
+                </button>
+              </div>
+              {editPolicyNote ? (
+                <div className="settings-note" style={{ marginTop: "10px" }}>
+                  <span>{editPolicyNote}</span>
+                </div>
+              ) : null}
             </div>
           )}
 

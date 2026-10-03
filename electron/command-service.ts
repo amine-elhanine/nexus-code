@@ -235,7 +235,7 @@ export async function executeCommand(projectRoot: string, command: string, optio
 
 function backendId(project: ProjectRecord) { return `workspace-${project.id}`; }
 
-export async function getAgentBackend(project: ProjectRecord, options: { readOnly?: boolean; runId?: string } = {}) {
+export async function getAgentBackend(project: ProjectRecord, options: { readOnly?: boolean; runId?: string; editPolicy?: "auto" | "ask" } = {}) {
   const backend: any = new FilesystemBackend({ rootDir: path.resolve(project.root), virtualMode: true });
   backend.id = backendId(project);
   // Cap listing/search fan-out: an uncapped `ls /` or `glob **/*` on a repo
@@ -263,6 +263,27 @@ export async function getAgentBackend(project: ProjectRecord, options: { readOnl
     backend.execute = refuse("execute");
   } else {
     backend.execute = (command: string) => executeCommand(project.root, command, { runId: options.runId, requireApproval: true });
+    if (options.editPolicy === "ask") {
+      // Opt-in edit approval (AppSettings.editPolicy="ask"): backend file
+      // mutations wait for the same approval UI shell commands use. A
+      // "session" decision (approvalKey + runId) approves the rest of the
+      // run's edits; a denial throws so the model sees the refusal.
+      const gate = (action: string, original: any) => async (filePath: string, ...rest: any[]) => {
+        const decision = await requestCommandApproval({
+          runId: options.runId,
+          approvalKey: "file-edit",
+          command: `${action} ${filePath}`,
+          cwd: path.resolve(project.root),
+          reason: "Edit approval is on: file changes wait for your confirmation.",
+        });
+        if (decision === "deny") throw new Error(`Edit denied by the user: ${action} on ${filePath} was not approved. Do not retry the same change; explain what you intended instead.`);
+        return original(filePath, ...rest);
+      };
+      for (const action of ["write", "edit", "delete"] as const) {
+        const original = backend[action]?.bind(backend);
+        if (original) backend[action] = gate(action, original);
+      }
+    }
   }
   return { backend, workspace: project.root };
 }

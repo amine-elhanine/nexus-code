@@ -604,7 +604,7 @@ function sanitizeSkillDest(raw: unknown, skillName: string): string {
  * run via the returned workspace-relative paths with execute. Only skills
  * eligible for the current mode are visible here (pass the filtered catalog).
  */
-export function createSkillFilesTool(eligibleSkills: SkillInfo[], workspaceRoot: string) {
+export function createSkillFilesTool(eligibleSkills: SkillInfo[], workspaceRoot: string, options: { beforeEdit?: (info: { tool: string; files: string[] }) => Promise<string | null> } = {}) {
   const root = path.resolve(workspaceRoot);
   return tool(async ({ skill: name, dest }: { skill: string; dest?: string }) => {
     const query = String(name || "").trim().toLowerCase();
@@ -618,6 +618,10 @@ export function createSkillFilesTool(eligibleSkills: SkillInfo[], workspaceRoot:
     const target = path.join(root, rel);
     if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
       return "Destination escapes the workspace — pick a relative folder.";
+    }
+    if (options.beforeEdit) {
+      const denial = await options.beforeEdit({ tool: "materialize_skill_files", files: [rel.replace(/\\/g, "/")] });
+      if (denial) return denial;
     }
     await fs.rm(target, { recursive: true, force: true });
     await fs.mkdir(target, { recursive: true });

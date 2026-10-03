@@ -153,3 +153,5 @@ await test('middleware returns null when no tool hooks are configured', () => {
   const middleware = createHooksMiddleware({ projectRoot: '.', hooks: [{ event: 'run:end', command: 'node -v' }] });
   assert.equal(middleware, null, 'run lifecycle hooks do not need the middleware');
 });
+
+if (failed > 0) process.exitCode = 1;

@@ -24,6 +24,7 @@ import { saveArtifact, type ArtifactItem } from "./artifacts-service.js";
 import { TrajectoryLogger } from "./trajectory-service.js";
 import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint } from "./rate-limit.js";
 import { RunCancelledError, getRunAbortSignal } from "./command-service.js";
+import { requestCommandApproval } from "./approval-service.js";
 import { createHomeMemoryTool, addMemoryFact, removeMemoryFactWithCount, selectRelevantHomeMemory, parseCandidateFacts, shouldExtractMemory, type MemoryCandidate } from "./home-memory-service.js";
 import { createHomeTaskJournal, finishHomeTaskJournal, recordHomeTaskAction, saveHomeTaskJournal, type HomeTaskJournal, type HomeTaskPhase } from "./home-task-service.js";
 import { selectHomeArtifactCandidates, validateHomeArtifacts } from "./home-artifact-service.js";
@@ -380,6 +381,8 @@ export async function runProjectAgent(options: {
   resumePlanItems?: PlanItem[] | null;
   resumeNote?: string | null;
   taskKind?: AgentTaskKind;
+  /** "ask" gates every file mutation (backend + apply_patch + skill files) behind approval UI. */
+  editPolicy?: "auto" | "ask";
   /** Agent mode for skill scoping ("home" | "code" | "notebook"). Omit = all skills eligible. */
   skillsMode?: SkillMode;
   /** Callback when the agent updates shared Home long-term memory via manage_memory. */
@@ -623,6 +626,23 @@ export async function runProjectAgent(options: {
   };
   // Home general runs always get the browser + free web search: research is
   // core to that mode, not an edge case.
+  // Edit-approval gate (opt-in via AppSettings.editPolicy or the run options):
+  // applied at all three mutation paths — backend write/edit/delete (see
+  // getAgentBackend), apply_patch, and materialize_skill_files.
+  const editGate = options.editPolicy === "ask"
+    ? async (info: { tool: string; files: string[] }) => {
+        const decision = await requestCommandApproval({
+          runId: sessionId,
+          approvalKey: "file-edit",
+          command: `${info.tool} ${info.files.slice(0, 5).join(", ")}${info.files.length > 5 ? ` (+${info.files.length - 5} more)` : ""}`,
+          cwd: projectRoot,
+          reason: "Edit approval is on: file changes wait for your confirmation.",
+        });
+        return decision === "deny"
+          ? `Edit denied by the user: ${info.tool} on ${info.files.join(", ")} was not approved. Do not retry the same change; explain what you intended instead.`
+          : null;
+      }
+    : undefined;
   const browserTools = wantsBrowser || isGeneral
     ? createBrowserTools(projectRoot, {
         agentBrowser: {
@@ -667,9 +687,9 @@ export async function runProjectAgent(options: {
   // tool-registration boundary too: custom tools must not bypass the backend.
   // importableAttachments covers every file type (images + docs); the legacy
   // attachedImages alias keeps image imports working for older callers.
-  const editTools = mode === "plan" ? [] : createEditTools(projectRoot, { attachedImages: attachments, attachedFiles: importableAttachments ?? attachments });
+  const editTools = mode === "plan" ? [] : createEditTools(projectRoot, { attachedImages: attachments, attachedFiles: importableAttachments ?? attachments, beforeEdit: editGate });
   // Skill helper scripts run through the workspace: plan mode stays read-only.
-  const skillFilesTools = mode === "plan" || !skillsConfig.enabled ? [] : [createSkillFilesTool(eligibleSkillCatalog, projectRoot)];
+  const skillFilesTools = mode === "plan" || !skillsConfig.enabled ? [] : [createSkillFilesTool(eligibleSkillCatalog, projectRoot, { beforeEdit: editGate })];
   const questionTool = createQuestionTool(async (questions) => {
     emit("status", `Clarifying questions: ${questions.map((q) => q.header).join(", ")}`);
     if (trajectory) {

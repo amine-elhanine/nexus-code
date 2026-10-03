@@ -59,3 +59,5 @@ await test('CLI: unknown --provider exits 3 without touching the network', async
     }
   );
 });
+
+if (failed > 0) process.exitCode = 1;

@@ -114,3 +114,5 @@ if (serverAvailable) {
     }
   });
 }
+
+if (failed > 0) process.exitCode = 1;

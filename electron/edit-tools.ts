@@ -292,9 +292,16 @@ async function acquireProjectWriteLock(projectRoot: string): Promise<() => void>
   };
 }
 
-export function createEditTools(projectRoot: string, options: { attachedImages?: string[]; attachedFiles?: string[] } = {}) {
+export function createEditTools(projectRoot: string, options: { attachedImages?: string[]; attachedFiles?: string[]; beforeEdit?: (info: { tool: string; files: string[] }) => Promise<string | null> } = {}) {
   const applyPatchTool = tool(
     async ({ patchText }: { patchText: string }) => {
+      // Approval gate BEFORE the write lock and any filesystem side effect, so
+      // a pending approval never blocks parallel tool calls.
+      const previewOps = parsePatchText(patchText || "");
+      if (previewOps.length && options.beforeEdit) {
+        const denial = await options.beforeEdit({ tool: "apply_patch", files: previewOps.map((op) => (op.kind === "move" ? `${op.from} -> ${op.to}` : op.file)) });
+        if (denial) return denial;
+      }
       const releaseWrite = await acquireProjectWriteLock(projectRoot);
       type Snapshot = { path: string; existed: boolean; content?: Buffer; mode?: number };
       const snapshots = new Map<string, Snapshot>();
