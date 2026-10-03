@@ -4,15 +4,14 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import { ensureSymbolParsersReady, parseSymbolsWithTreeSitterSync, startSymbolParserWarmup, type SymbolEntry } from "./symbol-parser.js";
+
+export type { SymbolEntry };
+// Warm the WASM grammars in the background so the sync parse path is
+// AST-backed (not regex fallback) by the time an agent run starts.
+startSymbolParserWarmup();
 
 const execFileAsync = promisify(execFile);
-
-export type SymbolEntry = {
-  kind: "function" | "class" | "interface" | "type" | "variable" | "export" | "import" | "struct" | "enum" | "trait";
-  name: string;
-  line: number;
-  signature: string;
-};
 
 const IGNORED_DIRS = new Set([
   ".git",
@@ -69,6 +68,26 @@ export function parseSymbolsFromCode(arg1: string, arg2: string): SymbolEntry[] 
   let code = arg1;
   let fileName = arg2;
   // Auto-detect argument order if fileName was passed first
+  if (arg1.includes("\n") || (!arg2.includes("\n") && arg1.length > arg2.length)) {
+    code = arg1;
+    fileName = arg2;
+  } else if (arg2.includes("\n") || (!arg1.includes("\n") && arg2.length > arg1.length)) {
+    code = arg2;
+    fileName = arg1;
+  }
+
+  // AST path when the WASM grammar for this extension has warmed; the regex
+  // parser below remains the fallback (cold start, unsupported language).
+  const ast = parseSymbolsWithTreeSitterSync(code, fileName);
+  if (ast) return ast;
+  return parseSymbolsFromCodeRegex(code, fileName);
+}
+
+/** Line-regex symbol extraction. Kept as fallback for unsupported languages
+ *  and for the window before the WASM grammars finish warming. */
+function parseSymbolsFromCodeRegex(arg1: string, arg2: string): SymbolEntry[] {
+  let code = arg1;
+  let fileName = arg2;
   if (arg1.includes("\n") || (!arg2.includes("\n") && arg1.length > arg2.length)) {
     code = arg1;
     fileName = arg2;
@@ -331,6 +350,7 @@ export function createCodeIntelligenceTools(projectRoot: string) {
   const getSymbolOutlineTool = tool(
     async ({ filePath }: { filePath: string }) => {
       try {
+        await ensureSymbolParsersReady().catch(() => false);
         const target = await safePath(projectRoot, filePath);
         const content = await fs.readFile(target, "utf8");
         const lines = content.split(/\r?\n/).length;
@@ -342,7 +362,7 @@ export function createCodeIntelligenceTools(projectRoot: string) {
     },
     {
       name: "get_symbol_outline",
-      description: "Extract structural symbols (functions, classes, interfaces, types, structs) from a code file without loading the entire body into memory. Much faster and more token-efficient than read_file for exploring structure.",
+      description: "Extract structural symbols (functions, classes, interfaces, types, structs) from a code file via AST parsing — accurate for multi-line signatures, decorators, and class members. Much faster and more token-efficient than read_file for exploring structure.",
       schema: z.object({
         filePath: z.string().describe("Relative path to the source file (e.g. src/App.tsx)"),
       }),
@@ -354,6 +374,7 @@ export function createCodeIntelligenceTools(projectRoot: string) {
       const cleanSymbol = symbol.trim();
       if (!cleanSymbol) return "Symbol name is required.";
 
+      await ensureSymbolParsersReady().catch(() => false);
       const escaped = cleanSymbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       let hits = await gitGrep(projectRoot, `\\b${escaped}\\b`);
       if (hits === null) {
@@ -394,6 +415,7 @@ export function createCodeIntelligenceTools(projectRoot: string) {
       const cleanSymbol = symbol.trim();
       if (!cleanSymbol) return "Symbol name is required.";
 
+      await ensureSymbolParsersReady().catch(() => false);
       const escaped = cleanSymbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const pattern = `\\b${escaped}\\b`;
       let hits: GrepHit[] | null = await gitGrep(projectRoot, pattern);

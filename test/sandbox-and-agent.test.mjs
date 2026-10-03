@@ -652,7 +652,9 @@ export const helper = () => true;
     const outline = formatOutline('src/user.ts', symbols);
     assert.match(outline, /interface User/);
     assert.match(outline, /class UserService/);
-    assert.match(outline, /method getUser/);
+    // AST signatures keep the full multi-line method signature + return type
+    // (the old regex parser truncated at the first line break).
+    assert.match(outline, /getUser\(id: string\): Promise<User>/);
     assert.match(outline, /function formatUser/);
   });
 
