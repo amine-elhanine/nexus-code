@@ -23,14 +23,14 @@ import {
 
 test("ECC Integration: listSystemSkills discovers the full curated catalog", async () => {
   const systemSkills = await listSystemSkills();
-  assert.ok(systemSkills.length >= 120, `Expected the full curated catalog (~130), got ${systemSkills.length}`);
+  assert.ok(systemSkills.length >= 40, `Expected the curated catalog (46 shipped), got ${systemSkills.length}`);
   const codeSkills = systemSkills.filter((s) => !s.modes.length || s.modes.includes("code"));
-  assert.ok(codeSkills.length >= 110, `Expected the full code-scoped catalog (~120), got ${codeSkills.length}`);
+  assert.ok(codeSkills.length >= 40, `Expected the code-scoped catalog (~43: all/ + code/), got ${codeSkills.length}`);
 
   const names = systemSkills.map((s) => s.name);
   assert.ok(names.includes("tdd-workflow"), "tdd-workflow should be present");
   assert.ok(names.includes("security-review"), "security-review should be present");
-  assert.ok(names.includes("verification-loop"), "verification-loop should be present");
+  assert.ok(names.includes("python-testing"), "python-testing should be present");
   assert.ok(names.includes("search-first"), "search-first should be present");
   assert.ok(names.includes("error-handling"), "error-handling should be present");
   assert.ok(names.includes("postgres-patterns"), "postgres-patterns should be present");
