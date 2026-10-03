@@ -1,9 +1,10 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import {
   FileCode2, Save, X, Eye, Code2, GitBranch, WrapText, Map,
   FileJson, FileText, Sparkles
 } from "lucide-react";
+import "../../utils/monaco-setup.js";
 
 interface MonacoEditorViewProps {
   activeFile: string;
@@ -82,6 +83,12 @@ export const MonacoEditorView: React.FC<MonacoEditorViewProps> = ({
   const [wordWrap, setWordWrap] = useState<"on" | "off">("on");
   const [minimap, setMinimap] = useState(false);
   const editorRef = useRef<any>(null);
+  // Ctrl+S is registered once at mount; a plain closure would capture the
+  // FIRST render's save/fileContent and silently write stale buffer content.
+  const saveRef = useRef(save);
+  useEffect(() => {
+    saveRef.current = save;
+  }, [save]);
 
   const language = detectLanguage(activeFile);
 
@@ -117,7 +124,7 @@ export const MonacoEditorView: React.FC<MonacoEditorViewProps> = ({
 
     // Add Ctrl+S / Cmd+S save hotkey
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-      save();
+      saveRef.current();
     });
   };
 
@@ -199,10 +206,13 @@ export const MonacoEditorView: React.FC<MonacoEditorViewProps> = ({
         </div>
       </div>
 
-      {/* Monaco Instance */}
+      {/* Monaco Instance — `path` gives each open file its own model, so
+          switching tabs swaps buffers instead of pushing one file's text into
+          the previous file's model (the stale/blank content bug). */}
       <div className="monaco-editor-wrapper">
         <Editor
           height="100%"
+          path={activeFile}
           language={language}
           value={content}
           theme="forgepilot-dark"

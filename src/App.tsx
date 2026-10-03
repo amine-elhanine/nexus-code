@@ -1018,7 +1018,7 @@ function App() {
 
         {showContext && area !== "notebook" ? (
           area === "code" ? (
-          <aside key="code-context" className="context-pane" style={{ width: contextWidth }}>
+          <aside key="code-context" className={`context-pane${contextWidth <= 300 ? " narrow" : ""}`} style={{ width: contextWidth }}>
             <div className="context-resize" onPointerDown={startContextResize} title="Drag to resize the sidebar" />
             <div className="notebook-side-head">
               <div className="notebook-side-head-left">
@@ -1041,22 +1041,22 @@ function App() {
             </div>
             <div className="context-tabs" role="tablist" aria-label="Code sidebar">
               <button type="button" role="tab" aria-selected={codeSideTab === "session"} className={codeSideTab === "session" ? "active" : ""} onClick={() => setCodeSideTab("session")} title="Session status and tools">
-                <Info size={12} /> Session
+                <Info size={12} /> <span className="context-tab-label">Session</span>
               </button>
               <button type="button" role="tab" aria-selected={codeSideTab === "files"} className={codeSideTab === "files" ? "active" : ""} onClick={() => setCodeSideTab("files")} title="Project files">
-                <FolderOpen size={12} /> Files
+                <FolderOpen size={12} /> <span className="context-tab-label">Files</span>
               </button>
               <button type="button" role="tab" aria-selected={codeSideTab === "browser"} className={codeSideTab === "browser" ? "active" : ""} onClick={() => setCodeSideTab("browser")} title="Built-in browser">
-                <Globe size={12} /> Browser
+                <Globe size={12} /> <span className="context-tab-label">Browser</span>
               </button>
               <button type="button" role="tab" aria-selected={codeSideTab === "terminal"} className={codeSideTab === "terminal" ? "active" : ""} onClick={() => setCodeSideTab("terminal")} title="Interactive terminal">
-                <Terminal size={12} /> Term
+                <Terminal size={12} /> <span className="context-tab-label">Term</span>
               </button>
               <button type="button" role="tab" aria-selected={codeSideTab === "diff"} className={codeSideTab === "diff" ? "active" : ""} onClick={() => { setCodeSideTab("diff"); void refreshDiff(); }} title="Git diff">
-                <GitBranch size={12} /> Diff{diff.length > 0 ? ` (${diff.length})` : ""}
+                <GitBranch size={12} /> <span className="context-tab-label">Diff{diff.length > 0 ? ` (${diff.length})` : ""}</span>
               </button>
               <button type="button" role="tab" aria-selected={codeSideTab === "memory"} className={codeSideTab === "memory" ? "active" : ""} onClick={() => setCodeSideTab("memory")} title="Persistent memory">
-                <Brain size={12} /> Memory
+                <Brain size={12} /> <span className="context-tab-label">Memory</span>
               </button>
             </div>
             <div className={`context-tab-panel${codeSideTab === "session" ? "" : " hidden"}`}>
@@ -1174,7 +1174,7 @@ function App() {
           ) : (
             // Notebook owns its own 3-pane layout (sources / chat / artifacts)
             // inside NotebookView, so the app-level context pane stays hidden.
-          <aside key="home-context" className="context-pane" style={{ width: contextWidth }}>
+          <aside key="home-context" className={`context-pane${contextWidth <= 300 ? " narrow" : ""}`} style={{ width: contextWidth }}>
             <div className="context-resize" onPointerDown={startContextResize} title="Drag to resize the sidebar" />
             <div className="notebook-side-head">
               <div className="notebook-side-head-left">
@@ -1204,7 +1204,7 @@ function App() {
                 onClick={() => setHomeSideTab("session")}
                 title="Session status, usage and memory"
               >
-                <Info size={12} /> Session
+                <Info size={12} /> <span className="context-tab-label">Session</span>
               </button>
               <button
                 type="button"
@@ -1224,7 +1224,7 @@ function App() {
                 onClick={() => setHomeSideTab("browser")}
                 title="Built-in browser"
               >
-                <Globe size={12} /> Browser
+                <Globe size={12} /> <span className="context-tab-label">Browser</span>
               </button>
               <button
                 type="button"
@@ -1234,7 +1234,7 @@ function App() {
                 onClick={() => { setHomeSideTab("memory"); void home.refreshHomeMemory(); }}
                 title="Long-term memory shared across all Home chats"
               >
-                <Brain size={12} /> Memory
+                <Brain size={12} /> <span className="context-tab-label">Memory</span>
               </button>
             </div>
             {homeSideTab === "session" && (
