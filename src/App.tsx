@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Brain, BookOpen, Check, ChevronDown, ChevronRight, Code2, Coins, Download, FileCode2, FileText,
-  FolderOpen, GitBranch, Globe, Home, Info, Loader2, Menu, Sparkles, X,
+  Folder, FolderOpen, GitBranch, Globe, Home, Info, Loader2, Menu, Sparkles, X,
   MessageSquare, PanelRight, Pencil, Plus, RefreshCw, Undo2,
   Settings2, Terminal, Trash2, TriangleAlert, Activity
 } from "lucide-react";
@@ -39,28 +39,36 @@ function FileRow({
   entry,
   active,
   expanded,
+  status,
   onClick,
 }: {
   entry: FileEntry;
   active: boolean;
   expanded: boolean;
+  status?: string;
   onClick: () => void;
 }) {
-  const nested = entry.path.includes("/");
+  const isFolder = entry.kind === "folder";
+  const depth = entry.path.split("/").length - 1;
   return (
-    <button className={`tree-row ${active ? "active" : ""} ${nested ? "nested" : ""}`} onClick={onClick}>
-      {entry.kind === "folder" ? (
+    <button
+      className={`tree-row ${active ? "active" : ""}`}
+      style={{ paddingLeft: 6 + depth * 13 }}
+      onClick={onClick}
+    >
+      {isFolder ? (
         <>
-          {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-          <FolderOpen size={14} />
+          <span className="twist">{expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
+          <span className="ficon">{expanded ? <FolderOpen size={14} /> : <Folder size={14} />}</span>
         </>
       ) : (
         <>
-          {!nested && <span className="indent" />}
-          {fileIcon(entry.path)}
+          <span className="twist hidden" />
+          <span className="ficon">{fileIcon(entry.path)}</span>
         </>
       )}
-      <span>{entry.path.split("/").pop()}</span>
+      <span className="fname">{entry.path.split("/").pop()}</span>
+      {status && <span className={`git-mark git-${status}`}>{status}</span>}
     </button>
   );
 }
@@ -312,6 +320,8 @@ function App() {
     showSkills,
     setShowSkills,
     skillsEnabled,
+    rulesEnabled,
+    setRulesEnabled,
     setSkillsEnabled,
     confirmDialog,
     setConfirmDialog,
@@ -345,8 +355,11 @@ function App() {
     activateSession,
     deleteActiveSession,
     renameSession,
+    gitStatus,
     openFile,
     saveFile,
+    workspacePreviewPath,
+    setWorkspacePreviewPath,
     toggleFolder,
     loadWorkspace,
     refreshDiff,
@@ -361,7 +374,8 @@ function App() {
     keepChanges,
     switchModel,
     handleProvidersChange,
-    saveMemories,
+    removeProjectFact,
+    clearSessionMemory,
     submit,
     stopAgent,
     setActiveFile,
@@ -1102,6 +1116,7 @@ function App() {
                     <span>MEMORY</span>
                     <button onClick={() => setCodeSideTab("memory")}><ChevronRight size={13} /></button>
                   </div>
+                  <MemoryRow label="Project facts" value={activeProject?.facts ? "Updated" : "Empty"} />
                   <MemoryRow label="Project memory" value={activeProject?.memory ? "Updated" : "Empty"} />
                   <MemoryRow label="Session memory" value={activeSession?.memory ? "Updated" : "Empty"} />
                 </div>
@@ -1126,6 +1141,7 @@ function App() {
                     entry={entry}
                     active={entry.path === activeFile}
                     expanded={expandedFolders.has(entry.path)}
+                    status={gitStatus[entry.path]}
                     onClick={() =>
                       entry.kind === "folder" ? toggleFolder(entry.path) : void openFile(entry.path)
                     }
@@ -1168,7 +1184,7 @@ function App() {
               />
             </div>
             <div className={`context-tab-panel${codeSideTab === "memory" ? "" : " hidden"}`}>
-              <MemoryView project={activeProject} session={activeSession} onSave={saveMemories} />
+              <MemoryView project={activeProject} session={activeSession} onRemoveFact={(fact) => void removeProjectFact(fact)} onClearSessionMemory={() => void clearSessionMemory()} />
             </div>
           </aside>
           ) : (
@@ -1372,6 +1388,11 @@ function App() {
             setSkillsEnabled(enabled);
             await api.saveSkillsConfig({ enabled });
           }}
+          rulesEnabled={rulesEnabled}
+          onToggleRules={async (enabled) => {
+            setRulesEnabled(enabled);
+            await api.saveRulesConfig({ enabled });
+          }}
           providers={providers}
           providerDefinitions={providerDefinitions}
           onProvidersChange={handleProvidersChange}
@@ -1565,6 +1586,14 @@ function App() {
           filePath={homePreviewPath}
           onClose={() => setHomePreviewPath(null)}
           onDownload={(p) => void api.downloadHomeFile(p)}
+        />
+      )}
+      {workspacePreviewPath && (
+        <FilePreviewModal
+          filePath={workspacePreviewPath}
+          onClose={() => setWorkspacePreviewPath(null)}
+          onDownload={(p) => void api.downloadWorkspaceFile(p)}
+          load={() => api.readWorkspaceFileBase64(workspacePreviewPath)}
         />
       )}
       {attachmentPreview && <AttachmentPreviewModal attachment={attachmentPreview} onClose={() => setAttachmentPreview(null)} />}

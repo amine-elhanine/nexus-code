@@ -6,6 +6,47 @@ import { getHeadCommit, resetNexusCommitsOnly } from "./repo-service.js";
 
 const execFileAsync = promisify(execFile);
 export type WorkspaceDiffFile = { path: string; directory: string; name: string; additions: number; deletions: number; status: string; patch: string };
+export type GitStatusCode = "U" | "A" | "M" | "D" | "R";
+export type WorkspaceGitStatusEntry = { path: string; code: GitStatusCode };
+
+/**
+ * Parses `git status --porcelain --untracked-files=all` into per-file
+ * decoration codes for the explorer tree. Untracked files report as "U" (VS
+ * Code green), staged-new as "A", modified as "M", deleted as "D", renamed
+ * as "R" (decorating the NEW path only).
+ */
+export function parseGitStatusPorcelain(stdout: string): WorkspaceGitStatusEntry[] {
+  const entries: WorkspaceGitStatusEntry[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    // Porcelain v1 rows are exactly two status chars, a space, then the path —
+    // anything else (blank lines, stray output) is skipped.
+    if (!/^[ MADRCU?]{2} /.test(line)) continue;
+    const x = line[0];
+    const y = line[1];
+    const raw = line.slice(3).trim();
+    // Renames read "old -> new"; the new path is what the tree shows.
+    const parts = raw.split(" -> ");
+    const filePath = (parts[parts.length - 1] || raw).replace(/^"|"$/g, "").replace(/\\/g, "/");
+    if (!filePath) continue;
+    // Prefer the most user-visible change when index and worktree both moved.
+    const code: GitStatusCode = x === "?" || y === "?" ? "U"
+      : x === "D" || y === "D" ? "D"
+      : x === "A" || y === "A" ? "A"
+      : x === "R" || y === "R" ? "R"
+      : "M";
+    entries.push({ path: filePath, code });
+  }
+  return entries;
+}
+
+export async function getWorkspaceGitStatus(projectRoot: string): Promise<WorkspaceGitStatusEntry[]> {
+  try {
+    const { stdout } = await execFileAsync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: projectRoot, maxBuffer: 2_000_000 });
+    return parseGitStatusPorcelain(stdout);
+  } catch {
+    return [];
+  }
+}
 
 function parseNumstat(output: string) {
   return output.split(/\r?\n/).filter(Boolean).map((line) => {

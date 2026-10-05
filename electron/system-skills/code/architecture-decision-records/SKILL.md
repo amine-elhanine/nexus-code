@@ -2,7 +2,7 @@
 name: architecture-decision-records
 description: Capture architectural decisions made during Nexus sessions as structured ADRs. Auto-detects decision moments, records context, alternatives considered, and rationale. Maintains an ADR log so future developers understand why the codebase is shaped the way it is.
 metadata:
-  origin: ECC
+  origin: Nexus
 ---
 
 # Architecture Decision Records

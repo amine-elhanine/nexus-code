@@ -35,7 +35,7 @@ export type AgentEvent = {
   // already read — without it every run starts cold and re-reads everything.
   detail?: string;
 };
-export type AgentMemoryContext = { projectMemory: string; sessionMemory: string };
+export type AgentMemoryContext = { projectMemory: string; sessionMemory: string; /** Agent-recorded durable facts (project_memory tool, Code mode only). */ facts?: string };
 // "code" = repository work (typecheck/test verification). "general" = the
 // Home assistant (documents, spreadsheets, slides, research, everyday
 // questions): same tool loop, but no code-project verification and a

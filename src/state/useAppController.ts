@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type SetStateAction } from "react";
 import type { SlashCommand } from "../components/chat/SlashCommandPopup.js";
 import { nowIso, pushLiveEvent } from "../utils/format.js";
+import { isKnownBinaryFile } from "../utils/binaryFiles.js";
 import type {
   AppView,
   ArtifactItem,
@@ -56,8 +57,13 @@ export function useAppController() {
   const [activeFile, setActiveFile] = useState("");
   const [openFiles, setOpenFiles] = useState<string[]>([]);
   const [fileContent, setFileContent] = useState("");
+  // Binary workspace files (pptx/docx/xlsx/pdf/images) never enter the editor
+  // buffer — this path opens the FilePreviewModal in App instead.
+  const [workspacePreviewPath, setWorkspacePreviewPath] = useState<string | null>(null);
   const [savedContent, setSavedContent] = useState("");
   const [diff, setDiff] = useState<WorkspaceDiffFile[]>([]);
+  // Explorer decorations: path -> git code (U/A/M/D/R) from `git status`.
+  const [gitStatus, setGitStatus] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState("");
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
@@ -79,6 +85,7 @@ export function useAppController() {
   const [showContext, setShowContext] = useState(true);
   const [showProviders, setShowProviders] = useState(false);
   const [skillsEnabled, setSkillsEnabled] = useState(true);
+  const [rulesEnabled, setRulesEnabled] = useState(true);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [activeArtifact, setActiveArtifact] = useState<ArtifactItem | null>(null);
   const [worktreeStatus, setWorktreeStatus] = useState<{ isGit: boolean; worktree: { worktreePath: string; branch: string } | null } | null>(null);
@@ -99,7 +106,12 @@ export function useAppController() {
   const currentMessages = (activeSession?.messages || []) as ChatItem[];
   const running = Boolean(activeSession && runningSessionIds.has(activeSession.id));
   const liveEventsForSession = activeSession ? liveEvents[activeSession.id] || [] : [];
+  // Nexus telemetry storage (.nexus/.forgepilot/.deepagents) is machinery,
+  // not project content — the explorer never shows it, matching how IDEs
+  // hide their own metadata folders.
+  const TELEMETRY_DIRS = new Set([".nexus", ".forgepilot", ".deepagents"]);
   const visibleFiles = files.filter((entry) => {
+    if (TELEMETRY_DIRS.has(entry.path.split("/")[0])) return false;
     const parts = entry.path.split("/");
     return parts.length === 1 || parts.slice(0, -1).every((_, index) => expandedFolders.has(parts.slice(0, index + 1).join("/")));
   });
@@ -111,12 +123,14 @@ export function useAppController() {
       api.listProjects(),
       api.listProviders(),
       api.listProviderDefinitions(),
+      api.getRulesConfig(),
       api.getSkillsConfig(),
       api.listCustomCommands(),
-    ]).then(async ([projectList, providerList, definitions, skillsConfig, cmds]) => {
+    ]).then(async ([projectList, providerList, definitions, rulesConfig, skillsConfig, cmds]) => {
       setProjects(projectList);
       setProviders(providerList);
       if (definitions?.length) setProviderDefinitions(definitions);
+      setRulesEnabled(rulesConfig?.enabled !== false);
       setSkillsEnabled(skillsConfig?.enabled !== false);
       if (cmds?.length) setCustomCommands(cmds as SlashCommand[]);
       if (projectList[0]) {
@@ -206,16 +220,24 @@ export function useAppController() {
     setOpenFiles([]);
     setFileContent("");
     setSavedContent("");
+    setWorkspacePreviewPath(null);
     setDiff([]);
     setGitBranch("No Git repository");
   }
 
   async function loadGit() {
     try {
-      const info = await api.getGit();
+      const [info, statusEntries] = await Promise.all([
+        api.getGit(),
+        api.getWorkspaceGitStatus().catch(() => []),
+      ]);
       setGitBranch(info.branch);
+      const map: Record<string, string> = {};
+      for (const entry of statusEntries || []) map[entry.path] = entry.code;
+      setGitStatus(map);
     } catch {
       setGitBranch("No Git repository");
+      setGitStatus({});
     }
   }
 
@@ -269,7 +291,9 @@ export function useAppController() {
           } catch { /* keep the current buffer */ }
         }
       } else {
-        const first = mapped.find((item) => item.kind === "file");
+        // Auto-picking a tab on reload must never land on a binary file —
+        // those live in the previewer, not the editor.
+        const first = mapped.find((item) => item.kind === "file" && !isKnownBinaryFile(item.path));
         if (first) await openFile(first.path);
       }
       await loadGit();
@@ -436,13 +460,26 @@ export function useAppController() {
 
   async function openFile(file: string) {
     if (file.endsWith("/")) return;
+    // Binary containers never enter the editor buffer: previewing them as
+    // text would show mojibake, and an accidental save would corrupt the
+    // file. Route to the preview modal instead.
+    if (isKnownBinaryFile(file)) {
+      setWorkspacePreviewPath(file);
+      return;
+    }
     setActiveFile(file);
     setOpenFiles((current) => (current.includes(file) ? current : [...current, file]));
     try {
       const result = await api.readFile(file);
       setFileContent(result.content);
       setSavedContent(result.content);
-    } catch {
+    } catch (error) {
+      // Unknown-extension binary caught by the backend's NUL-byte guard —
+      // still better in the previewer (clean download card) than in Monaco.
+      if (error instanceof Error && /binary file/i.test(error.message)) {
+        setWorkspacePreviewPath(file);
+        return;
+      }
       setFileContent(`// Unable to read ${file}`);
       setSavedContent("");
     }
@@ -724,10 +761,12 @@ export function useAppController() {
   function handleProvidersChange(nextProviders: ProviderConfig[]) {
     setProviders(nextProviders);
     const activeProv = nextProviders.find((p) => p.id === selectedProviderId);
-    const modelValid = activeProv ? activeProv.models.includes(selectedModel) : false;
+    const modelValid = activeProv && activeProv.enabled !== false ? activeProv.models.includes(selectedModel) : false;
     if (!activeProv || !modelValid) {
-      const fallbackId = nextProviders[0]?.id || "";
-      const fallbackModel = nextProviders[0]?.models[0] || "";
+      // Disabled connections stay configured but are not selectable.
+      const usable = nextProviders.filter((p) => p.enabled !== false);
+      const fallbackId = usable[0]?.id || "";
+      const fallbackModel = usable[0]?.models[0] || "";
       setSelectedProviderId(fallbackId);
       setSelectedModel(fallbackModel);
       if (activeProject && activeSession) {
@@ -740,12 +779,24 @@ export function useAppController() {
     }
   }
 
-  async function saveMemories(projectMemory: string, sessionMemory: string) {
+  async function removeProjectFact(fact: string) {
+    if (!activeProject) return;
+    try {
+      const project = await api.removeProjectFact(activeProject.id, fact);
+      setActiveProject(project);
+    } catch (error) {
+      console.error("Failed to remove project fact", error);
+    }
+  }
+
+  async function clearSessionMemory() {
     if (!activeProject || !activeSession) return;
-    const project = await api.updateProjectMemory(activeProject.id, projectMemory);
-    const session = await api.updateSessionMemory(activeProject.id, activeSession.id, sessionMemory);
-    setActiveProject(project);
-    setActiveSession(session);
+    try {
+      const session = await api.updateSessionMemory(activeProject.id, activeSession.id, "");
+      setActiveSession(session);
+    } catch (error) {
+      console.error("Failed to clear session memory", error);
+    }
   }
 
   return {
@@ -764,8 +815,11 @@ export function useAppController() {
     openFiles,
     fileContent,
     setFileContent,
+    workspacePreviewPath,
+    setWorkspacePreviewPath,
     dirty,
     diff,
+    gitStatus,
     draft,
     setDraft,
     streamingText,
@@ -787,6 +841,8 @@ export function useAppController() {
     setShowSkills,
     skillsEnabled,
     setSkillsEnabled,
+    rulesEnabled,
+    setRulesEnabled,
     confirmDialog,
     setConfirmDialog,
     activeArtifact,
@@ -838,7 +894,8 @@ export function useAppController() {
     keepChanges,
     switchModel,
     handleProvidersChange,
-    saveMemories,
+    removeProjectFact,
+    clearSessionMemory,
     submit,
     stopAgent,
     setActiveFile,

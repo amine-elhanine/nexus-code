@@ -22,7 +22,7 @@ function electronMod(): ElectronShim {
 
 import type { SubagentItem } from "./subagent-service.js";
 
-export type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[]; modelEndpoints?: Partial<Record<string, ChatEndpointKind>>; /** Set at load when the stored ciphertext could not be decrypted on this machine. Never persisted. */ keyNeedsReentry?: boolean };
+export type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[]; modelEndpoints?: Partial<Record<string, ChatEndpointKind>>; /** Disabled connections stay configured but disappear from the session model pickers. */ enabled?: boolean; /** Set at load when the stored ciphertext could not be decrypted on this machine. Never persisted. */ keyNeedsReentry?: boolean };
 // Wire protocol a model speaks. Providers default to chat completions,
 // except Anthropic-native which defaults to messages. A per-model entry
 // overrides the default — e.g. gateways like OpenCode Zen serve different
@@ -36,6 +36,7 @@ export type McpTransport = "stdio" | "http" | "sse";
 export type McpServerConfig = { id: string; name: string; enabled: boolean; transport: McpTransport; command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string> };
 export type SkillsConfig = { enabled: boolean };
 export type HooksConfig = { enabled: boolean };
+export type RulesConfig = { enabled: boolean };
 export type AppSettings = {
   browserHeadless?: boolean;
   /** Opt-in edit approval for Code runs: "ask" gates every file mutation behind the approval UI. */
@@ -57,11 +58,11 @@ export type NotebookParserConfig = {
   version: string;
   timeoutSeconds: number;
 };
-export type ProjectRecord = { id: string; name: string; root: string; createdAt: string; updatedAt: string; memory: string; sessions: SessionRecord[] };
+export type ProjectRecord = { id: string; name: string; root: string; createdAt: string; updatedAt: string; memory: string; /** Agent-recorded durable facts (home-memory markdown format). Optional so pre-facts snapshots load cleanly. */ facts?: string; sessions: SessionRecord[] };
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
 export type ChatAttachment = { url: string; name: string; mimeType: string; size: number };
 export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; checkpointIds?: string[]; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact" | "stream-reset"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; subagent?: SubagentItem; artifact?: unknown; detail?: string }>; model?: { providerId: string; model: string } };
-type PersistedState = { stateVersion?: number; projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; hooks?: HooksConfig; appSettings?: AppSettings; notebookParser?: NotebookParserConfig; homeSessions?: SessionRecord[]; homeMemory?: string };
+type PersistedState = { stateVersion?: number; projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; hooks?: HooksConfig; rules?: RulesConfig; appSettings?: AppSettings; notebookParser?: NotebookParserConfig; homeSessions?: SessionRecord[]; homeMemory?: string };
 
 let cache: PersistedState | null = null;
 
@@ -436,12 +437,36 @@ export async function upsertProject(input: { id?: string; name: string; root: st
     await persist();
     return existing;
   }
-  const project: ProjectRecord = { id: uid("project"), name: input.name, root: input.root, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), memory: "", sessions: [] };
+  const project: ProjectRecord = { id: uid("project"), name: input.name, root: input.root, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), memory: "", facts: "", sessions: [] };
   state.projects.unshift(project);
   await persist();
   return project;
 }
 export async function updateProjectMemory(projectId: string, memory: string) { const project = await getProject(projectId); if (!project) throw new Error("Project not found"); project.memory = memory; project.updatedAt = new Date().toISOString(); await persist(); return project; }
+
+// Agent-recorded project facts (project_memory tool). Same shape as the
+// Home-memory mutation queue: runs can execute in parallel within one
+// project, so every write re-reads the CURRENT facts inside a serialized
+// queue — a run-start snapshot wholesale-replaced here would erase facts a
+// parallel task just saved.
+let projectFactsQueue: Promise<unknown> = Promise.resolve();
+export function updateProjectFacts(projectId: string, mutate: (current: string) => string): Promise<ProjectRecord> {
+  const run = projectFactsQueue.then(async () => {
+    const state = await ensureLoaded();
+    const project = state.projects.find((p) => p.id === projectId);
+    if (!project) throw new Error("Project not found");
+    const current = project.facts ?? "";
+    const next = mutate(current);
+    if (next !== current) {
+      project.facts = next;
+      project.updatedAt = new Date().toISOString();
+      await persist();
+    }
+    return project;
+  });
+  projectFactsQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
 
 // The Home area is a built-in project with a FIXED id so the renderer can
 // tell home sessions apart from coding sessions. Created on demand pointing
@@ -456,7 +481,7 @@ export async function ensureHomeProject(homeId: string, name: string, root: stri
     await persist();
     return existing;
   }
-  const project: ProjectRecord = { id: homeId, name, root, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), memory: "", sessions: [] };
+  const project: ProjectRecord = { id: homeId, name, root, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), memory: "", facts: "", sessions: [] };
   state.projects.unshift(project);
   await persist();
   return project;
@@ -657,6 +682,116 @@ export async function removeProvider(providerId: string) {
   return state.providers;
 }
 
+// Granular connection CRUD. The old whole-record provider:save round-trip
+// made every edit a potential key-loss point (the renderer never holds the
+// real key — only a mask), so the UI now edits each aspect through its own
+// function and the API key is simply not part of most payloads.
+function requireProvider(state: PersistedState, providerId: string) {
+  const provider = state.providers.find((p) => p.id === providerId);
+  if (!provider) throw new Error("Provider not found.");
+  return provider;
+}
+
+export async function createProviderConnection(input: { provider: string; label: string; apiKey: string; baseUrl?: string }): Promise<ProviderConfig> {
+  const state = await ensureLoaded();
+  const provider: ProviderConfig = {
+    id: uid("provider"),
+    provider: input.provider,
+    label: input.label.trim() || "Provider",
+    apiKey: (input.apiKey || "").trim(),
+    baseUrl: input.baseUrl?.trim() || undefined,
+    models: [],
+    modelEndpoints: {},
+    enabled: true,
+  };
+  state.providers.push(provider);
+  if (provider.apiKey) clearFailedSecrets(`provider:${provider.id}`);
+  await persist();
+  return provider;
+}
+
+export async function updateProviderConnection(providerId: string, patch: { label?: string; baseUrl?: string }): Promise<ProviderConfig> {
+  const state = await ensureLoaded();
+  const provider = requireProvider(state, providerId);
+  // Deliberately no apiKey and no models here: renaming/re-pointing a
+  // connection can never touch credentials or the model list.
+  if (patch.label !== undefined) provider.label = patch.label.trim() || provider.label;
+  if (patch.baseUrl !== undefined) provider.baseUrl = patch.baseUrl.trim() || undefined;
+  await persist();
+  return provider;
+}
+
+export async function updateProviderKey(providerId: string, apiKey: string): Promise<ProviderConfig> {
+  const state = await ensureLoaded();
+  const provider = requireProvider(state, providerId);
+  const key = (apiKey || "").trim();
+  if (!key) throw new Error("API key cannot be empty.");
+  provider.apiKey = key;
+  clearFailedSecrets(`provider:${providerId}`);
+  delete provider.keyNeedsReentry;
+  await persist();
+  return provider;
+}
+
+export async function setProviderEnabled(providerId: string, enabled: boolean): Promise<ProviderConfig> {
+  const state = await ensureLoaded();
+  const provider = requireProvider(state, providerId);
+  provider.enabled = enabled;
+  await persist();
+  return provider;
+}
+
+export async function addProviderModels(providerId: string, models: string[]): Promise<ProviderConfig> {
+  const state = await ensureLoaded();
+  const provider = requireProvider(state, providerId);
+  const cleaned = (models || []).map((m) => m.trim()).filter(Boolean);
+  if (!cleaned.length) throw new Error("No model names given.");
+  provider.models = Array.from(new Set([...(provider.models || []), ...cleaned]));
+  await persist();
+  return provider;
+}
+
+export async function updateProviderModel(providerId: string, model: string, patch: { newName?: string; endpoint?: "" | ChatEndpointKind }): Promise<ProviderConfig> {
+  const state = await ensureLoaded();
+  const provider = requireProvider(state, providerId);
+  const oldName = model.trim();
+  const list = provider.models || [];
+  if (!list.includes(oldName)) throw new Error(`Model "${oldName}" not found.`);
+  const endpoints = { ...(provider.modelEndpoints || {}) };
+  const newName = patch.newName?.trim();
+  if (newName && newName !== oldName) {
+    if (newName && list.includes(newName)) throw new Error(`Model "${newName}" already exists.`);
+    provider.models = list.map((m) => (m === oldName ? newName : m));
+    // Carry a per-model path override across renames.
+    if (endpoints[oldName]) {
+      endpoints[newName] = endpoints[oldName];
+      delete endpoints[oldName];
+    }
+  }
+  if (patch.endpoint !== undefined) {
+    const target = newName || oldName;
+    if (patch.endpoint) endpoints[target] = patch.endpoint;
+    else delete endpoints[target];
+  }
+  provider.modelEndpoints = endpoints;
+  await persist();
+  return provider;
+}
+
+export async function removeProviderModel(providerId: string, model: string): Promise<ProviderConfig> {
+  const state = await ensureLoaded();
+  const provider = requireProvider(state, providerId);
+  const name = model.trim();
+  provider.models = (provider.models || []).filter((m) => m !== name);
+  if (provider.modelEndpoints) {
+    const endpoints = { ...provider.modelEndpoints };
+    delete endpoints[name];
+    provider.modelEndpoints = endpoints;
+  }
+  await persist();
+  return provider;
+}
+
 const EMBEDDING_KINDS: EmbeddingEndpointKind[] = ["openai", "ollama", "gemini", "cohere"];
 
 export async function listEmbeddingProviders() { return (await ensureLoaded()).embeddingProviders ?? []; }
@@ -751,6 +886,8 @@ export async function getSkillsConfig(): Promise<SkillsConfig> { return { enable
 export async function saveSkillsConfig(input: SkillsConfig) { const state = await ensureLoaded(); state.skills = { enabled: input.enabled !== false }; await persist(); return state.skills; }
 export async function getHooksConfig(): Promise<HooksConfig> { return { enabled: (await ensureLoaded()).hooks?.enabled !== false }; }
 export async function saveHooksConfig(input: HooksConfig) { const state = await ensureLoaded(); state.hooks = { enabled: input.enabled !== false }; await persist(); return state.hooks; }
+export async function getRulesConfig(): Promise<RulesConfig> { return { enabled: (await ensureLoaded()).rules?.enabled !== false }; }
+export async function saveRulesConfig(input: RulesConfig) { const state = await ensureLoaded(); state.rules = { enabled: input.enabled !== false }; await persist(); return state.rules; }
 export async function getAppSettings(): Promise<AppSettings> { return { ...(await ensureLoaded()).appSettings }; }
 export async function saveAppSettings(input: AppSettings) { const state = await ensureLoaded(); state.appSettings = { ...state.appSettings, ...input }; await persist(); return state.appSettings; }
 export async function getNotebookParserConfig(): Promise<NotebookParserConfig> {

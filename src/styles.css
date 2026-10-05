@@ -2204,3 +2204,18 @@ button.update-pill.error{background:#2a1215;border-color:#7f2d35;color:#fda4af}
 .row-edit:hover{color:var(--nexus-bright);background:var(--accent-soft)}
 .session-row.editing{cursor:default}
 .session-rename-input{flex:1;min-width:0;background:var(--bg);border:1px solid var(--nexus-green);border-radius:4px;color:var(--text);font-size:11px;padding:2px 6px;outline:none}
+
+/* ---- IDE-style explorer refinements (VS Code conventions) ---- */
+.file-tree{padding:4px 6px 8px}
+.tree-row{height:24px;gap:7px;font-size:11px;padding:0 6px;color:#94a1b3}
+.tree-row:hover{background:#182130;color:#dfe5ee}
+.tree-row.active{background:var(--accent-soft);color:var(--nexus-bright)}
+.tree-row .twist{width:12px;height:12px;flex:none;display:grid;place-items:center;color:#5a6a7e}
+.tree-row .twist.hidden{visibility:hidden}
+.tree-row .ficon{width:16px;height:16px;flex:none;display:grid;place-items:center}
+.tree-row .fname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree-row .git-mark{flex:none;width:13px;text-align:center;font:600 9.5px 'DM Mono',monospace}
+.tree-row .git-U,.tree-row .git-A{color:#6cc281}
+.tree-row .git-M{color:#d8b45f}
+.tree-row .git-D{color:#e07a72}
+.tree-row .git-R{color:#b58ee0}

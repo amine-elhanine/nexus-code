@@ -7,24 +7,26 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-import { runProjectAgent, RunCancelledError, clearLastRunCheckpoint, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint, summarizeCompletedSteps, type AgentMode, type AgentSettings, type AgentEvent, type HistoryInput } from "./agent-service.js";
+import { runProjectAgent, RunCancelledError, clearLastRunCheckpoint, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint, summarizeCompletedSteps, appendEntryLog, PROJECT_MEMORY_RUN_LOG_CAP, SESSION_MEMORY_ENTRY_CAP, SESSION_MEMORY_CHAR_CAP, type AgentMode, type AgentSettings, type AgentEvent, type HistoryInput } from "./agent-service.js";
 import { PROVIDERS, fetchRemoteModels } from "./providers.js";
 import {
   appendHomeSessionMessages, appendSessionMessages, createHomeSession, createSession, deleteHomeSession, deleteProject, deleteSession, getHomeMemory, getHomeSession, getProject, getSession,
-  getHooksConfig, getSkillsConfig, listEmbeddingProviders, listHomeSessions, listMcpServers, listProjects, listProviders, listSessions,
+  getHooksConfig, getRulesConfig, getSkillsConfig, listEmbeddingProviders, listHomeSessions, listMcpServers, listProjects, listProviders, listSessions,
   isMaskedSecret,
-  removeEmbeddingProvider, removeMcpServer, removeProvider, saveHooksConfig, saveSkillsConfig, updateHomeMemory, updateHomeSession, updateProjectMemory,
-  updateSession, upsertEmbeddingProvider, upsertMcpServer, upsertProject, upsertProvider, getAppSettings, saveAppSettings, getNotebookParserConfig, saveNotebookParserConfig, type AppSettings, type EmbeddingProviderConfig,
-  type McpServerConfig, type ProviderConfig, type ChatAttachment, mutateHomeMemory, listMcpServersMasked
+  removeEmbeddingProvider, removeMcpServer, removeProvider, saveHooksConfig, saveRulesConfig, saveSkillsConfig, updateHomeMemory, updateHomeSession, updateProjectMemory, updateProjectFacts,
+  updateSession, upsertEmbeddingProvider, upsertMcpServer, upsertProject, getAppSettings, saveAppSettings, getNotebookParserConfig, saveNotebookParserConfig, type AppSettings, type EmbeddingProviderConfig,
+  type McpServerConfig, type ProviderConfig, type ChatEndpointKind, type ChatAttachment, mutateHomeMemory, listMcpServersMasked,
+  createProviderConnection, updateProviderConnection, updateProviderKey, setProviderEnabled, addProviderModels, updateProviderModel, removeProviderModel
 } from "./store.js";
 import { HOME_PROJECT_ID, cleanupHomeGeneratorScripts, downloadHomeFile, ensureHomeDir, listHomeFiles, listHomeSessionFiles, listHomeSessionFilesForDeletion, openHomeFolder, readHomeFile, recordHomeRunFiles, removeSessionFromManifest } from "./home-service.js";
 import { homeTaskJournalPath } from "./home-task-service.js";
+import { removeMemoryFactWithCount } from "./home-memory-service.js";
 import { codeTaskJournalPath } from "./code-task-service.js";
 import { testMcpServer } from "./mcp-service.js";
 import { createSkill, deleteSkill, ensureSkillSourceDirs, importSkill, listAllSkills, listSkills, openSkillsFolder, readSkillContent, setSkillModes } from "./skills-service.js";
 import { beginCommandRun, cancelCommandRun, endCommandRun, isCommandRunCancelled, runProjectCommand, getAgentBackend } from "./command-service.js";
-import { createWorkspaceCheckpoint, deleteWorkspaceCheckpoint, getWorkspaceDiffFiles, restoreWorkspaceCheckpoint, revertAllWorkspaceChanges, revertWorkspaceFile, revertWorkspaceHunk } from "./diff-service.js";
-import { getWorkspaceGit, listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./project-tools.js";
+import { createWorkspaceCheckpoint, deleteWorkspaceCheckpoint, getWorkspaceDiffFiles, getWorkspaceGitStatus, restoreWorkspaceCheckpoint, revertAllWorkspaceChanges, revertWorkspaceFile, revertWorkspaceHunk } from "./diff-service.js";
+import { getWorkspaceGit, listWorkspaceFiles, readWorkspaceFile, readWorkspaceFileBase64, safePath, writeWorkspaceFile } from "./project-tools.js";
 import {
   createSessionWorktree, getSessionWorktree, mergeWorktreeToMain, discardSessionWorktree,
   getSessionWorktreeDiff, isGitRepo
@@ -848,17 +850,33 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle("memory:project:update", (_event, projectId: string, memory: string) => updateProjectMemory(projectId, memory));
+  ipcMain.handle("memory:project:facts:update", (_event, projectId: string, facts: string) => updateProjectFacts(projectId, () => facts));
+  ipcMain.handle("memory:project:fact:remove", (_event, projectId: string, fact: string) => updateProjectFacts(projectId, (current) => removeMemoryFactWithCount(current, fact || "").memory));
   ipcMain.handle("memory:session:update", (_event, projectId: string, sessionId: string, memory: string) => updateSession(projectId, sessionId, { memory }));
 
   ipcMain.handle("providers:definitions", () => PROVIDERS);
-  ipcMain.handle("providers:list", async () => (await listProviders()).map((provider) => ({ ...provider, apiKey: provider.apiKey ? "********" : "" })));
-  ipcMain.handle("provider:save", async (_event, input: Omit<ProviderConfig, "id"> & { id?: string }) => {
-    const existing = input.id ? (await listProviders()).find((provider) => provider.id === input.id) : undefined;
-    const payload = { ...input, apiKey: isMaskedSecret(input.apiKey) ? existing?.apiKey || "" : input.apiKey };
-    return (await upsertProvider(payload)).map((provider) => ({ ...provider, apiKey: provider.apiKey ? "********" : "" }));
+  const maskProviders = (list: ProviderConfig[]) => list.map((provider) => ({ ...provider, apiKey: provider.apiKey ? "********" : "" }));
+  ipcMain.handle("providers:list", async () => maskProviders(await listProviders()));
+  // Granular provider CRUD: the renderer never sends (or holds) the real key
+  // except through provider:updateKey, and model edits cannot touch it.
+  ipcMain.handle("provider:create", async (_event, input: { provider: string; label: string; apiKey: string; baseUrl?: string }) => maskProviders([await createProviderConnection(input)])[0]);
+  ipcMain.handle("provider:updateMeta", async (_event, providerId: string, patch: { label?: string; baseUrl?: string }) => maskProviders([await updateProviderConnection(providerId, patch)])[0]);
+  ipcMain.handle("provider:updateKey", async (_event, providerId: string, apiKey: string) => maskProviders([await updateProviderKey(providerId, apiKey)])[0]);
+  ipcMain.handle("provider:setEnabled", async (_event, providerId: string, enabled: boolean) => maskProviders([await setProviderEnabled(providerId, enabled)])[0]);
+  ipcMain.handle("provider:models:add", async (_event, providerId: string, models: string[]) => maskProviders([await addProviderModels(providerId, models)])[0]);
+  ipcMain.handle("provider:models:update", async (_event, providerId: string, model: string, patch: { newName?: string; endpoint?: "" | ChatEndpointKind }) => maskProviders([await updateProviderModel(providerId, model, patch)])[0]);
+  ipcMain.handle("provider:models:remove", async (_event, providerId: string, model: string) => maskProviders([await removeProviderModel(providerId, model)])[0]);
+  ipcMain.handle("provider:remove", async (_event, providerId: string) => maskProviders(await removeProvider(providerId)));
+  // Model discovery: when the renderer has no key (it never does — only a
+  // mask), the server resolves the STORED key for the given provider.
+  ipcMain.handle("providers:fetch-models", async (_event, input: { providerId?: string; baseUrl?: string; apiKey?: string }) => {
+    let apiKey = (input?.apiKey || "").trim();
+    if ((!apiKey || isMaskedSecret(apiKey)) && input?.providerId) {
+      const stored = (await listProviders()).find((provider) => provider.id === input.providerId);
+      if (stored?.apiKey) apiKey = stored.apiKey;
+    }
+    return fetchRemoteModels(input?.baseUrl || "", apiKey);
   });
-  ipcMain.handle("provider:remove", async (_event, providerId: string) => (await removeProvider(providerId)).map((provider) => ({ ...provider, apiKey: provider.apiKey ? "********" : "" })));
-  ipcMain.handle("providers:fetch-models", async (_event, input: { baseUrl?: string; apiKey?: string }) => fetchRemoteModels(input?.baseUrl || "", input?.apiKey));
 
   ipcMain.handle("mcp:list", async () => listMcpServersMasked());
   ipcMain.handle("mcp:save", (_event, input: Omit<McpServerConfig, "id"> & { id?: string }) => upsertMcpServer(input));
@@ -867,6 +885,8 @@ app.whenReady().then(async () => {
 
   ipcMain.handle("hooks:config:get", () => getHooksConfig());
   ipcMain.handle("hooks:config:save", (_event, config: { enabled: boolean }) => saveHooksConfig(config));
+  ipcMain.handle("rules:config:get", () => getRulesConfig());
+  ipcMain.handle("rules:config:save", (_event, config: { enabled: boolean }) => saveRulesConfig(config));
   ipcMain.handle("skills:config:get", () => getSkillsConfig());
   ipcMain.handle("skills:config:save", (_event, config: { enabled: boolean }) => saveSkillsConfig(config));
   ipcMain.handle("skills:list", async () => {
@@ -919,6 +939,21 @@ app.whenReady().then(async () => {
 
   ipcMain.handle("workspace:list", () => listWorkspaceFiles(requireRoot()));
   ipcMain.handle("workspace:read", (_event, file: string) => readWorkspaceFile(requireRoot(), file));
+  // Base64 read for the file previewer (pptx/docx/xlsx/pdf/images) — the code
+  // editor path above refuses binary content, this one serves it.
+  ipcMain.handle("workspace:readBase64", (_event, file: string) => readWorkspaceFileBase64(requireRoot(), file));
+  ipcMain.handle("workspace:gitStatus", () => getWorkspaceGitStatus(requireRoot()));
+  ipcMain.handle("workspace:downloadFile", async (_event, file: string) => {
+    const root = requireRoot();
+    const source = safePath(root, file);
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      defaultPath: path.basename(source),
+      title: "Download file",
+    });
+    if (canceled || !filePath) return null;
+    await fs.copyFile(source, filePath);
+    return filePath;
+  });
   ipcMain.handle("workspace:readHead", async (_event, file: string) => {
     const root = requireRoot();
     const wt = activeSessionId ? await getSessionWorktree(root, activeSessionId) : null;
@@ -926,6 +961,9 @@ app.whenReady().then(async () => {
     const normalized = file.replace(/\\/g, "/").replace(/^\.\//, "");
     try {
       const { stdout } = await execFileAsync("git", ["show", `HEAD:${normalized}`], { cwd: targetRoot, maxBuffer: 4_000_000 });
+      // `git show HEAD:binary` dumps raw bytes into a UTF-8 string — the diff
+      // view only wants text, so blank out anything with NUL bytes.
+      if (stdout.includes("\u0000")) return "";
       return stdout;
     } catch {
       return "";
@@ -1382,7 +1420,7 @@ app.whenReady().then(async () => {
           attachmentDocs,
           importableAttachments: importableAttachments.length ? importableAttachments : undefined,
           settings: runSettings,
-          memory: { projectMemory: project.memory, sessionMemory: session.memory },
+          memory: { projectMemory: project.memory, sessionMemory: session.memory, facts: project.facts ?? "" },
           history,
           mode,
           agentBackend: backend,
@@ -1390,6 +1428,7 @@ app.whenReady().then(async () => {
           resumeMessages: stored?.messages ?? null,
           resumePlanItems: stored?.planItems ?? null,
           resumeNote,
+          onProjectMemoryUpdate: (mutate) => updateProjectFacts(projectId, mutate),
           onUserQuestion: (questions) => askUserBlocking(sessionId, questions),
           onEvent: (event) => {
             // Token chunks stay ephemeral (streaming display only); everything
@@ -1460,17 +1499,24 @@ app.whenReady().then(async () => {
       }
       // Multi-level Undo: push (never clear) so each click steps one run back.
       await pushCheckpoint(projectId, sessionId, executionRoot, checkpointId);
-      // Memories are rolling windows, not append-only logs: entries are
-      // individually capped upstream, and the totals are capped here so
-      // hundreds of runs cannot bloat every future prompt.
-      const nextSessionMemory = [session.memory, result.memoryEntry].filter(Boolean).join("\n\n");
-      const nextProjectMemory = [project.memory, result.projectMemoryLogEntry].filter(Boolean).join("\n");
+      // Memories are rolling windows of WHOLE entries, not append-only logs:
+      // the newest entries that fit the caps survive, and a cap never cuts an
+      // entry mid-sentence (appendEntryLog drops the oldest whole entries).
+      const nextSessionMemory = appendEntryLog(session.memory, result.memoryEntry, {
+        maxEntries: SESSION_MEMORY_ENTRY_CAP,
+        maxChars: SESSION_MEMORY_CHAR_CAP,
+        separator: "\n\n",
+      });
+      const nextProjectMemory = appendEntryLog(project.memory, result.projectMemoryLogEntry, {
+        maxEntries: PROJECT_MEMORY_RUN_LOG_CAP,
+        maxChars: 2000,
+        separator: "\n",
+      });
       // pushCheckpoint already updated the stack; only memory remains here.
       await updateSession(projectId, sessionId, {
-        memory: nextSessionMemory.slice(-4000),
+        memory: nextSessionMemory,
       });
-      // Keep the memory log bounded; agent-service returns a capped entry.
-      await updateProjectMemory(projectId, nextProjectMemory.slice(-2000));
+      await updateProjectMemory(projectId, nextProjectMemory);
       return result.response;
     } finally {
       activeRunSessions.delete(sessionId);
@@ -1712,9 +1758,13 @@ app.whenReady().then(async () => {
         await recordHomeRunFiles(sessionId, runStartMs, result.response);
       } catch { /* best effort */ }
 
-      const nextSessionMemory = [session.memory, result.memoryEntry].filter(Boolean).join("\n\n");
+      const nextSessionMemory = appendEntryLog(session.memory, result.memoryEntry, {
+        maxEntries: SESSION_MEMORY_ENTRY_CAP,
+        maxChars: SESSION_MEMORY_CHAR_CAP,
+        separator: "\n\n",
+      });
       await updateHomeSession(sessionId, {
-        memory: nextSessionMemory.slice(-4000),
+        memory: nextSessionMemory,
       });
       // Roll the shared Home memory forward only for substantive deliverables (capped at 5).
       // Session memory stays a compact pointer — the transcript is the source of truth.

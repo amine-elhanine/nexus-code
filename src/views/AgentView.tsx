@@ -53,7 +53,7 @@ export function ModelSelect({
         }}
       >
         <option value="">{providers.length ? "Select model…" : "Configure provider…"}</option>
-        {providers.map((item) => (
+        {providers.filter((item) => item.enabled !== false).map((item) => (
           <optgroup key={item.id} label={item.label}>
             {item.models.map((model) => (
               <option key={`${item.id}-${model}`} value={`${item.id}::${model}`}>

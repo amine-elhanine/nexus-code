@@ -8,6 +8,27 @@ function tail(value: string | undefined, cap: number) {
   return value.length > cap ? `…${value.slice(-cap)}` : value;
 }
 
+// Memory strings are collections of whole entries (run summaries, facts),
+// not prose: a char tail can start mid-entry and present a truncated
+// fragment as a fact. Trim by dropping the OLDEST whole entries until the
+// text fits; single-entry overflow falls back to the char tail.
+export function tailEntries(value: string | undefined, cap: number): string {
+  const text = (value || "").trim();
+  if (!text || text.length <= cap) return text;
+  const paragraphs = text.split(/\n{2,}/);
+  const kept: string[] = [];
+  let used = 0;
+  for (let i = paragraphs.length - 1; i >= 0; i--) {
+    const cost = paragraphs[i].length + (kept.length ? 2 : 0);
+    if (used + cost > cap) break;
+    kept.unshift(paragraphs[i]);
+    used += cost;
+  }
+  if (!kept.length) return tail(text, cap);
+  const out = kept.join("\n\n");
+  return kept.length < paragraphs.length ? `…[older memory trimmed]\n${out}` : out;
+}
+
 export function inferHomeTaskContract(request: string): HomeTaskContract {
   const text = (request || "").trim();
   // Polite wrappers ("can you create a report") are requests, not questions:
@@ -41,7 +62,7 @@ function todayLine(): string {
   return `Today is ${long} (${now.toISOString().slice(0, 10)}).`;
 }
 
-export function buildSystemPrompt(mode: AgentMode, projectRoot: string, providerLabel: string, modelName: string, memory: AgentMemoryContext, projectRulesSection: string = "", complexity: TaskComplexity = "complex", isNewProject = false, taskKind: AgentTaskKind = "code", repoMapSection: string = "", homeTaskContract: HomeTaskContract | null = null) {
+export function buildSystemPrompt(mode: AgentMode, projectRoot: string, providerLabel: string, modelName: string, memory: AgentMemoryContext, projectRulesSection: string = "", complexity: TaskComplexity = "complex", isNewProject = false, taskKind: AgentTaskKind = "code", repoMapSection: string = "", homeTaskContract: HomeTaskContract | null = null, subagentCatalog: string = "", projectInstructionsSection: string = "") {
   const today = todayLine();
   if (taskKind === "general") {
     let general = `You are Nexus Home, a helpful general-purpose assistant. Your workspace folder is exposed at the virtual root / — use paths relative to it (for example report.docx). Files you create land in the user's Nexus folder, where they can download them.
@@ -54,10 +75,10 @@ Provider: ${providerLabel} / ${modelName}
 The virtual root / is the selected project root. Use relative workspace paths only. Do not invent or use alternate host paths such as C:\\nexus-landing, /nexus-landing, /workspace, or /repo, and never cd outside the selected workspace. Commands already run with the correct cwd. Do not use verbose/debug build flags unless the user explicitly asks for them.
 
 Long-term memory (shared across ALL Home chats — user profile, preferences, recurring context):
-${tail(memory.projectMemory, 4000) || "(empty)"}
+${tailEntries(memory.projectMemory, 4000) || "(empty)"}
 
 Session memory (this chat only):
-${tail(memory.sessionMemory, 3000) || "(empty)"}
+${tailEntries(memory.sessionMemory, 3000) || "(empty)"}
 
 Working rules:
 - Visual answers: when a visual would make the answer substantially easier to understand — a comparison, trend, process, hierarchy, timeline, distribution, plan, or spatial relationship — include one chart or diagram alongside the explanation, whatever the kind of question (research, explanation, how-to, analysis, planning). Prefer a chart over a markdown table of the same numbers when the shape matters more than the exact figures; keep prose or a table when a visual would add no clarity. Pick the matching fenced block and copy its syntax exactly, grounding every value in sources or tool output:
@@ -124,15 +145,19 @@ ${today} Anchor every relative time expression to it.
 Project root on host (metadata only): ${projectRoot}
 Provider: ${providerLabel} / ${modelName}
 
-Project memory:
-${tail(memory.projectMemory, 2000) || "(empty)"}
+Project memory (recent work log):
+${tailEntries(memory.projectMemory, 2000) || "(empty)"}
+
+Project facts (durable, agent-recorded across tasks — conventions, decisions, working commands, gotchas):
+${tailEntries(memory.facts, 2000) || "(none yet — record lasting discoveries with project_memory)"}
 
 Session memory:
-${tail(memory.sessionMemory, 3000) || "(empty)"}
-
+${tailEntries(memory.sessionMemory, 3000) || "(empty)"}
+${projectInstructionsSection}
 Working rules:
 - Inspect the relevant code before proposing or making changes; never assume file contents.
 - Follow the engineering harness loop: Plan -> Test -> Implement -> Review -> Verify.
+- Durable memory: when a task teaches something future tasks will need — a build/test command that actually works, a convention the user states, an environment gotcha, a decision and its reason — save it with the project_memory tool (action='remember'). Never save transient task details or anything evident from the code, and trust the recorded facts above instead of re-deriving them.
 - Be efficient: act in at most 3 exploration calls (grep_search/read_file_range) before editing or answering. Read files directly; do not chain outline -> definition -> references -> read for the same symbol. (SKILL.md reads don't count — always check skills first.)
 - Never list the repository root (ls /) or run unscoped globs (**/*): they return thousands of entries (node_modules/dist) and stall the run. Always scope to a subdirectory or a narrow pattern like src/**/*.tsx.
 - Prefer grep_search with a tight query over browsing; if a listing is truncated, narrow it instead of paging through it.
@@ -152,7 +177,7 @@ Working rules:
 - If a skill ships helper scripts you must run, copy them into the workspace first with materialize_skill_files, then run them via the returned workspace-relative paths with execute (skill folders are read-only and outside the run directory).
 - Never expose secrets.
 - Self-review: before finishing, verify that modified code compiles, tests pass, and no unintended edits or secrets were introduced. Once compilation or verification passes (e.g. npm run build succeeds), do NOT repeatedly re-read the source files you just wrote. Update your todo list to completed with write_todos and summarize your work to the user. Report files changed, commands run, and remaining risks.
-${repoMapSection ? `\n${repoMapSection}` : ""}`;
+${repoMapSection ? `\n${repoMapSection}` : ""}${subagentCatalog ? `\n\nSPECIALIST SUBAGENTS — delegate with delegate_task (role=<name>, task=<focused instructions>). Reviewers/researchers are read-only and may run in parallel; write-capable roles must run sequentially:\n${subagentCatalog}` : ""}`;
 
   // New-project builds must come out production-ready (Claude-Code bar), not
   // as loose static files: real toolchain, installable deps, persisted

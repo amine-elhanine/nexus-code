@@ -9,13 +9,15 @@ import { MemoryRow } from "../views/MemoryView.js";
 import { APP_THEMES, applyTheme, getStoredThemeId } from "../state/theme.js";
 import type { EmbeddingEndpointKind, EmbeddingProviderConfig, ProviderConfig, ProviderDefinition, UpdaterState } from "../types.js";
 
-type SettingsSection = "appearance" | "browser" | "providers" | "notebook" | "mcp" | "skills" | "services" | "updates" | "workspace";
+type SettingsSection = "appearance" | "browser" | "providers" | "notebook" | "mcp" | "skills" | "rules" | "services" | "updates" | "workspace";
 
 export function SettingsModal({
   area,
   hasProject,
   skillsEnabled,
   onToggleSkills,
+  rulesEnabled,
+  onToggleRules,
   providers,
   providerDefinitions,
   onProvidersChange,
@@ -30,6 +32,8 @@ export function SettingsModal({
   hasProject: boolean;
   skillsEnabled: boolean;
   onToggleSkills: (enabled: boolean) => Promise<void>;
+  rulesEnabled: boolean;
+  onToggleRules: (enabled: boolean) => Promise<void>;
   providers: ProviderConfig[];
   providerDefinitions: ProviderDefinition[];
   onProvidersChange: (providers: ProviderConfig[]) => void;
@@ -378,6 +382,13 @@ export function SettingsModal({
           badge: skillsEnabled ? "ON" : "OFF",
           badgeType: skillsEnabled ? "active" : "neutral",
         },
+        {
+          id: "rules",
+          label: "Rules",
+          icon: <Shield size={13} />,
+          badge: rulesEnabled ? "ON" : "OFF",
+          badgeType: rulesEnabled ? "active" : "neutral",
+        },
       ],
     },
     {
@@ -426,6 +437,11 @@ export function SettingsModal({
       kicker: "AI & Agents",
       title: "Agent Skills Middleware",
       subtitle: "Enable and inspect specialized SKILL.md instruction sets available to the agent across workspace modes.",
+    },
+    rules: {
+      kicker: "AI & Agents",
+      title: "Engineering Standards (System Rules)",
+      subtitle: "Toggle the bundled coding standards injected into Code runs; auto-matched to the detected project stack.",
     },
     services: {
       kicker: "System",
@@ -723,7 +739,7 @@ export function SettingsModal({
                     <label className="field-label" style={{ marginTop: 10 }}>Reranker provider</label>
                     <select className="select-field" value={rerankProviderId} onChange={(e) => { setRerankProviderId(e.target.value); setRerankModel(""); }} disabled={!rerankEnabled}>
                       <option value="">Use first configured provider</option>
-                      {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}
+                      {providers.filter((provider) => provider.enabled !== false).map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}
                     </select>
                     <label className="field-label" style={{ marginTop: 10 }}>Reranker model</label>
                     <input
@@ -805,7 +821,7 @@ export function SettingsModal({
                   <label className="field-label" style={{ marginTop: 10 }}>Vision provider</label>
                   <select className="select-field" value={visionProviderId} onChange={(e) => { setVisionProviderId(e.target.value); setVisionModel(""); }} disabled={!visionEnabled}>
                     <option value="">Use first configured provider</option>
-                    {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}
+                    {providers.filter((provider) => provider.enabled !== false).map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}
                   </select>
                   <label className="field-label" style={{ marginTop: 10 }}>Vision model</label>
                   <input className="text-field" value={visionModel} onChange={(e) => setVisionModel(e.target.value)} placeholder="Use provider default vision model" disabled={!visionEnabled} list="vision-models" />
@@ -963,6 +979,27 @@ export function SettingsModal({
 
           {section === "skills" && (
             <SkillsManager hasProject={hasProject} enabled={skillsEnabled} onToggle={onToggleSkills} />
+          )}
+
+          {section === "rules" && (
+            <div className="skills-top-banner">
+              <div className="skills-top-banner-info">
+                <strong>
+                  <Shield size={15} style={{ color: "var(--nexus-bright)" }} />
+                  Engineering Standards
+                </strong>
+                <small>
+                  Bundled coding standards (style, testing, security, git workflow) auto-matched to the project
+                  stack and injected into Code runs. Your own project rules (AGENTS.md, .nexus/rules) always apply
+                  regardless of this switch.
+                </small>
+              </div>
+              <Toggle
+                checked={rulesEnabled}
+                onChange={(next) => void onToggleRules(next)}
+                title={rulesEnabled ? "Disable system rules" : "Enable system rules"}
+              />
+            </div>
           )}
 
           {section === "services" && (

@@ -124,13 +124,36 @@ function skillsRootFor(scope: "global" | "project", projectRoot: string) {
 
 // Minimal frontmatter reader: the agent only needs name/description, and a
 // forgiving parser keeps half-written SKILL.md files from breaking the list.
+// Supports single-line values, quoted values, and YAML folded/literal scalars
+// (`>`, `>-`, `|`, `|-`) whose continuation lines are indented — several
+// bundled skills describe themselves in multi-line blocks, and a line-only
+// parser would leave their description as the bare ">" marker.
 function parseFrontmatter(content: string) {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!match) return null;
   const result: Record<string, string> = {};
-  for (const line of match[1].split(/\r?\n/)) {
-    const pair = line.match(/^([A-Za-z_-]+)\s*:\s*(.*)$/);
-    if (pair) result[pair[1].trim()] = pair[2].trim().replace(/^["']|["']$/g, "");
+  const lines = match[1].split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const pair = lines[i].match(/^([A-Za-z_-]+)\s*:\s*(.*)$/);
+    if (!pair) continue;
+    const key = pair[1].trim();
+    let value = pair[2].trim();
+    if (/^[>|][+-]?$/.test(value)) {
+      // Folded (`>`) joins the block with spaces; literal (`|`) keeps lines.
+      // The block runs until the first non-indented, non-empty line.
+      const folded = value.startsWith(">");
+      const chunks: string[] = [];
+      i++;
+      while (i < lines.length && (lines[i].startsWith(" ") || lines[i].startsWith("\t") || lines[i].trim() === "")) {
+        if (lines[i].trim() !== "") chunks.push(lines[i].trim());
+        i++;
+      }
+      i--;
+      value = chunks.join(folded ? " " : "\n");
+    } else {
+      value = value.replace(/^["']|["']$/g, "");
+    }
+    result[key] = value;
   }
   return result;
 }
@@ -560,6 +583,31 @@ export function recommendSkills(skills: SkillInfo[], request: string, maxN = 3, 
 function partialHit(a: string, b: string): boolean {
   if (Math.min(a.length, b.length) < 4) return false;
   return a.includes(b) || b.includes(a);
+}
+
+/**
+ * Skills whose workflow depends on a specific MCP server being connected.
+ * Value = list of alternative server-name matches (any-of, case-insensitive
+ * substring against the configured server name). When none are connected the
+ * skill stays mounted and materializable, but is excluded from
+ * recommendations — pointing the model at an MCP-only workflow with no
+ * server configured just burns a read and ends in a missing-tool error.
+ */
+export const REQUIRED_MCP_SKILLS: Record<string, string[][]> = {
+  "exa-search": [["exa"]],
+  "deep-research": [["exa"], ["firecrawl"]],
+  "documentation-lookup": [["context7"]],
+};
+
+export function filterSkillsByMcp(skills: SkillInfo[], connectedServerNames: string[]): SkillInfo[] {
+  const connected = (connectedServerNames || []).map((n) => String(n || "").toLowerCase());
+  return skills.filter((skill) => {
+    const alternatives = REQUIRED_MCP_SKILLS[skill.name];
+    if (!alternatives) return true;
+    return alternatives.some((option) =>
+      option.some((server) => connected.some((name) => name.includes(server))),
+    );
+  });
 }
 
 // ---- Skill helper scripts ----

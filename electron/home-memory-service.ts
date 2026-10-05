@@ -290,6 +290,26 @@ export function removeMemoryFact(raw: string, query: string): string {
 }
 
 /**
+ * Hard cap on tracked memory items across all sections (agent-recorded facts
+ * grow without bound over months). Evicts the OLDEST items from the least
+ * durable sections first (context → facts → preferences → profile) and
+ * re-formats. No-op under the cap.
+ */
+export function capMemoryItems(raw: string, maxItems: number): string {
+  const struct = parseHomeMemory(raw);
+  let over = struct.profile.length + struct.preferences.length + struct.facts.length + struct.context.length - maxItems;
+  for (const key of ["context", "facts", "preferences", "profile"] as const) {
+    if (over <= 0) break;
+    const drop = Math.min(over, struct[key].length);
+    if (drop > 0) {
+      struct[key] = struct[key].slice(drop);
+      over -= drop;
+    }
+  }
+  return formatHomeMemory(struct);
+}
+
+/**
  * Appends a deliverable to the rolling Recent Deliverables section (capped at 5).
  * The originating chat session id is kept so the UI can link back to it.
  */
@@ -485,11 +505,15 @@ export function isSubstantiveHomeTask(
 /**
  * Creates the `manage_memory` tool for Home Mode, allowing the agent to
  * explicitly save or delete enduring user profile details, preferences, and project context.
+ * Name and description are overridable so Code mode can mount the same
+ * machinery as a project-scoped `project_memory` tool.
  */
 export function createHomeMemoryTool(options: {
   onRemember: (category: SemanticCategory, fact: string) => Promise<void> | void;
   /** Returns how many entries were removed, so "forget" can't claim success for a no-op. */
   onForget: (query: string) => Promise<number | void> | number | void;
+  name?: string;
+  description?: string;
 }) {
   return tool(
     async ({ action, category, fact }: { action: "remember" | "forget"; category?: SemanticCategory; fact: string }) => {
@@ -509,8 +533,9 @@ export function createHomeMemoryTool(options: {
       }
     },
     {
-      name: "manage_memory",
+      name: options.name || "manage_memory",
       description:
+        options.description ||
         "Manage long-term memory shared across all Home chats. Call this tool when the user asks you to remember something, states an enduring personal preference (e.g. tone, language, tools, formatting), shares their background/role, or asks to forget a past preference. Do NOT call this tool for temporary conversational details. For action='forget', pass the item's EXACT current wording — paraphrases do not match.",
       schema: z.object({
         action: z.enum(["remember", "forget"]).describe("Whether to remember a new fact/preference or forget an existing one."),

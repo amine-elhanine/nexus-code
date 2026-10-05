@@ -61,7 +61,7 @@ export function getSystemAgents() {
         const content = readFileSync(path.join(dir, file), "utf8");
         const title = roleName.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
         const descMatch = content.match(/description:\s*([^\r\n]+)/i);
-        const description = descMatch ? descMatch[1].trim() : `${title} specialist from ECC`;
+        const description = descMatch ? descMatch[1].trim() : `${title} specialist from Nexus`;
         const isReadOnly = /\b(reviewer|analyzer|architect|explorer|evaluator|lookup|specialist|miner)\b/i.test(roleName);
         map.set(roleName, {
           title,
@@ -83,6 +83,36 @@ export function getAllSubagentRoles(): string[] {
   const sys = getSystemAgents();
   return [...new Set([...SUBAGENT_ROLES, ...Array.from(sys.keys())])];
 }
+
+/**
+ * One line per role ("`role` — description") for the system prompt. The
+ * delegate_task schema takes a free-string role, so without this catalog the
+ * model only uses roles it happens to guess from the tool description. Tuned
+ * configs come first; bundled .md specialists fill in the rest.
+ */
+export function buildSubagentCatalog(maxDescChars = 90): string {
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  const push = (role: string, description: string) => {
+    const key = role.toLowerCase();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    const desc = String(description || "").replace(/\s+/g, " ").trim();
+    lines.push(`- \`${role}\` — ${desc.length > maxDescChars ? `${desc.slice(0, maxDescChars - 1)}…` : desc}`);
+  };
+  for (const [role, config] of Object.entries(SUBAGENT_CONFIGS)) push(role, config.description);
+  for (const [role, agent] of getSystemAgents()) push(role, agent.description);
+  return lines.sort((a, b) => a.localeCompare(b)).join("\n");
+}
+
+/**
+ * Appended to every subagent system prompt: the bundled specialist .md files
+ * were written against Claude Code's tool surface (Read/Grep/Glob/Task), and
+ * instructions naming tools that don't exist here waste turns or send the
+ * model hunting for a delegation tool it does not have.
+ */
+const SUBAGENT_TOOL_NOTES = `
+[Tool mapping — this environment's actual tools: read_file / read_file_range (Read), glob (Glob), grep_search (Grep), write_file (Write), edit_file (Edit), execute (Bash/shell), plus any listed MCP tools. There is NO Task tool and you cannot spawn further subagents — if these instructions mention delegating to or launching other agents, do that work yourself and cover it in your report.]`;
 
 export type SubagentStep = {
   toolName: string;
@@ -457,7 +487,7 @@ export async function executeSubagentTask(options: {
       backend: (skillsBackend || backend) as any,
       tools,
       skills: skills || [],
-      systemPrompt: config.systemPrompt(projectRoot),
+      systemPrompt: `${config.systemPrompt(projectRoot)}\n${SUBAGENT_TOOL_NOTES}`,
     });
 
     let finalMessages: any[] = [];
@@ -606,9 +636,9 @@ export function createSubagentDelegationTool(options: {
     },
     {
       name: "delegate_task",
-      description: "Delegate a focused sub-task to a specialized engineering subagent. Read-only specialists may run concurrently, but only one write-capable subagent may modify the workspace at a time. 68 specialized ECC roles are supported, including 'architect', 'code-reviewer', 'security-reviewer', 'tdd-guide', 'build-error-resolver', 'refactor-cleaner', 'database-reviewer', 'researcher', 'tester', 'coder', etc.",
+      description: `Delegate a focused sub-task to a specialized engineering subagent. Read-only specialists may run concurrently, but only one write-capable subagent may modify the workspace at a time. ${getAllSubagentRoles().length} specialist roles are available — the full catalog with each role's purpose is in your system instructions under "SPECIALIST SUBAGENTS".`,
       schema: z.object({
-        role: z.string().min(1).describe("The specialized subagent role to execute the task (e.g. 'architect', 'code-reviewer', 'security-reviewer', 'tdd-guide', 'build-error-resolver', 'database-reviewer', 'researcher', 'tester', 'coder', or any other ECC specialist agent)."),
+        role: z.string().min(1).describe(`The specialized subagent role to execute the task. Pick from the SPECIALIST SUBAGENTS catalog in your instructions (e.g. 'architect', 'code-reviewer', 'security-reviewer', 'build-error-resolver', 'researcher').`),
         task: z.string().min(1).max(4_000).describe("Clear, focused instructions for the subagent describing what to find, design, test, review, or implement. Maximum 4,000 characters."),
       }),
     }
