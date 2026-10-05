@@ -1,6 +1,6 @@
 {
   "name": "nexus",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": true,
   "description": "Nexus — Autonomous AI desktop agent: coding agent, general assistant and grounded notebook Q&A (Electron + LangChain + LangGraph + DeepAgents).",
   "main": "dist-electron/main.js",
@@ -64,10 +64,10 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Nexus",
-      "artifactName": "${productName} Setup ${version}.${ext}"
+      "artifactName": "${productName}.Setup.${version}.${ext}"
     },
     "portable": {
-      "artifactName": "${productName} ${version} Portable.${ext}"
+      "artifactName": "${productName}.${version}.Portable.${ext}"
     },
     "mac": {
       "icon": "build/icon.png",
@@ -118,7 +118,7 @@
     "pptxgenjs": "^4.0.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "tree-sitter-wasms": "^0.1.13",
+    "tree-sitter-wasms": "0.1.11",
     "web-tree-sitter": "^0.22.4",
     "xlsx": "^0.18.5",
     "zod": "4.4.3"
