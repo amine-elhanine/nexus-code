@@ -325,8 +325,38 @@ export function substituteCommandPlaceholders(
 ): string {
   let result = template;
   result = result.replace(/\{\{input\}\}/gi, variables.input || "");
+  // $ARGUMENTS is the Claude-Code convention several bundled commands were
+  // written with — treat it as an alias of {{input}} so both styles expand.
+  result = result.replace(/\$ARGUMENTS/g, variables.input || "");
   result = result.replace(/\{\{activeFile\}\}/gi, variables.activeFile || "the current workspace files");
   result = result.replace(/\{\{gitBranch\}\}/gi, variables.gitBranch || "main");
   result = result.replace(/\{\{diffSummary\}\}/gi, variables.diffSummary || "no current changes");
   return result.trim();
+}
+
+/**
+ * Expands a leading slash command ("/name rest of line") into its full
+ * prompt template. Unknown commands and plain text pass through untouched,
+ * so the agent never sees a mangled request. `scope` filters which bundled/
+ * project commands are eligible (same convention as the slash popup UI).
+ */
+export async function expandSlashCommand(
+  request: string,
+  projectRoot?: string,
+  scope?: Exclude<CommandScope, "all">
+): Promise<string> {
+  const raw = (request || "").trimStart();
+  const match = raw.match(/^\/([a-z0-9][a-z0-9_-]{0,31})\b[ \t]*([\s\S]*)$/);
+  if (!match) return request;
+  const name = match[1].toLowerCase();
+  const input = (match[2] || "").trim();
+  let commands: CustomSlashCommand[];
+  try {
+    commands = await discoverCustomCommands(projectRoot, scope);
+  } catch {
+    return request;
+  }
+  const cmd = commands.find((c) => c.command === `/${name}`);
+  if (!cmd || !cmd.promptTemplate) return request;
+  return substituteCommandPlaceholders(cmd.promptTemplate, { input });
 }

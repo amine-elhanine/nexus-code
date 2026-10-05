@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Brain, BookOpen, Check, ChevronDown, ChevronRight, Code2, Coins, Download, FileCode2, FileText,
-  FolderOpen, GitBranch, Globe, Home, Info, Loader2, Menu, Sparkles, X,
+  Folder, FolderOpen, GitBranch, Globe, Home, Info, Loader2, Menu, Sparkles, X,
   MessageSquare, PanelRight, Pencil, Plus, RefreshCw, Undo2,
   Settings2, Terminal, Trash2, TriangleAlert, Activity
 } from "lucide-react";
@@ -32,35 +32,43 @@ import { useAppController, sortSessionsByUpdatedAt } from "./state/useAppControl
 import { applyTheme } from "./state/theme.js";
 import { getSessionUsage, fileIcon } from "./utils/format.js";
 import { timeLabel } from "./utils/format.js";
-import type { ChatAttachment, UpdaterState } from "./types.js";
+import type { ChatAttachment, UpdaterState, SessionRecord } from "./types.js";
 import { formatCost, type FileEntry } from "./types.js";
 
 function FileRow({
   entry,
   active,
   expanded,
+  status,
   onClick,
 }: {
   entry: FileEntry;
   active: boolean;
   expanded: boolean;
+  status?: string;
   onClick: () => void;
 }) {
-  const nested = entry.path.includes("/");
+  const isFolder = entry.kind === "folder";
+  const depth = entry.path.split("/").length - 1;
   return (
-    <button className={`tree-row ${active ? "active" : ""} ${nested ? "nested" : ""}`} onClick={onClick}>
-      {entry.kind === "folder" ? (
+    <button
+      className={`tree-row ${active ? "active" : ""}`}
+      style={{ paddingLeft: 6 + depth * 13 }}
+      onClick={onClick}
+    >
+      {isFolder ? (
         <>
-          {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-          <FolderOpen size={14} />
+          <span className="twist">{expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
+          <span className="ficon">{expanded ? <FolderOpen size={14} /> : <Folder size={14} />}</span>
         </>
       ) : (
         <>
-          {!nested && <span className="indent" />}
-          {fileIcon(entry.path)}
+          <span className="twist hidden" />
+          <span className="ficon">{fileIcon(entry.path)}</span>
         </>
       )}
-      <span>{entry.path.split("/").pop()}</span>
+      <span className="fname">{entry.path.split("/").pop()}</span>
+      {status && <span className={`git-mark git-${status}`}>{status}</span>}
     </button>
   );
 }
@@ -312,6 +320,8 @@ function App() {
     showSkills,
     setShowSkills,
     skillsEnabled,
+    rulesEnabled,
+    setRulesEnabled,
     setSkillsEnabled,
     confirmDialog,
     setConfirmDialog,
@@ -345,8 +355,11 @@ function App() {
     activateSession,
     deleteActiveSession,
     renameSession,
+    gitStatus,
     openFile,
     saveFile,
+    workspacePreviewPath,
+    setWorkspacePreviewPath,
     toggleFolder,
     loadWorkspace,
     refreshDiff,
@@ -361,7 +374,8 @@ function App() {
     keepChanges,
     switchModel,
     handleProvidersChange,
-    saveMemories,
+    removeProjectFact,
+    clearSessionMemory,
     submit,
     stopAgent,
     setActiveFile,
@@ -380,6 +394,15 @@ function App() {
     : (activeSession?.title || "No session selected");
   const currentSessionUsage = getSessionUsage(activeSession);
   const [homePreviewPath, setHomePreviewPath] = useState<string | null>(null);
+  // Delete-chat confirmation: fetches the high-confidence owned-file list so
+  // the user can choose "delete chat" vs "delete chat + the files it created".
+  const [homeDeleteDialog, setHomeDeleteDialog] = useState<{ session: SessionRecord; ownedFiles: Array<{ path: string; name: string; size: number; modified: string }> } | null>(null);
+  function openHomeDeleteDialog(session: SessionRecord) {
+    const api = window.nexus || window.forgepilot;
+    api.listHomeSessionFilesForDeletion(session.id)
+      .catch(() => [])
+      .then((files) => setHomeDeleteDialog({ session, ownedFiles: files || [] }));
+  }
   const [attachmentPreview, setAttachmentPreview] = useState<ChatAttachment | null>(null);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingSessionTitle, setEditingSessionTitle] = useState("");
@@ -672,7 +695,7 @@ function App() {
                   onDraftChange={home.setEditingSessionTitle}
                   onCommit={home.commitRename}
                   onCancel={home.cancelRename}
-                  onDelete={() => void home.deleteChat(session.id)}
+                  onDelete={() => openHomeDeleteDialog(session)}
                 />
               ))}
               {!home.sessions.length && <div className="empty-pane">Start a new chat to begin.</div>}
@@ -917,9 +940,7 @@ function App() {
                 switchModel={(providerId, model) => void switchModel(providerId, model)}
                 onOpenProviders={() => setShowProviders(true)}
                 sessionUsage={home.sessionUsage}
-                homeFiles={home.homeFiles}
                 homeRoot={home.homeRoot}
-                onRefreshFiles={() => void home.refreshFiles()}
                 onDownloadFile={(relPath) => void api.downloadHomeFile(relPath)}
                 onOpenFolder={() => void api.openHomeFolder()}
                 onNewChat={() => void home.createChat()}
@@ -1011,7 +1032,7 @@ function App() {
 
         {showContext && area !== "notebook" ? (
           area === "code" ? (
-          <aside key="code-context" className="context-pane" style={{ width: contextWidth }}>
+          <aside key="code-context" className={`context-pane${contextWidth <= 300 ? " narrow" : ""}`} style={{ width: contextWidth }}>
             <div className="context-resize" onPointerDown={startContextResize} title="Drag to resize the sidebar" />
             <div className="notebook-side-head">
               <div className="notebook-side-head-left">
@@ -1034,22 +1055,22 @@ function App() {
             </div>
             <div className="context-tabs" role="tablist" aria-label="Code sidebar">
               <button type="button" role="tab" aria-selected={codeSideTab === "session"} className={codeSideTab === "session" ? "active" : ""} onClick={() => setCodeSideTab("session")} title="Session status and tools">
-                <Info size={12} /> Session
+                <Info size={12} /> <span className="context-tab-label">Session</span>
               </button>
               <button type="button" role="tab" aria-selected={codeSideTab === "files"} className={codeSideTab === "files" ? "active" : ""} onClick={() => setCodeSideTab("files")} title="Project files">
-                <FolderOpen size={12} /> Files
+                <FolderOpen size={12} /> <span className="context-tab-label">Files</span>
               </button>
               <button type="button" role="tab" aria-selected={codeSideTab === "browser"} className={codeSideTab === "browser" ? "active" : ""} onClick={() => setCodeSideTab("browser")} title="Built-in browser">
-                <Globe size={12} /> Browser
+                <Globe size={12} /> <span className="context-tab-label">Browser</span>
               </button>
               <button type="button" role="tab" aria-selected={codeSideTab === "terminal"} className={codeSideTab === "terminal" ? "active" : ""} onClick={() => setCodeSideTab("terminal")} title="Interactive terminal">
-                <Terminal size={12} /> Term
+                <Terminal size={12} /> <span className="context-tab-label">Term</span>
               </button>
               <button type="button" role="tab" aria-selected={codeSideTab === "diff"} className={codeSideTab === "diff" ? "active" : ""} onClick={() => { setCodeSideTab("diff"); void refreshDiff(); }} title="Git diff">
-                <GitBranch size={12} /> Diff{diff.length > 0 ? ` (${diff.length})` : ""}
+                <GitBranch size={12} /> <span className="context-tab-label">Diff{diff.length > 0 ? ` (${diff.length})` : ""}</span>
               </button>
               <button type="button" role="tab" aria-selected={codeSideTab === "memory"} className={codeSideTab === "memory" ? "active" : ""} onClick={() => setCodeSideTab("memory")} title="Persistent memory">
-                <Brain size={12} /> Memory
+                <Brain size={12} /> <span className="context-tab-label">Memory</span>
               </button>
             </div>
             <div className={`context-tab-panel${codeSideTab === "session" ? "" : " hidden"}`}>
@@ -1095,6 +1116,7 @@ function App() {
                     <span>MEMORY</span>
                     <button onClick={() => setCodeSideTab("memory")}><ChevronRight size={13} /></button>
                   </div>
+                  <MemoryRow label="Project facts" value={activeProject?.facts ? "Updated" : "Empty"} />
                   <MemoryRow label="Project memory" value={activeProject?.memory ? "Updated" : "Empty"} />
                   <MemoryRow label="Session memory" value={activeSession?.memory ? "Updated" : "Empty"} />
                 </div>
@@ -1119,6 +1141,7 @@ function App() {
                     entry={entry}
                     active={entry.path === activeFile}
                     expanded={expandedFolders.has(entry.path)}
+                    status={gitStatus[entry.path]}
                     onClick={() =>
                       entry.kind === "folder" ? toggleFolder(entry.path) : void openFile(entry.path)
                     }
@@ -1161,13 +1184,13 @@ function App() {
               />
             </div>
             <div className={`context-tab-panel${codeSideTab === "memory" ? "" : " hidden"}`}>
-              <MemoryView project={activeProject} session={activeSession} onSave={saveMemories} />
+              <MemoryView project={activeProject} session={activeSession} onRemoveFact={(fact) => void removeProjectFact(fact)} onClearSessionMemory={() => void clearSessionMemory()} />
             </div>
           </aside>
           ) : (
             // Notebook owns its own 3-pane layout (sources / chat / artifacts)
             // inside NotebookView, so the app-level context pane stays hidden.
-          <aside key="home-context" className="context-pane" style={{ width: contextWidth }}>
+          <aside key="home-context" className={`context-pane${contextWidth <= 300 ? " narrow" : ""}`} style={{ width: contextWidth }}>
             <div className="context-resize" onPointerDown={startContextResize} title="Drag to resize the sidebar" />
             <div className="notebook-side-head">
               <div className="notebook-side-head-left">
@@ -1197,7 +1220,7 @@ function App() {
                 onClick={() => setHomeSideTab("session")}
                 title="Session status, usage and memory"
               >
-                <Info size={12} /> Session
+                <Info size={12} /> <span className="context-tab-label">Session</span>
               </button>
               <button
                 type="button"
@@ -1217,7 +1240,7 @@ function App() {
                 onClick={() => setHomeSideTab("browser")}
                 title="Built-in browser"
               >
-                <Globe size={12} /> Browser
+                <Globe size={12} /> <span className="context-tab-label">Browser</span>
               </button>
               <button
                 type="button"
@@ -1227,7 +1250,7 @@ function App() {
                 onClick={() => { setHomeSideTab("memory"); void home.refreshHomeMemory(); }}
                 title="Long-term memory shared across all Home chats"
               >
-                <Brain size={12} /> Memory
+                <Brain size={12} /> <span className="context-tab-label">Memory</span>
               </button>
             </div>
             {homeSideTab === "session" && (
@@ -1365,6 +1388,11 @@ function App() {
             setSkillsEnabled(enabled);
             await api.saveSkillsConfig({ enabled });
           }}
+          rulesEnabled={rulesEnabled}
+          onToggleRules={async (enabled) => {
+            setRulesEnabled(enabled);
+            await api.saveRulesConfig({ enabled });
+          }}
           providers={providers}
           providerDefinitions={providerDefinitions}
           onProvidersChange={handleProvidersChange}
@@ -1440,6 +1468,36 @@ function App() {
           danger={confirmDialog.danger}
           onConfirm={confirmDialog.onConfirm}
           onCancel={() => setConfirmDialog(null)}
+        />
+      )}
+      {homeDeleteDialog && (
+        <ConfirmModal
+          title={`Delete "${homeDeleteDialog.session.title || "chat"}"?`}
+          message={
+            homeDeleteDialog.ownedFiles.length
+              ? `This chat created ${homeDeleteDialog.ownedFiles.length} file${homeDeleteDialog.ownedFiles.length === 1 ? "" : "s"} in your Nexus folder (${homeDeleteDialog.ownedFiles.slice(0, 5).map((f) => f.name).join(", ")}${homeDeleteDialog.ownedFiles.length > 5 ? ", …" : ""}). Choose whether to keep or delete them.`
+              : "The chat transcript will be removed. No files in your Nexus folder are owned by this chat."
+          }
+          confirmLabel="Delete chat"
+          secondaryAction={
+            homeDeleteDialog.ownedFiles.length
+              ? {
+                  label: `Delete chat + ${homeDeleteDialog.ownedFiles.length} file${homeDeleteDialog.ownedFiles.length === 1 ? "" : "s"}`,
+                  onConfirm: () => {
+                    const target = homeDeleteDialog;
+                    setHomeDeleteDialog(null);
+                    void home.deleteChat(target.session.id, { deleteFiles: true });
+                  },
+                }
+              : undefined
+          }
+          danger
+          onConfirm={() => {
+            const target = homeDeleteDialog;
+            setHomeDeleteDialog(null);
+            void home.deleteChat(target.session.id);
+          }}
+          onCancel={() => setHomeDeleteDialog(null)}
         />
       )}
       {approvalRequest && (
@@ -1528,6 +1586,14 @@ function App() {
           filePath={homePreviewPath}
           onClose={() => setHomePreviewPath(null)}
           onDownload={(p) => void api.downloadHomeFile(p)}
+        />
+      )}
+      {workspacePreviewPath && (
+        <FilePreviewModal
+          filePath={workspacePreviewPath}
+          onClose={() => setWorkspacePreviewPath(null)}
+          onDownload={(p) => void api.downloadWorkspaceFile(p)}
+          load={() => api.readWorkspaceFileBase64(workspacePreviewPath)}
         />
       )}
       {attachmentPreview && <AttachmentPreviewModal attachment={attachmentPreview} onClose={() => setAttachmentPreview(null)} />}

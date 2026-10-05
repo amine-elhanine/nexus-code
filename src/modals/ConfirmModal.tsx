@@ -5,6 +5,7 @@ export function ConfirmModal({
   title,
   message,
   confirmLabel = "Delete",
+  secondaryAction,
   danger = true,
   onConfirm,
   onCancel,
@@ -12,6 +13,8 @@ export function ConfirmModal({
   title: string;
   message: string;
   confirmLabel?: string;
+  /** Optional second confirm choice (e.g. "delete chat + its files") shown next to the primary one. */
+  secondaryAction?: { label: string; onConfirm: () => void };
   danger?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
@@ -39,6 +42,11 @@ export function ConfirmModal({
           >
             {danger ? <Trash2 size={13} /> : <Check size={13} />} {confirmLabel}
           </button>
+          {secondaryAction && (
+            <button className="primary danger-confirm-btn" onClick={secondaryAction.onConfirm} title={secondaryAction.label}>
+              <Trash2 size={13} /> {secondaryAction.label}
+            </button>
+          )}
         </div>
       </div>
     </div>

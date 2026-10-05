@@ -1,6 +1,6 @@
 ---
 name: gan-evaluator
-description: "GAN Harness — Evaluator agent. Tests the live running application via Playwright, scores against rubric, and provides actionable feedback to the Generator."
+description: "GAN Harness — Evaluator agent. Tests the live running application via Playwright MCP (requires a Playwright MCP server to be configured), scores against rubric, and provides actionable feedback to the Generator."
 tools: Read, Write, Bash, Grep, Glob, mcp__playwright__browser_navigate, mcp__playwright__browser_click, mcp__playwright__browser_take_screenshot, mcp__playwright__browser_snapshot, mcp__playwright__browser_type, mcp__playwright__browser_fill_form
 model: sonnet
 color: red

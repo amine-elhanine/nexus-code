@@ -249,4 +249,4 @@ Verdict: BLOCK — HIGH issues must be fixed before merge.
 - **Approve**: No CRITICAL or HIGH issues
 - **Block**: Any CRITICAL or HIGH issues — must fix before merge
 
-Refer to the `flutter-dart-code-review` skill for the comprehensive review checklist.
+Review the diff file by file: correctness, widget-tree structure, state management hygiene, async patterns, and Dart/Flutter idiom.

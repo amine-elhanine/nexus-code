@@ -7,7 +7,7 @@ import {
 import { ModelSelect } from "./AgentView.js";
 import { ActivityGroupView, CopyTextButton } from "../components/chat/ChatMessageItem.js";
 import { SlashCommandPopup, filterSlashCommands, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
-import { renderMarkdown } from "../markdown.js";
+import { RichMarkdown } from "../components/common/RichMarkdown.js";
 import { timeLabel } from "../utils/format.js";
 import { SourcePassageModal, type PassageAction } from "../components/notebook/SourcePassageModal.js";
 import { DocumentViewerModal } from "../components/notebook/DocumentViewerModal.js";
@@ -1132,7 +1132,7 @@ export function NotebookView({
                   <time>{timeLabel(message.createdAt)}</time>
                 </div>
                 {message.role === "assistant" ? (
-                  <div className="chat-message-text md" dangerouslySetInnerHTML={{ __html: renderMarkdown(message.text) }} />
+                  <RichMarkdown source={message.text} className="chat-message-text" />
                 ) : (
                   <div className="chat-text">{message.text}</div>
                 )}
@@ -1218,7 +1218,7 @@ export function NotebookView({
                   </span>{" "}
                   Notebook
                 </div>
-                <div className="chat-message-text md" dangerouslySetInnerHTML={{ __html: renderMarkdown(streaming) }} />
+                <RichMarkdown source={streaming} className="chat-message-text" />
                 <span className="stream-caret">▍</span>
               </div>
             )}

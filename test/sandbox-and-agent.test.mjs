@@ -12,6 +12,7 @@ import {
   runProjectCommand,
   executeCommand,
   getAgentBackend,
+  RunCancelledError,
 } from '../dist-electron/command-service.js';
 import { isDeniedCommand, classifyCommand } from '../dist-electron/permissions.js';
 import { requestCommandApproval, resolveCommandApproval, setApprovalNotifier, pendingApprovalCount } from '../dist-electron/approval-service.js';
@@ -112,22 +113,53 @@ app.whenReady().then(async () => {
     beginCommandRun();
     const runPromise = runProjectCommand(project, `node ${scriptPath}`);
 
-    await new Promise((r) => setTimeout(r, 250));
+    // Cancellation rejects the run promise with RunCancelledError (the old
+    // exit-code-130 result object predates per-run cancellation). The child
+    // may not have spawned yet when the first cancel lands — under load the
+    // spawn can trail the fixed sleep — so retry the idempotent cancel until
+    // the run settles and measure promptness from the FIRST cancel. A prompt
+    // tree kill must stay far below the script's 30s runtime.
     const startTime = Date.now();
-    cancelCommandRun();
-
-    const result = await runPromise;
+    let settled = false;
+    runPromise.then(() => { settled = true; }, () => { settled = true; });
+    while (!settled) {
+      cancelCommandRun();
+      await new Promise((r) => setTimeout(r, 100));
+    }
     const elapsed = Date.now() - startTime;
 
-    assert.ok(elapsed < 4000, `Process tree was terminated promptly in ${elapsed}ms`);
-    assert.equal(result.exitCode, 130);
-    assert.match(result.output, /cancelled by user/i);
-
+    await assert.rejects(runPromise, RunCancelledError);
+    assert.ok(elapsed < 10000, `Process tree was terminated promptly in ${elapsed}ms`);
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  console.log('\n=== 3. Read-Only Backend Tests (Plan Mode) ===');
+  await test('Agent-run commands inherit a scrubbed environment (no secret-shaped vars)', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-env-'));
+    const scriptPath = path.join(tempDir, 'print-env.js');
+    await fs.writeFile(
+      scriptPath,
+      'process.stdout.write(JSON.stringify({ secret: process.env.NEXUS_TEST_API_KEY ?? null, plain: process.env.NEXUS_TEST_PLAINVAR ?? null }));',
+      'utf8'
+    );
+    process.env.NEXUS_TEST_API_KEY = 'sk-leak-should-not-pass';
+    process.env.NEXUS_TEST_PLAINVAR = 'passes-through';
 
+    try {
+      const project = await upsertProject({ id: 'test-env', name: 'env-test', root: tempDir });
+      // Fresh run state: the cancel test above leaves the shared state cancelled.
+      beginCommandRun();
+      const result = await runProjectCommand(project, `node "${scriptPath}"`);
+      const parsed = JSON.parse(result.output || '{}');
+      assert.equal(parsed.secret, null, 'secret-shaped env vars must not reach agent-run commands');
+      assert.equal(parsed.plain, 'passes-through', 'ordinary env vars still pass through');
+    } finally {
+      delete process.env.NEXUS_TEST_API_KEY;
+      delete process.env.NEXUS_TEST_PLAINVAR;
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  console.log('\n=== 3. Read-Only Backend Tests (Plan Mode) ===');
   await test('Read-only backend blocks write, edit, delete, and execute with descriptive message', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-readonly-'));
     const project = await upsertProject({ id: 'test-readonly', name: 'readonly-test', root: tempDir });
@@ -286,7 +318,9 @@ app.whenReady().then(async () => {
     await fs.writeFile(path.join(tempDir, 'tsconfig.json'), '{}', 'utf8');
 
     const cmd = pickVerificationCommand(tempDir);
-    assert.equal(cmd, 'tsc --noEmit');
+    // npx-wrapped so the project-local TypeScript is used without requiring a
+    // global install (matches agent-service pickVerificationCommand).
+    assert.equal(cmd, 'npx --no-install tsc --noEmit');
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
@@ -618,7 +652,9 @@ export const helper = () => true;
     const outline = formatOutline('src/user.ts', symbols);
     assert.match(outline, /interface User/);
     assert.match(outline, /class UserService/);
-    assert.match(outline, /method getUser/);
+    // AST signatures keep the full multi-line method signature + return type
+    // (the old regex parser truncated at the first line break).
+    assert.match(outline, /getUser\(id: string\): Promise<User>/);
     assert.match(outline, /function formatUser/);
   });
 
@@ -879,13 +915,13 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.equal(skill.name, 'react-testing-guide');
     assert.equal(skill.source, 'project');
 
-    const content = await readSkillContent(skill.path);
+    const content = await readSkillContent(skill.path, tempDir);
     assert.ok(content.includes('React Testing'));
 
     const list = await listSkills(tempDir);
     assert.ok(list.some((s) => s.name === 'react-testing-guide'));
 
-    await deleteSkill(skill.path);
+    await deleteSkill(skill.path, tempDir);
     const listAfterDelete = await listSkills(tempDir);
     assert.ok(!listAfterDelete.some((s) => s.name === 'react-testing-guide'));
 
@@ -909,7 +945,7 @@ pub async fn execute_task(task: &str) -> bool { true }
     const list = await listSkills(tempDir);
     assert.ok(list.some((s) => s.name === 'node-security'));
 
-    await deleteSkill(imported.path);
+    await deleteSkill(imported.path, tempDir);
     await fs.rm(tempDir, { recursive: true, force: true });
     await fs.rm(externalDir, { recursive: true, force: true });
   });
@@ -978,7 +1014,7 @@ pub async fn execute_task(task: &str) -> bool { true }
     const skill = await createSkill(tempDir, { name: 'loc-check', description: 'd', scope: 'project', content: 'x' });
     assert.ok(skill.path.includes(path.join('.nexus', 'skills')));
     assert.match(skillVirtualPath(skill), /\.nexus\/skills\/loc-check\/SKILL\.md/);
-    await deleteSkill(skill.path);
+    await deleteSkill(skill.path, tempDir);
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
@@ -992,15 +1028,15 @@ pub async fn execute_task(task: &str) -> bool { true }
     const found = list.find((s) => s.name === 'old-guide');
     assert.ok(found);
     assert.match(skillVirtualPath(found), /\.deepagents\/skills\/old-guide\/SKILL\.md/);
-    assert.match(await readSkillContent(found.path), /Legacy body/);
+    assert.match(await readSkillContent(found.path, tempDir), /Legacy body/);
 
     // New location wins on name collision; legacy stays readable otherwise.
     const created = await createSkill(tempDir, { name: 'old-guide', description: 'new copy', scope: 'project', content: 'y' });
     const listed = (await listSkills(tempDir)).filter((s) => s.name === 'old-guide');
     assert.equal(listed.length, 1);
     assert.ok(listed[0].path.includes(path.join('.nexus', 'skills')));
-    await deleteSkill(created.path);
-    await deleteSkill(found.path);
+    await deleteSkill(created.path, tempDir);
+    await deleteSkill(found.path, tempDir);
     assert.equal((await listSkills(tempDir)).filter((s) => s.name === 'old-guide').length, 0);
     await fs.rm(tempDir, { recursive: true, force: true });
   });

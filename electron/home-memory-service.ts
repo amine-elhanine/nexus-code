@@ -260,20 +260,52 @@ export function addMemoryFact(
 /**
  * Removes a fact from memory. Matches the exact fact only: a substring match
  * turned "forget Paris" into deleting "Paris-based projects" and truncating
- * deliverable summaries that merely mentioned the word.
+ * deliverable summaries that merely mentioned the word. Returns how many
+ * entries were removed so the caller can tell "removed" apart from
+ * "nothing matched" instead of claiming success for both.
  */
-export function removeMemoryFact(raw: string, query: string): string {
+export function removeMemoryFactWithCount(raw: string, query: string): { memory: string; removed: number } {
   const struct = parseHomeMemory(raw);
   const target = query.toLowerCase().trim();
-  if (!target) return raw;
+  if (!target) return { memory: raw, removed: 0 };
 
   const isTarget = (item: string) => item.toLowerCase().trim() === target;
+  const removed =
+    struct.profile.filter(isTarget).length +
+    struct.preferences.filter(isTarget).length +
+    struct.facts.filter(isTarget).length +
+    struct.context.filter(isTarget).length +
+    struct.recentDeliverables.filter((d) => isTarget(d.summary)).length;
   struct.profile = struct.profile.filter((p) => !isTarget(p));
   struct.preferences = struct.preferences.filter((p) => !isTarget(p));
   struct.facts = struct.facts.filter((f) => !isTarget(f));
   struct.context = struct.context.filter((c) => !isTarget(c));
   struct.recentDeliverables = struct.recentDeliverables.filter((d) => !isTarget(d.summary));
 
+  return { memory: formatHomeMemory(struct), removed };
+}
+
+export function removeMemoryFact(raw: string, query: string): string {
+  return removeMemoryFactWithCount(raw, query).memory;
+}
+
+/**
+ * Hard cap on tracked memory items across all sections (agent-recorded facts
+ * grow without bound over months). Evicts the OLDEST items from the least
+ * durable sections first (context → facts → preferences → profile) and
+ * re-formats. No-op under the cap.
+ */
+export function capMemoryItems(raw: string, maxItems: number): string {
+  const struct = parseHomeMemory(raw);
+  let over = struct.profile.length + struct.preferences.length + struct.facts.length + struct.context.length - maxItems;
+  for (const key of ["context", "facts", "preferences", "profile"] as const) {
+    if (over <= 0) break;
+    const drop = Math.min(over, struct[key].length);
+    if (drop > 0) {
+      struct[key] = struct[key].slice(drop);
+      over -= drop;
+    }
+  }
   return formatHomeMemory(struct);
 }
 
@@ -424,7 +456,7 @@ export function shouldExtractMemory(request: string, response: string): boolean 
     /^(hi|hello|hey|yo|good\s+(morning|afternoon|evening)|thanks|thank you|ok|okay|continue)\b/i.test(req) &&
     req.length < 30;
   const hasIdentitySignal =
-    /\b(my name is|call me|i am a|i'm a|i work as|i study|i'm studying|my role is|i live in|i'm from|my preference is|i prefer|je m'appelle|mon nom est|je suis|j'étudie|j'etudie|je travaille|je préfère|je prefere)\b/i.test(
+    /\b(my name is|call me|i am a|i'm a|i work as|i study|i'm studying|my role is|i live in|i'm from|my preference is|i prefer|je m'appelle|mon nom est|je suis (?:un|une)|j'étudie|j'etudie|je travaille|je préfère|je prefere)\b/i.test(
       req
     );
   if (hasIdentitySignal) return res.length >= 10;
@@ -473,10 +505,15 @@ export function isSubstantiveHomeTask(
 /**
  * Creates the `manage_memory` tool for Home Mode, allowing the agent to
  * explicitly save or delete enduring user profile details, preferences, and project context.
+ * Name and description are overridable so Code mode can mount the same
+ * machinery as a project-scoped `project_memory` tool.
  */
 export function createHomeMemoryTool(options: {
   onRemember: (category: SemanticCategory, fact: string) => Promise<void> | void;
-  onForget: (query: string) => Promise<void> | void;
+  /** Returns how many entries were removed, so "forget" can't claim success for a no-op. */
+  onForget: (query: string) => Promise<number | void> | number | void;
+  name?: string;
+  description?: string;
 }) {
   return tool(
     async ({ action, category, fact }: { action: "remember" | "forget"; category?: SemanticCategory; fact: string }) => {
@@ -485,18 +522,21 @@ export function createHomeMemoryTool(options: {
           const cat = category || "preference";
           await options.onRemember(cat, fact);
           return `Successfully saved to long-term memory under [${cat}]: "${fact}".`;
-        } else {
-          await options.onForget(fact);
-          return `Successfully removed matching item(s) from long-term memory for: "${fact}".`;
         }
+        const removed = await options.onForget(fact);
+        if (typeof removed === "number" && removed > 0) {
+          return `Removed ${removed} item(s) from long-term memory.`;
+        }
+        return `No exact match found in memory for "${fact}" — nothing was removed. Retry with the exact wording shown in the Memory tab.`;
       } catch (err) {
         return `Failed to update memory: ${err instanceof Error ? err.message : String(err)}`;
       }
     },
     {
-      name: "manage_memory",
+      name: options.name || "manage_memory",
       description:
-        "Manage long-term memory shared across all Home chats. Call this tool when the user asks you to remember something, states an enduring personal preference (e.g. tone, language, tools, formatting), shares their background/role, or asks to forget a past preference. Do NOT call this tool for temporary conversational details.",
+        options.description ||
+        "Manage long-term memory shared across all Home chats. Call this tool when the user asks you to remember something, states an enduring personal preference (e.g. tone, language, tools, formatting), shares their background/role, or asks to forget a past preference. Do NOT call this tool for temporary conversational details. For action='forget', pass the item's EXACT current wording — paraphrases do not match.",
       schema: z.object({
         action: z.enum(["remember", "forget"]).describe("Whether to remember a new fact/preference or forget an existing one."),
         category: z.enum(["profile", "preference", "fact", "context"]).optional().describe("Category: 'profile' (role, background, identity), 'preference' (output formats, style, language), 'fact' (durable personal facts), or 'context' (ongoing project goals). Defaults to 'preference'."),

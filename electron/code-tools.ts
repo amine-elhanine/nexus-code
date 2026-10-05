@@ -4,15 +4,15 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import { ensureSymbolParsersReady, parseSymbolsWithTreeSitterSync, startSymbolParserWarmup, type SymbolEntry } from "./symbol-parser.js";
+import { lspDefinition, lspDiagnostics, lspDocumentSymbols, lspReferences } from "./lsp-service.js";
+
+export type { SymbolEntry };
+// Warm the WASM grammars in the background so the sync parse path is
+// AST-backed (not regex fallback) by the time an agent run starts.
+startSymbolParserWarmup();
 
 const execFileAsync = promisify(execFile);
-
-export type SymbolEntry = {
-  kind: "function" | "class" | "interface" | "type" | "variable" | "export" | "import" | "struct" | "enum" | "trait";
-  name: string;
-  line: number;
-  signature: string;
-};
 
 const IGNORED_DIRS = new Set([
   ".git",
@@ -69,6 +69,26 @@ export function parseSymbolsFromCode(arg1: string, arg2: string): SymbolEntry[] 
   let code = arg1;
   let fileName = arg2;
   // Auto-detect argument order if fileName was passed first
+  if (arg1.includes("\n") || (!arg2.includes("\n") && arg1.length > arg2.length)) {
+    code = arg1;
+    fileName = arg2;
+  } else if (arg2.includes("\n") || (!arg1.includes("\n") && arg2.length > arg1.length)) {
+    code = arg2;
+    fileName = arg1;
+  }
+
+  // AST path when the WASM grammar for this extension has warmed; the regex
+  // parser below remains the fallback (cold start, unsupported language).
+  const ast = parseSymbolsWithTreeSitterSync(code, fileName);
+  if (ast) return ast;
+  return parseSymbolsFromCodeRegex(code, fileName);
+}
+
+/** Line-regex symbol extraction. Kept as fallback for unsupported languages
+ *  and for the window before the WASM grammars finish warming. */
+function parseSymbolsFromCodeRegex(arg1: string, arg2: string): SymbolEntry[] {
+  let code = arg1;
+  let fileName = arg2;
   if (arg1.includes("\n") || (!arg2.includes("\n") && arg1.length > arg2.length)) {
     code = arg1;
     fileName = arg2;
@@ -305,6 +325,17 @@ export async function runDiagnostics(projectRoot: string, files: string[] = []):
       }
     }
     if (cleanFiles.length && cleanFiles.every((f) => f.endsWith(".py"))) {
+      // Type-aware pyright diagnostics first (ruff is lint-only); fall back
+      // when no language server is available for this project.
+      if (cleanFiles.length === 1) {
+        const lspItems = await lspDiagnostics(root, path.resolve(root, cleanFiles[0])).catch(() => null);
+        if (lspItems) {
+          const summary = lspItems.length
+            ? lspItems.map((d) => `${cleanFiles[0]}:${d.line}:${d.col} ${d.code} ${d.message}`).join("\n").slice(0, 4000)
+            : `No pyright errors in ${cleanFiles[0]}.`;
+          return { items: lspItems.slice(0, 50), summary };
+        }
+      }
       try {
         await execFileAsync("ruff", ["check", "--output-format", "concise", ...cleanFiles], { cwd: root, timeout: 30000, maxBuffer: 4_000_000 });
         return { items, summary: "No ruff errors." };
@@ -331,10 +362,18 @@ export function createCodeIntelligenceTools(projectRoot: string) {
   const getSymbolOutlineTool = tool(
     async ({ filePath }: { filePath: string }) => {
       try {
+        await ensureSymbolParsersReady().catch(() => false);
         const target = await safePath(projectRoot, filePath);
         const content = await fs.readFile(target, "utf8");
         const lines = content.split(/\r?\n/).length;
-        const symbols = parseSymbolsFromCode(content, path.basename(target));
+        // Type-aware document symbols first; the AST parser covers languages
+        // and installs without a language server.
+        const lspSymbols = await lspDocumentSymbols(projectRoot, target).catch(() => []);
+        const symbols: SymbolEntry[] = lspSymbols.length
+          ? lspSymbols
+              .sort((a, b) => a.line - b.line)
+              .map((s) => ({ kind: s.kind, name: s.name, line: s.line, signature: s.detail || s.name }))
+          : parseSymbolsFromCode(content, path.basename(target));
         return formatOutline(symbols, filePath, lines);
       } catch (error) {
         return `Failed to generate outline for ${filePath}: ${error instanceof Error ? error.message : String(error)}`;
@@ -342,7 +381,7 @@ export function createCodeIntelligenceTools(projectRoot: string) {
     },
     {
       name: "get_symbol_outline",
-      description: "Extract structural symbols (functions, classes, interfaces, types, structs) from a code file without loading the entire body into memory. Much faster and more token-efficient than read_file for exploring structure.",
+      description: "Extract structural symbols (functions, classes, interfaces, types, structs) from a code file via AST parsing — accurate for multi-line signatures, decorators, and class members. Much faster and more token-efficient than read_file for exploring structure.",
       schema: z.object({
         filePath: z.string().describe("Relative path to the source file (e.g. src/App.tsx)"),
       }),
@@ -354,6 +393,7 @@ export function createCodeIntelligenceTools(projectRoot: string) {
       const cleanSymbol = symbol.trim();
       if (!cleanSymbol) return "Symbol name is required.";
 
+      await ensureSymbolParsersReady().catch(() => false);
       const escaped = cleanSymbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       let hits = await gitGrep(projectRoot, `\\b${escaped}\\b`);
       if (hits === null) {
@@ -376,13 +416,25 @@ export function createCodeIntelligenceTools(projectRoot: string) {
         })
         .sort((a, b) => Number(b.isDeclaration) - Number(a.isDeclaration))
         .slice(0, 25);
+      // Type-aware fast path: a language server resolves the FIRST textual hit
+      // to its true declaration — disambiguating overloads and same-name
+      // locals that the grep ranking cannot. Absent servers degrade silently.
+      if (hits.length) {
+        const first = hits[0];
+        const lsp = await lspDefinition(projectRoot, path.resolve(projectRoot, first.path), first.line, Math.max(0, first.text.indexOf(cleanSymbol))).catch(() => null);
+        if (lsp && lsp.length) {
+          const rel = (p: string) => path.relative(projectRoot, p).replace(/\\/g, "/");
+          const lines = lsp.slice(0, 25).map((loc) => `${rel(loc.path)}:L${loc.line}:C${loc.col} (type-aware)`);
+          return `Found ${lsp.length} definition(s) for "${cleanSymbol}" (language server):\n${lines.join("\n")}`;
+        }
+      }
       if (!scored.length) return `No declaration found for symbol "${cleanSymbol}" in workspace.`;
       const lines = scored.map(({ hit, isDeclaration }) => `${hit.path}:L${hit.line}${isDeclaration ? "" : " (reference)"} -> ${hit.text.trim().slice(0, 100)}`);
       return `Found ${scored.length} declaration candidate(s) for "${cleanSymbol}":\n${lines.join("\n")}`;
     },
     {
       name: "find_symbol_definition",
-      description: "Search the codebase for where a function, class, interface, type, or struct is declared.",
+      description: "Search the codebase for where a function, class, interface, type, or struct is declared. Type-aware (resolves overloads and same-name locals) when a language server is available; falls back to ranked text search.",
       schema: z.object({
         symbol: z.string().describe("The symbol or function name to locate (e.g. 'runProjectAgent' or 'PlanItem')"),
       }),
@@ -394,6 +446,7 @@ export function createCodeIntelligenceTools(projectRoot: string) {
       const cleanSymbol = symbol.trim();
       if (!cleanSymbol) return "Symbol name is required.";
 
+      await ensureSymbolParsersReady().catch(() => false);
       const escaped = cleanSymbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const pattern = `\\b${escaped}\\b`;
       let hits: GrepHit[] | null = await gitGrep(projectRoot, pattern);
@@ -411,12 +464,38 @@ export function createCodeIntelligenceTools(projectRoot: string) {
         });
       }
       hits = hits.slice(0, 40);
+      // Type-aware fast path: references from a language server understand
+      // shadowing and distinct symbols that share a name. A server only
+      // indexes documents it has opened, so the results are UNIONED with the
+      // text hits (deduped by path:line) — grep guarantees recall, the
+      // server guarantees precision.
+      if (hits.length) {
+        const first = hits[0];
+        const lsp = await lspReferences(projectRoot, path.resolve(projectRoot, first.path), first.line, Math.max(0, first.text.indexOf(cleanSymbol))).catch(() => null);
+        if (lsp) {
+          const rel = (p: string) => path.relative(projectRoot, p).replace(/\\/g, "/");
+          // Canonical key: LSP locations arrive with forward slashes from the
+          // file:// URI; grep hits go through path.resolve (backslashes).
+          const key = (p: string, line: number) => `${path.resolve(p).replace(/\\/g, "/").toLowerCase()}:${line}`;
+          const seen = new Set(lsp.map((loc) => key(loc.path, loc.line)));
+          const lspLines = lsp.slice(0, 40).map((loc) => `${rel(loc.path)}:L${loc.line} (type-aware)`);
+          const extraLines = hits
+            .map((h) => ({ path: path.resolve(projectRoot, h.path), line: h.line }))
+            .filter((loc) => !seen.has(key(loc.path, loc.line)))
+            .slice(0, Math.max(0, 40 - lspLines.length))
+            .map((loc) => `${rel(loc.path)}:L${loc.line}`);
+          const all = [...lspLines, ...extraLines];
+          if (all.length) {
+            return `Found ${all.length} reference(s) to "${cleanSymbol}":\n${all.join("\n")}`;
+          }
+        }
+      }
       if (!hits.length) return `No references found for symbol "${cleanSymbol}" in workspace.`;
       return `Found ${hits.length} reference(s) to "${cleanSymbol}":\n${hits.map((hit) => `${hit.path}:L${hit.line}: ${hit.text.trim().slice(0, 100)}`).join("\n")}`;
     },
     {
       name: "find_symbol_references",
-      description: "Find all usages and references of a symbol (function, class, variable, type) across the workspace files.",
+      description: "Find all usages and references of a symbol (function, class, variable, type) across the workspace files. Type-aware (understands shadowing and distinct same-name symbols) when a language server is available; falls back to text search.",
       schema: z.object({
         symbol: z.string().describe("The symbol name to find references for"),
       }),
@@ -463,7 +542,14 @@ export function createCodeIntelligenceTools(projectRoot: string) {
         return `Invalid regex pattern: ${err instanceof Error ? err.message : String(err)}`;
       }
 
-      const searchRoot = pathPrefix ? await safePath(projectRoot, pathPrefix) : path.resolve(projectRoot);
+      let searchRoot: string;
+      try {
+        searchRoot = pathPrefix ? await safePath(projectRoot, pathPrefix) : path.resolve(projectRoot);
+      } catch (error) {
+        // A model may occasionally pass a host-root path after web research.
+        // Keep the agent loop alive and let it retry with a workspace-relative path.
+        return `Search path rejected: ${error instanceof Error ? error.message : String(error)} Use a path relative to the selected project root, or omit pathPrefix to search the workspace.`;
+      }
       const fixedString = isRegex ? cleanQuery : cleanQuery.replace(/[.*+?^$+( )|[\]\\]/g, (c) => (c === "\n" ? "\\n" : `\\${c}`));
       let hits: GrepHit[] | null = pathPrefix
         ? null // git grep is root-wide; a scoped prefix goes straight to the walk

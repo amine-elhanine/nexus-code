@@ -2,7 +2,7 @@
 name: codebase-onboarding
 description: Analyze an unfamiliar codebase and generate a structured onboarding guide with architecture map, key entry points, conventions, and a starter repository rules (`.nexus/rules/`). Use when joining a new project or setting up Nexus for the first time in a repo.
 metadata:
-  origin: ECC
+  origin: Nexus
 ---
 
 # Codebase Onboarding

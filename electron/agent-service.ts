@@ -13,81 +13,47 @@ import { getRepoMapSection } from "./repo-map-service.js";
 import { getProjectIndexSection } from "./project-index-service.js";
 import { createWebSearchTools } from "./websearch-tool.js";
 import { discoverAllRules, discoverProjectRules } from "./rules-service.js";
-import { createSubagentDelegationTool, executeSubagentTask, calculateAgentUsage, type SubagentItem } from "./subagent-service.js";
+import { discoverProjectInstructions } from "./project-instructions.js";
+import { expandSlashCommand } from "./custom-commands-service.js";
+import { createSubagentDelegationTool, executeSubagentTask, calculateAgentUsage, buildSubagentCatalog, type SubagentItem } from "./subagent-service.js";
 import { getWorkspaceDiffFiles } from "./diff-service.js";
 import { getMcpTools } from "./mcp-service.js";
-import { getSkillsConfig } from "./store.js";
-import { GLOBAL_SKILLS_ROUTE, PROJECT_SKILLS_DIR, SKILL_SOURCE_PRIORITY, SYSTEM_SKILLS_ROUTE, buildSkillMounts, createSkillFilesTool, globalSkillsDir, listSkills, listSystemSkills, recommendSkills, skillAppliesToMode, skillDirVirtualPath, skillVirtualPath, systemSkillsDir, type SkillInfo, type SkillMode } from "./skills-service.js";
+import { getHooksConfig, getRulesConfig, getSkillsConfig } from "./store.js";
+import { createHooksMiddleware, dispatchHooks, discoverHooks } from "./hooks-service.js";
+import { GLOBAL_SKILLS_ROUTE, PROJECT_SKILLS_DIR, SKILL_SOURCE_PRIORITY, SYSTEM_SKILLS_ROUTE, buildSkillMounts, createSkillFilesTool, filterSkillsByMcp, globalSkillsDir, listSkills, listSystemSkills, recommendSkills, skillAppliesToMode, skillDirVirtualPath, skillVirtualPath, systemSkillsDir, type SkillInfo, type SkillMode } from "./skills-service.js";
 import { compactHistory, compactHistoryWithModel, estimateTokens, StreamUsageTracker } from "./context-service.js";
 import { saveArtifact, type ArtifactItem } from "./artifacts-service.js";
 import { TrajectoryLogger } from "./trajectory-service.js";
 import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint } from "./rate-limit.js";
 import { RunCancelledError, getRunAbortSignal } from "./command-service.js";
-import { createHomeMemoryTool, addMemoryFact, removeMemoryFact, selectRelevantHomeMemory, parseCandidateFacts, shouldExtractMemory, type MemoryCandidate } from "./home-memory-service.js";
+import { requestCommandApproval } from "./approval-service.js";
+import { createHomeMemoryTool, addMemoryFact, removeMemoryFactWithCount, selectRelevantHomeMemory, parseCandidateFacts, capMemoryItems, shouldExtractMemory, type MemoryCandidate } from "./home-memory-service.js";
 import { createHomeTaskJournal, finishHomeTaskJournal, recordHomeTaskAction, saveHomeTaskJournal, type HomeTaskJournal, type HomeTaskPhase } from "./home-task-service.js";
 import { selectHomeArtifactCandidates, validateHomeArtifacts } from "./home-artifact-service.js";
 import { createCodeTaskJournal, finishCodeTaskJournal, inferCodeTaskContract, loadCodeTaskJournal, parseBlockingReviewFindings, recordCodeTaskAction, recordCodeTaskPlan, saveCodeTaskJournal, type CodeTaskContract, type CodeTaskJournal, type CodeTaskPhase } from "./code-task-service.js";
 import type { ProviderConfig } from "./store.js";
 
-export type AgentMode = "plan" | "ask" | "auto";
-export type PlanItem = { content: string; status: "pending" | "in_progress" | "completed" };
-export type AgentTurn = { role: "user" | "assistant"; text: string };
-// Prior-run tool activity fed back into the next run so it reuses results
-// instead of re-reading files. Kept as plain text (not LangChain ToolMessages,
-// which require matching tool_call_ids the next run doesn't have).
-export type HistoryEventItem = {
-  role: "event";
-  text: string;
-  kind?: string;
-  detail?: string;
-  plan?: PlanItem[];
-  subagent?: { role: string; task: string; status: string };
-};
-export type HistoryInput = AgentTurn | HistoryEventItem;
-export type AgentSettings = { provider?: ProviderConfig; model?: string; apiKey?: string; baseUrl?: string };
-export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
-export type AgentEvent = {
-  type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact" | "stream-reset";
-  sessionId: string;
-  text: string;
-  timestamp: string;
-  items?: PlanItem[];
-  usage?: AgentUsage;
-  subagent?: SubagentItem;
-  artifact?: ArtifactItem;
-  // Truncated tool-result excerpt for tool events. Persisted in the session
-  // transcript (unlike token chunks) so the NEXT run can reuse what this run
-  // already read — without it every run starts cold and re-reads everything.
-  detail?: string;
-};
-export type AgentMemoryContext = { projectMemory: string; sessionMemory: string };
-// "code" = repository work (typecheck/test verification). "general" = the
-// Home assistant (documents, spreadsheets, slides, research, everyday
-// questions): same tool loop, but no code-project verification and a
-// different system prompt.
-export type AgentTaskKind = "code" | "general";
+import type { AgentEvent, AgentMemoryContext, AgentMode, AgentSettings, AgentTaskKind, AgentUsage, AttachmentDoc, HistoryInput, HomeTaskContract, PlanItem } from "./agent-types.js";
+import type { TaskComplexity } from "./task-routing.js";
+import { buildSystemPrompt, homeRequestNamesFileFormat, inferHomeTaskContract } from "./agent-prompt.js";
+import { DoomLoopError, loopPreventionMiddleware, toolParameterNormalizationMiddleware } from "./loop-prevention.js";
+import { classifyTaskComplexity, detectPackageManager, findTargetedTests, isContinueRequest, isNewProjectTask, isWebTask, pickAffectedPackageCommands, pickFileScopedVerification, pickVerificationCommands, shouldSkipMcpForTask } from "./task-routing.js";
+import { describeToolCall, extractGithubLogin, extractSkillNameFromPath, loadedSkillNamesFromMessages, toolCallSummary, toolResultExcerpt } from "./tool-describe.js";
+import { saveLastRunCheckpoint, summarizeCompletedSteps } from "./run-checkpoint.js";
+
+// Backward-compatible re-exports: main.ts and tests import these from
+// agent-service; the implementations now live in the focused modules above.
+export type { AgentMode, PlanItem, AgentTurn, HistoryEventItem, HistoryInput, AgentSettings, AgentUsage, AgentEvent, AgentMemoryContext, AgentTaskKind, HomeTaskContract, AttachmentDoc } from "./agent-types.js";
+export { inferHomeTaskContract, homeRequestNamesFileFormat } from "./agent-prompt.js";
+export { DoomLoopError, toolParameterNormalizationMiddleware, loopPreventionMiddleware } from "./loop-prevention.js";
+export type { PackageManagerName, PackageManager, TaskComplexity } from "./task-routing.js";
+export { detectPackageManager, pickVerificationCommand, pickVerificationCommands, pickAffectedPackageCommands, pickFileScopedVerification, findTargetedTests, classifyTaskComplexity, shouldSkipMcpForTask, isWebTask, isNewProjectTask, isContinueRequest } from "./task-routing.js";
+export { extractSkillNameFromPath, loadedSkillNamesFromMessages, describeToolCall, extractGithubLogin, toolResultExcerpt } from "./tool-describe.js";
+export type { TaskLedger, RunCheckpoint } from "./run-checkpoint.js";
+export { getLastRunCheckpoint, saveLastRunCheckpoint, persistLastRunCheckpoint, loadLastRunCheckpoint, clearLastRunCheckpoint, summarizeCompletedSteps } from "./run-checkpoint.js";
+
 export { RunCancelledError };
 
-/**
- * Generic contract inferred from a Home request. This deliberately does not
- * classify formats or domains (PDF, courses, reports, etc.). It only captures
- * whether the user asked the agent to produce an observable result and whether
- * research is part of the request. The model remains responsible for deciding
- * what the result should be and how to produce it.
- */
-export type HomeTaskContract = {
-  expectsOutput: boolean;
-  needsResearch: boolean;
-};
-
-export function inferHomeTaskContract(request: string): HomeTaskContract {
-  const text = (request || "").trim();
-  const expectsOutput =
-    /\b(create|make|generate|build|write|draft|prepare|produce|export|save|deliver|develop|design|turn|convert|transform)\b/i.test(text) &&
-    !/^\s*(what|why|how|where|when|which|who|can|could|would|should)\b/i.test(text);
-  const needsResearch = /\b(research|read|docs?|documentation|investigate|look\s+up|find\s+out|compare|sources?|latest|current)\b/i.test(text);
-  return { expectsOutput, needsResearch };
-}
 
 type HomeFileSnapshot = Map<string, number>;
 
@@ -121,17 +87,6 @@ async function findFreshHomeFiles(root: string, baseline: HomeFileSnapshot, star
     .sort();
 }
 
-// OpenCode-style doom-loop breaker: the model repeating the exact same tool
-// call is stuck, not working. Thrown from the stream consumer and converted
-// into a resumable partial result at graph.invoke — never retried.
-export class DoomLoopError extends Error {
-  toolName: string;
-  constructor(toolName: string, detail: string) {
-    super(`DoomLoop: ${toolName} repeated without progress (${detail})`);
-    this.name = "DoomLoopError";
-    this.toolName = toolName;
-  }
-}
 
 // LangGraph recursion budgets per mode. Lowered from the previous
 // 60/160/300: unbounded budgets let the model wander on trivial tasks.
@@ -148,7 +103,11 @@ export const MAX_REPAIRS: Record<AgentMode, number> = { plan: 0, ask: 3, auto: 5
 const HISTORY_CHAR_CAP = 4000;
 const VERIFY_OUTPUT_CAP = 4000;
 const MEMORY_ENTRY_CAP = 600;
-const PROJECT_MEMORY_RUN_LOG_CAP = 20;
+// Project memory log: newest 20 runs, char-capped as a second bound.
+export const PROJECT_MEMORY_RUN_LOG_CAP = 20;
+// Session memory log: newest 40 run summaries, 4000 chars.
+export const SESSION_MEMORY_ENTRY_CAP = 40;
+export const SESSION_MEMORY_CHAR_CAP = 4000;
 
 export function extractDiagnosticFeedback(rawOutput: string, cap = VERIFY_OUTPUT_CAP): string {
   if (!rawOutput) return "";
@@ -298,297 +257,6 @@ class UsageAccumulator {
   }
 }
 
-export type PackageManagerName = "npm" | "pnpm" | "yarn" | "bun";
-export type PackageManager = { name: PackageManagerName; run: string; exec: string; install: string; testFile: (rel: string) => string };
-
-/**
- * Detect the JS/TS package manager from explicit config first, then
- * lockfiles. Order matters: pnpm-lock.yaml / yarn.lock / bun.lock[b] win
- * over package-lock.json so monorepos with multiple lockfiles resolve to
- * the most specific one present.
- */
-export function detectPackageManager(projectRoot: string): PackageManager {
-  const fallback: PackageManager = {
-    name: "npm",
-    run: "npm run",
-    exec: "npx",
-    install: "npm install",
-    testFile: (rel: string) => `npm test -- ${rel}`,
-  };
-  try {
-    const root = path.resolve(projectRoot);
-    // Explicit override: .nexus/package-manager.json { "name": "pnpm" } or
-    // NEXUS_PACKAGE_MANAGER env (useful for tests / containers).
-    const envName = (process.env.NEXUS_PACKAGE_MANAGER || "").toLowerCase();
-    const overridePath = path.join(root, ".nexus", "package-manager.json");
-    let override: string | null = null;
-    if (existsSync(overridePath)) {
-      try {
-        override = String(JSON.parse(readFileSync(overridePath, "utf8"))?.name || "").toLowerCase();
-      } catch { /* ignore malformed override */ }
-    }
-    const pick = (name: string): PackageManager | null => {
-      if (name === "pnpm") return { name: "pnpm", run: "pnpm", exec: "pnpm exec", install: "pnpm install", testFile: (rel: string) => `pnpm test -- ${rel}` };
-      if (name === "yarn") return { name: "yarn", run: "yarn", exec: "yarn exec", install: "yarn install", testFile: (rel: string) => `yarn test -- ${rel}` };
-      if (name === "bun") return { name: "bun", run: "bun run", exec: "bunx", install: "bun install", testFile: (rel: string) => `bun test ${rel}` };
-      if (name === "npm") return fallback;
-      return null;
-    };
-    const fromEnv = envName ? pick(envName) : null;
-    if (fromEnv) return fromEnv;
-    const fromFile = override ? pick(override) : null;
-    if (fromFile) return fromFile;
-    // package.json packageManager field: "pnpm@9.1.0", "yarn@4", "bun@1".
-    const pkgPath = path.join(root, "package.json");
-    if (existsSync(pkgPath)) {
-      try {
-        const pmField = String(JSON.parse(readFileSync(pkgPath, "utf8"))?.packageManager || "").toLowerCase();
-        if (pmField.startsWith("pnpm")) return pick("pnpm")!;
-        if (pmField.startsWith("yarn")) return pick("yarn")!;
-        if (pmField.startsWith("bun")) return pick("bun")!;
-        if (pmField.startsWith("npm")) return fallback;
-      } catch { /* ignore */ }
-    }
-    if (existsSync(path.join(root, "pnpm-lock.yaml"))) return pick("pnpm")!;
-    if (existsSync(path.join(root, "yarn.lock"))) return pick("yarn")!;
-    if (existsSync(path.join(root, "bun.lockb")) || existsSync(path.join(root, "bun.lock"))) return pick("bun")!;
-    return fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-export function pickVerificationCommand(projectRoot: string): string | null {
-  try {
-    const root = path.resolve(projectRoot);
-    const pm = detectPackageManager(root);
-    const pkgPath = path.join(root, "package.json");
-    if (existsSync(pkgPath)) {
-      const scripts = JSON.parse(readFileSync(pkgPath, "utf8")).scripts ?? {};
-      // Named typecheck scripts are the source of truth; `check` scripts often
-      // cover more tsconfigs than a bare `tsc --noEmit` would (multiple
-      // projects), so prefer them over running tsc directly.
-      if (typeof scripts.typecheck === "string") return `${pm.run} typecheck`;
-      if (typeof scripts.check === "string") return `${pm.run} check`;
-      if (existsSync(path.join(root, "tsconfig.json"))) return `${pm.exec} --no-install tsc --noEmit`;
-      if (typeof scripts.lint === "string") return `${pm.run} lint`;
-    }
-
-    if (existsSync(path.join(root, "Cargo.toml"))) return "cargo check";
-    if (existsSync(path.join(root, "go.mod"))) return "go vet ./...";
-    // JVM: Maven first, then Gradle (wrapper preferred when checked in).
-    if (existsSync(path.join(root, "pom.xml"))) return "mvn -q test";
-    if (
-      existsSync(path.join(root, "build.gradle")) ||
-      existsSync(path.join(root, "build.gradle.kts")) ||
-      existsSync(path.join(root, "settings.gradle")) ||
-      existsSync(path.join(root, "settings.gradle.kts"))
-    ) {
-      if (process.platform === "win32" && existsSync(path.join(root, "gradlew.bat"))) return "gradlew.bat build";
-      if (existsSync(path.join(root, "gradlew"))) return "./gradlew build";
-      return "gradle build";
-    }
-    // .NET: any SDK-style project or solution at the root.
-    try {
-      const entries = readdirSync(root);
-      if (entries.some((name) => /\.(csproj|fsproj|sln)$/i.test(name))) return "dotnet test";
-    } catch { /* fall through to Python */ }
-    // Python: Django check, then pytest when tests are present, then ruff,
-    // then a dependency-free syntax compile as last resort.
-    if (existsSync(path.join(root, "manage.py"))) return "python manage.py check";
-    if (
-      existsSync(path.join(root, "pytest.ini")) ||
-      existsSync(path.join(root, "tox.ini")) ||
-      existsSync(path.join(root, "tests")) ||
-      existsSync(path.join(root, "test"))
-    ) return "pytest -q";
-    if (existsSync(path.join(root, "pyproject.toml")) || existsSync(path.join(root, "ruff.toml"))) return "ruff check";
-    if (
-      existsSync(path.join(root, "requirements.txt")) ||
-      existsSync(path.join(root, "setup.py")) ||
-      existsSync(path.join(root, "setup.cfg")) ||
-      existsSync(path.join(root, "Pipfile")) ||
-      existsSync(path.join(root, "poetry.lock"))
-    ) return "python -m compileall -q .";
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Project-level verification override. A repository may provide
- * `.nexus/verification.json` with `{ "commands": ["npm run check", "npm test"] }`
- * or the same object under `package.json.nexus.verification`. This keeps the
- * safe heuristics as a fallback while letting projects define their real build
- * and integration gates.
- */
-export function pickVerificationCommands(projectRoot: string): string[] {
-  try {
-    const root = path.resolve(projectRoot);
-    const candidates = [path.join(root, ".nexus", "verification.json")];
-    const pkgPath = path.join(root, "package.json");
-    if (existsSync(pkgPath)) {
-      const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-      if (pkg?.nexus?.verification) candidates.push("package.json:nexus.verification");
-      for (const candidate of candidates) {
-        const raw = candidate === "package.json:nexus.verification" ? pkg.nexus.verification : JSON.parse(readFileSync(candidate, "utf8"));
-        const commands = Array.isArray(raw) ? raw : raw?.commands;
-        if (Array.isArray(commands)) {
-          const valid = commands.filter((command: unknown): command is string => typeof command === "string" && Boolean(command.trim())).map((command) => command.trim()).slice(0, 8);
-          if (valid.length) return valid;
-        }
-      }
-    } else if (existsSync(candidates[0])) {
-      const raw = JSON.parse(readFileSync(candidates[0], "utf8"));
-      const commands = Array.isArray(raw) ? raw : raw?.commands;
-      if (Array.isArray(commands)) return commands.filter((command: unknown): command is string => typeof command === "string" && Boolean(command.trim())).map((command) => command.trim()).slice(0, 8);
-    }
-  } catch { /* invalid configuration falls back to detection */ }
-  const fallback = pickVerificationCommand(projectRoot);
-  return fallback ? [fallback] : [];
-}
-
-/**
- * Finds package-local verification commands for changed files in a workspace.
- * Commands use the package manager's prefix/filter mechanism so the caller
- * can execute them from the repository root without changing process cwd.
- */
-export function pickAffectedPackageCommands(projectRoot: string, modifiedFiles: string[]): string[] {
-  try {
-    const root = path.resolve(projectRoot);
-    const pm = detectPackageManager(root);
-    const commands: string[] = [];
-    const seen = new Set<string>();
-    for (const modified of modifiedFiles) {
-      let directory = path.dirname(path.resolve(root, modified));
-      while (directory.startsWith(root) && directory !== path.dirname(root)) {
-        const packagePath = path.join(directory, "package.json");
-        if (existsSync(packagePath)) {
-          const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
-          const relative = path.relative(root, directory).replace(/\\/g, "/") || ".";
-          const scripts = pkg?.scripts || {};
-          for (const name of ["check", "typecheck", "build", "test"]) {
-            if (typeof scripts[name] !== "string") continue;
-            const command = relative === "."
-              ? `${pm.run} ${name}`
-              : pm.name === "pnpm"
-                ? `pnpm --dir "${relative}" run ${name}`
-                : pm.name === "yarn"
-                  ? `yarn --cwd "${relative}" run ${name}`
-                  : pm.name === "bun"
-                    ? `bun --cwd "${relative}" run ${name}`
-                    : `npm --prefix "${relative}" run ${name}`;
-            if (!seen.has(command)) { seen.add(command); commands.push(command); }
-            break;
-          }
-          break;
-        }
-        directory = path.dirname(directory);
-      }
-      if (commands.length >= 8) break;
-    }
-    return commands.slice(0, 8);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Opencode-style fast path: for small diffs, lint only the changed files
- * instead of typechecking the whole project. Returns null when no fast
- * scoped check applies (caller falls back to pickVerificationCommand).
- */
-export function pickFileScopedVerification(projectRoot: string, modifiedFiles: string[]): string | null {
-  try {
-    if (!modifiedFiles.length || modifiedFiles.length > 5) return null;
-    const root = path.resolve(projectRoot);
-    const pm = detectPackageManager(root);
-    const quoted = modifiedFiles.map((f) => `"${f.replace(/"/g, "")}"`).join(" ");
-    const pkgPath = path.join(root, "package.json");
-    if (existsSync(pkgPath)) {
-      const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-      const devDeps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
-      const hasEslint = Boolean(devDeps.eslint || typeof pkg.scripts?.lint === "string");
-      if (hasEslint) return `${pm.exec} eslint ${quoted}`;
-      return null;
-    }
-    // Python-only change with a ruff config: lint just the touched files.
-    if (
-      modifiedFiles.length > 0 &&
-      modifiedFiles.every((f) => f.endsWith(".py")) &&
-      (existsSync(path.join(root, "pyproject.toml")) || existsSync(path.join(root, "ruff.toml")))
-    ) {
-      return `ruff check ${quoted}`;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-export function findTargetedTests(projectRoot: string, modifiedFiles: string[]): string | null {
-  try {
-    const root = path.resolve(projectRoot);
-    const pm = detectPackageManager(root);
-    const hasPackageJson = existsSync(path.join(root, "package.json"));
-    let hasTestScript = false;
-    if (hasPackageJson) {
-      const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
-      hasTestScript = typeof pkg.scripts?.test === "string";
-    }
-
-    const hasPom = existsSync(path.join(root, "pom.xml"));
-    const hasGradle =
-      existsSync(path.join(root, "build.gradle")) ||
-      existsSync(path.join(root, "build.gradle.kts")) ||
-      existsSync(path.join(root, "settings.gradle")) ||
-      existsSync(path.join(root, "settings.gradle.kts"));
-    let hasDotnet = false;
-    try {
-      hasDotnet = readdirSync(root).some((name) => /\.(csproj|fsproj|sln)$/i.test(name));
-    } catch { /* ignore */ }
-
-    // Heuristic: check if any modified file has a corresponding test file
-    for (const file of modifiedFiles) {
-      const parsed = path.parse(file);
-      const candidates = [
-        path.join(root, parsed.dir, `${parsed.name}.test${parsed.ext}`),
-        path.join(root, parsed.dir, `${parsed.name}.spec${parsed.ext}`),
-        path.join(root, "test", `${parsed.name}.test${parsed.ext}`),
-        path.join(root, "tests", `test_${parsed.name}${parsed.ext}`),
-      ];
-      // Java: Foo.java <-> FooTest.java in the same package or under src/test.
-      if (parsed.ext === ".java") {
-        candidates.push(
-          path.join(root, parsed.dir, `${parsed.name}Test.java`),
-          path.join(root, parsed.dir, `Test${parsed.name}.java`),
-        );
-      }
-      for (const cand of candidates) {
-        if (existsSync(cand)) {
-          const rel = path.relative(root, cand).replace(/\\/g, "/");
-          if (hasTestScript) return pm.testFile(rel);
-          if (parsed.ext === ".py") return `pytest ${rel}`;
-          if (parsed.ext === ".rs") return `cargo test ${parsed.name}`;
-          if (parsed.ext === ".go") return `go test ./${path.dirname(rel)}`;
-          if (parsed.ext === ".java") {
-            const testClass = path.basename(cand, ".java");
-            if (hasPom) return `mvn -q -Dtest=${testClass} test`;
-            if (hasGradle) return `gradle test --tests "*${testClass}*"`;
-          }
-          if (parsed.ext === ".cs" && hasDotnet) return "dotnet test";
-          return null;
-        }
-      }
-      // .NET without a colocated test file: a test run still validates the change.
-      if (parsed.ext === ".cs" && hasDotnet) return "dotnet test";
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
 
 function planItemsFromArgs(args: any): PlanItem[] | null {
   if (!args || typeof args !== "object") return null;
@@ -606,247 +274,6 @@ function planItemsFromArgs(args: any): PlanItem[] | null {
   return items.length ? items : null;
 }
 
-// One-line, human-readable detail for a tool call, shown in the activity
-// feed (e.g. "read_file · src/App.tsx:1-120", "execute · npm run check").
-// Must track the REAL arg schemas: the DeepAgents FilesystemBackend tools
-// use snake_case `file_path` (not `filePath`), `apply_patch` takes a single
-// `patchText` blob, `ask_user` takes `questions[]`, etc. A generic key scan
-// misses those and the UI ends up showing bare `read_file()` / `execute()`.
-function shortLine(value: string, max = 90) {
-  const oneLine = value.replace(/\s+/g, " ").trim();
-  return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
-}
-
-function patchFilesSummary(patchText: string): string {
-  const files: string[] = [];
-  for (const line of patchText.split(/\r?\n/)) {
-    const m = line.match(/^\*\*\*\s*(?:Add File|Update File|Delete File|Move to)\s*:?\s*(.*)$/i);
-    if (m && m[1].trim() && files.length < 4) files.push(m[1].trim());
-  }
-  if (!files.length) return "";
-  const extra = (patchText.match(/^\*\*\*\s*(?:Add File|Update File|Delete File)/gim) || []).length;
-  return extra > files.length ? `${files.join(", ")} (+${extra - files.length} more)` : files.join(", ");
-}
-
-export function extractSkillNameFromPath(filePath: string): string | null {
-  if (!filePath) return null;
-  const normalized = filePath.replace(/\\/g, "/");
-  const skillMdMatch = normalized.match(/(?:^|\/)([a-zA-Z0-9_-]+)\/SKILL\.md$/i);
-  if (skillMdMatch) return skillMdMatch[1];
-
-  const prefixMatch = normalized.match(/(?:system-skills|global-skills|\.nexus\/skills)\/(?:[a-zA-Z0-9_-]+\/)?([a-zA-Z0-9_-]+)/i);
-  if (prefixMatch) {
-    const candidate = prefixMatch[1];
-    if (!/^SKILL$/i.test(candidate)) return candidate;
-  }
-
-  const skillsMatch = normalized.match(/\/skills\/([a-zA-Z0-9_-]+)/i);
-  if (skillsMatch && !/^SKILL$/i.test(skillsMatch[1])) return skillsMatch[1];
-
-  return null;
-}
-
-/**
- * Skill names already loaded in this run, derived from tool-call history.
- * Used in repair/resume feedback so the model is told exactly which skills
- * need no re-reading (the middleware enforces the same at execution time).
- */
-export function loadedSkillNamesFromMessages(messages: any[]): string[] {
-  const names: string[] = [];
-  const seen = new Set<string>();
-  const scanArgs = (args: unknown) => {
-    if (!args || typeof args !== "object") return;
-    const a = args as Record<string, unknown>;
-    const file = String(a.file_path || a.filePath || a.file || a.path || "");
-    if (!file) return;
-    const skill = extractSkillNameFromPath(file);
-    if (skill && !seen.has(skill.toLowerCase())) {
-      seen.add(skill.toLowerCase());
-      names.push(skill);
-    }
-  };
-  for (const message of messages || []) {
-    if (!message || typeof message !== "object") continue;
-    const direct = (message as { tool_calls?: unknown }).tool_calls;
-    if (Array.isArray(direct)) {
-      for (const call of direct) scanArgs((call as { args?: unknown })?.args);
-    }
-    const extra = (message as { additional_kwargs?: { tool_calls?: unknown } }).additional_kwargs?.tool_calls;
-    if (Array.isArray(extra)) {
-      for (const call of extra) {
-        const fnArgs = (call as { function?: { arguments?: unknown } })?.function?.arguments;
-        if (typeof fnArgs === "string") {
-          try {
-            scanArgs(JSON.parse(fnArgs));
-          } catch { /* ignore unparseable */ }
-        } else {
-          scanArgs((call as { args?: unknown })?.args);
-        }
-      }
-    }
-  }
-  return names;
-}
-
-export function describeToolCall(name: string, args: any): string {
-  if (!args || typeof args !== "object") return "";
-  const str = (v: unknown) => (typeof v === "string" ? v : "");
-  // Backend tools use `file_path`; custom tools use `filePath`.
-  const file = str(args.file_path || args.filePath || args.file || args.path);
-  switch (name) {
-    case "read_file": {
-      if (!file) return "";
-      const skill = extractSkillNameFromPath(file);
-      if (skill) return `Consulting skill: ${skill}`;
-      const hasRange = args.offset != null || args.limit != null;
-      return hasRange ? `${file}:${args.offset ?? 0}+${args.limit ?? 100}` : file;
-    }
-    case "write_file":
-    case "edit_file":
-    case "delete":
-      return file;
-    case "ls":
-      return str(args.path) || "/";
-    case "glob": {
-      const pattern = str(args.pattern);
-      const base = str(args.path);
-      return base && base !== "/" ? `${pattern} in ${base}` : pattern;
-    }
-    case "grep": {
-      const pattern = str(args.pattern);
-      if (!pattern) return "";
-      const scope = str(args.glob || args.path);
-      return scope && scope !== "/" ? `"${shortLine(pattern, 60)}" in ${scope}` : `"${shortLine(pattern, 60)}"`;
-    }
-    case "execute":
-      return shortLine(str(args.command), 110);
-    case "read_file_range": {
-      if (!file) return "";
-      const skill = extractSkillNameFromPath(file);
-      if (skill) return `Consulting skill: ${skill}`;
-      return `${file}:${args.startLine ?? 1}-${args.endLine ?? 100}`;
-    }
-    case "grep_search": {
-      const query = str(args.query);
-      if (!query) return "";
-      const scope = str(args.pathPrefix);
-      return scope ? `"${shortLine(query, 60)}" in ${scope}` : `"${shortLine(query, 60)}"`;
-    }
-    case "find_symbol_definition":
-    case "find_symbol_references":
-      return str(args.symbol);
-    case "get_symbol_outline":
-      return file;
-    case "apply_patch": {
-      const files = patchFilesSummary(str(args.patchText));
-      return files || shortLine(str(args.patchText), 60);
-    }
-    case "ask_user": {
-      const questions = Array.isArray(args.questions) ? args.questions : [];
-      const headers = questions.map((q: any) => str(q?.header || q?.question)).filter(Boolean).slice(0, 3);
-      return headers.length ? `needs input: ${shortLine(headers.join(" · "), 90)}` : "";
-    }
-    case "delegate_task": {
-      const role = str(args.role);
-      const task = shortLine(str(args.task), 80);
-      return role && task ? `[${role}] ${task}` : role || task;
-    }
-    case "web_search":
-      return str(args.query) ? `"${shortLine(str(args.query), 70)}"` : "";
-    case "browser_inspect":
-      return str(args.url);
-    case "browser_fetch_api": {
-      const url = str(args.url);
-      const method = str(args.method);
-      return method && method !== "GET" ? `${method} ${url}` : url;
-    }
-    default: {
-      // Fallback for MCP tools and future tools: scan common key names,
-      // including snake_case variants the old scanner missed.
-      const parts: string[] = [];
-      for (const key of ["file_path", "filePath", "file", "path", "command", "url", "pattern", "query", "symbol", "role", "task"]) {
-        const value = (args as any)[key];
-        if (typeof value === "string" && value.trim()) {
-          parts.push(shortLine(value, 70));
-          if (parts.length >= 2) break;
-        }
-      }
-      return parts.join(" · ");
-    }
-  }
-}
-
-function toolCallSummary(call: any) {
-  return describeToolCall(call?.name || "", call?.args);
-}
-
-// Pulls the `login` out of a GitHub get_me result (JSON string, object, or
-// LangChain message content). Returns null when no login is recognizable.
-export function extractGithubLogin(raw: unknown): string | null {
-  const texts: string[] = [];
-  if (typeof raw === "string") texts.push(raw);
-  else if (Array.isArray(raw)) {
-    for (const block of raw) {
-      if (typeof block === "string") texts.push(block);
-      else if (block && typeof block === "object") {
-        const o = block as Record<string, unknown>;
-        if (typeof o.text === "string") texts.push(o.text);
-        if (typeof o.login === "string") return o.login;
-      }
-    }
-  } else if (raw && typeof raw === "object") {
-    const o = raw as Record<string, unknown>;
-    if (typeof o.login === "string") return o.login;
-    try { texts.push(JSON.stringify(o)); } catch { /* ignore */ }
-  }
-  for (const text of texts) {
-    try {
-      const parsed = JSON.parse(text) as unknown;
-      if (parsed && typeof parsed === "object" && typeof (parsed as Record<string, unknown>).login === "string") {
-        return (parsed as Record<string, unknown>).login as string;
-      }
-    } catch { /* not JSON — fall through to regex */ }
-    const match = text.match(/"login"\s*:\s*"([^"]+)"/);
-    if (match) return match[1];
-  }
-  return null;
-}
-
-// Truncated plain-text excerpt of a LangChain ToolMessage payload for
-// transcript persistence. Caps size so one giant grep dump can't bloat every
-// future prompt in the session.
-export function toolResultExcerpt(content: unknown, cap = 1500): string {
-  let text = "";
-  if (typeof content === "string") {
-    text = content;
-  } else if (Array.isArray(content)) {
-    text = content
-      .map((block) => {
-        if (typeof block === "string") return block;
-        if (block && typeof block === "object") {
-          const o = block as Record<string, unknown>;
-          if (typeof o.text === "string") return o.text;
-          if (typeof o.output === "string") return o.output;
-          try {
-            return JSON.stringify(o).slice(0, 500);
-          } catch {
-            return "";
-          }
-        }
-        return "";
-      })
-      .join("\n");
-  } else if (content != null) {
-    try {
-      text = typeof content === "object" ? JSON.stringify(content) : String(content);
-    } catch {
-      text = "";
-    }
-  }
-  text = text.trim();
-  if (text.length > cap) text = text.slice(0, cap) + `… [truncated ${text.length - cap} chars]`;
-  return text;
-}
 
 // Builds the "what prior runs already did" context block from persisted
 // session events (OpenCode/Pi-style: tool history rides along in-session).
@@ -922,645 +349,37 @@ export function buildToolContextBlock(items: HistoryInput[] | undefined | null, 
   );
 }
 
-export type TaskComplexity = "simple" | "complex";
 
-const COMPLEX_TASK_PATTERN =
-  /\b(refactor|migrate|redesign|overhaul|multi[- ]?step|all files|entire (codebase|project|app|repo)|codebase-wide|end[- ]to[- ]end|from scratch)\b/i;
-// Building something new from zero is a multi-file project even when the
-// request is one short sentence ("build me an app..."). Single-file creates
-// ("create a file/component/function") stay simple.
-const BUILD_TASK_PATTERN =
-  /\b(build|building|rebuild|scaffold|scaffolding|bootstrap|bootstrapping|launch|launching|set\s+up\s+a\s+new)\b/i;
-const CREATE_PROJECT_PATTERN =
-  /\b(create|creating|make|making|develop|developing|generate|generating|build|building|launch|launching|start)\b.{0,40}\b(app|application|website|site|platform|portal|hub|project|dashboard|chat\s*app|web\s*app)\b/i;
-const LANDING_PAGE_BUILD_PATTERN = /\b(build|create|make|develop|design|generate)\b.{0,80}\b(landing\s*page|marketing\s*page|homepage|portfolio\s*site)\b/i;
-// Deliverable builds (slides, docs, spreadsheets) are multi-step projects
-// even in one short sentence: read the skill, write a generator script,
-// run it, verify the file. Classifying them "simple" caps the run at ~3
-// tool calls — the agent burns them all on skill exploration and never acts.
-const DOC_BUILD_PATTERN =
-  /\b(pdf|presentation|power ?point|pptx?|slide deck|slideshow|slides?|spreadsheet|excel|xlsx?|workbook|word documents?|docx?|latex|document|report)\b/i;
-// "Create/write a report/memo/summary" is a document build even without a
-// format keyword: research + write + save is multi-step, never a lookup.
-const DOC_WRITE_PATTERN =
-  /\b(create|make|generate|write|draft)\b.{0,40}\b(report|document|memo|letter|resume|summary|writeup|write-up)\b/i;
 
-/**
- * Pure document builds (slides/docs/sheets via local skills + write_file +
- * execute) virtually never need user MCP servers — but every bound MCP tool
- * (e.g. 26 GitHub tools) inflates each model call and slows flaky endpoints.
- * Skip MCP only when the request shows no research/external-service intent.
- */
-export function shouldSkipMcpForTask(request: string): boolean {
-  const text = request || "";
-  const isBuild = DOC_BUILD_PATTERN.test(text) || DOC_WRITE_PATTERN.test(text) || BUILD_TASK_PATTERN.test(text) || LANDING_PAGE_BUILD_PATTERN.test(text);
-  if (!isBuild) return false;
-  if (/\b(research|search(ing)?|find|latest|compare|gather|lookup|investigate|github|repos?|issues?|pull request|prs?|gists?|jira|notion|slack|drive|gmail)\b/i.test(text)) return false;
-  return true;
-}
-const WEB_TASK_PATTERN = /\b(localhost|127\.0\.0\.1|https?:\/\/|web ?(app|page|server)|browser|api .*(health|endpoint)|dev server)\b/i;
-// Edit verbs: the request wants the code changed, not explained.
-const EDIT_VERB_PATTERN =
-  /\b(fix|implement|add|change|update|create|delete|remove|write|move|rename|migrate|debug|resolve|handle|support|enable|wire|integrate|replace)\b/i;
-// Bug language: debugging is never a 3-call lookup — it needs
-// reproduce + locate + fix + verify, so it must never route simple.
-const BUG_PATTERN =
-  /\b(bug|error|failing|failed|broken|crash|issue|wrong|exception|stack|traceback|doesn'?t work|not working)\b/i;
-
-/** Heuristic router: trivial lookups / single edits skip planning, delegation and full verification. */
-export function classifyTaskComplexity(request: string): TaskComplexity {
-  const text = (request || "").trim();
-  if (!text) return "simple";
-  // Pure questions are lookups, not projects — even long ones. Only promote
-  // when the text carries explicit edit verbs.
-  if (/^(what|where|which|how\s+(does|do|is|are|can)|why|explain|describe|show|list|tell\s+me)\b/i.test(text) &&
-    !/\b(fix|implement|add|change|refactor|update|create|delete|remove|write|move|rename|migrate)\b/i.test(text)) {
-    return "simple";
-  }
-  if (COMPLEX_TASK_PATTERN.test(text)) return "complex";
-  if (BUILD_TASK_PATTERN.test(text) || CREATE_PROJECT_PATTERN.test(text) || LANDING_PAGE_BUILD_PATTERN.test(text)) return "complex";
-  if (DOC_BUILD_PATTERN.test(text)) return "complex";
-  if (DOC_WRITE_PATTERN.test(text)) return "complex";
-  // Debugging always needs reproduce + locate + fix + verify: never simple.
-  if (BUG_PATTERN.test(text) && EDIT_VERB_PATTERN.test(text)) return "complex";
-  // An edit verb with any scope signal is real work, not a lookup: two files,
-  // a non-trivial description, pasted code/traces, or verify/test language.
-  const fileMentions = (text.match(/[\w\-./]+\.\w{1,5}/g) || []).length;
-  const hasPastedContext = /```/.test(text) || /^\s*at\s+\S+.*:\d+/m.test(text) || /\b(Error|Exception|Traceback)\s*:/.test(text);
-  if (
-    EDIT_VERB_PATTERN.test(text) &&
-    (fileMentions >= 2 ||
-      text.length > 120 ||
-      hasPastedContext ||
-      /\b(verify|test|tests|check)\b/i.test(text))
-  ) {
-    return "complex";
-  }
-  // Long multi-sentence briefs are real projects, not quick tasks.
-  const sentences = text.split(/[.!?\n]+/).map((s) => s.trim()).filter(Boolean);
-  if (text.length > 350 || (sentences.length >= 3 && text.length > 180)) return "complex";
-  // Explicit multi-file / multi-stage signals.
-  if (fileMentions >= 3) return "complex";
-  if (/\b(and then|then verify|step \d|first .* then)\b/i.test(text) && text.length > 120) return "complex";
-  return "simple";
-}
-
-export function isWebTask(request: string): boolean {
-  return WEB_TASK_PATTERN.test(request || "");
-}
-
-/** True when the user wants a brand-new project scaffolded, not an edit. */
-export function isNewProjectTask(request: string): boolean {
-  const text = (request || "").trim();
-  if (!text) return false;
-  // Explicit existing-project signals win over build verbs: "add a dashboard
-  // to this repo" is an edit inside the workspace, not a greenfield scaffold
-  // (which would nest a fresh Vite app + npm install into the current repo).
-  if (/\b(into|in)\s+(this|the|our|my)\s+(repo|repository|project|codebase|app)\b/i.test(text)) return false;
-  if (/\bexisting\s+(repo|repository|project|codebase|app)\b/i.test(text)) return false;
-  return BUILD_TASK_PATTERN.test(text) || CREATE_PROJECT_PATTERN.test(text);
-}
-
-// A resume is ONLY a bare continue command ("continue", "please continue",
-// "continue from where you stopped"). The old start-anchored `\b` match
-// treated genuine new tasks as resumes: "Finish the login page" or
-// "Proceed with checkout" injected the previous run's checkpoint plus a
-// "do NOT restart, proceed with the next unfinished step" order — so the
-// agent ignored the new request and kept working on the old task.
-const CONTINUE_PHRASES = [
-  "continue",
-  "resume",
-  "go on",
-  "proceed",
-  "keep going",
-  "carry on",
-  "finish it",
-  "finish",
-  "finish the task",
-  "finish it up",
-  "complete it",
-  "keep working",
-  "continue now",
-  "continue the task",
-  "pick up where you left off",
-  "pick up from where you left off",
-  "pick up where you stopped",
-  "pick up from where you stopped",
-  "continue from where you stopped",
-  "continue from where you left off",
-  "ok",
-  "okay",
-  "sure",
-  "go ahead",
-  "yes",
-  "do it",
-  "please do it",
-  "proceed please",
-];
-export function isContinueRequest(request: string): boolean {
-  const text = (request || "").trim().replace(/[.!…]+$/g, "").trim().toLowerCase();
-  if (!text) return false;
-  const bare = text.startsWith("please ") ? text.slice("please ".length).trim() : text;
-  const core = bare.endsWith(" please") ? bare.slice(0, -" please".length).trim() : bare;
-  if ((CONTINUE_PHRASES as string[]).includes(core)) return true;
-  if (/^(?:continue|resume|pick\s+up)\s+(?:from\s+)?where\b.{0,60}$/i.test(core)) return true;
-  if (/^(?:continue|resume|keep\s+going|keep\s+working|go\s+ahead)\b.{0,40}$/i.test(core)) return true;
-  if (/^(?:ok|okay|sure|yes|do\s+it|proceed)\b.{0,20}$/i.test(core)) return true;
-  return false;
-}
-
-// Checkpoint of the last run per session: full LangChain message history
-// (tool calls + results) plus the working plan. This is what lets a
-// follow-up "continue" resume instead of restarting — text history alone
-// (user/assistant turns) cannot reconstruct tool state. Kept in memory for
-// speed and mirrored to disk (.nexus/run-checkpoints/) so "continue" also
-// survives an app restart, when the in-memory map is empty.
-export type TaskLedger = {
-  updatedAt: string;
-  planItems: PlanItem[] | null;
-  completedSteps: string[];
-  lastDiagnostics: string[];
-  changedFiles: string[];
-  verification: "none" | "passed" | "failed" | "interrupted";
-};
-export type RunCheckpoint = { messages: any[]; planItems: PlanItem[] | null; ledger?: TaskLedger };
-const lastRunStore = new Map<string, RunCheckpoint>();
-
-export function getLastRunCheckpoint(sessionId: string | undefined): RunCheckpoint | null {
-  if (!sessionId) return null;
-  return lastRunStore.get(sessionId) ?? null;
-}
-
-function countToolCalls(messages: any[]): number {
-  let count = 0;
-  for (const m of messages || []) {
-    if (Array.isArray(m?.tool_calls)) count += m.tool_calls.length;
-  }
-  return count;
-}
-
-export function saveLastRunCheckpoint(sessionId: string | undefined, checkpoint: RunCheckpoint, telemetryRoot?: string): void {
-  if (!sessionId) return;
-  const messages = (checkpoint.messages || []).slice(-100);
-  const ledger = checkpoint.ledger ?? {
-    updatedAt: new Date().toISOString(),
-    planItems: checkpoint.planItems ?? null,
-    completedSteps: summarizeCompletedSteps(messages),
-    lastDiagnostics: messages
-      .filter((message: any) => message?.type === "tool" || message?.type === "human")
-      .map((message: any) => String(message?.content ?? ""))
-      .filter((text: string) => /error|failed|diagnostic|verification/i.test(text))
-      .slice(-8)
-      .map((text: string) => text.slice(-600)),
-    changedFiles: [],
-    verification: "none",
-  };
-  const next = { messages, planItems: checkpoint.planItems ?? null, ledger };
-  // A run that did no tool work (pure Q&A) must not clobber the checkpoint
-  // of the previous working run — otherwise a later "continue" would resume
-  // from the small talk instead of the interrupted task.
-  const existing = lastRunStore.get(sessionId);
-  if (existing && countToolCalls(messages) === 0 && countToolCalls(existing.messages) > 0) return;
-  lastRunStore.set(sessionId, next);
-  if (telemetryRoot) {
-    void persistLastRunCheckpoint(telemetryRoot, sessionId).catch(() => { /* best effort */ });
-  }
-}
-
-function runCheckpointPath(telemetryRoot: string, sessionId: string): string {
-  const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  return path.join(telemetryRoot, ".nexus", "run-checkpoints", `${safe}.json`);
-}
-
-function truncateForDisk(value: unknown, cap = 1500): unknown {
-  if (typeof value === "string") {
-    return value.length > cap ? `${value.slice(0, cap)}\n…[truncated for checkpoint storage]` : value;
-  }
-  if (Array.isArray(value)) return value.map((v) => truncateForDisk(v, cap));
-  if (value && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value)) out[k] = k === "content" ? truncateForDisk(v, cap) : v;
-    return out;
-  }
-  return value;
-}
-
-const CHECKPOINT_TYPE_BY_CLASS: Record<string, string> = {
-  HumanMessage: "human",
-  AIMessage: "ai",
-  ToolMessage: "tool",
-  SystemMessage: "system",
-};
-
-function serializeCheckpointMessage(message: any): unknown {
-  try {
-    const json = typeof message?.toJSON === "function" ? message.toJSON() : message;
-    if (!json || typeof json !== "object") return null;
-    const data = json as { type?: string; id?: unknown; kwargs?: unknown };
-    // LangChain toJSON uses { type: "constructor", id: [..., "AIMessage"] } —
-    // the message kind lives in the trailing id segment, not in `type`.
-    const className = Array.isArray(data.id) ? String(data.id[data.id.length - 1]) : "";
-    const type = CHECKPOINT_TYPE_BY_CLASS[className] ?? (typeof data.type === "string" && ["human", "ai", "tool", "system"].includes(data.type) ? data.type : null);
-    if (!type) return null;
-    return { type, kwargs: truncateForDisk(data.kwargs ?? {}) };
-  } catch {
-    return null;
-  }
-}
-
-export async function persistLastRunCheckpoint(telemetryRoot: string, sessionId: string): Promise<void> {
-  const checkpoint = lastRunStore.get(sessionId);
-  if (!checkpoint || !telemetryRoot) return;
-  const filePath = runCheckpointPath(telemetryRoot, sessionId);
-  await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
-  const payload = {
-    savedAt: new Date().toISOString(),
-    planItems: checkpoint.planItems,
-    ledger: checkpoint.ledger ?? {
-      updatedAt: new Date().toISOString(),
-      planItems: checkpoint.planItems,
-      completedSteps: summarizeCompletedSteps(checkpoint.messages),
-      lastDiagnostics: [],
-      changedFiles: [],
-      verification: "none",
-    },
-    messages: checkpoint.messages.slice(-80).map(serializeCheckpointMessage).filter(Boolean),
-  };
-  await fsPromises.writeFile(filePath, JSON.stringify(payload), "utf8");
-}
-
-function reviveCheckpointMessage(stored: any): any | null {
-  try {
-    if (!stored || typeof stored !== "object" || !stored.type) return null;
-    const kwargs = (stored.kwargs ?? {}) as any;
-    switch (stored.type) {
-      case "human": return new HumanMessage(kwargs);
-      case "ai": return new AIMessage(kwargs);
-      case "tool": return new ToolMessage(kwargs);
-      case "system": return new SystemMessage(kwargs);
-      default: return null;
-    }
-  } catch {
-    return null;
-  }
-}
-
-export async function loadLastRunCheckpoint(telemetryRoot: string, sessionId: string | undefined): Promise<RunCheckpoint | null> {
-  if (!sessionId) return null;
-  const inMemory = lastRunStore.get(sessionId);
-  if (inMemory) return inMemory;
-  try {
-    const raw = await fsPromises.readFile(runCheckpointPath(telemetryRoot, sessionId), "utf8");
-    const parsed = JSON.parse(raw) as { planItems?: PlanItem[] | null; messages?: any[]; ledger?: TaskLedger };
-    const messages = (parsed.messages || []).map(reviveCheckpointMessage).filter(Boolean);
-    if (!messages.length) return null;
-    const checkpoint = { messages: sanitizeResumeCheckpoint(messages), planItems: parsed.planItems ?? null, ledger: parsed.ledger };
-    lastRunStore.set(sessionId, checkpoint);
-    return checkpoint;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Deterministic record of finished tool work, derived from message history:
- * every model tool call that has a matching tool result. Weak models often
- * ignore "do not repeat completed steps" after a retry/continue because the
- * raw history is long — an explicit ledger ("- read_file src/App.tsx")
- * survives where prose instructions don't.
- */
-export function summarizeCompletedSteps(messages: any[], max = 25): string[] {
-  type Step = { id: string | null; desc: string; done: boolean };
-  const steps: Step[] = [];
-  const byId = new Map<string, Step>();
-  for (const message of messages || []) {
-    const calls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
-    for (const call of calls) {
-      const desc = describeToolCall(call?.name || "tool", call?.args) || (call?.name || "tool");
-      const label = `${call?.name || "tool"} · ${desc}`;
-      const step: Step = { id: typeof call?.id === "string" ? call.id : null, desc: label, done: false };
-      steps.push(step);
-      if (step.id) byId.set(step.id, step);
-      else step.done = true; // result-less shape: can't match, count as seen
-    }
-    const resultId = (message as any)?.tool_call_id;
-    if (typeof resultId === "string" && byId.has(resultId)) {
-      byId.get(resultId)!.done = true;
-    }
-  }
-  return steps.filter((s) => s.done).map((s) => s.desc).slice(-max);
-}
-
-export function clearLastRunCheckpoint(sessionId: string | undefined): void {
-  if (!sessionId) return;
-  lastRunStore.delete(sessionId);
-}
-
-/**
- * Normalizes tool arguments so models passing `filePath` or `path` instead of
- * snake_case `file_path` for DeepAgents filesystem tools (read_file, write_file,
- * edit_file, delete) succeed without validation crashes.
- */
-export function toolParameterNormalizationMiddleware() {
-  const normalize = (toolCalls: any[]) => {
-    if (!Array.isArray(toolCalls)) return;
-    for (const tc of toolCalls) {
-      if (tc?.args && typeof tc.args === "object") {
-        if ("filePath" in tc.args && !("file_path" in tc.args)) {
-          tc.args.file_path = tc.args.filePath;
-        }
-        if ("path" in tc.args && !("file_path" in tc.args)) {
-          tc.args.file_path = tc.args.path;
-        }
-      }
-    }
-  };
-
-  return createMiddleware({
-    name: "toolParameterNormalizationMiddleware",
-    wrapModelCall: async (request: any, handler: any) => {
-      const response = await handler(request);
-      if (response && Array.isArray((response as any).tool_calls)) {
-        normalize((response as any).tool_calls);
-      }
-      return response;
-    },
-    afterModel: (state: any) => {
-      const messages = state?.messages;
-      if (!messages || messages.length === 0) return undefined;
-      for (const msg of messages) {
-        if (msg?.tool_calls) {
-          normalize(msg.tool_calls);
-        }
-      }
-      return undefined;
-    },
-  });
-}
-
-/**
- * Loop Prevention Middleware:
- * Detects and breaks repetitive read/inspection tool loops (e.g., repeatedly calling
- * read_file, grep_search, or glob on the same file/target without any edits or modifying commands).
- *
- * Modifying actions (write_file, edit_file, delete, apply_patch, execute) reset inspection tracking.
- *
- * Repetition 2: Injects a proactive steering notice into the tool message advising the model
- *               that the file has not changed, build/tests already passed, and to mark todos completed.
- * Repetition 3+: Blocks execution of the tool, returning an intervention ToolMessage directing the model
- *                to update its todo list and provide its final answer immediately.
- */
-export function loopPreventionMiddleware(options: { general?: boolean; outputRequired?: boolean; beforeModify?: () => string | null } = {}) {
-  let lastReadSig: string | null = null;
-  let consecutiveCount = 0;
-  let researchCallCount = 0;
-  const inspectionCounts = new Map<string, number>();
-  // SKILL.md content never changes mid-run: the first read loads it, every
-  // repeat is pure waste (observed as skill→plan→todos→repair→skill testing
-  // loops on slow endpoints). Track by skill NAME (not path) so virtual-path
-  // variants (/system-skills/x vs system-skills/x) can't dodge the guard.
-  const loadedSkills = new Set<string>();
-
-  const isModifying = (name: string) => /^(write_file|edit_file|delete|apply_patch|execute)$/i.test(name);
-  const isInspection = (name: string) => /^(read_file|read_file_range|grep_search|glob|ls|view_file|search_code|code_structure|code_symbol)$/i.test(name);
-  const isFileRead = (name: string) => /^(read_file|read_file_range)$/i.test(name);
-  const isResearchTool = (name: string) => /^(web_search|browser_fetch_api|browser_inspect|search_web|fetch_url)$/i.test(name);
-
-  const normalizePath = (args: any) => {
-    if (!args || typeof args !== "object") return "";
-    const p = String(args.file_path || args.filePath || args.path || args.file || args.query || args.pattern || "");
-    return p.replace(/\\/g, "/").replace(/^\/+/, "").trim();
-  };
-
-  return createMiddleware({
-    name: "loopPreventionMiddleware",
-    wrapToolCall: async (request: any, handler: any) => {
-      const toolName = String(request.tool?.name ?? request.toolCall?.name ?? "");
-      const args = request.toolCall?.args ?? {};
-      const toolCallId = String(request.toolCall?.id ?? "");
-
-      if (isModifying(toolName)) {
-        const gate = options.beforeModify?.();
-        if (gate) {
-          return new ToolMessage({
-            tool_call_id: toolCallId,
-            name: toolName,
-            status: "error",
-            content: gate,
-          });
-        }
-        inspectionCounts.clear();
-        lastReadSig = null;
-        consecutiveCount = 0;
-        researchCallCount = 0;
-        return handler(request);
-      }
-
-      if (options.general && options.outputRequired && isResearchTool(toolName)) {
-        researchCallCount++;
-        if (researchCallCount > 8) {
-          return new ToolMessage({
-            tool_call_id: toolCallId,
-            name: toolName,
-            content: "[SUPERVISOR INTERVENTION] The research budget for this task has been reached. Use the evidence already collected and take the next result-producing action. Do not perform another web search or page fetch unless it directly unblocks creation of the requested output.",
-          });
-        }
-      }
-
-      // Skill reads bypass the generic inspection counters (a plan/todos call
-      // in between would reset them): first read executes, repeats get a
-      // cached steer-forward instead of the file content.
-      if (isFileRead(toolName)) {
-        const skill = extractSkillNameFromPath(normalizePath(args));
-        if (skill) {
-          const key = skill.toLowerCase();
-          if (loadedSkills.has(key)) {
-            return new ToolMessage({
-              tool_call_id: toolCallId,
-              name: toolName,
-              status: "error",
-              content: `[SKILL ALREADY LOADED]: Skill '${skill}' is already loaded above — its instructions have not changed. Do NOT re-read any SKILL.md file. Proceed directly: write_file the generator script, execute it, verify the output with ls, then present the result.`,
-            });
-          }
-          const result = await handler(request);
-          loadedSkills.add(key);
-          return result;
-        }
-      }
-
-      if (isInspection(toolName)) {
-        const target = normalizePath(args);
-        const sig = `${toolName}:${target}`;
-        const totalCount = (inspectionCounts.get(sig) ?? 0) + 1;
-        inspectionCounts.set(sig, totalCount);
-
-        if (sig === lastReadSig) {
-          consecutiveCount++;
-        } else {
-          lastReadSig = sig;
-          consecutiveCount = 1;
-        }
-
-        // 3rd+ consecutive repetition or 4th total inspection without modifying actions:
-        // Intervene and short-circuit! Do NOT re-execute the tool.
-        if (consecutiveCount >= 3 || totalCount >= 4) {
-          return new ToolMessage({
-            tool_call_id: toolCallId,
-            name: toolName,
-            status: "error",
-            content: `[LOOP PREVENTION NOTICE]: You have already inspected '${target || toolName}' multiple times (${totalCount}x) without making any workspace edits or code changes. The file content has not changed.\n\nCRITICAL INSTRUCTIONS:\n1. Stop inspecting or re-reading files.\n2. If build or tests already passed and required changes are in place, call write_todos to mark remaining in-progress todos as completed.\n3. Output your final response to the user immediately detailing the changes made.`,
-          });
-        }
-
-        const result = await handler(request);
-
-        // 2nd consecutive repetition or 2nd total inspection of the same target:
-        // Append proactive steering notice to guide the model before a hard block.
-        if (consecutiveCount === 2 || totalCount === 2) {
-          const currentContent = typeof result.content === "string" ? result.content : JSON.stringify(result.content);
-          const nudge = `\n\n[Notice: You already inspected '${target || toolName}'. The content has not changed. Do NOT re-read or inspect this again. If your build or verification passed, update your todo list to completed with write_todos and present your final response now.]`;
-          result.content = currentContent + nudge;
-        }
-
-        return result;
-      }
-
-      return handler(request);
-    },
-  });
-}
 
 function isRecursionLimitError(error: unknown): boolean {
   const text = [error instanceof Error ? error.message : String(error), String((error as any)?.name ?? "")].join(" ");
   return /recursion\s*limit|GRAPH_RECURSION_LIMIT/i.test(text);
 }
 
-function todayLine(): string {
-  const now = new Date();
-  const long = now.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
-  return `Today is ${long} (${now.toISOString().slice(0, 10)}).`;
-}
-
-function buildSystemPrompt(mode: AgentMode, projectRoot: string, providerLabel: string, modelName: string, memory: AgentMemoryContext, projectRulesSection: string = "", complexity: TaskComplexity = "complex", isNewProject = false, taskKind: AgentTaskKind = "code", repoMapSection: string = "", homeTaskContract: HomeTaskContract | null = null) {
-  const today = todayLine();
-  if (taskKind === "general") {
-    let general = `You are Nexus Home, a helpful general-purpose assistant. Your workspace folder is exposed at the virtual root / — use paths relative to it (for example report.docx). Files you create land in the user's Nexus folder, where they can download them.
-
-${today} Anchor every relative time expression to it ("last decade", "this year", "recent", "latest").
-
-Project root on host (metadata only): ${projectRoot}
-Provider: ${providerLabel} / ${modelName}
-
-The virtual root / is the selected project root. Use relative workspace paths only. Do not invent or use alternate host paths such as C:\\nexus-landing, /nexus-landing, /workspace, or /repo, and never cd outside the selected workspace. Commands already run with the correct cwd. Do not use verbose/debug build flags unless the user explicitly asks for them.
-
-Long-term memory (shared across ALL Home chats — user profile, preferences, recurring context):
-${tail(memory.projectMemory, 4000) || "(empty)"}
-
-Session memory (this chat only):
-${tail(memory.sessionMemory, 3000) || "(empty)"}
-
-Working rules:
-- Answer chit-chat and simple questions directly with zero tool calls — EXCEPT memory saves below, which never count toward any tool budget.
-- Long-term memory stores enduring facts about the user, their role, communication style, and tool/format preferences across sessions.
-- Memory management: you have access to the manage_memory tool. When the user explicitly asks you to remember something ("remember that...", "keep in mind that...", "my preference is..."), or when they state an enduring personal preference, role, or project context, use manage_memory with action='remember' to persist it to long-term memory. Use action='forget' if they ask to remove or change a prior preference. Do NOT call manage_memory for temporary or transient chat trivia (e.g. "I am eating lunch").
-- Saving is YOUR job, never the user's: when someone tells you who they are (name, role, background, education, work, projects), call manage_memory yourself in the SAME run — never reply "tell me to save this and I will remember" or ask them to instruct you. Save first, then briefly confirm what you remembered (e.g. "Noted — I'll remember you're Amine, a master's student in data science & AI.").
-- Memories above are summaries, not transcripts: the full answers live in chat history. Never treat a memory fragment as complete data — re-read the chat or re-run the lookup for exact lists, tables, or numbers.
-- For research: use web_search first, then read the most promising pages with browser_fetch_api or browser_inspect before stating facts. Never invent current prices, versions, or news. For latest/current-year rankings or "best of" lists, verify with web_search and include the current year — never clip ranges to your training cutoff.
-- If the task involves a library, API, or technology you are unsure about — especially anything recently released — research it first: web_search, then read the official docs with browser_inspect. Never invent APIs, import paths, or options; pin the exact version you verified.
-    - For any request that asks you to create, prepare, produce, export, write, or transform something, treat the requested result as a completion contract. Decide what concrete output proves completion, create it in the workspace, inspect it, and only then finish.
-    - For documents and other artifacts: check the skills in your System Note first — a skill may describe exactly how to build the requested output. Follow it: write the needed draft or generator with write_file, run it with execute, inspect the result, and clean up only throwaway files after successful validation.
-    - CRITICAL IN AUTO MODE: Do NOT stop after reading a skill or researching to announce your intent. Once you have enough evidence to act, take the next concrete action that advances the requested result. Never conclude while a declared output is missing or uninspected.
-- If a command fails because a tool is missing (python, pip packages), install it or fall back to the closest format you CAN produce, and say so clearly.
-- Save finished deliverables with clear file names in the workspace root and end by naming the exact file(s) the user can download.
-    - Be efficient: research only while it is producing new evidence. After research, switch to creating or transforming the requested result. Keep answers concise.
-- Skills listed in your instructions are mandatory pre-reads: if a skill covers the task, read its SKILL.md first via its exact given path. CRITICAL: SKILL.md contains private operational instructions for YOU, not text for the user. NEVER quote, echo, dump, or output the SKILL.md text, code samples, or numbered lines back to the user. Silently follow its instructions to produce the requested deliverable (e.g. write a generator script with write_file, execute it to create the file, verify it with ls, clean up the script, and deliver the final result). Never browse skill folders (ls/glob of .nexus/skills, /global-skills, /system-skills) to discover skills — the System Note already lists everything available to you.
-- If a skill ships helper scripts you must run, copy them into the workspace first with materialize_skill_files, then run them via the returned workspace-relative paths with execute (skill folders are read-only and outside the run directory).
-- Never expose secrets.`;
-    if (complexity === "simple") {
-      general += `\n\nEFFICIENCY MODE (simple task): answer in at most 3 tool calls. Do NOT create a todo list, do NOT delegate to subagents. If no file is needed, answer directly. manage_memory calls are exempt from the budget and must still fire when the user shares identity or preferences.`;
-    }
-    if (projectRulesSection) {
-      general += `\n\n${projectRulesSection}`;
-    }
-    if (homeTaskContract?.expectsOutput) {
-      general += `\n\nTASK CONTRACT: This request asks for an observable result. Decide what output proves completion, create or update it in the workspace, inspect it, and do not finish with a promise or research summary alone.${homeTaskContract.needsResearch ? " Research is allowed, but switch to producing the result once the evidence is sufficient." : ""}`;
-    }
-    if (mode === "plan") return `${general}\n\nMODE: PLAN. Investigate and return a structured markdown plan. Writing, editing and command execution are disabled — read and search only.`;
-    return `${general}\n\nMODE: ${mode === "auto" ? "AUTO. Work autonomously end to end: research, create, then verify the deliverable exists before finishing." : "ASK. Fulfil the request, keep it focused, and confirm the result before answering."}`;
-  }
-
-  let common = `You are Nexus, an advanced autonomous coding agent working on a local repository. The repository is exposed at the virtual root / — use paths relative to the repository root (for example src/App.tsx).
-
-${today} Anchor every relative time expression to it.
-
-Project root on host (metadata only): ${projectRoot}
-Provider: ${providerLabel} / ${modelName}
-
-Project memory:
-${tail(memory.projectMemory, 2000) || "(empty)"}
-
-Session memory:
-${tail(memory.sessionMemory, 3000) || "(empty)"}
-
-Working rules:
-- Inspect the relevant code before proposing or making changes; never assume file contents.
-- Follow the engineering harness loop: Plan -> Test -> Implement -> Review -> Verify.
-- Be efficient: act in at most 3 exploration calls (grep_search/read_file_range) before editing or answering. Read files directly; do not chain outline -> definition -> references -> read for the same symbol. (SKILL.md reads don't count — always check skills first.)
-- Never list the repository root (ls /) or run unscoped globs (**/*): they return thousands of entries (node_modules/dist) and stall the run. Always scope to a subdirectory or a narrow pattern like src/**/*.tsx.
-- Prefer grep_search with a tight query over browsing; if a listing is truncated, narrow it instead of paging through it.
-- For multi-file edits, prefer a single apply_patch call over N sequential writes/edits.
-- Never write throwaway verification scripts into the repo (no check-*.js, smoke-test.js, or any scratch files — and never inside .nexus/, which is telemetry storage). Verify with a single inline command instead, then stop: one syntax check plus one smoke run is enough for a small app.
-- Use ask_user sparingly (at most once) when genuinely blocked by ambiguity; otherwise proceed with best guess.
-- Use browser_inspect or browser_fetch_api ONLY for web/dev-server/API-health tasks. Never use them for plain code edits or explanations. browser_inspect renders the page with JavaScript in the built-in browser session (the user can watch in the Browser tab when headless is off), so prefer it for checking what a running dev server actually renders. To interact with the page (click buttons, fill forms, submit, scroll), use browser_act — snapshot first for element refs, then act on refs.
-- If the task involves a library, API, or technology you are unsure about — especially anything recently released — research it first with web_search, then read the official docs with browser_inspect before writing code. Never invent APIs, import paths, or options; pin the exact version you verified.
-- Immutability & clean design: prefer pure functions and immutable data transforms over mutation. Keep functions small (<50 lines) and files focused (<800 lines). Never silently swallow errors in empty catch blocks.
-- Security-first: zero tolerance for hardcoded API keys, secrets, or credentials. Always parameterize queries against SQL injection and sanitize user inputs against XSS.
-- Test-driven development (TDD): for bug fixes or features, write or update tests alongside changes. Verify that tests pass.
-- Specialist subagents: use delegate_task for complex isolated tasks (e.g. 'architect' for system design, 'code-reviewer' for quality audits, 'security-reviewer' for vulnerability checks, 'tdd-guide' for test workflows, 'build-error-resolver' for compiler errors, 'refactor-cleaner' for dead code removal). Never delegate simple single-file edits or Q&A. Keep write-capable delegation sequential; use read-only reviewers/researchers for parallel investigation.
-- Keep diffs minimal and focused; prefer editing existing files over rewriting them.
-- Only use the todo list for tasks with 3+ distinct steps. Skip it entirely for trivial tasks (single question, single-file fix, typo, rename).
-- Additional MCP tools (if listed in your tools) come from user-configured MCP servers; prefer them for the capabilities they expose (e.g. search, APIs, external systems). When GitHub MCP tools are available, never ask the user for their GitHub username — the token already identifies them (see the authenticated-user note, or call get_me). To list the user's own repositories: call get_me, then search_repositories with the query 'user:<login>'. Use the login verbatim — exact spelling, no spaces, never the display name. If GitHub rejects the query with 422 on the user: qualifier, call get_me again and retry once with that exact login before reporting failure.
-- Skills listed in your instructions are mandatory pre-reads, not options: before exploring or writing code, check whether any skill covers the task and read its SKILL.md first via its exact given path. SKILL.md contains internal instructions for YOU — never output, quote, echo, or dump skill contents to the user. Never browse skill folders (ls/glob of .nexus/skills, /global-skills, /system-skills) to discover skills — the System Note already lists everything available to you.
-- If a skill ships helper scripts you must run, copy them into the workspace first with materialize_skill_files, then run them via the returned workspace-relative paths with execute (skill folders are read-only and outside the run directory).
-- Never expose secrets.
-- Self-review: before finishing, verify that modified code compiles, tests pass, and no unintended edits or secrets were introduced. Once compilation or verification passes (e.g. npm run build succeeds), do NOT repeatedly re-read the source files you just wrote. Update your todo list to completed with write_todos and summarize your work to the user. Report files changed, commands run, and remaining risks.
-${repoMapSection ? `\n${repoMapSection}` : ""}`;
-
-  // New-project builds must come out production-ready (Claude-Code bar), not
-  // as loose static files: real toolchain, installable deps, persisted
-  // settings, streaming chat, error states, and a green build before stopping.
-  if (isNewProject && mode !== "plan") {
-    common += `\n\nNEW WEB PROJECT warm-up: the user wants a brand-new application, not an edit. Deliver production-grade work:
-- Default stack is Vite + React + TypeScript unless the request names another. Scaffold with the official starter (npm create vite), then npm install. Never hand-roll a toolchain with loose .html/.css/.js files when a framework scaffold applies.
-- Structure: src/ components (Chat, Settings, MessageList...), a small api client module for the OpenAI-compatible endpoint, styles co-located or in one stylesheet, .env.example for base URL / key / model names.
-- Settings page: provider base URL, API key, and model selectable, persisted to localStorage, loaded on start. Never hardcode secrets.
-- Chat: streaming responses via fetch to /chat/completions (SSE), with loading, empty, and error states (bad key, network failure, non-200 with body excerpt). No dead buttons — every control must work.
-- README.md with prerequisites, setup (npm install), dev (npm run dev), and build (npm run build) instructions.
-- Finish only when npm run build passes. If the build fails, fix and rebuild — do not hand back a project that does not compile. Once the build passes, conclude your task and report the result. Do NOT loop re-reading files after a successful build.`;
-  }
-
-  if (complexity === "simple") {
-    common += `\n\nEFFICIENCY MODE (simple task): answer in at most 3 tool calls. Do NOT create a todo list, do NOT delegate to subagents, do NOT run verification commands yourself. Read at most 2 files besides any SKILL.md, then act and stop. If no file change is needed, answer directly with zero or one lookup.`;
-  }
-
-  if (projectRulesSection) {
-    common += `\n\n${projectRulesSection}`;
-  }
-
-  if (mode === "plan") return `${common}\n\nMODE: PLAN. Investigate the repository and return a structured markdown implementation plan with sections: # Objective, ## Proposed Changes, ## Risks, ## Verification Plan. Writing, editing, deleting and command execution are disabled — gather information with read, search, and symbol tools only, and do not attempt to change anything.`;
-  if (mode === "auto") return `${common}\n\nMODE: AUTO. Work autonomously end to end: plan, implement, then verify with the available checks. If a check fails, fix your changes before finishing.`;
-  return `${common}\n\nMODE: ASK. Implement the requested change, keep it minimal, and verify with the available checks before answering.`;
-}
 
 // Project memory is a rolling log; keep the most recent entries so it cannot
 // grow without bound across hundreds of runs.
-function appendMemoryLog(existing: string | undefined, entry: string): string {
-  const lines = (existing || "").split("\n").filter(Boolean);
-  lines.push(entry);
-  return lines.slice(-PROJECT_MEMORY_RUN_LOG_CAP).join("\n");
+// Rolling memory logs (project + session) keep WHOLE entries: char-slicing
+// cut the oldest entry mid-sentence and left a misleading fragment at the
+// top of what the model reads. Entries are separated by `separator`
+// ("\n" for the one-line-per-run project log, "\n\n" for session memory).
+export function appendEntryLog(
+  existing: string | undefined,
+  entry: string,
+  opts: { maxEntries: number; maxChars: number; separator: string }
+): string {
+  const parts = (existing || "").split(opts.separator).map((p) => p.trim()).filter(Boolean);
+  parts.push(entry.trim());
+  let kept = parts.length > opts.maxEntries ? parts.slice(-opts.maxEntries) : parts;
+  while (kept.length > 1 && kept.join(opts.separator).length > opts.maxChars) kept = kept.slice(1);
+  return kept.join(opts.separator);
 }
 
-export type AttachmentDoc = { name: string; mimeType: string; text: string; truncated: boolean };
+// Project facts are agent-recorded and deduped, but unbounded counts would
+// still creep up over months of use (eviction handled by capMemoryItems).
+const MAX_PROJECT_MEMORY_ITEMS = 50;
+
 
 export async function runProjectAgent(options: {
   projectRoot: string;
@@ -1582,17 +401,26 @@ export async function runProjectAgent(options: {
   resumePlanItems?: PlanItem[] | null;
   resumeNote?: string | null;
   taskKind?: AgentTaskKind;
+  /** "ask" gates every file mutation (backend + apply_patch + skill files) behind approval UI. */
+  editPolicy?: "auto" | "ask";
   /** Agent mode for skill scoping ("home" | "code" | "notebook"). Omit = all skills eligible. */
   skillsMode?: SkillMode;
   /** Callback when the agent updates shared Home long-term memory via manage_memory. */
   onHomeMemoryUpdate?: (mutate: (current: string) => string) => void | Promise<unknown>;
+  /** Callback when the agent records durable facts via project_memory (Code runs). */
+  onProjectMemoryUpdate?: (mutate: (current: string) => string) => void | Promise<unknown>;
   /** Blocking clarifying-question handler: return the user's answers or null to best-guess. */
   onUserQuestion?: (questions: Array<{ header: string; question: string; options: string[] }>) => Promise<string | null>;
 }) {
-  const { projectRoot, telemetryRoot, sessionId, request, images, attachments, attachmentDocs, importableAttachments, settings, memory, history, mode, agentBackend, onEvent, isCancelled, onHomeMemoryUpdate, onUserQuestion } = options;
+  const { projectRoot, telemetryRoot, sessionId, request: rawRequest, images, attachments, attachmentDocs, importableAttachments, settings, memory, history, mode, agentBackend, onEvent, isCancelled, onHomeMemoryUpdate, onProjectMemoryUpdate, onUserQuestion } = options;
   const { resumeMessages, resumePlanItems, resumeNote, skillsMode } = options;
   const taskKind: AgentTaskKind = options.taskKind ?? "code";
   const isGeneral = taskKind === "general";
+  // Slash-command expansion: "/review 123" becomes the command's full prompt
+  // template with "123" as its input. Single choke point for every run path
+  // (Code IPC, Home IPC, headless CLI). Unknown commands and plain text pass
+  // through untouched.
+  const request = await expandSlashCommand(rawRequest || "", projectRoot, isGeneral ? "home" : "code").catch(() => rawRequest || "");
   const homeTaskContract = isGeneral ? inferHomeTaskContract(request) : null;
   const codeTaskContract = isGeneral ? null : inferCodeTaskContract(request);
   const targetTelemetryRoot = telemetryRoot || projectRoot;
@@ -1600,6 +428,10 @@ export async function runProjectAgent(options: {
   const emit = (type: AgentEvent["type"], text: string, items?: PlanItem[], usage?: AgentUsage, subagent?: SubagentItem, artifact?: ArtifactItem, detail?: string) => {
     if (text || items?.length || usage || subagent || artifact) onEvent({ type, sessionId: sessionId || "", text, timestamp: new Date().toISOString(), items, usage, subagent, artifact, detail });
   };
+  if (request !== (rawRequest || "")) {
+    const cmdName = (rawRequest || "").trimStart().slice(1).split(/\s/, 1)[0];
+    emit("status", `Expanded slash command /${cmdName} into its full prompt template`);
+  }
 
   const trajectory = sessionId ? new TrajectoryLogger(targetTelemetryRoot, sessionId) : null;
   if (trajectory) {
@@ -1639,16 +471,36 @@ export async function runProjectAgent(options: {
       promise,
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)), ms)),
     ]);
+  // Fast-path routing: simple tasks get fewer tools, no todo planning and
+  // no subagent delegation so one lookup cannot fan out into 10+ steps.
+  // Classified BEFORE the parallel setup: the rules loader needs it to skip
+  // the bundled standards corpus on trivial tasks.
+  const complexity = classifyTaskComplexity(request);
+  // A "continue" that resumes prior tool state is never a simple task: it
+  // needs the full budget, todo tracking and delegation to finish the job.
+  const hasResume = Boolean((resumeMessages && resumeMessages.length) || resumeNote);
+  let effectiveComplexity: TaskComplexity = hasResume ? "complex" : complexity;
+  let isSimple = effectiveComplexity === "simple";
+  const isNewProject = isNewProjectTask(request);
   // Setup I/O (MCP servers, project rules, skills config, repo map) is
   // independent — fetch in parallel instead of serially.
-  const [mcpResult, rulesResult, skillsConfig, repoMapSection] = await Promise.all([
+  const [mcpResult, rulesResult, skillsConfig, repoMapSection, projectInstructions] = await Promise.all([
     ((isGeneral || shouldSkipMcpForTask(request) || (taskKind === "code" && !/\b(github|repository|repositories|issue|pull request|slack|notion|web search|latest|research|external)\b/i.test(`${request} ${resumeNote || ""}`)))
       ? Promise.resolve({ tools: [], serverNames: [], warnings: undefined })
       : withSetupTimeout(getMcpTools(), 20000, "MCP servers")).then(
       (r) => ({ ok: true as const, tools: r.tools, serverNames: r.serverNames, warnings: r.warnings }),
       (error: unknown) => ({ ok: false as const, error }),
     ),
-    (isGeneral ? Promise.resolve({ hasRules: false, ruleFiles: [], combinedPromptSection: "" }) : discoverAllRules(projectRoot)),
+    // Rules loading: Home runs skip rules entirely; Code runs honor the
+    // user-facing toggle, and simple tasks get only the project's own rules —
+    // the bundled standards corpus is for real engineering work, not lookups.
+    (isGeneral
+      ? Promise.resolve({ hasRules: false, ruleFiles: [], combinedPromptSection: "" })
+      : getRulesConfig()
+          .then((config) => (config.enabled === false || effectiveComplexity === "simple"
+            ? discoverProjectRules(projectRoot)
+            : discoverAllRules(projectRoot)))
+          .catch(() => ({ hasRules: false, ruleFiles: [], combinedPromptSection: "" }))),
     getSkillsConfig(),
     // Code runs get a symbol-outline map so the model orients without
     // re-listing the tree every task. Home/doc runs skip it (a documents
@@ -1659,6 +511,11 @@ export async function runProjectAgent(options: {
         getRepoMapSection(projectRoot, request).catch(() => ""),
         getProjectIndexSection(projectRoot, request).catch(() => ""),
       ]).then((sections) => sections.filter(Boolean).join("\n\n"))),
+    // AGENTS.md / CLAUDE.md (project + ~/.nexus global): the user's own
+    // instruction file loads for every Code run regardless of the rules
+    // toggle or task complexity — it is project memory, not the standards
+    // corpus. Never fails the run.
+    (isGeneral ? Promise.resolve({ files: [], section: "" }) : discoverProjectInstructions(projectRoot).catch(() => ({ files: [], section: "" }))),
   ]);
 
   let mcpTools: any[] = [];
@@ -1716,6 +573,9 @@ export async function runProjectAgent(options: {
   if (rulesResult.hasRules && !isGeneral) {
     emit("status", `Loaded ${rulesResult.ruleFiles.length} project rule file${rulesResult.ruleFiles.length === 1 ? "" : "s"} (${rulesResult.ruleFiles.map((r) => r.filename).join(", ")})`);
   }
+  if (projectInstructions.files.length && !isGeneral) {
+    emit("status", `Loaded project instructions (${projectInstructions.files.map((f) => f.name).join(", ")})`);
+  }
 
   const runCommand = async (command: string) => {
     try {
@@ -1768,7 +628,9 @@ export async function runProjectAgent(options: {
       const fullCatalog = [...(await listSkills(projectRoot)), ...(await listSystemSkills().catch(() => []))];
       const catalog = skillsMode ? fullCatalog.filter((s) => skillAppliesToMode(s, skillsMode)) : fullCatalog;
       eligibleSkillCatalog = catalog;
-      const recs = recommendSkills(catalog, request, 3);
+      // MCP-dependent skills stay mounted and materializable, but drop out of
+      // recommendations when their server isn't connected (REQUIRED_MCP_SKILLS).
+      const recs = recommendSkills(filterSkillsByMcp(catalog, mcpResult.ok ? mcpResult.serverNames : []), request, 3);
       // The framework parses every directory passed in `skills`. Passing the
       // complete catalog makes unrelated skills part of every run and means a
       // malformed/unsupported frontmatter file can fail an otherwise
@@ -1804,6 +666,14 @@ export async function runProjectAgent(options: {
     .sort((a, b) => SKILL_SOURCE_PRIORITY[b.source] - SKILL_SOURCE_PRIORITY[a.source])
     .map(skillDirVirtualPath);
 
+  // Project hooks (.nexus/hooks.json) behind a global toggle: run:start/end,
+  // tool:before (deny-capable) / tool:after, verify:fail. Hook failures are
+  // reported, never fatal.
+  const hooks = (await getHooksConfig().catch(() => ({ enabled: true }))).enabled
+    ? await discoverHooks(projectRoot).catch(() => [])
+    : [];
+  const hooksMiddleware = hooks.length ? createHooksMiddleware({ projectRoot, hooks, runId: sessionId }) : null;
+
   const allCodeTools = createCodeIntelligenceTools(projectRoot);
   const wantsBrowser = isWebTask(request);
   let homeResearchToolCalls = 0;
@@ -1817,6 +687,23 @@ export async function runProjectAgent(options: {
   };
   // Home general runs always get the browser + free web search: research is
   // core to that mode, not an edge case.
+  // Edit-approval gate (opt-in via AppSettings.editPolicy or the run options):
+  // applied at all three mutation paths — backend write/edit/delete (see
+  // getAgentBackend), apply_patch, and materialize_skill_files.
+  const editGate = options.editPolicy === "ask"
+    ? async (info: { tool: string; files: string[] }) => {
+        const decision = await requestCommandApproval({
+          runId: sessionId,
+          approvalKey: "file-edit",
+          command: `${info.tool} ${info.files.slice(0, 5).join(", ")}${info.files.length > 5 ? ` (+${info.files.length - 5} more)` : ""}`,
+          cwd: projectRoot,
+          reason: "Edit approval is on: file changes wait for your confirmation.",
+        });
+        return decision === "deny"
+          ? `Edit denied by the user: ${info.tool} on ${info.files.join(", ")} was not approved. Do not retry the same change; explain what you intended instead.`
+          : null;
+      }
+    : undefined;
   const browserTools = wantsBrowser || isGeneral
     ? createBrowserTools(projectRoot, {
         agentBrowser: {
@@ -1845,15 +732,6 @@ export async function runProjectAgent(options: {
     },
   });
   const usage = new UsageAccumulator();
-  // Fast-path routing: simple tasks get fewer tools, no todo planning and
-  // no subagent delegation so one lookup cannot fan out into 10+ steps.
-  const complexity = classifyTaskComplexity(request);
-  // A "continue" that resumes prior tool state is never a simple task: it
-  // needs the full budget, todo tracking and delegation to finish the job.
-  const hasResume = Boolean((resumeMessages && resumeMessages.length) || resumeNote);
-  let effectiveComplexity: TaskComplexity = hasResume ? "complex" : complexity;
-  let isSimple = effectiveComplexity === "simple";
-  const isNewProject = isNewProjectTask(request);
   let recursionLimit = isSimple ? SIMPLE_TASK_LIMIT : MODE_LIMITS[mode];
   // Opencode core: ripgrep-like grep + range-read only for simple tasks.
   const codeTools = pickRuntimeCodeTools(allCodeTools, effectiveComplexity);
@@ -1861,9 +739,9 @@ export async function runProjectAgent(options: {
   // tool-registration boundary too: custom tools must not bypass the backend.
   // importableAttachments covers every file type (images + docs); the legacy
   // attachedImages alias keeps image imports working for older callers.
-  const editTools = mode === "plan" ? [] : createEditTools(projectRoot, { attachedImages: attachments, attachedFiles: importableAttachments ?? attachments });
+  const editTools = mode === "plan" ? [] : createEditTools(projectRoot, { attachedImages: attachments, attachedFiles: importableAttachments ?? attachments, beforeEdit: editGate });
   // Skill helper scripts run through the workspace: plan mode stays read-only.
-  const skillFilesTools = mode === "plan" || !skillsConfig.enabled ? [] : [createSkillFilesTool(eligibleSkillCatalog, projectRoot)];
+  const skillFilesTools = mode === "plan" || !skillsConfig.enabled ? [] : [createSkillFilesTool(eligibleSkillCatalog, projectRoot, { beforeEdit: editGate })];
   const questionTool = createQuestionTool(async (questions) => {
     emit("status", `Clarifying questions: ${questions.map((q) => q.header).join(", ")}`);
     if (trajectory) {
@@ -1910,27 +788,62 @@ export async function runProjectAgent(options: {
             emit("status", `Saved to long-term memory: ${fact}`);
           },
           onForget: async (query) => {
-            let removed = false;
+            let removed = 0;
             await onHomeMemoryUpdate?.((current) => {
-              const next = removeMemoryFact(current, query);
-              removed = next !== current;
-              return next;
+              const { memory, removed: count } = removeMemoryFactWithCount(current, query);
+              removed = count;
+              return memory;
             });
             emit("status", removed ? `Removed from long-term memory: ${query}` : `No long-term memory item matched "${query}".`);
+            return removed;
           },
         }),
       ]
     : [];
 
+  // Code-mode durable memory (Claude-Code auto-memory parity): the model can
+  // explicitly record facts future tasks should know — working build/test
+  // commands, conventions, gotchas, decisions — instead of relying only on
+  // the automatic work log. Writes go through the store's serialized
+  // project-facts queue; the user sees and can forget every entry in the
+  // Memory tab.
+  const projectMemoryTool =
+    !isGeneral && onProjectMemoryUpdate
+      ? [
+          createHomeMemoryTool({
+            name: "project_memory",
+            description:
+              "Manage durable project memory for THIS repository (survives across sessions and tasks). Call this tool when you learn something future tasks should know: build/test/lint commands that actually work, the user's stated conventions or preferences, architectural decisions and their reasons, environment gotchas (e.g. 'integration tests need DATABASE_URL set'), or corrections to previous assumptions. Category: 'fact' for project truths, 'context' for ongoing goals/decisions, 'preference' for the user's coding preferences, 'profile' for the user's role in the project. Do NOT record transient task details, file listings, tool output, or anything already evident from the code. For action='forget', pass the item's EXACT current wording — paraphrases do not match.",
+            onRemember: async (category, fact) => {
+              await onProjectMemoryUpdate((current) => capMemoryItems(addMemoryFact(current, category, fact), MAX_PROJECT_MEMORY_ITEMS));
+              emit("status", `Saved to project memory: ${fact}`);
+            },
+            onForget: async (query) => {
+              let removed = 0;
+              await onProjectMemoryUpdate((current) => {
+                const { memory, removed: count } = removeMemoryFactWithCount(current, query);
+                removed = count;
+                return memory;
+              });
+              emit("status", removed ? `Removed from project memory: ${query}` : `No project memory item matched "${query}".`);
+              return removed;
+            },
+          }),
+        ]
+      : [];
+
   const deepAgent = await createDeepAgent({
     model: llm,
     backend: compositeBackend as any,
-    middleware: isSimple
-      ? [toolParameterNormalizationMiddleware(), loopPreventionMiddleware({ general: isGeneral, outputRequired: Boolean(homeTaskContract?.expectsOutput), beforeModify: beforeCodeModify })]
-      : [toolParameterNormalizationMiddleware(), loopPreventionMiddleware({ general: isGeneral, outputRequired: Boolean(homeTaskContract?.expectsOutput), beforeModify: beforeCodeModify }), todoListMiddleware()],
+    middleware: [
+      toolParameterNormalizationMiddleware(),
+      loopPreventionMiddleware({ general: isGeneral, outputRequired: Boolean(homeTaskContract?.expectsOutput), beforeModify: beforeCodeModify }),
+      ...(isSimple ? [] : [todoListMiddleware()]),
+      ...(hooksMiddleware ? [hooksMiddleware] : []),
+    ],
     tools: isSimple
-      ? [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...homeMemoryTool, ...mcpTools]
-      : [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...homeMemoryTool, subagentTool, ...mcpTools],
+      ? [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...homeMemoryTool, ...projectMemoryTool, ...mcpTools]
+      : [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...homeMemoryTool, ...projectMemoryTool, subagentTool, ...mcpTools],
     skills: skillDirs,
     // Relevance-ranked memory for the prompt: profile/preferences always in,
     // facts and recent activity filtered to the current request so unrelated
@@ -1949,7 +862,11 @@ export async function runProjectAgent(options: {
       isNewProject,
       taskKind,
       repoMapSection,
-      homeTaskContract
+      homeTaskContract,
+      // Full role catalog only where delegate_task is actually bound — simple
+      // runs drop the tool, Home runs never mention delegation.
+      !isGeneral && effectiveComplexity !== "simple" ? buildSubagentCatalog() : "",
+      projectInstructions.section
     ),
   });
 
@@ -2364,6 +1281,13 @@ export async function runProjectAgent(options: {
   emit("status", briefMsg);
   if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: briefMsg });
 
+  if (hooks.length) {
+    const startOutcome = await dispatchHooks(projectRoot, hooks, "run:start", { request, mode, projectRoot, runId: sessionId }).catch(() => null);
+    if (startOutcome && !startOutcome.ok) {
+      emit("status", `run:start hook failed (exit ${startOutcome.exitCode ?? "timeout"}): ${startOutcome.output.slice(0, 200)}`);
+    }
+  }
+
   const graph = new StateGraph(AgentState as any)
     .addNode("deep_agent", async (state: any) => {
       if (isCancelled() || signal?.aborted) throw new RunCancelledError();
@@ -2401,6 +1325,22 @@ export async function runProjectAgent(options: {
           : [];
         const invalidArtifacts = artifactChecks.filter((check) => !check.valid);
         const validatedDeliverable = createdDeliverable && invalidArtifacts.length === 0;
+        // Chat-answer escape: a genuinely chat-shaped request (poem,
+        // explanation, email text) that names no file format may be answered
+        // directly in chat, marked with [[answer-in-chat]]. The model decides
+        // what the deliverable is; the sentinel + substance + no-named-format
+        // guardrails keep it from dodging real file work.
+        const responseTextTrimmed = String(state.response || "").trimEnd();
+        const chatAnswerDeclared =
+          wantsDeliverable &&
+          !createdDeliverable &&
+          !homeRequestNamesFileFormat(request) &&
+          responseTextTrimmed.length >= 200 &&
+          /\[\[answer-in-chat\]\]\s*$/i.test(responseTextTrimmed);
+        if (chatAnswerDeclared) {
+          emit("tool", "Verification passed · answered in chat (request names no file format)");
+          return { verification: "none" };
+        }
         const conversationalPromise = /\b(let me|i will|now i'll|i am going to|i'll now|going to write|next step is to)\b.{0,50}\b(write|create|generate|run|execute|build)\b/i.test(state.response || "");
 
         if (wantsDeliverable && (!createdDeliverable || !validatedDeliverable) && (conversationalPromise || currentRepairs < maxRepairs)) {
@@ -2737,65 +1677,74 @@ export async function runProjectAgent(options: {
   // partial result instead of a hard GraphRecursionError.
   let outerLimit = Math.max(recursionLimit, 50);
   let result: any;
-  let escalated = false;
+  // Budget exhaustion is a pause, not a stop: a run that was making progress
+  // auto-resumes from the furthest complete superstep with a fresh budget
+  // until the task finishes. Bounded by MAX_BUDGET_EXTENSIONS so a wandering
+  // model cannot burn API spend forever; the doom-loop breaker and a user
+  // cancel still stop the run immediately.
+  const MAX_BUDGET_EXTENSIONS = 10;
+  let budgetExtensions = 0;
   try {
     result = await graph.invoke({ projectRoot, request }, { recursionLimit: outerLimit, signal });
   } catch (error) {
-    const isCancel = error instanceof RunCancelledError || (error as any)?.name === "AbortError" || isCancelled() || signal?.aborted;
-    if (isCancel) {
-      saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
-      await finishRunJournals("interrupted");
-      throw new RunCancelledError();
-    }
-    const isDoom = error instanceof DoomLoopError || (error as any)?.name === "DoomLoopError";
-    const isBudget = isRecursionLimitError(error);
-    // Misclassified simple tasks die at the 50-step wall even though the run
-    // was making progress. Escalate once to the full mode budget and continue
-    // in place instead of forcing the user to say "continue". The step
-    // history (runMessages) is already checkpointed above, so the retry
-    // resumes where the run stopped. Tools stay simple-scoped, but the
-    // verify node flips to the full cascade via isSimple below.
-    if (isBudget && !isDoom && effectiveComplexity === "simple" && !escalated) {
-      escalated = true;
-      effectiveComplexity = "complex";
-      isSimple = false;
+    let runError: unknown = error;
+    for (;;) {
+      const isCancel = runError instanceof RunCancelledError || (runError as any)?.name === "AbortError" || isCancelled() || signal?.aborted;
+      if (isCancel) {
+        saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
+        await finishRunJournals("interrupted");
+        throw new RunCancelledError();
+      }
+      const isDoom = runError instanceof DoomLoopError || (runError as any)?.name === "DoomLoopError";
+      const isBudget = isRecursionLimitError(runError);
+      // Misclassified simple tasks die at the 50-step wall; every budget hit
+      // (simple or complex) just extends in place. Tools stay simple-scoped,
+      // but the verify node flips to the full cascade via isSimple below.
+      if (result !== undefined || !isBudget || isDoom || budgetExtensions >= MAX_BUDGET_EXTENSIONS) break;
+      budgetExtensions++;
+      if (effectiveComplexity === "simple") {
+        effectiveComplexity = "complex";
+        isSimple = false;
+      }
       recursionLimit = MODE_LIMITS[mode];
       outerLimit = Math.max(recursionLimit, 50);
       saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
-      emit("status", `Simple budget exhausted at ${SIMPLE_TASK_LIMIT} steps — escalating to full budget (${outerLimit} steps) and continuing…`);
-      if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: `Simple-task budget hit at ${SIMPLE_TASK_LIMIT}; auto-escalated to complex budget ${outerLimit}.` });
+      emit("status", `Step budget reached — extending automatically (${budgetExtensions}/${MAX_BUDGET_EXTENSIONS}) and continuing from where the run stopped…`);
+      if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: `Recursion limit hit at ${outerLimit}; auto-extended budget ${budgetExtensions}/${MAX_BUDGET_EXTENSIONS}.` });
+      // The model must not have to infer that it should continue: the pruned
+      // checkpoint can end on a tool result, so say it explicitly.
+      runMessages = [...runMessages, new HumanMessage("[System Note: The step budget was extended automatically. All preceding tool actions are complete. Continue the task directly from where it stopped — do not repeat completed steps or re-read files you already inspected.]")];
       try {
         result = await graph.invoke({ projectRoot, request }, { recursionLimit: outerLimit, signal });
       } catch (retryError) {
-        error = retryError;
-        if (error instanceof RunCancelledError || (error as any)?.name === "AbortError" || isCancelled() || signal?.aborted) {
-          saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
-          await finishRunJournals("interrupted");
-          throw new RunCancelledError();
-        }
+        runError = retryError;
       }
     }
     if (result === undefined) {
-      const retryIsDoom = error instanceof DoomLoopError || (error as any)?.name === "DoomLoopError";
-      if (!isRecursionLimitError(error) && !retryIsDoom) {
+      const retryIsDoom = runError instanceof DoomLoopError || (runError as any)?.name === "DoomLoopError";
+      if (!isRecursionLimitError(runError) && !retryIsDoom) {
         // Unexpected run failure: still checkpoint so "continue" resumes THIS
         // task instead of a stale one, and record the journals as failed.
         saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
         await finishRunJournals("failed");
-        throw error;
+        throw runError;
       }
       saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
       await finishRunJournals("interrupted");
       const planSummary = lastPlanItems?.length
         ? `\n\nWorking plan so far:\n${lastPlanItems.map((p) => `- [${p.status === "completed" ? "x" : " "}] ${p.content} (${p.status})`).join("\n")}`
         : "";
-      const doomTool = retryIsDoom ? (error as DoomLoopError).toolName || "tool" : null;
+      const doomTool = retryIsDoom ? (runError as DoomLoopError).toolName || "tool" : null;
+      const budgetNote = budgetExtensions > 0
+        ? ` I extended the step budget ${budgetExtensions} time${budgetExtensions === 1 ? "" : "s"} automatically before pausing.`
+        : "";
       const partial = retryIsDoom
         ? `I got stuck repeating the same ${doomTool} call without making progress, so I stopped instead of looping forever. Progress is checkpointed — say "continue" and I will resume with a different approach.${planSummary}`
-        : `I hit the step budget before finishing. Progress is checkpointed — say "continue" and I will resume from where I stopped instead of restarting.${planSummary}`;
-      emit("error", retryIsDoom ? `Stuck repeating ${doomTool} — stopped to avoid an infinite loop after ${toolCallCount} tool calls. Say "continue" to resume differently.` : `Step budget reached (${outerLimit} graph steps; ${toolCallCount} tool calls). Progress saved — say "continue" to resume.`);
-      if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: retryIsDoom ? `Doom-loop breaker fired on ${doomTool}; checkpoint saved for resume.` : `Recursion limit hit at ${outerLimit}; checkpoint saved for resume.` });
+        : `I paused because this run used its entire step budget${budgetNote}. Progress is checkpointed — say "continue" and I will resume from where I stopped instead of restarting.${planSummary}`;
+      emit("error", retryIsDoom ? `Stuck repeating ${doomTool} — stopped to avoid an infinite loop after ${toolCallCount} tool calls. Say "continue" to resume differently.` : `Step budget exhausted after ${budgetExtensions} automatic extension${budgetExtensions === 1 ? "" : "s"} (${outerLimit} graph steps; ${toolCallCount} tool calls). Progress saved — say "continue" to resume.`);
+      if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: retryIsDoom ? `Doom-loop breaker fired on ${doomTool}; checkpoint saved for resume.` : `Recursion limit hit at ${outerLimit} after ${budgetExtensions} extensions; checkpoint saved for resume.` });
       const partialUsage = usage.finalize(modelName, estimatedFallbackInputTokens, 0);
+      if (hooks.length) void dispatchHooks(projectRoot, hooks, "run:end", { request, mode, projectRoot, runId: sessionId, verification: "interrupted" }).catch(() => undefined);
       return {
         response: partial,
         verification: "interrupted",
@@ -2807,6 +1756,11 @@ export async function runProjectAgent(options: {
         interrupted: true as const,
       };
     }
+  }
+  // The sentinel is routing information for the verifier, never user-facing
+  // content: strip it before the response reaches transcript, memory, or artifacts.
+  if (result?.response) {
+    result.response = String(result.response).replace(/\s*\[\[answer-in-chat\]\]\s*$/i, "");
   }
   // Never let final prose override an unmet Home output contract. A failed
   // run can still be resumed, but it must be reported as incomplete.
@@ -2872,6 +1826,15 @@ export async function runProjectAgent(options: {
   const finalUsage = usage.finalize(modelName, estimatedFallbackInputTokens, fallbackOutputTokens);
   emit("assistant", result.response, undefined, finalUsage);
   emit("usage", `Token usage · ${finalUsage.totalTokens} tokens${finalUsage.estimatedCost == null ? "" : ` (~$${finalUsage.estimatedCost})`}`, undefined, finalUsage);
+
+  if (hooks.length) {
+    const hookEvent = result?.verification === "failed" ? "verify:fail" : "run:end";
+    void dispatchHooks(projectRoot, hooks, hookEvent, {
+      request, mode, projectRoot, runId: sessionId,
+      verification: result?.verification ?? "none",
+      response: tail(String(result?.response ?? ""), 2000),
+    }).catch(() => undefined);
+  }
 
   if (trajectory) {
     await trajectory.log({ source: "MODEL", type: "PLANNER_RESPONSE", content: result.response, usage: finalUsage });

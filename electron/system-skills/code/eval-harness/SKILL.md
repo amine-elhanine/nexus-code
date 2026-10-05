@@ -2,7 +2,7 @@
 name: eval-harness
 description: Formal evaluation framework for Nexus sessions implementing eval-driven development (EDD) principles. Use when a Nexus workflow needs a formal eval before it is trusted or changed.
 metadata:
-  origin: ECC
+  origin: Nexus
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 

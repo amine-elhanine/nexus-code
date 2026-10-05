@@ -105,128 +105,115 @@ export async function discoverSystemRules(projectRoot?: string): Promise<Project
   const rules: ProjectRuleFile[] = [];
   const sysDir = systemRulesDir();
   try {
-    // 1. Common ECC standards (testing, security, coding style, git workflow)
-    const commonDir = path.join(sysDir, "common");
-    const commonEntries = await fs.readdir(commonDir, { withFileTypes: true }).catch(() => []);
-    for (const entry of commonEntries) {
-      if (entry.isFile() && entry.name.endsWith(".md")) {
-        const content = await fs.readFile(path.join(commonDir, entry.name), "utf8").catch(() => "");
-        if (content.trim()) {
-          rules.push({
-            filename: entry.name,
-            relativePath: `system-rules/common/${entry.name}`,
-            content: content.trim(),
-            source: "system",
-          });
-        }
-      }
-    }
+    // 1. Common standards (testing, security, coding style, git workflow) —
+    // always loaded for code runs.
+    await loadRuleDir(path.join(sysDir, "common"), "system-rules/common", rules);
 
-    if (projectRoot) {
-      const root = path.resolve(projectRoot);
-      const pkgPath = path.join(root, "package.json");
-      let hasPkg = false;
+    if (!projectRoot) return rules;
+
+    // 2. Stack-specific standards, selected by detecting the project's actual
+    // toolchain. A stack whose detector misses (e.g. a pom.xml project) ships
+    // rule files that would never load — every shipped stack dir MUST have a
+    // detector here.
+    const root = path.resolve(projectRoot);
+    const deps = await readPackageDeps(root);
+    for (const source of STACK_RULE_SOURCES) {
+      let detected = false;
       try {
-        await fs.access(pkgPath);
-        hasPkg = true;
-      } catch { /* no package.json */ }
-
-      if (hasPkg) {
-        const pkgRaw = await fs.readFile(pkgPath, "utf8").catch(() => "{}");
-        const pkg = JSON.parse(pkgRaw || "{}");
-        const allDeps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
-        const stackDirs = ["web"];
-        let hasTs = Boolean(allDeps.typescript);
-        if (!hasTs) {
-          try {
-            await fs.access(path.join(root, "tsconfig.json"));
-            hasTs = true;
-          } catch { /* no tsconfig */ }
-        }
-        if (hasTs) stackDirs.push("typescript");
-        if (allDeps.react || allDeps["react-dom"]) stackDirs.push("react");
-        if (allDeps["react-native"]) stackDirs.push("react-native");
-        if (allDeps.vue) stackDirs.push("vue");
-        if (allDeps["@angular/core"]) stackDirs.push("angular");
-
-        for (const stack of stackDirs) {
-          const sDir = path.join(sysDir, stack);
-          const sEntries = await fs.readdir(sDir, { withFileTypes: true }).catch(() => []);
-          for (const entry of sEntries) {
-            if (entry.isFile() && entry.name.endsWith(".md")) {
-              const content = await fs.readFile(path.join(sDir, entry.name), "utf8").catch(() => "");
-              if (content.trim()) {
-                rules.push({
-                  filename: entry.name,
-                  relativePath: `system-rules/${stack}/${entry.name}`,
-                  content: content.trim(),
-                  source: "system",
-                });
-              }
-            }
-          }
-        }
-      }
-
-      // Python
-      let hasPy = false;
-      try {
-        await fs.access(path.join(root, "pyproject.toml"));
-        hasPy = true;
+        detected = await source.detect(root, deps);
       } catch {
-        try {
-          await fs.access(path.join(root, "requirements.txt"));
-          hasPy = true;
-        } catch { /* no python */ }
+        detected = false;
       }
-      if (hasPy) {
-        const pyDir = path.join(sysDir, "python");
-        const pyEntries = await fs.readdir(pyDir, { withFileTypes: true }).catch(() => []);
-        for (const entry of pyEntries) {
-          if (entry.isFile() && entry.name.endsWith(".md")) {
-            const content = await fs.readFile(path.join(pyDir, entry.name), "utf8").catch(() => "");
-            if (content.trim()) rules.push({ filename: entry.name, relativePath: `system-rules/python/${entry.name}`, content: content.trim(), source: "system" });
-          }
-        }
-      }
-
-      // Rust
-      let hasRust = false;
-      try {
-        await fs.access(path.join(root, "Cargo.toml"));
-        hasRust = true;
-      } catch { /* no rust */ }
-      if (hasRust) {
-        const rustDir = path.join(sysDir, "rust");
-        const rustEntries = await fs.readdir(rustDir, { withFileTypes: true }).catch(() => []);
-        for (const entry of rustEntries) {
-          if (entry.isFile() && entry.name.endsWith(".md")) {
-            const content = await fs.readFile(path.join(rustDir, entry.name), "utf8").catch(() => "");
-            if (content.trim()) rules.push({ filename: entry.name, relativePath: `system-rules/rust/${entry.name}`, content: content.trim(), source: "system" });
-          }
-        }
-      }
-
-      // Golang
-      let hasGo = false;
-      try {
-        await fs.access(path.join(root, "go.mod"));
-        hasGo = true;
-      } catch { /* no go */ }
-      if (hasGo) {
-        const goDir = path.join(sysDir, "golang");
-        const goEntries = await fs.readdir(goDir, { withFileTypes: true }).catch(() => []);
-        for (const entry of goEntries) {
-          if (entry.isFile() && entry.name.endsWith(".md")) {
-            const content = await fs.readFile(path.join(goDir, entry.name), "utf8").catch(() => "");
-            if (content.trim()) rules.push({ filename: entry.name, relativePath: `system-rules/golang/${entry.name}`, content: content.trim(), source: "system" });
-          }
-        }
-      }
+      if (!detected) continue;
+      await loadRuleDir(path.join(sysDir, source.dir), `system-rules/${source.dir}`, rules);
     }
   } catch { /* ignore */ }
 
   return rules;
+}
+
+type StackRuleSource = {
+  dir: string;
+  /** root = absolute project root; deps = merged dependencies+devDependencies from package.json ({} when absent). */
+  detect: (root: string, deps: Record<string, string>) => boolean | Promise<boolean>;
+};
+
+async function fileExists(target: string): Promise<boolean> {
+  try {
+    await fs.access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function anyExists(root: string, ...names: string[]): Promise<boolean> {
+  for (const name of names) {
+    if (await fileExists(path.join(root, name))) return true;
+  }
+  return false;
+}
+
+/** True when any root entry ends with one of the extensions (files or dirs, e.g. .xcodeproj). */
+async function hasRootExtension(root: string, extensions: string[]): Promise<boolean> {
+  try {
+    const entries = await fs.readdir(root);
+    return entries.some((entry) => extensions.some((ext) => entry.toLowerCase().endsWith(ext)));
+  } catch {
+    return false;
+  }
+}
+
+async function readPackageDeps(root: string): Promise<Record<string, string>> {
+  if (!(await fileExists(path.join(root, "package.json")))) return {};
+  try {
+    const pkg = JSON.parse((await fs.readFile(path.join(root, "package.json"), "utf8")) || "{}");
+    return { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+  } catch {
+    return {};
+  }
+}
+
+const STACK_RULE_SOURCES: StackRuleSource[] = [
+  // Node project marker: any package.json project gets the web standards.
+  { dir: "web", detect: (root) => fileExists(path.join(root, "package.json")) },
+  { dir: "typescript", detect: (root, deps) => Boolean(deps.typescript) || fileExists(path.join(root, "tsconfig.json")) },
+  { dir: "react", detect: (_root, deps) => Boolean(deps.react || deps["react-dom"]) },
+  { dir: "react-native", detect: (_root, deps) => Boolean(deps["react-native"]) },
+  { dir: "vue", detect: (_root, deps) => Boolean(deps.vue || deps.nuxt) },
+  { dir: "angular", detect: (_root, deps) => Boolean(deps["@angular/core"]) },
+  { dir: "nuxt", detect: (_root, deps) => Boolean(deps.nuxt) },
+  { dir: "python", detect: (root) => anyExists(root, "pyproject.toml", "requirements.txt") },
+  { dir: "rust", detect: (root) => fileExists(path.join(root, "Cargo.toml")) },
+  { dir: "golang", detect: (root) => fileExists(path.join(root, "go.mod")) },
+  { dir: "java", detect: (root) => anyExists(root, "pom.xml", "build.gradle", "build.gradle.kts") },
+  { dir: "kotlin", detect: async (root) => (await anyExists(root, "build.gradle.kts", "settings.gradle.kts")) || fileExists(path.join(root, "src", "main", "kotlin")) },
+  { dir: "cpp", detect: (root) => anyExists(root, "CMakeLists.txt", "Makefile") },
+  { dir: "csharp", detect: (root) => hasRootExtension(root, [".csproj", ".sln"]) },
+  { dir: "fsharp", detect: (root) => hasRootExtension(root, [".fsproj"]) },
+  { dir: "dart", detect: (root) => fileExists(path.join(root, "pubspec.yaml")) },
+  { dir: "ruby", detect: async (root) => (await anyExists(root, "Gemfile")) || hasRootExtension(root, [".gemspec"]) },
+  { dir: "php", detect: (root) => fileExists(path.join(root, "composer.json")) },
+  { dir: "perl", detect: (root) => anyExists(root, "Makefile.PL", "Build.PL", "cpanfile") },
+  { dir: "swift", detect: async (root) => (await anyExists(root, "Package.swift")) || hasRootExtension(root, [".xcodeproj"]) },
+  { dir: "arkts", detect: (root) => anyExists(root, "hvigorfile.ts", "oh-package.json5") },
+];
+
+/** Reads every .md rule file in one stack dir; missing dirs contribute nothing. */
+async function loadRuleDir(dir: string, prefix: string, rules: ProjectRuleFile[]): Promise<void> {
+  const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+    const content = await fs.readFile(path.join(dir, entry.name), "utf8").catch(() => "");
+    if (content.trim()) {
+      rules.push({
+        filename: entry.name,
+        relativePath: `${prefix}/${entry.name}`,
+        content: content.trim(),
+        source: "system",
+      });
+    }
+  }
 }
 
 export async function discoverAllRules(projectRoot: string): Promise<ProjectRulesResult> {
@@ -239,14 +226,14 @@ export async function discoverAllRules(projectRoot: string): Promise<ProjectRule
   }
 
   const projectSections = projectResult.ruleFiles.map((rf) => `### [Project Rule: ${rf.relativePath}]\n${rf.content}`);
-  const sysSections = sysRules.map((rf) => `### [ECC Standard: ${rf.relativePath}]\n${rf.content}`);
+  const sysSections = sysRules.map((rf) => `### [Nexus Standard: ${rf.relativePath}]\n${rf.content}`);
 
   let combinedPromptSection = "";
   if (projectSections.length > 0) {
     combinedPromptSection += `\n\n## Project-Specific Rules & Guidelines\nThe following rules have been defined for this repository. You MUST adhere to all instructions and style guides below:\n\n${projectSections.join("\n\n")}\n`;
   }
   if (sysSections.length > 0) {
-    combinedPromptSection += `\n\n## ECC Engineering Standards & Harness Rules\nThe following standards govern software development in this workspace:\n\n${sysSections.join("\n\n")}\n`;
+    combinedPromptSection += `\n\n## Nexus Engineering Standards & Harness Rules\nThe following standards govern software development in this workspace:\n\n${sysSections.join("\n\n")}\n`;
   }
 
   return {

@@ -23,7 +23,12 @@ export function setApprovalNotifier(listener: ((request: CommandApprovalRequest)
 
 export function requestCommandApproval(input: Omit<CommandApprovalRequest, "id" | "createdAt">): Promise<ApprovalDecision> {
   if (input.runId && input.approvalKey && sessionApprovals.get(input.runId)?.has(input.approvalKey)) return Promise.resolve("session");
-  if (!notify) return Promise.resolve("deny");
+  if (!notify) {
+    // Headless/CI: no UI is attached. Deny by default (safe); NEXUS_APPROVAL=allow
+    // explicitly opts unattended runs into auto-approving risky commands.
+    if (process.env.NEXUS_APPROVAL === "allow") return Promise.resolve("session");
+    return Promise.resolve("deny");
+  }
   const request: CommandApprovalRequest = { ...input, id: `approval_${crypto.randomUUID()}`, createdAt: new Date().toISOString() };
   return new Promise((resolve) => {
     const timer = setTimeout(() => {

@@ -34,6 +34,6 @@ These are Claude Code harness hooks for Nuxt work. They run via the harness, not
 
 ## Reference
 
-- ECC skills: `nuxt4-patterns`, `vite-patterns`.
+- Nexus skills: `nuxt4-patterns`, `vite-patterns`.
 - [@nuxt/eslint module](https://eslint.nuxt.com/)
 - [nuxi typecheck](https://nuxt.com/docs/api/commands/typecheck)

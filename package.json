@@ -17,10 +17,11 @@
     "start": "electron .",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
     "test": "npm run build:electron && electron test/sandbox-and-agent.test.mjs",
-    "test:unit": "npm run build:electron && node test/rate-limit.test.mjs && node test/checkpoint-resume.test.mjs && node test/loop-prevention.test.mjs && node test/home-memory.test.mjs && node test/skill-archive.test.mjs && node test/ecc-integration.test.mjs && node test/large-project-index.test.mjs && node test/code-task.test.mjs && node test/home-task.test.mjs && node test/home-artifact.test.mjs && node test/home-isolation.test.mjs && node test/home-session-files.test.mjs && node test/fix-regressions.test.mjs",
+    "test:unit": "npm run build:electron && node test/rate-limit.test.mjs && node test/checkpoint-resume.test.mjs && node test/loop-prevention.test.mjs && node test/symbol-parser.test.mjs && node test/lsp-service.test.mjs && node test/hooks.test.mjs && node test/headless-cli.test.mjs && node test/edit-gate.test.mjs && node test/plugins.test.mjs && node test/state-split.test.mjs && node test/home-memory.test.mjs && node test/skill-archive.test.mjs && node test/ecc-integration.test.mjs && node test/large-project-index.test.mjs && node test/code-task.test.mjs && node test/home-task.test.mjs && node test/home-artifact.test.mjs && node test/home-isolation.test.mjs && node test/home-session-files.test.mjs && node test/fix-regressions.test.mjs && node test/command-expansion.test.mjs && node test/rules-detection.test.mjs && node test/skills-parsing.test.mjs && node test/binary-files.test.mjs && node test/git-status.test.mjs && node test/project-instructions.test.mjs && node test/project-memory.test.mjs && node test/memory-format.test.mjs && node test/provider-crud.test.mjs",
     "test:notebook": "npm run build:electron && node test/notebook-text.test.mjs && node test/notebook-parse.test.mjs && node test/notebook-library.test.mjs && node test/notebook-pipeline.test.mjs && node test/notebook-agentic.test.mjs && node test/notebook-evidence.test.mjs && node test/notebook-vectors-sqlite.test.mjs",
     "dist": "npm run build && electron-builder",
-    "dist:dir": "npm run build && electron-builder --dir"
+    "dist:dir": "npm run build && electron-builder --dir",
+    "cli": "node scripts/agent-cli.mjs"
   },
   "build": {
     "appId": "com.nexus.app",
@@ -39,7 +40,9 @@
       "output": "release"
     },
     "asarUnpack": [
-      "node_modules/@homebridge/node-pty-prebuilt-multiarch/**"
+      "node_modules/@homebridge/node-pty-prebuilt-multiarch/**",
+      "node_modules/web-tree-sitter/**",
+      "node_modules/tree-sitter-wasms/**"
     ],
     "files": [
       "dist/**/*",
@@ -110,10 +113,13 @@
     "langchain-mcp-adapters": "^0.6.0",
     "lucide-react": "1.34.0",
     "mermaid": "^11.17.2",
+    "monaco-editor": "^0.52.2",
     "pdf-parse": "^2.4.5",
     "pptxgenjs": "^4.0.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "tree-sitter-wasms": "^0.1.13",
+    "web-tree-sitter": "^0.22.4",
     "xlsx": "^0.18.5",
     "zod": "4.4.3"
   },
@@ -126,11 +132,16 @@
     "electron": "44.0.0",
     "electron-builder": "^26.15.3",
     "typescript": "7.0.2",
+    "typescript-language-server": "^6.0.1",
+    "typescript5": "npm:typescript@^5.9.3",
     "vite": "8.2.2",
     "wait-on": "9.1.0"
   },
   "allowScripts": {
     "@homebridge/node-pty-prebuilt-multiarch@0.14.1": true,
     "electron-winstaller@5.4.0": true
+  },
+  "bin": {
+    "nexus-agent": "scripts/agent-cli.mjs"
   }
 }

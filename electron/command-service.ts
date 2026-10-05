@@ -6,6 +6,7 @@ import { FilesystemBackend } from "deepagents";
 import { isDeniedCommand, classifyCommand } from "./permissions.js";
 import type { CommandPolicy } from "./permissions.js";
 import { requestCommandApproval } from "./approval-service.js";
+import { scrubSecretEnv } from "./child-env.js";
 import type { ProjectRecord } from "./store.js";
 
 const DEFAULT_COMMAND_TIMEOUT_SECONDS = 180;
@@ -197,8 +198,13 @@ export async function executeCommand(projectRoot: string, command: string, optio
   const appNodeModules = path.resolve(process.cwd(), "node_modules");
   const existingNodePath = process.env.NODE_PATH || "";
   const nodePath = [existingNodePath, appNodeModules].filter(Boolean).join(path.delimiter);
+  // Agent-run commands inherit the user environment MINUS secret-shaped
+  // variables — the same policy as the interactive terminal. A prompt-injected
+  // or confused model must not be able to leak API keys by echoing the
+  // environment; tools that legitimately need credentials should receive them
+  // via the daemon allowlist mechanism or explicit configuration.
   const env = {
-    ...process.env,
+    ...scrubSecretEnv(),
     CI: "true",
     DEBIAN_FRONTEND: "noninteractive",
     NONINTERACTIVE: "1",
@@ -229,7 +235,7 @@ export async function executeCommand(projectRoot: string, command: string, optio
 
 function backendId(project: ProjectRecord) { return `workspace-${project.id}`; }
 
-export async function getAgentBackend(project: ProjectRecord, options: { readOnly?: boolean; runId?: string } = {}) {
+export async function getAgentBackend(project: ProjectRecord, options: { readOnly?: boolean; runId?: string; editPolicy?: "auto" | "ask" } = {}) {
   const backend: any = new FilesystemBackend({ rootDir: path.resolve(project.root), virtualMode: true });
   backend.id = backendId(project);
   // Cap listing/search fan-out: an uncapped `ls /` or `glob **/*` on a repo
@@ -257,6 +263,27 @@ export async function getAgentBackend(project: ProjectRecord, options: { readOnl
     backend.execute = refuse("execute");
   } else {
     backend.execute = (command: string) => executeCommand(project.root, command, { runId: options.runId, requireApproval: true });
+    if (options.editPolicy === "ask") {
+      // Opt-in edit approval (AppSettings.editPolicy="ask"): backend file
+      // mutations wait for the same approval UI shell commands use. A
+      // "session" decision (approvalKey + runId) approves the rest of the
+      // run's edits; a denial throws so the model sees the refusal.
+      const gate = (action: string, original: any) => async (filePath: string, ...rest: any[]) => {
+        const decision = await requestCommandApproval({
+          runId: options.runId,
+          approvalKey: "file-edit",
+          command: `${action} ${filePath}`,
+          cwd: path.resolve(project.root),
+          reason: "Edit approval is on: file changes wait for your confirmation.",
+        });
+        if (decision === "deny") throw new Error(`Edit denied by the user: ${action} on ${filePath} was not approved. Do not retry the same change; explain what you intended instead.`);
+        return original(filePath, ...rest);
+      };
+      for (const action of ["write", "edit", "delete"] as const) {
+        const original = backend[action]?.bind(backend);
+        if (original) backend[action] = gate(action, original);
+      }
+    }
   }
   return { backend, workspace: project.root };
 }

@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { promises as fs, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { tool } from "@langchain/core/tools";
@@ -6,6 +6,7 @@ import electronPkg from "electron";
 const app = (electronPkg as any)?.app || (electronPkg as any)?.default?.app;
 const shell = (electronPkg as any)?.shell || (electronPkg as any)?.default?.shell;
 import { z } from "zod";
+import { pluginSkillDirs } from "./plugins-service.js";
 
 // Skills are plain folders containing a SKILL.md (name + description frontmatter,
 // instructions below). Per-project skills live inside the repository; the global
@@ -123,13 +124,36 @@ function skillsRootFor(scope: "global" | "project", projectRoot: string) {
 
 // Minimal frontmatter reader: the agent only needs name/description, and a
 // forgiving parser keeps half-written SKILL.md files from breaking the list.
+// Supports single-line values, quoted values, and YAML folded/literal scalars
+// (`>`, `>-`, `|`, `|-`) whose continuation lines are indented — several
+// bundled skills describe themselves in multi-line blocks, and a line-only
+// parser would leave their description as the bare ">" marker.
 function parseFrontmatter(content: string) {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!match) return null;
   const result: Record<string, string> = {};
-  for (const line of match[1].split(/\r?\n/)) {
-    const pair = line.match(/^([A-Za-z_-]+)\s*:\s*(.*)$/);
-    if (pair) result[pair[1].trim()] = pair[2].trim().replace(/^["']|["']$/g, "");
+  const lines = match[1].split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const pair = lines[i].match(/^([A-Za-z_-]+)\s*:\s*(.*)$/);
+    if (!pair) continue;
+    const key = pair[1].trim();
+    let value = pair[2].trim();
+    if (/^[>|][+-]?$/.test(value)) {
+      // Folded (`>`) joins the block with spaces; literal (`|`) keeps lines.
+      // The block runs until the first non-indented, non-empty line.
+      const folded = value.startsWith(">");
+      const chunks: string[] = [];
+      i++;
+      while (i < lines.length && (lines[i].startsWith(" ") || lines[i].startsWith("\t") || lines[i].trim() === "")) {
+        if (lines[i].trim() !== "") chunks.push(lines[i].trim());
+        i++;
+      }
+      i--;
+      value = chunks.join(folded ? " " : "\n");
+    } else {
+      value = value.replace(/^["']|["']$/g, "");
+    }
+    result[key] = value;
   }
   return result;
 }
@@ -164,6 +188,10 @@ export async function listSkills(projectRoot?: string | null): Promise<SkillInfo
   if (projectRoot) {
     roots.push({ root: projectSkillsDir(projectRoot), scope: "project" });
     roots.push({ root: legacyProjectSkillsDir(projectRoot), scope: "project" });
+    // Plugin-contributed skills (.nexus/plugins/<name>/skills/<skill>).
+    for (const dir of await pluginSkillDirs(projectRoot).catch(() => [])) {
+      roots.push({ root: dir, scope: "project" });
+    }
   }
   for (const { root, scope } of roots) {
     let entries: string[] = [];
@@ -385,12 +413,34 @@ export async function openSkillsFolder(scope: "global" | "project", projectRoot:
   if (errorMessage) throw new Error(errorMessage);
 }
 
+// Canonical form of a path even when it does not exist yet: realpath the
+// deepest existing ancestor and re-join the remainder. Without this, Windows
+// 8.3 short names (C:\Users\RUNNER~1\...), junctions, and case differences
+// make two references to the SAME directory compare unequal and a legitimate
+// skill path gets rejected as a security violation.
+function canonicalPathExisting(target: string): string {
+  const resolved = path.resolve(target);
+  let probe = resolved;
+  const trailing: string[] = [];
+  for (;;) {
+    try {
+      const real = realpathSync(probe);
+      return trailing.length ? path.join(real, ...trailing) : real;
+    } catch {
+      const parent = path.dirname(probe);
+      if (parent === probe) return resolved; // nothing exists up to the drive root
+      trailing.unshift(path.basename(probe));
+      probe = parent;
+    }
+  }
+}
+
 function validateSkillPathAllowed(skillPath: string, projectRoot?: string | null, allowSystem = false): string {
-  const resolved = path.resolve(skillPath);
-  const globalRoot = path.resolve(globalSkillsDir());
-  const projectRootResolved = projectRoot ? path.resolve(projectSkillsDir(projectRoot)) : null;
-  const legacyRootResolved = projectRoot ? path.resolve(legacyProjectSkillsDir(projectRoot)) : null;
-  const sysRoot = path.resolve(systemSkillsDir());
+  const resolved = canonicalPathExisting(skillPath);
+  const globalRoot = canonicalPathExisting(globalSkillsDir());
+  const projectRootResolved = projectRoot ? canonicalPathExisting(projectSkillsDir(projectRoot)) : null;
+  const legacyRootResolved = projectRoot ? canonicalPathExisting(legacyProjectSkillsDir(projectRoot)) : null;
+  const sysRoot = canonicalPathExisting(systemSkillsDir());
 
   const isInsideGlobal = resolved === globalRoot || resolved.startsWith(`${globalRoot}${path.sep}`);
   // Project skills only exist relative to a REAL project root. The old
@@ -535,6 +585,31 @@ function partialHit(a: string, b: string): boolean {
   return a.includes(b) || b.includes(a);
 }
 
+/**
+ * Skills whose workflow depends on a specific MCP server being connected.
+ * Value = list of alternative server-name matches (any-of, case-insensitive
+ * substring against the configured server name). When none are connected the
+ * skill stays mounted and materializable, but is excluded from
+ * recommendations — pointing the model at an MCP-only workflow with no
+ * server configured just burns a read and ends in a missing-tool error.
+ */
+export const REQUIRED_MCP_SKILLS: Record<string, string[][]> = {
+  "exa-search": [["exa"]],
+  "deep-research": [["exa"], ["firecrawl"]],
+  "documentation-lookup": [["context7"]],
+};
+
+export function filterSkillsByMcp(skills: SkillInfo[], connectedServerNames: string[]): SkillInfo[] {
+  const connected = (connectedServerNames || []).map((n) => String(n || "").toLowerCase());
+  return skills.filter((skill) => {
+    const alternatives = REQUIRED_MCP_SKILLS[skill.name];
+    if (!alternatives) return true;
+    return alternatives.some((option) =>
+      option.some((server) => connected.some((name) => name.includes(server))),
+    );
+  });
+}
+
 // ---- Skill helper scripts ----
 
 export const SKILL_SOURCE_PRIORITY: Record<SkillInfo["source"], number> = { project: 0, global: 1, system: 2 };
@@ -582,7 +657,7 @@ function sanitizeSkillDest(raw: unknown, skillName: string): string {
  * run via the returned workspace-relative paths with execute. Only skills
  * eligible for the current mode are visible here (pass the filtered catalog).
  */
-export function createSkillFilesTool(eligibleSkills: SkillInfo[], workspaceRoot: string) {
+export function createSkillFilesTool(eligibleSkills: SkillInfo[], workspaceRoot: string, options: { beforeEdit?: (info: { tool: string; files: string[] }) => Promise<string | null> } = {}) {
   const root = path.resolve(workspaceRoot);
   return tool(async ({ skill: name, dest }: { skill: string; dest?: string }) => {
     const query = String(name || "").trim().toLowerCase();
@@ -596,6 +671,10 @@ export function createSkillFilesTool(eligibleSkills: SkillInfo[], workspaceRoot:
     const target = path.join(root, rel);
     if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
       return "Destination escapes the workspace — pick a relative folder.";
+    }
+    if (options.beforeEdit) {
+      const denial = await options.beforeEdit({ tool: "materialize_skill_files", files: [rel.replace(/\\/g, "/")] });
+      if (denial) return denial;
     }
     await fs.rm(target, { recursive: true, force: true });
     await fs.mkdir(target, { recursive: true });

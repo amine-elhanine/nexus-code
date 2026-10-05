@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import { GitBranch, X, Columns, Rows, RotateCcw, Check, WrapText, Map, FileCode } from "lucide-react";
+import "../../utils/monaco-setup.js";
 
 interface MonacoDiffModalProps {
   fileName: string;

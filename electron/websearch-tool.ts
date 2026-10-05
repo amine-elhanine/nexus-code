@@ -36,17 +36,29 @@ function stripTags(html: string): string {
 
 export type WebSearchResult = { title: string; url: string; snippet: string };
 
-export async function duckDuckGoSearch(query: string, maxResults = MAX_RESULTS): Promise<WebSearchResult[]> {
+// DuckDuckGo Lite date filter: recency bias for time-sensitive queries
+// ("latest", "current", prices, releases, rankings). Verified live: df=y
+// reorders results toward pages from the requested window.
+const FRESHNESS_DF: Record<string, string> = { day: "d", week: "w", month: "m", year: "y" };
+
+export function freshnessToDateFilter(freshness?: string): string | null {
+  if (!freshness) return null;
+  return FRESHNESS_DF[freshness.toLowerCase()] ?? null;
+}
+
+export async function duckDuckGoSearch(query: string, maxResults = MAX_RESULTS, dateFilter?: string | null): Promise<WebSearchResult[]> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), DDG_TIMEOUT_MS);
   try {
+    const params = new URLSearchParams({ q: query });
+    if (dateFilter) params.set("df", dateFilter);
     const response = await fetch("https://lite.duckduckgo.com/lite/", {
       method: "POST",
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Content-Type": "application/x-www-form-urlencoded",
       },
-      body: `q=${encodeURIComponent(query)}`,
+      body: params.toString(),
       signal: controller.signal,
     });
     if (!response.ok) throw new Error(`DuckDuckGo returned HTTP ${response.status}`);
@@ -74,7 +86,7 @@ export async function duckDuckGoSearch(query: string, maxResults = MAX_RESULTS):
 
 export function createWebSearchTools(opts?: { onSearch?: (query: string, url: string) => void; beforeSearch?: () => string | null }) {
   const webSearchTool = tool(
-    async ({ query, maxResults = MAX_RESULTS }: { query: string; maxResults?: number }) => {
+    async ({ query, maxResults = MAX_RESULTS, freshness }: { query: string; maxResults?: number; freshness?: "day" | "week" | "month" | "year" }) => {
       const guard = opts?.beforeSearch?.();
       if (guard) return guard;
       const cleanQuery = query.trim();
@@ -86,20 +98,21 @@ export function createWebSearchTools(opts?: { onSearch?: (query: string, url: st
         opts?.onSearch?.(cleanQuery, `https://duckduckgo.com/?q=${encodeURIComponent(cleanQuery)}`);
       } catch { /* mirror is best-effort */ }
       try {
-        const results = await duckDuckGoSearch(cleanQuery, Math.min(Math.max(maxResults, 1), 10));
+        const results = await duckDuckGoSearch(cleanQuery, Math.min(Math.max(maxResults, 1), 10), freshnessToDateFilter(freshness));
         if (!results.length) return `No web results found for "${cleanQuery}". Try different keywords.`;
         const lines = results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet}` : ""}`);
-        return `Web results for "${cleanQuery}":\n${lines.join("\n")}\n\nUse browser_fetch_api or browser_inspect on a result URL to read the full page before citing facts.`;
+        return `Web results for "${cleanQuery}"${freshness ? ` (freshness: ${freshness})` : ""}:\n${lines.join("\n")}\n\nUse browser_fetch_api or browser_inspect on a result URL to read the full page before citing facts. For time-sensitive topics, note each source's publication date and prefer the most recent.`;
       } catch (error) {
         return `Web search failed: ${error instanceof Error ? error.message : String(error)}. Continue with local knowledge and say so.`;
       }
     },
     {
       name: "web_search",
-      description: "Search the public web for current facts, docs, prices, news (free, no API key). Returns titles, URLs and snippets — then read promising pages with browser_fetch_api/browser_inspect before answering.",
+      description: "Search the public web for current facts, docs, prices, news (free, no API key). Returns titles, URLs and snippets — then read promising pages with browser_fetch_api/browser_inspect before answering. For anything time-sensitive (latest releases, current prices, rankings, news), pass freshness so results are filtered to the requested window.",
       schema: z.object({
-        query: z.string().describe("Search keywords, e.g. 'python-pptx add image to slide'"),
+        query: z.string().describe("Search keywords, e.g. 'python-pptx add image to slide'. For time-sensitive topics include the current year."),
         maxResults: z.number().optional().describe("How many results to return (1-10, default 8)"),
+        freshness: z.enum(["day", "week", "month", "year"]).optional().describe("Recency filter for time-sensitive topics: day, week, month, or year. Use it whenever the answer must reflect the current state (latest models, current prices, recent releases, news)."),
       }),
     }
   );

@@ -7,23 +7,26 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-import { runProjectAgent, RunCancelledError, clearLastRunCheckpoint, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint, summarizeCompletedSteps, type AgentMode, type AgentSettings, type AgentEvent, type HistoryInput } from "./agent-service.js";
+import { runProjectAgent, RunCancelledError, clearLastRunCheckpoint, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint, summarizeCompletedSteps, appendEntryLog, PROJECT_MEMORY_RUN_LOG_CAP, SESSION_MEMORY_ENTRY_CAP, SESSION_MEMORY_CHAR_CAP, type AgentMode, type AgentSettings, type AgentEvent, type HistoryInput } from "./agent-service.js";
 import { PROVIDERS, fetchRemoteModels } from "./providers.js";
 import {
   appendHomeSessionMessages, appendSessionMessages, createHomeSession, createSession, deleteHomeSession, deleteProject, deleteSession, getHomeMemory, getHomeSession, getProject, getSession,
-  getSkillsConfig, listEmbeddingProviders, listHomeSessions, listMcpServers, listProjects, listProviders, listSessions,
-  removeEmbeddingProvider, removeMcpServer, removeProvider, saveSkillsConfig, updateHomeMemory, updateHomeSession, updateProjectMemory,
-  updateSession, upsertEmbeddingProvider, upsertMcpServer, upsertProject, upsertProvider, getAppSettings, saveAppSettings, getNotebookParserConfig, saveNotebookParserConfig, type EmbeddingProviderConfig,
-  type McpServerConfig, type ProviderConfig, type ChatAttachment, mutateHomeMemory, listMcpServersMasked
+  getHooksConfig, getRulesConfig, getSkillsConfig, listEmbeddingProviders, listHomeSessions, listMcpServers, listProjects, listProviders, listSessions,
+  isMaskedSecret,
+  removeEmbeddingProvider, removeMcpServer, removeProvider, saveHooksConfig, saveRulesConfig, saveSkillsConfig, updateHomeMemory, updateHomeSession, updateProjectMemory, updateProjectFacts,
+  updateSession, upsertEmbeddingProvider, upsertMcpServer, upsertProject, getAppSettings, saveAppSettings, getNotebookParserConfig, saveNotebookParserConfig, type AppSettings, type EmbeddingProviderConfig,
+  type McpServerConfig, type ProviderConfig, type ChatEndpointKind, type ChatAttachment, mutateHomeMemory, listMcpServersMasked,
+  createProviderConnection, updateProviderConnection, updateProviderKey, setProviderEnabled, addProviderModels, updateProviderModel, removeProviderModel
 } from "./store.js";
 import { HOME_PROJECT_ID, cleanupHomeGeneratorScripts, downloadHomeFile, ensureHomeDir, listHomeFiles, listHomeSessionFiles, listHomeSessionFilesForDeletion, openHomeFolder, readHomeFile, recordHomeRunFiles, removeSessionFromManifest } from "./home-service.js";
 import { homeTaskJournalPath } from "./home-task-service.js";
+import { removeMemoryFactWithCount } from "./home-memory-service.js";
 import { codeTaskJournalPath } from "./code-task-service.js";
 import { testMcpServer } from "./mcp-service.js";
 import { createSkill, deleteSkill, ensureSkillSourceDirs, importSkill, listAllSkills, listSkills, openSkillsFolder, readSkillContent, setSkillModes } from "./skills-service.js";
 import { beginCommandRun, cancelCommandRun, endCommandRun, isCommandRunCancelled, runProjectCommand, getAgentBackend } from "./command-service.js";
-import { createWorkspaceCheckpoint, deleteWorkspaceCheckpoint, getWorkspaceDiffFiles, restoreWorkspaceCheckpoint, revertAllWorkspaceChanges, revertWorkspaceFile, revertWorkspaceHunk } from "./diff-service.js";
-import { getWorkspaceGit, listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./project-tools.js";
+import { createWorkspaceCheckpoint, deleteWorkspaceCheckpoint, getWorkspaceDiffFiles, getWorkspaceGitStatus, restoreWorkspaceCheckpoint, revertAllWorkspaceChanges, revertWorkspaceFile, revertWorkspaceHunk } from "./diff-service.js";
+import { getWorkspaceGit, listWorkspaceFiles, readWorkspaceFile, readWorkspaceFileBase64, safePath, writeWorkspaceFile } from "./project-tools.js";
 import {
   createSessionWorktree, getSessionWorktree, mergeWorktreeToMain, discardSessionWorktree,
   getSessionWorktreeDiff, isGitRepo
@@ -103,7 +106,10 @@ function createWindow() {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      // Renderer sandbox canary: NEXUS_SANDBOX=1 opts into Chromium's sandbox.
+      // Default stays off until a release cycle validates every preload/native
+      // interaction with it on (flip the default once verified).
+      sandbox: process.env.NEXUS_SANDBOX === "1",
       webviewTag: true,
       // Required for the built-in Chromium PDF viewer: the Home and Notebook
       // file previews render generated PDFs in an <iframe src="blob:…">.
@@ -127,6 +133,17 @@ function createWindow() {
       url.startsWith("nexus-attachment://") ||
       /^https?:\/\/127\.0\.0\.1:5173/.test(url);
     if (!allowed) event.preventDefault();
+  });
+  // Any <webview> that attaches must be a plain content surface: strip the
+  // host preload and node access so a compromised renderer cannot grant a
+  // guest (or itself through the guest) Electron/node capabilities. The
+  // browser views are declared without preload, so this changes nothing for
+  // them — it closes the door on renderer-injected webview attributes.
+  mainWindow.webContents.on("will-attach-webview", (_event, webPreferences) => {
+    delete webPreferences.preload;
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
   });
   setApprovalNotifier((request) => mainWindow?.webContents.send("command:approval-request", request));
   onNotebookJobProgress((progress) => mainWindow?.webContents.send("notebook:progress", progress));
@@ -438,6 +455,12 @@ app.whenReady().then(async () => {
     const sessions = await listHomeSessions();
     return listHomeSessionFiles(sessionId, sessions);
   });
+  // High-confidence ownership only (manifest + transcript mentions) — this is
+  // the list the "delete chat + files" dialog counts and deletes.
+  ipcMain.handle("home:sessionFiles:forDeletion", async (_event, sessionId: string) => {
+    const sessions = await listHomeSessions();
+    return listHomeSessionFilesForDeletion(sessionId, sessions);
+  });
   ipcMain.handle("home:readFile", (_event, relativePath: string) => readHomeFile(relativePath));
   ipcMain.handle("home:download", (_event, relativePath: string) => downloadHomeFile(relativePath));
   ipcMain.handle("home:openFolder", () => openHomeFolder());
@@ -736,7 +759,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("notebook:embedding-providers:list", async () => (await listEmbeddingProviders()).map((p) => ({ ...p, apiKey: p.apiKey ? "********" : "" })));
   ipcMain.handle("notebook:embedding-provider:save", async (_event, input: Omit<EmbeddingProviderConfig, "id"> & { id?: string }) => {
     const existing = input.id ? (await listEmbeddingProviders()).find((p) => p.id === input.id) : undefined;
-    const payload = { ...input, apiKey: input.apiKey === "********" ? existing?.apiKey || "" : input.apiKey };
+    const payload = { ...input, apiKey: isMaskedSecret(input.apiKey) ? existing?.apiKey || "" : input.apiKey };
     return (await upsertEmbeddingProvider(payload)).map((p) => ({ ...p, apiKey: p.apiKey ? "********" : "" }));
   });
   ipcMain.handle("notebook:embedding-provider:remove", async (_event, providerId: string) => (await removeEmbeddingProvider(providerId)).map((p) => ({ ...p, apiKey: p.apiKey ? "********" : "" })));
@@ -744,7 +767,7 @@ app.whenReady().then(async () => {
     let apiKey = input.apiKey || "";
     // Saved providers come back with a masked key — resolve the real one so
     // testing an existing entry doesn't authenticate with "********".
-    if (apiKey === "********" && input.id) {
+    if (isMaskedSecret(apiKey) && input.id) {
       apiKey = (await listEmbeddingProviders()).find((p) => p.id === input.id)?.apiKey || "";
     }
     return testEmbeddingEndpoint({ ...input, apiKey });
@@ -784,6 +807,18 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle("sessions:list", (_event, projectId: string) => listSessions(projectId));
+  ipcMain.handle("sessions:export", async (_event, sessionId: string) => {
+    if (!sessionId) throw new Error("No active session.");
+    for (const project of await listProjects()) {
+      const session = project.sessions.find((s) => s.id === sessionId);
+      if (!session) continue;
+      const { exportSessionHtml } = await import("./session-export.js");
+      const file = await exportSessionHtml(session, project.name, path.join(app.getPath("userData"), "exports"));
+      shell.showItemInFolder(file);
+      return file;
+    }
+    throw new Error("Session not found.");
+  });
   ipcMain.handle("session:create", async (_event, projectId: string, title?: string) => {
     const session = await createSession(projectId, title);
     activeProjectId = projectId; activeSessionId = session.id;
@@ -815,23 +850,43 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle("memory:project:update", (_event, projectId: string, memory: string) => updateProjectMemory(projectId, memory));
+  ipcMain.handle("memory:project:facts:update", (_event, projectId: string, facts: string) => updateProjectFacts(projectId, () => facts));
+  ipcMain.handle("memory:project:fact:remove", (_event, projectId: string, fact: string) => updateProjectFacts(projectId, (current) => removeMemoryFactWithCount(current, fact || "").memory));
   ipcMain.handle("memory:session:update", (_event, projectId: string, sessionId: string, memory: string) => updateSession(projectId, sessionId, { memory }));
 
   ipcMain.handle("providers:definitions", () => PROVIDERS);
-  ipcMain.handle("providers:list", async () => (await listProviders()).map((provider) => ({ ...provider, apiKey: provider.apiKey ? "********" : "" })));
-  ipcMain.handle("provider:save", async (_event, input: Omit<ProviderConfig, "id"> & { id?: string }) => {
-    const existing = input.id ? (await listProviders()).find((provider) => provider.id === input.id) : undefined;
-    const payload = { ...input, apiKey: input.apiKey === "********" ? existing?.apiKey || "" : input.apiKey };
-    return (await upsertProvider(payload)).map((provider) => ({ ...provider, apiKey: provider.apiKey ? "********" : "" }));
+  const maskProviders = (list: ProviderConfig[]) => list.map((provider) => ({ ...provider, apiKey: provider.apiKey ? "********" : "" }));
+  ipcMain.handle("providers:list", async () => maskProviders(await listProviders()));
+  // Granular provider CRUD: the renderer never sends (or holds) the real key
+  // except through provider:updateKey, and model edits cannot touch it.
+  ipcMain.handle("provider:create", async (_event, input: { provider: string; label: string; apiKey: string; baseUrl?: string }) => maskProviders([await createProviderConnection(input)])[0]);
+  ipcMain.handle("provider:updateMeta", async (_event, providerId: string, patch: { label?: string; baseUrl?: string }) => maskProviders([await updateProviderConnection(providerId, patch)])[0]);
+  ipcMain.handle("provider:updateKey", async (_event, providerId: string, apiKey: string) => maskProviders([await updateProviderKey(providerId, apiKey)])[0]);
+  ipcMain.handle("provider:setEnabled", async (_event, providerId: string, enabled: boolean) => maskProviders([await setProviderEnabled(providerId, enabled)])[0]);
+  ipcMain.handle("provider:models:add", async (_event, providerId: string, models: string[]) => maskProviders([await addProviderModels(providerId, models)])[0]);
+  ipcMain.handle("provider:models:update", async (_event, providerId: string, model: string, patch: { newName?: string; endpoint?: "" | ChatEndpointKind }) => maskProviders([await updateProviderModel(providerId, model, patch)])[0]);
+  ipcMain.handle("provider:models:remove", async (_event, providerId: string, model: string) => maskProviders([await removeProviderModel(providerId, model)])[0]);
+  ipcMain.handle("provider:remove", async (_event, providerId: string) => maskProviders(await removeProvider(providerId)));
+  // Model discovery: when the renderer has no key (it never does — only a
+  // mask), the server resolves the STORED key for the given provider.
+  ipcMain.handle("providers:fetch-models", async (_event, input: { providerId?: string; baseUrl?: string; apiKey?: string }) => {
+    let apiKey = (input?.apiKey || "").trim();
+    if ((!apiKey || isMaskedSecret(apiKey)) && input?.providerId) {
+      const stored = (await listProviders()).find((provider) => provider.id === input.providerId);
+      if (stored?.apiKey) apiKey = stored.apiKey;
+    }
+    return fetchRemoteModels(input?.baseUrl || "", apiKey);
   });
-  ipcMain.handle("provider:remove", async (_event, providerId: string) => (await removeProvider(providerId)).map((provider) => ({ ...provider, apiKey: provider.apiKey ? "********" : "" })));
-  ipcMain.handle("providers:fetch-models", async (_event, input: { baseUrl?: string; apiKey?: string }) => fetchRemoteModels(input?.baseUrl || "", input?.apiKey));
 
   ipcMain.handle("mcp:list", async () => listMcpServersMasked());
   ipcMain.handle("mcp:save", (_event, input: Omit<McpServerConfig, "id"> & { id?: string }) => upsertMcpServer(input));
   ipcMain.handle("mcp:remove", (_event, serverId: string) => removeMcpServer(serverId));
   ipcMain.handle("mcp:test", (_event, input: Omit<McpServerConfig, "id" | "enabled">) => testMcpServer(input));
 
+  ipcMain.handle("hooks:config:get", () => getHooksConfig());
+  ipcMain.handle("hooks:config:save", (_event, config: { enabled: boolean }) => saveHooksConfig(config));
+  ipcMain.handle("rules:config:get", () => getRulesConfig());
+  ipcMain.handle("rules:config:save", (_event, config: { enabled: boolean }) => saveRulesConfig(config));
   ipcMain.handle("skills:config:get", () => getSkillsConfig());
   ipcMain.handle("skills:config:save", (_event, config: { enabled: boolean }) => saveSkillsConfig(config));
   ipcMain.handle("skills:list", async () => {
@@ -867,7 +922,7 @@ app.whenReady().then(async () => {
     const { apiKey, ...rest } = next;
     // A masked round-trip means "keep the stored key" — deleting it here used
     // to wipe the key on any unrelated settings change.
-    settings = { ...settings, ...rest, ...(apiKey === "********" ? {} : { apiKey }) };
+    settings = { ...settings, ...rest, ...(isMaskedSecret(apiKey) ? {} : { apiKey }) };
     return { ...settings, apiKey: settings.apiKey ? "********" : "" };
   });
   ipcMain.handle("app-settings:get", () => getAppSettings());
@@ -878,12 +933,27 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("notebook:parser:save", async (_event, input: Parameters<typeof saveNotebookParserConfig>[0]) => {
     const existing = await getNotebookParserConfig();
-    const config = await saveNotebookParserConfig({ ...input, apiKey: input.apiKey === "********" ? existing.apiKey : input.apiKey });
+    const config = await saveNotebookParserConfig({ ...input, apiKey: isMaskedSecret(input.apiKey) ? existing.apiKey : input.apiKey });
     return { ...config, apiKey: config.apiKey ? "********" : "" };
   });
 
   ipcMain.handle("workspace:list", () => listWorkspaceFiles(requireRoot()));
   ipcMain.handle("workspace:read", (_event, file: string) => readWorkspaceFile(requireRoot(), file));
+  // Base64 read for the file previewer (pptx/docx/xlsx/pdf/images) — the code
+  // editor path above refuses binary content, this one serves it.
+  ipcMain.handle("workspace:readBase64", (_event, file: string) => readWorkspaceFileBase64(requireRoot(), file));
+  ipcMain.handle("workspace:gitStatus", () => getWorkspaceGitStatus(requireRoot()));
+  ipcMain.handle("workspace:downloadFile", async (_event, file: string) => {
+    const root = requireRoot();
+    const source = safePath(root, file);
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      defaultPath: path.basename(source),
+      title: "Download file",
+    });
+    if (canceled || !filePath) return null;
+    await fs.copyFile(source, filePath);
+    return filePath;
+  });
   ipcMain.handle("workspace:readHead", async (_event, file: string) => {
     const root = requireRoot();
     const wt = activeSessionId ? await getSessionWorktree(root, activeSessionId) : null;
@@ -891,6 +961,9 @@ app.whenReady().then(async () => {
     const normalized = file.replace(/\\/g, "/").replace(/^\.\//, "");
     try {
       const { stdout } = await execFileAsync("git", ["show", `HEAD:${normalized}`], { cwd: targetRoot, maxBuffer: 4_000_000 });
+      // `git show HEAD:binary` dumps raw bytes into a UTF-8 string — the diff
+      // view only wants text, so blank out anything with NUL bytes.
+      if (stdout.includes("\u0000")) return "";
       return stdout;
     } catch {
       return "";
@@ -1264,7 +1337,8 @@ app.whenReady().then(async () => {
 
       const backendRecord = { ...project, root: executionRoot };
       emitFor(sessionId, { type: "status", text: "Preparing workspace…" });
-      const { backend } = await getAgentBackend(backendRecord, { readOnly: mode === "plan", runId: sessionId });
+      const editPolicy = (await getAppSettings().catch(() => ({}) as AppSettings)).editPolicy === "ask" ? "ask" : "auto";
+      const { backend } = await getAgentBackend(backendRecord, { readOnly: mode === "plan", runId: sessionId, editPolicy });
       // Undo-ready baseline: HEAD before the run + file snapshot. Best-effort
       // so non-git projects still run (their Undo simply no-ops).
       let preRunHead: string | null = null;
@@ -1346,13 +1420,15 @@ app.whenReady().then(async () => {
           attachmentDocs,
           importableAttachments: importableAttachments.length ? importableAttachments : undefined,
           settings: runSettings,
-          memory: { projectMemory: project.memory, sessionMemory: session.memory },
+          memory: { projectMemory: project.memory, sessionMemory: session.memory, facts: project.facts ?? "" },
           history,
           mode,
           agentBackend: backend,
+          editPolicy,
           resumeMessages: stored?.messages ?? null,
           resumePlanItems: stored?.planItems ?? null,
           resumeNote,
+          onProjectMemoryUpdate: (mutate) => updateProjectFacts(projectId, mutate),
           onUserQuestion: (questions) => askUserBlocking(sessionId, questions),
           onEvent: (event) => {
             // Token chunks stay ephemeral (streaming display only); everything
@@ -1423,17 +1499,24 @@ app.whenReady().then(async () => {
       }
       // Multi-level Undo: push (never clear) so each click steps one run back.
       await pushCheckpoint(projectId, sessionId, executionRoot, checkpointId);
-      // Memories are rolling windows, not append-only logs: entries are
-      // individually capped upstream, and the totals are capped here so
-      // hundreds of runs cannot bloat every future prompt.
-      const nextSessionMemory = [session.memory, result.memoryEntry].filter(Boolean).join("\n\n");
-      const nextProjectMemory = [project.memory, result.projectMemoryLogEntry].filter(Boolean).join("\n");
+      // Memories are rolling windows of WHOLE entries, not append-only logs:
+      // the newest entries that fit the caps survive, and a cap never cuts an
+      // entry mid-sentence (appendEntryLog drops the oldest whole entries).
+      const nextSessionMemory = appendEntryLog(session.memory, result.memoryEntry, {
+        maxEntries: SESSION_MEMORY_ENTRY_CAP,
+        maxChars: SESSION_MEMORY_CHAR_CAP,
+        separator: "\n\n",
+      });
+      const nextProjectMemory = appendEntryLog(project.memory, result.projectMemoryLogEntry, {
+        maxEntries: PROJECT_MEMORY_RUN_LOG_CAP,
+        maxChars: 2000,
+        separator: "\n",
+      });
       // pushCheckpoint already updated the stack; only memory remains here.
       await updateSession(projectId, sessionId, {
-        memory: nextSessionMemory.slice(-4000),
+        memory: nextSessionMemory,
       });
-      // Keep the memory log bounded; agent-service returns a capped entry.
-      await updateProjectMemory(projectId, nextProjectMemory.slice(-2000));
+      await updateProjectMemory(projectId, nextProjectMemory);
       return result.response;
     } finally {
       activeRunSessions.delete(sessionId);
@@ -1675,9 +1758,13 @@ app.whenReady().then(async () => {
         await recordHomeRunFiles(sessionId, runStartMs, result.response);
       } catch { /* best effort */ }
 
-      const nextSessionMemory = [session.memory, result.memoryEntry].filter(Boolean).join("\n\n");
+      const nextSessionMemory = appendEntryLog(session.memory, result.memoryEntry, {
+        maxEntries: SESSION_MEMORY_ENTRY_CAP,
+        maxChars: SESSION_MEMORY_CHAR_CAP,
+        separator: "\n\n",
+      });
       await updateHomeSession(sessionId, {
-        memory: nextSessionMemory.slice(-4000),
+        memory: nextSessionMemory,
       });
       // Roll the shared Home memory forward only for substantive deliverables (capped at 5).
       // Session memory stays a compact pointer — the transcript is the source of truth.
@@ -1694,14 +1781,17 @@ app.whenReady().then(async () => {
         // Memory tab. A review queue would silently strand identity facts.
         const candidates = (result as unknown as { memoryCandidates?: Array<{ category: string; fact: string }> }).memoryCandidates || [];
         if (candidates.length) {
-          const saved = await mutateHomeMemory((latest) => {
+          // The mutate returns the merged memory (persisted by mutateHomeMemory);
+          // applied facts are collected through the closure for the notice below.
+          let applied: string[] = [];
+          await mutateHomeMemory((latest) => {
             const current = parseHomeMemory(latest);
             const known = new Set(
               [...current.profile, ...current.preferences, ...current.facts, ...current.context].map((f) => f.toLowerCase())
             );
             const validCats = ["profile", "preference", "fact", "context"];
             let merged = latest;
-            const applied: string[] = [];
+            applied = [];
             for (const cand of candidates.slice(0, 3)) {
               const fact = String(cand.fact || "").trim().slice(0, 200);
               if (!fact || known.has(fact.toLowerCase())) continue;
@@ -1710,10 +1800,10 @@ app.whenReady().then(async () => {
               known.add(fact.toLowerCase());
               applied.push(fact);
             }
-            return applied;
+            return merged;
           });
-          if (saved.length) {
-            const shown = saved.join("; ").slice(0, 220);
+          if (applied.length) {
+            const shown = applied.join("; ").slice(0, 220);
             emitFor(sessionId, { type: "status", text: `Saved to memory: ${shown} — manage it in the Memory tab.` });
           }
         }

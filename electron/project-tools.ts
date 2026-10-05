@@ -19,7 +19,7 @@ const IGNORED = new Set([
   ".DS_Store",
 ]);
 
-function safePath(projectRoot: string, requested: string) {
+export function safePath(projectRoot: string, requested: string) {
   const root = path.resolve(projectRoot);
   const candidate = path.resolve(root, requested || ".");
   if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
@@ -48,8 +48,32 @@ export async function listWorkspaceFiles(projectRoot: string) {
 
 export async function readWorkspaceFile(projectRoot: string, file: string) {
   const target = safePath(projectRoot, file);
-  const content = await fs.readFile(target, "utf8");
+  const buffer = await fs.readFile(target);
+  // Binary files (Office/ZIP/media/fonts/...) decode to mojibake as UTF-8 —
+  // and saving that text back through writeWorkspaceFile would corrupt the
+  // file permanently. Refuse at the read boundary; the editor UI routes
+  // these to the file previewer instead. NUL-byte sniff is the same
+  // heuristic git uses (first 8 KB).
+  const sniffEnd = Math.min(buffer.length, 8192);
+  if (buffer.subarray(0, sniffEnd).includes(0)) {
+    throw new Error(`Binary file: ${file} cannot be shown in the code editor.`);
+  }
+  const content = buffer.toString("utf8");
   return { file, content, lines: content.split(/\r?\n/).length };
+}
+
+/** Preview reads above this size are refused — base64 over IPC stops being fun well before it. */
+const MAX_PREVIEW_FILE_BYTES = 64 * 1024 * 1024;
+
+export async function readWorkspaceFileBase64(projectRoot: string, file: string) {
+  const target = safePath(projectRoot, file);
+  const stat = await fs.stat(target);
+  if (!stat.isFile()) throw new Error(`Not a file: ${file}`);
+  if (stat.size > MAX_PREVIEW_FILE_BYTES) {
+    throw new Error(`File is too large to preview (${Math.round(stat.size / (1024 * 1024))} MB).`);
+  }
+  const buffer = await fs.readFile(target);
+  return { name: path.basename(target), path: file, size: stat.size, base64: buffer.toString("base64") };
 }
 
 export async function writeWorkspaceFile(projectRoot: string, file: string, content: string) {

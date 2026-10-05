@@ -63,12 +63,12 @@ rules/
 > common rules, and breaks the relative `../common/` references used by
 > language-specific files.
 >
-> Use the ECC-owned namespace below for user-level Claude installs. Flat
-> package-level destinations can collide with non-ECC rule packs and do not
+> Use the Nexus-owned namespace below for user-level Claude installs. Flat
+> package-level destinations can collide with non-Nexus rule packs and do not
 > match the main README guidance.
 
 ```bash
-# Create the ECC rule namespace once.
+# Create the Nexus rule namespace once.
 mkdir -p ~/.claude/rules/ecc
 
 # Install common rules (required for all projects)

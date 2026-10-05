@@ -5,6 +5,8 @@ import {
   formatHomeMemory,
   addMemoryFact,
   removeMemoryFact,
+  removeMemoryFactWithCount,
+  createHomeMemoryTool,
   recordDeliverable,
   isSubstantiveHomeTask,
   selectRelevantHomeMemory,
@@ -213,6 +215,34 @@ await test("shouldExtractMemory fires on identity signals even with short replie
   assert.equal(shouldExtractMemory("analyze Q3 financials", "Here is a detailed breakdown of the quarterly revenue report with thorough analysis across multiple sectors and regions."), true);
   assert.equal(shouldExtractMemory("what is 2+2", "4"), false);
   assert.equal(shouldExtractMemory("my name is Amine", ""), false);
+});
+
+await test("removeMemoryFactWithCount reports how many entries were removed", () => {
+  const raw = "## User Profile\n- Lives in Paris\n\n## Preferences\n- Dark mode\n";
+  const hit = removeMemoryFactWithCount(raw, "Lives in Paris");
+  assert.equal(hit.removed, 1);
+  assert.ok(!hit.memory.includes("Lives in Paris"));
+  assert.ok(hit.memory.includes("Dark mode"));
+  const miss = removeMemoryFactWithCount(raw, "Berlin");
+  assert.equal(miss.removed, 0);
+  assert.ok(miss.memory.includes("Lives in Paris"));
+  // String wrapper keeps its old contract.
+  assert.equal(typeof removeMemoryFact(raw, "Dark mode"), "string");
+});
+
+await test("manage_memory forget reports no-match honestly instead of success", async () => {
+  const hit = createHomeMemoryTool({ onRemember: () => {}, onForget: () => 2 });
+  const okMsg = await hit.invoke({ action: "forget", fact: "Lives in Paris" });
+  assert.match(okMsg, /Removed 2 item/);
+  const miss = createHomeMemoryTool({ onRemember: () => {}, onForget: () => 0 });
+  const missMsg = await miss.invoke({ action: "forget", fact: "Something not stored" });
+  assert.match(missMsg, /No exact match/);
+  assert.doesNotMatch(missMsg, /Successfully removed/);
+});
+
+await test("shouldExtractMemory French identity requires a complement after 'je suis'", () => {
+  assert.equal(shouldExtractMemory("Je suis d'accord avec cette analyse", "Parfait, je continue avec la suite du rapport demandé."), false);
+  assert.equal(shouldExtractMemory("Je suis un étudiant en data science", "Compris, c'est noté."), true);
 });
 
 console.log(`\nSummary: ${passed} passed, ${failed} failed.`);

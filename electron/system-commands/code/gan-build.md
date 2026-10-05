@@ -21,7 +21,7 @@ This command orchestrates a three-agent build loop inspired by Anthropic's March
 
 ### Phase 1: Planning (Planner Agent)
 Unless `--skip-planner` is set:
-1. Launch the `gan-planner` agent via Task tool with the user's brief
+1. Launch the `gan-planner` agent via delegate_task (role="gan-planner") with the user's brief
 2. Wait for it to produce `gan-harness/spec.md` and `gan-harness/eval-rubric.md`
 3. Display the spec summary to the user
 4. Proceed to Phase 2
@@ -32,7 +32,7 @@ iteration = 1
 while iteration <= max_iterations:
 
     # GENERATE
-    Launch gan-generator agent via Task tool:
+    Launch gan-generator agent via delegate_task (role="gan-generator"):
     - Read spec.md
     - If iteration > 1: read feedback/feedback-{iteration-1}.md
     - Build/improve the application
@@ -42,7 +42,7 @@ while iteration <= max_iterations:
     # Wait for generator to finish
 
     # EVALUATE
-    Launch gan-evaluator agent via Task tool:
+    Launch gan-evaluator agent via delegate_task (role="gan-evaluator"):
     - Read eval-rubric.md and spec.md
     - Test the live application (mode: playwright/screenshot/code-only)
     - Score against rubric

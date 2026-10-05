@@ -1,61 +1,73 @@
 # Agent Orchestration
 
-## Available Agents
+## Delegation
 
-Located in `~/.nexus/agents/` (and built-in Nexus system agents):
+Delegate focused sub-tasks with the `delegate_task` tool. The role parameter is
+free-form; the full catalog of available specialist roles (name + purpose) is
+listed in your system instructions under "SPECIALIST SUBAGENTS" — consult it
+instead of guessing role names.
 
-| Agent | Purpose | When to Use |
-|-------|---------|-------------|
-| planner | Implementation planning | Complex features, refactoring |
+Core roles available in every project:
+
+| Role | Purpose | When to Use |
+|------|---------|-------------|
 | architect | System design | Architectural decisions |
-| tdd-guide | Test-driven development | New features, bug fixes |
 | code-reviewer | Code review | After writing code |
 | security-reviewer | Security analysis | Before commits |
+| tdd-guide | Test-driven development | New features, bug fixes |
 | build-error-resolver | Fix build errors | When build fails |
-| e2e-runner | E2E testing | Critical user flows |
 | refactor-cleaner | Dead code cleanup | Code maintenance |
-| doc-updater | Documentation | Updating docs |
-| rust-reviewer | Rust code review | Rust projects |
-| harmonyos-app-resolver | HarmonyOS app development | HarmonyOS/ArkTS projects |
+| database-reviewer | Schema/query review | Database changes |
+| researcher | Codebase exploration | Multi-file investigation |
+| tester | Test execution and diagnosis | Failing suites, reproduction |
+| coder | Focused implementation | Isolated subtasks |
 
-## Immediate Agent Usage
+Language specialists (e.g. rust-reviewer, python-reviewer, react-reviewer) and
+domain reviewers from the catalog apply when the relevant stack is present.
 
-No user prompt needed:
-1. Complex feature requests - Use **planner** agent
-2. Code just written/modified - Use **code-reviewer** agent
-3. Bug fix or new feature - Use **tdd-guide** agent
-4. Architectural decision - Use **architect** agent
+## When to Delegate
+
+Delegate proactively — no user prompt needed:
+1. Complex feature requests - Use **architect** for the design
+2. Code just written/modified - Use **code-reviewer**
+3. Bug fix or new feature - Use **tdd-guide**
+4. Build or compile failure - Use **build-error-resolver**
+
+Never delegate simple single-file edits, lookups, or Q&A — do them directly.
 
 ## Parallel Task Execution
 
-ALWAYS use parallel Task execution for independent operations:
+Use parallel delegation for INDEPENDENT read-only operations:
 
 ```markdown
-# GOOD: Parallel execution
-Launch 3 agents in parallel:
-1. Agent 1: Security analysis of auth module
-2. Agent 2: Performance review of cache system
-3. Agent 3: Type checking of utilities
+# GOOD: Parallel execution of read-only specialists
+Launch 3 reviewers in parallel:
+1. code-reviewer: review of auth module changes
+2. security-reviewer: audit of token handling
+3. database-reviewer: check migration scripts
 
 # BAD: Sequential when unnecessary
-First agent 1, then agent 2, then agent 3
+First reviewer 1, then reviewer 2, then reviewer 3
 ```
+
+Write-capable roles (coder, tdd-guide, build-error-resolver, refactor-cleaner)
+MUST run one at a time — concurrent edits to one workspace corrupt each other.
 
 ## Delegation Completion Contract
 
-Applies to every agent at every depth (parent, child, grandchild):
+Applies to every delegation:
 
-1. **Your final message IS the deliverable.** Never end your turn with "waiting for background agents" — a spawned task is not a completed task. Ending your turn while children are running orphans their results (completed children cannot notify a parent whose turn has ended).
-2. **If you delegate, you own collection.** Wait for results, integrate them, then return. Fire-and-forget delegation is forbidden.
-3. **Decompose only when the work cannot fit in one context.** Do not re-delegate a task already sized for a single agent — depth is an outcome, not a plan.
-
-> Rationale: observed failure mode — research agents followed "Parallel Task Execution" above, spawned children, and returned "waiting" as their final answer. All children completed successfully but their results were orphaned. The parallel rule without a completion contract produces zombie tasks.
+1. **Your final message IS the deliverable.** Never end with "review is
+   running" — a delegated task is not a completed task.
+2. **If you delegate, you own collection.** Wait for results, integrate them,
+   then report. Fire-and-forget delegation is forbidden.
+3. **Decompose only when the work cannot fit in one context.** Do not
+   re-delegate a task already sized for a single agent — subagents cannot
+   spawn further subagents.
 
 ## Multi-Perspective Analysis
 
-For complex problems, use split role sub-agents:
-- Factual reviewer
-- Senior engineer
-- Security expert
-- Consistency reviewer
-- Redundancy checker
+For complex problems, use the reviewer roles as split perspectives:
+- code-reviewer for correctness and maintainability
+- security-reviewer for injection, secrets, and input validation
+- database-reviewer for data integrity and query performance

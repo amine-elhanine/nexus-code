@@ -22,7 +22,7 @@ function electronMod(): ElectronShim {
 
 import type { SubagentItem } from "./subagent-service.js";
 
-export type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[]; modelEndpoints?: Partial<Record<string, ChatEndpointKind>>; /** Set at load when the stored ciphertext could not be decrypted on this machine. Never persisted. */ keyNeedsReentry?: boolean };
+export type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[]; modelEndpoints?: Partial<Record<string, ChatEndpointKind>>; /** Disabled connections stay configured but disappear from the session model pickers. */ enabled?: boolean; /** Set at load when the stored ciphertext could not be decrypted on this machine. Never persisted. */ keyNeedsReentry?: boolean };
 // Wire protocol a model speaks. Providers default to chat completions,
 // except Anthropic-native which defaults to messages. A per-model entry
 // overrides the default — e.g. gateways like OpenCode Zen serve different
@@ -35,8 +35,12 @@ export type EmbeddingProviderConfig = { id: string; name: string; kind: Embeddin
 export type McpTransport = "stdio" | "http" | "sse";
 export type McpServerConfig = { id: string; name: string; enabled: boolean; transport: McpTransport; command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string> };
 export type SkillsConfig = { enabled: boolean };
+export type HooksConfig = { enabled: boolean };
+export type RulesConfig = { enabled: boolean };
 export type AppSettings = {
   browserHeadless?: boolean;
+  /** Opt-in edit approval for Code runs: "ask" gates every file mutation behind the approval UI. */
+  editPolicy?: "auto" | "ask";
   notebookRerankEnabled?: boolean;
   notebookRerankProviderId?: string;
   notebookRerankModel?: string;
@@ -54,11 +58,11 @@ export type NotebookParserConfig = {
   version: string;
   timeoutSeconds: number;
 };
-export type ProjectRecord = { id: string; name: string; root: string; createdAt: string; updatedAt: string; memory: string; sessions: SessionRecord[] };
+export type ProjectRecord = { id: string; name: string; root: string; createdAt: string; updatedAt: string; memory: string; /** Agent-recorded durable facts (home-memory markdown format). Optional so pre-facts snapshots load cleanly. */ facts?: string; sessions: SessionRecord[] };
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
 export type ChatAttachment = { url: string; name: string; mimeType: string; size: number };
 export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; checkpointIds?: string[]; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact" | "stream-reset"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; subagent?: SubagentItem; artifact?: unknown; detail?: string }>; model?: { providerId: string; model: string } };
-type PersistedState = { projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; appSettings?: AppSettings; notebookParser?: NotebookParserConfig; homeSessions?: SessionRecord[]; homeMemory?: string };
+type PersistedState = { stateVersion?: number; projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; hooks?: HooksConfig; rules?: RulesConfig; appSettings?: AppSettings; notebookParser?: NotebookParserConfig; homeSessions?: SessionRecord[]; homeMemory?: string };
 
 let cache: PersistedState | null = null;
 
@@ -100,6 +104,16 @@ function clearFailedSecrets(prefix: string) {
   }
 }
 const SECRET_MASK = "********";
+/**
+ * True when a secret coming from the renderer is the display mask rather than
+ * a real value — i.e. "keep whatever is stored". The mask check is deliberately
+ * loose: the UI round-trips the exact SECRET_MASK, but a stray keystroke in the
+ * pre-filled password field ("********x", "*******") must never be stored as
+ * if it were a freshly entered key, silently destroying the real one.
+ */
+export function isMaskedSecret(value: unknown): boolean {
+  return typeof value === "string" && value.startsWith("***");
+}
 function encryptSecret(value: string) {
   if (!value || value.startsWith(ENCRYPTED_PREFIX)) return value;
   try { const ss = electronMod().safeStorage; if (ss?.isEncryptionAvailable?.()) return ENCRYPTED_PREFIX + ss.encryptString(value).toString("base64"); } catch { /* fall through to plaintext */ }
@@ -150,6 +164,75 @@ export function calculateSessionUsage(messages: SessionRecord["messages"]): Agen
     totalTokens,
     estimatedCost: costKnown ? Number(estimatedCost.toFixed(4)) : null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Session transcript split (stateVersion 2)
+//
+// Session MESSAGES live in per-session files under <userData>/sessions/, so
+// appending one message no longer re-serializes the whole nexus-state.json.
+// The state file keeps a lightweight index row per session (messages: []);
+// this module holds the transcripts, lazily loaded into messageCache and
+// hydrated back onto records at every API boundary. The returned arrays are
+// SHARED with the cache: appending mutates the same array the next file
+// write serializes, so there is exactly one source of truth.
+const STATE_VERSION = 2;
+const messageCache = new Map<string, SessionRecord["messages"]>();
+
+function messageFileKey(projectId: string | null, sessionId: string): string {
+  return projectId ? `${projectId}/${sessionId}` : `home/${sessionId}`;
+}
+
+function messageFilePath(projectId: string | null, sessionId: string): string {
+  const userData = path.dirname(statePath());
+  return path.join(userData, "sessions", projectId ?? "home", `${sessionId}.json`);
+}
+
+async function readMessageFile(projectId: string | null, sessionId: string): Promise<SessionRecord["messages"]> {
+  const key = messageFileKey(projectId, sessionId);
+  const cached = messageCache.get(key);
+  if (cached) return cached;
+  try {
+    const parsed = JSON.parse(await fs.readFile(messageFilePath(projectId, sessionId), "utf8")) as { messages?: SessionRecord["messages"] };
+    const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
+    messageCache.set(key, messages);
+    return messages;
+  } catch {
+    const empty: SessionRecord["messages"] = [];
+    messageCache.set(key, empty);
+    return empty;
+  }
+}
+
+async function writeMessageFile(projectId: string | null, sessionId: string, messages: SessionRecord["messages"]): Promise<void> {
+  messageCache.set(messageFileKey(projectId, sessionId), messages);
+  const target = messageFilePath(projectId, sessionId);
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  const temporary = `${target}.tmp-${process.pid}-${Date.now().toString(36)}`;
+  try {
+    await fs.writeFile(temporary, JSON.stringify({ version: 1, messages }), "utf8");
+    await fs.rename(temporary, target);
+  } catch (error) {
+    try { await fs.unlink(temporary); } catch { /* best effort cleanup */ }
+    throw error;
+  }
+}
+
+async function hydrateSession(projectId: string | null, session: SessionRecord): Promise<SessionRecord> {
+  if (!session.messages.length) {
+    session.messages = await readMessageFile(projectId, session.id);
+    session.usage = calculateSessionUsage(session.messages);
+  }
+  return session;
+}
+
+async function hydrateSessions(projectId: string | null, sessions: SessionRecord[]): Promise<void> {
+  await Promise.all(sessions.map((session) => hydrateSession(projectId, session)));
+}
+
+async function deleteMessageFile(projectId: string | null, sessionId: string): Promise<void> {
+  messageCache.delete(messageFileKey(projectId, sessionId));
+  try { await fs.unlink(messageFilePath(projectId, sessionId)); } catch { /* already gone */ }
 }
 
 export function sortSessionsInPlace(sessions: SessionRecord[]): SessionRecord[] {
@@ -243,6 +326,33 @@ async function ensureLoaded(): Promise<PersistedState> {
     };
   }
 
+  // One-time transcript split: move embedded messages into per-session files.
+  // The pre-split state file is preserved as a backup; on any failure the
+  // state stays unversioned and the migration retries next launch. Index rows
+  // (messages: []) keep working for callers even if it never completes.
+  if (cache.stateVersion !== STATE_VERSION) {
+    try {
+      const backupTarget = `${statePath()}.pre-split`;
+      await fs.writeFile(backupTarget, JSON.stringify(cache, null, 2), { encoding: "utf8", mode: 0o600 }).catch(() => undefined);
+      for (const project of cache.projects) {
+        for (const session of project.sessions) {
+          if (session.messages.length) {
+            await writeMessageFile(project.id, session.id, session.messages);
+            session.messages = [];
+          }
+        }
+      }
+      for (const session of cache.homeSessions ?? []) {
+        if (session.messages.length) {
+          await writeMessageFile(null, session.id, session.messages);
+          session.messages = [];
+        }
+      }
+      cache.stateVersion = STATE_VERSION;
+      await persist();
+    } catch { /* unversioned state retries next launch; index rows still work */ }
+  }
+
   return cache;
 }
 
@@ -269,6 +379,13 @@ async function doPersist() {
   const keepOrEncrypt = (value: string, trackKey: string) => failedCiphertext.get(trackKey) ?? encryptSecret(value);
   const snapshot: PersistedState = {
     ...cache,
+    // Transcripts live in per-session files (stateVersion 2) — the state file
+    // only ever carries empty index rows, however the in-memory cache looks.
+    projects: (cache.projects || []).map((project) => ({
+      ...project,
+      sessions: (project.sessions || []).map((session) => ({ ...session, messages: [] })),
+    })),
+    homeSessions: (cache.homeSessions || []).map((session) => ({ ...session, messages: [] })),
     providers: (cache.providers || []).map((provider) => ({ ...provider, apiKey: keepOrEncrypt(provider.apiKey, `provider:${provider.id}`), keyNeedsReentry: undefined })),
     embeddingProviders: (cache.embeddingProviders || []).map((provider) => ({ ...provider, apiKey: keepOrEncrypt(provider.apiKey, `emb:${provider.id}`) })),
     notebookParser: cache.notebookParser ? { ...cache.notebookParser, apiKey: keepOrEncrypt(cache.notebookParser.apiKey, "parser") } : undefined,
@@ -295,11 +412,18 @@ async function doPersist() {
   }
 }
 
-export async function listProjects() { return (await ensureLoaded()).projects; }
+export async function listProjects() {
+  const state = await ensureLoaded();
+  for (const project of state.projects) {
+    await hydrateSessions(project.id, project.sessions);
+  }
+  return state.projects;
+}
 export async function getProject(projectId: string) {
   const project = (await ensureLoaded()).projects.find((project) => project.id === projectId) ?? null;
   if (project?.sessions) {
     sortSessionsInPlace(project.sessions);
+    await hydrateSessions(project.id, project.sessions);
   }
   return project;
 }
@@ -313,12 +437,36 @@ export async function upsertProject(input: { id?: string; name: string; root: st
     await persist();
     return existing;
   }
-  const project: ProjectRecord = { id: uid("project"), name: input.name, root: input.root, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), memory: "", sessions: [] };
+  const project: ProjectRecord = { id: uid("project"), name: input.name, root: input.root, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), memory: "", facts: "", sessions: [] };
   state.projects.unshift(project);
   await persist();
   return project;
 }
 export async function updateProjectMemory(projectId: string, memory: string) { const project = await getProject(projectId); if (!project) throw new Error("Project not found"); project.memory = memory; project.updatedAt = new Date().toISOString(); await persist(); return project; }
+
+// Agent-recorded project facts (project_memory tool). Same shape as the
+// Home-memory mutation queue: runs can execute in parallel within one
+// project, so every write re-reads the CURRENT facts inside a serialized
+// queue — a run-start snapshot wholesale-replaced here would erase facts a
+// parallel task just saved.
+let projectFactsQueue: Promise<unknown> = Promise.resolve();
+export function updateProjectFacts(projectId: string, mutate: (current: string) => string): Promise<ProjectRecord> {
+  const run = projectFactsQueue.then(async () => {
+    const state = await ensureLoaded();
+    const project = state.projects.find((p) => p.id === projectId);
+    if (!project) throw new Error("Project not found");
+    const current = project.facts ?? "";
+    const next = mutate(current);
+    if (next !== current) {
+      project.facts = next;
+      project.updatedAt = new Date().toISOString();
+      await persist();
+    }
+    return project;
+  });
+  projectFactsQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
 
 // The Home area is a built-in project with a FIXED id so the renderer can
 // tell home sessions apart from coding sessions. Created on demand pointing
@@ -333,7 +481,7 @@ export async function ensureHomeProject(homeId: string, name: string, root: stri
     await persist();
     return existing;
   }
-  const project: ProjectRecord = { id: homeId, name, root, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), memory: "", sessions: [] };
+  const project: ProjectRecord = { id: homeId, name, root, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), memory: "", facts: "", sessions: [] };
   state.projects.unshift(project);
   await persist();
   return project;
@@ -375,7 +523,7 @@ export async function updateSession(projectId: string, sessionId: string, patch:
   }
   sortSessionsInPlace(project.sessions);
   project.updatedAt = new Date().toISOString();
-  await persist();
+  await Promise.all([persist(), patch.messages ? writeMessageFile(projectId, sessionId, session.messages) : Promise.resolve()]);
   return session;
 }
 export async function appendSessionMessage(projectId: string, sessionId: string, message: SessionRecord["messages"][number]) {
@@ -391,7 +539,7 @@ export async function appendSessionMessages(projectId: string, sessionId: string
   session.updatedAt = new Date().toISOString();
   sortSessionsInPlace(project.sessions);
   project.updatedAt = new Date().toISOString();
-  await persist();
+  await Promise.all([persist(), writeMessageFile(projectId, sessionId, session.messages)]);
   return session;
 }
 
@@ -405,6 +553,7 @@ export async function listHomeSessions(): Promise<SessionRecord[]> {
   state.homeSessions.forEach((session) => {
     session.usage = calculateSessionUsage(session.messages);
   });
+  await hydrateSessions(null, state.homeSessions);
   return state.homeSessions;
 }
 
@@ -412,7 +561,7 @@ export async function getHomeSession(sessionId: string): Promise<SessionRecord |
   const state = await ensureLoaded();
   const session = (state.homeSessions || []).find((s) => s.id === sessionId) ?? null;
   if (session) {
-    session.usage = calculateSessionUsage(session.messages);
+    await hydrateSession(null, session);
   }
   return session;
 }
@@ -447,7 +596,7 @@ export async function updateHomeSession(
     session.usage = calculateSessionUsage(session.messages);
   }
   sortSessionsInPlace(state.homeSessions);
-  await persist();
+  await Promise.all([persist(), patch.messages ? writeMessageFile(null, sessionId, session.messages) : Promise.resolve()]);
   return session;
 }
 
@@ -463,14 +612,14 @@ export async function appendHomeSessionMessages(
   session.usage = calculateSessionUsage(session.messages);
   session.updatedAt = new Date().toISOString();
   sortSessionsInPlace(state.homeSessions);
-  await persist();
+  await Promise.all([persist(), writeMessageFile(null, sessionId, session.messages)]);
   return session;
 }
 
 export async function deleteHomeSession(sessionId: string): Promise<boolean> {
   const state = await ensureLoaded();
   state.homeSessions = (state.homeSessions || []).filter((s) => s.id !== sessionId);
-  await persist();
+  await Promise.all([persist(), deleteMessageFile(null, sessionId)]);
   return true;
 }
 // Shared Home memory: ChatGPT-style long-term memory across all Home chats.
@@ -489,10 +638,18 @@ export async function updateHomeMemory(memory: string): Promise<string> {
 // Home memory is shared by every Home chat, and chats can run in parallel.
 // Every mutation therefore goes through one serialized queue AND re-reads the
 // current memory inside it — a run-start snapshot wholesale-replaced here
-// would silently erase the facts a parallel chat just saved.
+// would silently erase the facts a parallel chat just saved. The callback
+// returns the full new memory, which is persisted before the queue moves on;
+// without the save below, tool-driven "remember"/"forget" and deliverable
+// recording only mutated a throwaway string.
 let homeMemoryQueue: Promise<unknown> = Promise.resolve();
-export function mutateHomeMemory<T>(mutate: (current: string) => T): Promise<T> {
-  const run = homeMemoryQueue.then(async () => mutate(await getHomeMemory()));
+export function mutateHomeMemory(mutate: (current: string) => string): Promise<string> {
+  const run = homeMemoryQueue.then(async () => {
+    const current = await getHomeMemory();
+    const next = mutate(current);
+    if (next !== current) await updateHomeMemory(next);
+    return next;
+  });
   homeMemoryQueue = run.then(() => undefined, () => undefined);
   return run;
 }
@@ -523,6 +680,116 @@ export async function removeProvider(providerId: string) {
   }
   await persist();
   return state.providers;
+}
+
+// Granular connection CRUD. The old whole-record provider:save round-trip
+// made every edit a potential key-loss point (the renderer never holds the
+// real key — only a mask), so the UI now edits each aspect through its own
+// function and the API key is simply not part of most payloads.
+function requireProvider(state: PersistedState, providerId: string) {
+  const provider = state.providers.find((p) => p.id === providerId);
+  if (!provider) throw new Error("Provider not found.");
+  return provider;
+}
+
+export async function createProviderConnection(input: { provider: string; label: string; apiKey: string; baseUrl?: string }): Promise<ProviderConfig> {
+  const state = await ensureLoaded();
+  const provider: ProviderConfig = {
+    id: uid("provider"),
+    provider: input.provider,
+    label: input.label.trim() || "Provider",
+    apiKey: (input.apiKey || "").trim(),
+    baseUrl: input.baseUrl?.trim() || undefined,
+    models: [],
+    modelEndpoints: {},
+    enabled: true,
+  };
+  state.providers.push(provider);
+  if (provider.apiKey) clearFailedSecrets(`provider:${provider.id}`);
+  await persist();
+  return provider;
+}
+
+export async function updateProviderConnection(providerId: string, patch: { label?: string; baseUrl?: string }): Promise<ProviderConfig> {
+  const state = await ensureLoaded();
+  const provider = requireProvider(state, providerId);
+  // Deliberately no apiKey and no models here: renaming/re-pointing a
+  // connection can never touch credentials or the model list.
+  if (patch.label !== undefined) provider.label = patch.label.trim() || provider.label;
+  if (patch.baseUrl !== undefined) provider.baseUrl = patch.baseUrl.trim() || undefined;
+  await persist();
+  return provider;
+}
+
+export async function updateProviderKey(providerId: string, apiKey: string): Promise<ProviderConfig> {
+  const state = await ensureLoaded();
+  const provider = requireProvider(state, providerId);
+  const key = (apiKey || "").trim();
+  if (!key) throw new Error("API key cannot be empty.");
+  provider.apiKey = key;
+  clearFailedSecrets(`provider:${providerId}`);
+  delete provider.keyNeedsReentry;
+  await persist();
+  return provider;
+}
+
+export async function setProviderEnabled(providerId: string, enabled: boolean): Promise<ProviderConfig> {
+  const state = await ensureLoaded();
+  const provider = requireProvider(state, providerId);
+  provider.enabled = enabled;
+  await persist();
+  return provider;
+}
+
+export async function addProviderModels(providerId: string, models: string[]): Promise<ProviderConfig> {
+  const state = await ensureLoaded();
+  const provider = requireProvider(state, providerId);
+  const cleaned = (models || []).map((m) => m.trim()).filter(Boolean);
+  if (!cleaned.length) throw new Error("No model names given.");
+  provider.models = Array.from(new Set([...(provider.models || []), ...cleaned]));
+  await persist();
+  return provider;
+}
+
+export async function updateProviderModel(providerId: string, model: string, patch: { newName?: string; endpoint?: "" | ChatEndpointKind }): Promise<ProviderConfig> {
+  const state = await ensureLoaded();
+  const provider = requireProvider(state, providerId);
+  const oldName = model.trim();
+  const list = provider.models || [];
+  if (!list.includes(oldName)) throw new Error(`Model "${oldName}" not found.`);
+  const endpoints = { ...(provider.modelEndpoints || {}) };
+  const newName = patch.newName?.trim();
+  if (newName && newName !== oldName) {
+    if (newName && list.includes(newName)) throw new Error(`Model "${newName}" already exists.`);
+    provider.models = list.map((m) => (m === oldName ? newName : m));
+    // Carry a per-model path override across renames.
+    if (endpoints[oldName]) {
+      endpoints[newName] = endpoints[oldName];
+      delete endpoints[oldName];
+    }
+  }
+  if (patch.endpoint !== undefined) {
+    const target = newName || oldName;
+    if (patch.endpoint) endpoints[target] = patch.endpoint;
+    else delete endpoints[target];
+  }
+  provider.modelEndpoints = endpoints;
+  await persist();
+  return provider;
+}
+
+export async function removeProviderModel(providerId: string, model: string): Promise<ProviderConfig> {
+  const state = await ensureLoaded();
+  const provider = requireProvider(state, providerId);
+  const name = model.trim();
+  provider.models = (provider.models || []).filter((m) => m !== name);
+  if (provider.modelEndpoints) {
+    const endpoints = { ...provider.modelEndpoints };
+    delete endpoints[name];
+    provider.modelEndpoints = endpoints;
+  }
+  await persist();
+  return provider;
 }
 
 const EMBEDDING_KINDS: EmbeddingEndpointKind[] = ["openai", "ollama", "gemini", "cohere"];
@@ -559,7 +826,7 @@ export async function deleteSession(projectId: string, sessionId: string) {
   if (!project) throw new Error("Project not found");
   project.sessions = project.sessions.filter((session) => session.id !== sessionId);
   project.updatedAt = new Date().toISOString();
-  await persist();
+  await Promise.all([persist(), deleteMessageFile(projectId, sessionId)]);
   return project;
 }
 export async function deleteProject(projectId: string) {
@@ -617,6 +884,10 @@ export async function removeMcpServer(serverId: string) {
 }
 export async function getSkillsConfig(): Promise<SkillsConfig> { return { enabled: (await ensureLoaded()).skills?.enabled !== false }; }
 export async function saveSkillsConfig(input: SkillsConfig) { const state = await ensureLoaded(); state.skills = { enabled: input.enabled !== false }; await persist(); return state.skills; }
+export async function getHooksConfig(): Promise<HooksConfig> { return { enabled: (await ensureLoaded()).hooks?.enabled !== false }; }
+export async function saveHooksConfig(input: HooksConfig) { const state = await ensureLoaded(); state.hooks = { enabled: input.enabled !== false }; await persist(); return state.hooks; }
+export async function getRulesConfig(): Promise<RulesConfig> { return { enabled: (await ensureLoaded()).rules?.enabled !== false }; }
+export async function saveRulesConfig(input: RulesConfig) { const state = await ensureLoaded(); state.rules = { enabled: input.enabled !== false }; await persist(); return state.rules; }
 export async function getAppSettings(): Promise<AppSettings> { return { ...(await ensureLoaded()).appSettings }; }
 export async function saveAppSettings(input: AppSettings) { const state = await ensureLoaded(); state.appSettings = { ...state.appSettings, ...input }; await persist(); return state.appSettings; }
 export async function getNotebookParserConfig(): Promise<NotebookParserConfig> {

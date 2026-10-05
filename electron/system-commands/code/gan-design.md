@@ -29,7 +29,7 @@ This is the same mode Anthropic used for their frontend design experiments, wher
 Note: Originality weight is higher (0.30 vs 0.20) to push for creative breakthroughs. Functionality weight is lower since design mode focuses on visual quality.
 
 ### Loop
-Same as `/project:gan-build` Phase 2, but:
+Same as `/gan-build` Phase 2, but:
 - Skip the planner
 - Use the design-focused rubric
 - Generator prompt emphasizes visual quality over feature completeness
