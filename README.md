@@ -171,7 +171,7 @@ npm start
 npm run dist          # or: npm run dist:dir
 ```
 
-**Download prebuilt binaries**: see [GitHub Releases](https://github.com/amine-elhanine/nexus/releases/latest) — `Nexus Setup <version>.exe` (auto-updating NSIS installer), `Nexus <version> Portable.exe`, DMG and AppImage targets. Only the NSIS install self-updates; Portable re-downloads.
+**Download prebuilt binaries**: see [GitHub Releases](https://github.com/amine-elhanine/nexus/releases/latest) — `Nexus.Setup.<version>.exe` (auto-updating NSIS installer), `Nexus.<version>.Portable.exe`, DMG and AppImage targets. Only the NSIS install self-updates; Portable re-downloads.
 
 **Publish an update**: bump `version` in `package.json`, then `GH_TOKEN=<github_pat> npm run dist -- --publish always` (publishes to the releases repo `amine-elhanine/nexus`, including `latest.yml`; source lives at `amine-elhanine/nexus-code`). For testing the update flow in dev: `NEXUS_UPDATE_DEV=1` + `dev-app-update.yml`.
 
