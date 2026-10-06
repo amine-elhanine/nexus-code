@@ -6,6 +6,8 @@
  * captions (or private/region-blocked ones) fail with a friendly error.
  */
 
+import { assertPublicHttpUrl } from "./net-guard.js";
+
 export interface YouTubeTranscript {
   videoId: string;
   title: string;
@@ -209,6 +211,7 @@ function pickTrack(tracks: CaptionTrack[], preferred = "en"): CaptionTrack | nul
 }
 
 async function fetchText(url: string): Promise<string> {
+  await assertPublicHttpUrl(url);
   const res = await fetch(url, {
     headers: {
       "User-Agent": WATCH_UA,
@@ -236,6 +239,7 @@ interface InnertubePlayer {
  */
 async function tryInnertubeTranscript(videoId: string, language: string): Promise<YouTubeTranscript | null> {
   try {
+    await assertPublicHttpUrl("https://www.youtube.com/youtubei/v1/player");
     const res = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${INNERTUBE_KEY}`, {
       method: "POST",
       headers: { "User-Agent": WATCH_UA, "Content-Type": "application/json" },

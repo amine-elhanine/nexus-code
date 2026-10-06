@@ -135,7 +135,7 @@ type RawQuizQuestion = {
   citations?: unknown;
 };
 
-function sanitizeQuestions(
+export function sanitizeQuestions(
   parsed: unknown,
   count: number,
   quizType: NotebookQuizType,
@@ -158,7 +158,11 @@ function sanitizeQuestions(
     const refs = parseCitationRefs(`${question} ${explanation} ${Array.isArray(raw.citations) ? (raw.citations as unknown[]).join(" ") : ""}`);
     const linked = refs.map((n) => citationByIndex(citations, n)).filter((c): c is NotebookSourceCitation => Boolean(c));
     const fallbackCite = citations[i % Math.max(1, citations.length)];
-    const questionCitations = (linked.length ? linked : fallbackCite ? [fallbackCite] : []).slice(0, 2);
+    // Model-cited passages are verified; the positional fallback is an
+    // unverified guess that the UI renders dimmed.
+    const linkedCitations = linked.map((c) => ({ ...c, verified: true }));
+    const fallbackCitations = fallbackCite ? [{ ...fallbackCite, verified: false }] : [];
+    const questionCitations = (linkedCitations.length ? linkedCitations : fallbackCitations).slice(0, 2);
     if (isBoolean) {
       let correctBoolean: boolean | null = null;
       if (typeof raw.correctBoolean === "boolean") correctBoolean = raw.correctBoolean;

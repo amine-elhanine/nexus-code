@@ -149,14 +149,18 @@ function sanitizeNode(
       if (budget.remaining <= 0) break;
     }
   }
-  return { id: uid("node"), label, detail, citations: (linked.length ? linked : fallbackCite ? [fallbackCite] : []).slice(0, 2), children };
+  // Model-cited passages are verified; the positional fallback is an
+  // unverified guess that the UI renders dimmed.
+  const linkedCitations = linked.map((c) => ({ ...c, verified: true }));
+  const fallbackCitations = fallbackCite ? [{ ...fallbackCite, verified: false }] : [];
+  return { id: uid("node"), label, detail, citations: (linkedCitations.length ? linkedCitations : fallbackCitations).slice(0, 2), children };
 }
 
 function countNodes(nodes: NotebookMindmapNode[]): number {
   return nodes.reduce((sum, n) => sum + 1 + countNodes(n.children), 0);
 }
 
-function sanitizeRoots(parsed: unknown, maxNodes: number, citations: NotebookSourceCitation[]): NotebookMindmapNode[] {
+export function sanitizeRoots(parsed: unknown, maxNodes: number, citations: NotebookSourceCitation[]): NotebookMindmapNode[] {
   const root = (parsed || {}) as { roots?: unknown; nodes?: unknown };
   const rawRoots = Array.isArray(root.roots) ? root.roots : Array.isArray(root.nodes) ? root.nodes : null;
   if (!rawRoots) throw new Error("Model did not return a roots array.");

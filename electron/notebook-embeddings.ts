@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { NOTEBOOK_STOPWORDS } from "./notebook-text.js";
 import { listEmbeddingProviders, listProviders, type EmbeddingEndpointKind, type EmbeddingProviderConfig, type ProviderConfig } from "./store.js";
 
 // Lazy Electron access (see notebook-store.ts): plain-node safe.
@@ -74,15 +75,12 @@ function hashToken(token: string): number {
   return h >>> 0;
 }
 
-const LOCAL_STOPWORDS = new Set(
-  "the,a,an,and,or,of,to,in,on,for,with,as,at,by,from,is,are,was,were,be,been,being,it,its,this,that,these,those,you,your,he,she,they,them,his,her,their,our,we,us,i,me,my,not,no,yes,if,then,else,when,where,which,who,whom,what,how,why,can,could,should,would,will,do,does,did,have,has,had,all,any,each,more,most,other,some,such,than,too,very,into,over,after,before,between,through,during,about,against,per,via,also,within,without".split(",")
-);
-
 export function localEmbed(text: string, dims = LOCAL_DIMS): number[] {
   const vec = new Array<number>(dims).fill(0);
   // Stopwords removed: without this, filler words ("the", "what", "and")
   // shared by any two texts inflate cosine and drown out real similarity.
-  const tokens = (text.toLocaleLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_\-]{2,}/gu) || []).filter((t) => !LOCAL_STOPWORDS.has(t)).slice(0, 2000);
+  // Same stopword list as the lexical pipeline (notebook-text.js).
+  const tokens = (text.toLocaleLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_\-]{2,}/gu) || []).filter((t) => !NOTEBOOK_STOPWORDS.has(t)).slice(0, 2000);
   const grams = [...tokens];
   for (let i = 0; i + 1 < tokens.length && grams.length < 4000; i++) grams.push(`${tokens[i]}_${tokens[i + 1]}`);
   for (const g of grams) {

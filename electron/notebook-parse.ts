@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import LlamaCloud from "@llamaindex/llama-cloud";
+import { assertPublicHttpUrl } from "./net-guard.js";
 
 // Format parsers: raw bytes -> canonical markdown (the single intermediate
 // format for ingestion). Pure functions of (buffer, filename); no fs, no
@@ -41,12 +42,13 @@ function imageMime(filename: string): string {
   return ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
 }
 
-async function parseImage(buffer: Buffer, filename: string, describeImage?: ImageDescriber): Promise<ParsedDocument> {
+async function parseImage(buffer: Buffer, filename: string, describeImage?: ImageDescriber, onStatus?: (text: string) => void): Promise<ParsedDocument> {
   const mimeType = imageMime(filename);
   let description = "No visual description was generated. Configure a vision-capable chat provider to analyze this image.";
   let parser = "image";
   if (describeImage) {
     try {
+      onStatus?.(`Analyzing image ${filename}…`);
       const generated = await describeImage(buffer, filename, mimeType);
       if (generated?.trim()) {
         description = generated.trim().slice(0, MAX_MARKDOWN_CHARS);
@@ -170,7 +172,7 @@ async function loadZip(buffer: Buffer): Promise<ZipLike> {
   return new JSZip().loadAsync(buffer);
 }
 
-async function describeEmbeddedImages(zip: ZipLike, prefix: string, describeImage?: ImageDescriber): Promise<string[]> {
+async function describeEmbeddedImages(zip: ZipLike, prefix: string, describeImage?: ImageDescriber, onStatus?: (text: string) => void): Promise<string[]> {
   if (!describeImage || !zip.files) return [];
   const names = Object.keys(zip.files)
     .filter((name) => name.startsWith(prefix) && /\.(png|jpe?g|webp)$/i.test(name) && !zip.files?.[name]?.dir)
@@ -180,6 +182,7 @@ async function describeEmbeddedImages(zip: ZipLike, prefix: string, describeImag
     try {
       const ext = (name.split(".").pop() || "jpg").toLowerCase();
       const mime = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
+      onStatus?.(`Analyzing image ${name.split("/").pop() || name}…`);
       const raw = await zip.files[name].async("nodebuffer");
       if (!Buffer.isBuffer(raw)) continue;
       const description = await describeImage(raw, name.split("/").pop() || name, mime);
@@ -203,7 +206,7 @@ function xmlText(xml: string): string {
     .trim();
 }
 
-async function parseDocx(buffer: Buffer, describeImage?: ImageDescriber): Promise<ParsedDocument> {
+async function parseDocx(buffer: Buffer, describeImage?: ImageDescriber, onStatus?: (text: string) => void): Promise<ParsedDocument> {
   const zip = await loadZip(buffer);
   const docFile = zip.file("word/document.xml");
   if (!docFile) throw new Error("Not a valid .docx file (missing word/document.xml).");
@@ -259,12 +262,12 @@ async function parseDocx(buffer: Buffer, describeImage?: ImageDescriber): Promis
     else paras.push(text);
   }
   const all = [...paras, ...tablePlaceholders];
-  const visuals = await describeEmbeddedImages(zip, "word/media/", describeImage);
+  const visuals = await describeEmbeddedImages(zip, "word/media/", describeImage, onStatus);
   const { markdown, truncated } = cap([...all, ...visuals].join("\n\n"));
   return { markdown, parser: "docx", truncated };
 }
 
-async function parsePptx(buffer: Buffer, describeImage?: ImageDescriber): Promise<ParsedDocument> {
+async function parsePptx(buffer: Buffer, describeImage?: ImageDescriber, onStatus?: (text: string) => void): Promise<ParsedDocument> {
   const zip = await loadZip(buffer);
   // Slide order from presentation.xml.
   const presFile = zip.file("ppt/presentation.xml");
@@ -337,7 +340,7 @@ async function parsePptx(buffer: Buffer, describeImage?: ImageDescriber): Promis
     for (const t of slideTables) parts.push(t);
   }
   if (!parts.length) throw new Error("No readable slides found in .pptx file.");
-  const visuals = await describeEmbeddedImages(zip, "ppt/media/", describeImage);
+  const visuals = await describeEmbeddedImages(zip, "ppt/media/", describeImage, onStatus);
   const { markdown, truncated } = cap([...parts, ...visuals].join("\n\n"));
   return { markdown, parser: "pptx", truncated };
 }
@@ -392,7 +395,7 @@ async function parseWorkbook(buffer: Buffer, filename: string): Promise<ParsedDo
 
 // ---- PDF (pdf-parse v2, lazy) ----
 
-async function parsePdf(buffer: Buffer, describeImage?: ImageDescriber): Promise<ParsedDocument> {
+async function parsePdf(buffer: Buffer, describeImage?: ImageDescriber, onStatus?: (text: string) => void): Promise<ParsedDocument> {
   const mod = await import("pdf-parse");
   const PDFParse = (mod as unknown as { PDFParse: new (opts: { data: Buffer }) => {
     getText: () => Promise<{ text: string; pages: Array<{ text: string }> }>;
@@ -415,6 +418,7 @@ async function parsePdf(buffer: Buffer, describeImage?: ImageDescriber): Promise
           for (const page of images.pages || []) {
             for (const image of page.images || []) {
               if (count >= 20) break;
+              onStatus?.(`Analyzing image on page ${page.pageNumber || "?"}…`);
               const description = await describeImage(image.data, `page-${page.pageNumber || 0}-${image.name || count}.png`, "image/png");
               if (description?.trim()) visuals.push(`### PDF page ${page.pageNumber || "?"} image\n${description.trim().slice(0, 8000)}`);
               count++;
@@ -464,6 +468,7 @@ function parseFallback(buffer: Buffer): ParsedDocument {
 async function tryCloudParser(buffer: Buffer, filename: string): Promise<ParsedDocument | null> {
   const url = (process.env.NEXUS_CLOUD_PARSER_URL || "").trim();
   if (!url) return null;
+  await assertPublicHttpUrl(url);
   const res = await fetch(url.replace(/\/+$/, "") + "/parse", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -506,7 +511,7 @@ export async function parseWithLlamaParse(buffer: Buffer, filename: string, conf
 }
 
 /** Parse raw bytes to canonical markdown. Throws on unreadable input. */
-export async function parseToMarkdown(buffer: Buffer, filename: string, options?: { allowCloud?: boolean; describeImage?: ImageDescriber; llamaParse?: LlamaParseConfig }): Promise<ParsedDocument> {
+export async function parseToMarkdown(buffer: Buffer, filename: string, options?: { allowCloud?: boolean; describeImage?: ImageDescriber; llamaParse?: LlamaParseConfig; onStatus?: (text: string) => void }): Promise<ParsedDocument> {
   const ext = (filename.split(".").pop() || "").toLowerCase();
   if (options?.llamaParse) {
     try {
@@ -516,7 +521,7 @@ export async function parseToMarkdown(buffer: Buffer, filename: string, options?
     }
   }
   if (["png", "jpg", "jpeg", "webp"].includes(ext)) {
-    const parsed = await parseImage(buffer, filename, options?.describeImage);
+    const parsed = await parseImage(buffer, filename, options?.describeImage, options?.onStatus);
     return parsed;
   }
   if (options?.allowCloud && (ext === "pdf" || ext === "docx" || ext === "pptx")) {
@@ -576,13 +581,13 @@ export async function parseToMarkdown(buffer: Buffer, filename: string, options?
       parsed = parseHtml(buffer);
       break;
     case "docx":
-      parsed = await parseDocx(buffer, options?.describeImage);
+      parsed = await parseDocx(buffer, options?.describeImage, options?.onStatus);
       break;
     case "pptx":
-      parsed = await parsePptx(buffer, options?.describeImage);
+      parsed = await parsePptx(buffer, options?.describeImage, options?.onStatus);
       break;
     case "pdf":
-      parsed = await parsePdf(buffer, options?.describeImage);
+      parsed = await parsePdf(buffer, options?.describeImage, options?.onStatus);
       break;
     default:
       parsed = parseFallback(buffer);

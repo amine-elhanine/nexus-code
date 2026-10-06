@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { ArrowLeft, ArrowRight, RefreshCw, Shuffle, X } from "lucide-react";
 import { Modal } from "../common/Modal.js";
 import type { NotebookFlashcardSet } from "../../types.js";
+import { CitationSources } from "./CitationSources.js";
 
 /** Interactive flashcard runner: flip front/back, step through, shuffle. */
 export function FlashcardPlayerModal({ set, onClose }: { set: NotebookFlashcardSet; onClose: () => void }) {
@@ -71,7 +72,7 @@ export function FlashcardPlayerModal({ set, onClose }: { set: NotebookFlashcardS
             </button>
             {flipped && !!card.citations.length && (
               <small style={{ opacity: 0.8, display: "block", marginTop: 6 }}>
-                Sources: {card.citations.map((c) => `[S${c.index}] ${c.sourceName} — ${c.heading}`).join("; ")}
+                <CitationSources citations={card.citations} />
               </small>
             )}
             {!flipped && !!card.citations.length && (

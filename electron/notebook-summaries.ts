@@ -110,7 +110,7 @@ type RawSummarySection = {
   keyPoints?: unknown;
 };
 
-function sanitizeSummary(
+export function sanitizeSummary(
   parsed: unknown,
   length: NotebookSummaryLength,
   citations: NotebookSourceCitation[]

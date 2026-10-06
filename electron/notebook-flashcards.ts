@@ -116,7 +116,7 @@ type RawFlashcard = {
   citations?: unknown;
 };
 
-function sanitizeCards(
+export function sanitizeCards(
   parsed: unknown,
   count: number,
   citations: NotebookSourceCitation[]
@@ -133,7 +133,11 @@ function sanitizeCards(
     const refs = parseCitationRefs(`${front} ${back} ${Array.isArray(raw.citations) ? (raw.citations as unknown[]).join(" ") : ""}`);
     const linked = refs.map((n) => citationByIndex(citations, n)).filter((c): c is NotebookSourceCitation => Boolean(c));
     const fallbackCite = citations[i % Math.max(1, citations.length)];
-    const cardCitations = (linked.length ? linked : fallbackCite ? [fallbackCite] : []).slice(0, 2);
+    // Model-cited passages are verified; the positional fallback is an
+    // unverified guess that the UI renders dimmed.
+    const linkedCitations = linked.map((c) => ({ ...c, verified: true }));
+    const fallbackCitations = fallbackCite ? [{ ...fallbackCite, verified: false }] : [];
+    const cardCitations = (linkedCitations.length ? linkedCitations : fallbackCitations).slice(0, 2);
     cards.push({ id: uid("card"), front, back, citations: cardCitations });
   });
   if (!cards.length) throw new Error("Model returned no usable cards.");

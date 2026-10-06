@@ -487,12 +487,12 @@ app.whenReady().then(async () => {
   ipcMain.handle("notebook:sources", (_event, notebookId: string) => listNotebookSources(notebookId));
   ipcMain.handle("notebook:pickFiles", async (_event, notebookId: string) => {
     const before = new Set((await listNotebookSources(notebookId)).map((s) => s.id));
-    const sources = await pickAndImportSourceFiles(notebookId);
+    const { sources, failures } = await pickAndImportSourceFiles(notebookId);
     // Upload returns immediately; background jobs do parse → chunk → index.
     for (const source of sources) {
       if (!before.has(source.id) && source.status === "uploaded") enqueueIngest(notebookId, source.id);
     }
-    return sources;
+    return { sources, failures };
   });
   ipcMain.handle("notebook:uploadContent", async (_event, notebookId: string, filename: string, content: string) => {
     const record = await importSourceBuffer(notebookId, filename, Buffer.from(content, "utf8"));

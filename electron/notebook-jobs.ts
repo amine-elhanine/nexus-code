@@ -51,7 +51,7 @@ const running = new Set<string>(); // `${notebookId}:${sourceId}`
 const queued: Array<{ notebookId: string; sourceId: string }> = [];
 let pumping = false;
 
-export type JobProgress = { notebookId: string; sourceId: string; status: NotebookSourceStatus; chunks?: number; error?: string };
+export type JobProgress = { notebookId: string; sourceId: string; status: NotebookSourceStatus; chunks?: number; error?: string; detail?: string };
 export type ProgressListener = (progress: JobProgress) => void;
 const listeners = new Set<ProgressListener>();
 
@@ -179,6 +179,7 @@ export async function runIngestJob(notebookId: string, sourceId: string): Promis
         ? parserConfig
         : undefined,
       describeImage: (image, imageFilename, mimeType) => describeNotebookImage(image, imageFilename, mimeType),
+      onStatus: (text) => emitProgress({ notebookId, sourceId, status: "parsing", detail: text }),
     });
     await writeParsedMarkdown(notebookId, sourceId, parsed.markdown);
     const fingerprint = contentFingerprint(parsed.markdown);

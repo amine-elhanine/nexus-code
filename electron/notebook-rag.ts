@@ -17,16 +17,20 @@ import {
   loadVectors,
   sessionOutline,
   sessionSummary,
+  type SessionLibrary,
+  type VectorPartition,
 } from "./notebook-library.js";
 import { notebookSessionDir, saveNotebookNote, type NotebookSourceCitation, type NotebookAgentStep } from "./notebook-store.js";
 import {
   composeContextBlock,
   composeContextBlockIndexed,
+  evaluateCitationCoverage,
   gateDecision,
   isSessionWideAsk,
   notebookTokens,
   rewriteQuery,
   routeMessageHeuristic,
+  toCitations,
   type RouteAction,
 } from "./notebook-text.js";
 
@@ -81,7 +85,7 @@ export type ChatResult = {
   embeddingModel: string;
   dims: number;
   steps?: NotebookAgentStep[];
-  evaluation?: { groundedness: number; verdict: "grounded" | "partial" | "ungrounded"; issues: string[] };
+  evaluation?: { citationCoverage: number; verdict: "grounded" | "partial" | "ungrounded"; issues: string[] };
 };
 
 function queryVariants(query: string): string[] {
@@ -217,19 +221,31 @@ async function handleEmbeddingDrift(notebookId: string, indexModel: string): Pro
   }
 }
 
+/** One consistent library+vector read per ask. Hybrid retrieval, the agent's
+ *  search tools and the fallback pipeline all share it instead of each
+ *  re-parsing the store. Stale only if an ingestion job finishes mid-ask. */
+export type NotebookRetrievalSnapshot = { lib: SessionLibrary; partition: VectorPartition };
+
+export async function loadRetrievalSnapshot(notebookId: string): Promise<NotebookRetrievalSnapshot> {
+  const root = notebookSessionDir(notebookId);
+  const [lib, partition] = await Promise.all([loadLibrary(root, notebookId), loadVectors(root, notebookId)]);
+  return { lib, partition };
+}
+
 export async function hybridRetrieve(
   notebookId: string,
   query: string,
   topK = 8,
-  fileIds?: string[]
+  fileIds?: string[],
+  snapshot?: NotebookRetrievalSnapshot
 ): Promise<{ results: RetrievedChunk[]; embeddingModel: string; dims: number; embeddingModelMismatch?: boolean }> {
   const root = notebookSessionDir(notebookId);
-  const lib = await loadLibrary(root, notebookId);
+  const lib = snapshot?.lib ?? await loadLibrary(root, notebookId);
   const scope = fileIds?.length ? new Set(fileIds) : null;
   const corpus = lib.order
     .map((id) => lib.chunks[id])
     .filter((c) => c && (!scope || scope.has(c.fileId)));
-  const partition = await loadVectors(root, notebookId);
+  const partition = snapshot?.partition ?? await loadVectors(root, notebookId);
   if (!corpus.length) return { results: [], embeddingModel: partition.embeddingModel || "none", dims: partition.dims || 0 };
 
   const { vector: queryVec, modelMismatch } = await embedQuery(query, partition.embeddingModel || undefined);
@@ -431,9 +447,12 @@ async function generateAnswer(
   const attempts: Array<{ provider: (typeof providers)[number]; model: string; fallback: boolean }> = [
     { provider: primary, model: modelName, fallback: false },
   ];
-  const fallback = providers.find((p) => p.id !== primary.id && p.models.length);
+  // Keyless remote providers would only fail with a guaranteed 401 and mask
+  // the primary attempt's real error — local Ollama is the keyless exception.
+  const fallback = providers.find((p) => p.id !== primary.id && p.models.length && (p.apiKey || p.provider === "ollama"));
   if (fallback) attempts.push({ provider: fallback, model: fallback.models[0], fallback: true });
   let lastError: unknown = null;
+  let firstError: unknown = null;
   for (const attempt of attempts) {
     try {
       const llm = await createChatModel(attempt.provider, attempt.model);
@@ -443,22 +462,47 @@ async function generateAnswer(
       ];
       if (onToken) {
         let text = "";
-        const stream = await llm.stream(messages);
-        for await (const chunk of stream) {
-          const delta = chunkTextContent(chunk);
-          if (delta) {
-            text += delta;
-            onToken(delta);
+        let streamCompleted = true;
+        try {
+          const stream = await llm.stream(messages);
+          for await (const chunk of stream) {
+            const delta = chunkTextContent(chunk);
+            if (delta) {
+              text += delta;
+              onToken(delta);
+            }
           }
+        } catch {
+          // The streaming lane failed mid-run — providers surface overload and
+          // rate limits either as an SSE error payload inside HTTP 200 or as a
+          // thrown APIError. Never return a partial/truncated stream: fall
+          // through to the non-streaming retry of the same model below.
+          streamCompleted = false;
         }
-        return { text, fallbackModel: attempt.fallback };
+        if (streamCompleted && text.trim()) return { text, fallbackModel: attempt.fallback };
       }
+      // A stream that ends without content (silent SSE error payload or a
+      // thrown error) must not become an empty or failed answer when the same
+      // model still serves non-streaming requests. Retry it, then let the
+      // loop try the next provider.
       const res = await llm.invoke(messages);
-      const text = typeof res.content === "string" ? res.content : JSON.stringify(res.content);
+      const text = chunkTextContent(res);
+      if (!text.trim()) throw new Error(`"${attempt.model}" returned an empty response (provider may be overloaded or rate-limited) — try again or switch models.`);
       return { text, fallbackModel: attempt.fallback };
     } catch (error) {
+      if (!firstError) firstError = error;
       lastError = error;
+      // The failed attempt may have already streamed partial deltas — reset
+      // so the next attempt's stream replaces the buffer instead of appending.
+      options.onStreamReset?.();
     }
+  }
+  // When the fallback provider also failed, report the primary attempt's
+  // error first — it is the one the user's selected model produced.
+  if (firstError && lastError !== firstError) {
+    const first = firstError instanceof Error ? firstError.message : String(firstError);
+    const last = lastError instanceof Error ? lastError.message : String(lastError);
+    throw new Error(`${first} — fallback provider also failed: ${last}`);
   }
   throw lastError instanceof Error ? lastError : new Error("Generation failed.");
 }
@@ -477,7 +521,7 @@ type NotebookAgentRun = {
   embeddingModel: string;
   dims: number;
   steps: NotebookAgentStep[];
-  evaluation?: { groundedness: number; verdict: "grounded" | "partial" | "ungrounded"; issues: string[] };
+  evaluation?: { citationCoverage: number; verdict: "grounded" | "partial" | "ungrounded"; issues: string[] };
   /** True when agent tokens already reached the renderer (fallback must reset). */
   streamedTokens?: boolean;
 };
@@ -493,7 +537,8 @@ async function runNotebookAgent(
   question: string,
   history: Array<{ role: string; text: string }>,
   options: NotebookRagOptions,
-  summary: { files: string[]; headings: string[]; terms: string[] }
+  summary: { files: string[]; headings: string[]; terms: string[] },
+  snapshot: NotebookRetrievalSnapshot
 ): Promise<NotebookAgentRun | null> {
   if (options.generate) return null; // deterministic pipeline tests and callers can inject their own generator
   const providers = await listProviders().catch(() => []);
@@ -544,7 +589,7 @@ async function runNotebookAgent(
     throwIfCancelled();
     const cleanQuery = query.trim();
     options.onStatus?.(`Searching sources for "${cleanQuery}"…`);
-    const found = await hybridRetrieve(notebookId, cleanQuery, Math.min(Math.max(topK || 8, 4), 24), fileIds?.length ? fileIds : options.fileIds);
+    const found = await hybridRetrieve(notebookId, cleanQuery, Math.min(Math.max(topK || 8, 4), 24), fileIds?.length ? fileIds : options.fileIds, snapshot);
     embeddingModel = found.embeddingModel;
     dims = found.dims;
     const uniqueSources = [...new Set(found.results.map((r) => r.sourceName))];
@@ -584,7 +629,7 @@ async function runNotebookAgent(
     throwIfCancelled();
     options.onStatus?.("Inspecting notebook structure & table of contents…");
     const outline = await sessionOutline(notebookSessionDir(notebookId), notebookId);
-    const overview = await hybridRetrieve(notebookId, "main topics overview concepts themes", 24, options.fileIds);
+    const overview = await hybridRetrieve(notebookId, "main topics overview concepts themes", 24, options.fileIds, snapshot);
     embeddingModel = overview.embeddingModel;
     dims = overview.dims;
     const detail = `${outline.length} file(s), ${outline.reduce((sum, d) => sum + d.sectionCount, 0)} sections`;
@@ -886,18 +931,10 @@ Notebook terms: ${summary.terms.slice(0, 40).join(", ") || "(none)"}${options.in
     const sources = toCitations(ranked);
     await registerAgentDeliverables(notebookId, workspace, runStartMs, question, answer, sources);
 
-    // Groundedness self-evaluation
-    const citedMarkers = answer.match(/\[S\d+\]/g) || [];
-    let evaluation: { groundedness: number; verdict: "grounded" | "partial" | "ungrounded"; issues: string[] } | undefined;
-    if (sources.length > 0) {
-      if (citedMarkers.length >= 2) {
-        evaluation = { groundedness: 9, verdict: "grounded", issues: [] };
-      } else if (citedMarkers.length === 1) {
-        evaluation = { groundedness: 7, verdict: "partial", issues: ["Single citation found"] };
-      } else {
-        evaluation = { groundedness: 5, verdict: "partial", issues: ["Answer did not explicitly cite [Sn] source markers"] };
-      }
-    }
+    // Structural citation-coverage evaluation: every marker must resolve to a
+    // registered chunk, and the score is the share of prose sentences carrying
+    // one. Purely structural — no extra model call.
+    const evaluation = sources.length > 0 ? evaluateCitationCoverage(answer, citationRegistry.length) : undefined;
 
     return {
       answer,
@@ -990,12 +1027,15 @@ export async function answerNotebookQuestion(
   const topK = options.topK || 8;
   const summary = await sessionSummary(root, notebookId);
   const termSet = new Set(summary.termSet);
+  // One store read per ask: every retrieval below (agent tools, multi-query
+  // variants, session outline) reuses this snapshot.
+  const snapshot = await loadRetrievalSnapshot(notebookId);
 
   // The normal notebook path is now a tool-using agent. Keep the explicit
   // retrieval pipeline below as a grounded compatibility fallback for tests,
   // providers without tool-call support, and transient agent failures.
   const heuristicForAgent = routeMessageHeuristic(question, termSet);
-  const agentResult = await runNotebookAgent(notebookId, question, history, options, summary);
+  const agentResult = await runNotebookAgent(notebookId, question, history, options, summary, snapshot);
   if (agentResult && (agentResult.sources.length > 0 || heuristicForAgent.action !== "retrieve" || isSessionWideAsk(question))) {
     return {
       answer: agentResult.answer,
@@ -1084,7 +1124,7 @@ export async function answerNotebookQuestion(
         dims: 0,
       };
     }
-    const lib = await loadLibrary(root, notebookId);
+    const lib = snapshot.lib;
     const repChunks: RetrievedChunk[] = [];
     for (const doc of outline) {
       for (const heading of doc.headings.slice(0, 8)) {
@@ -1133,7 +1173,7 @@ export async function answerNotebookQuestion(
   const effectiveTopK = generative ? Math.max(topK, 24) : topK;
   const variants = queryVariants(searchQuery);
   const retrievalBatches = await Promise.all(
-    variants.map((variant) => hybridRetrieve(notebookId, variant, Math.max(effectiveTopK, 24), options.fileIds))
+    variants.map((variant) => hybridRetrieve(notebookId, variant, Math.max(effectiveTopK, 24), options.fileIds, snapshot))
   );
   const firstBatch = retrievalBatches[0] || { results: [], embeddingModel: "none", dims: 0 };
   const results = mergeRetrievedResults(retrievalBatches.map((batch) => batch.results), Math.max(effectiveTopK * 3, 24));
@@ -1206,21 +1246,8 @@ export async function answerNotebookQuestion(
     embeddingModel,
     dims,
     steps: [{ id: `step-${Date.now()}`, name: "hybrid_retrieve", title: `Hybrid search: "${searchQuery}"`, detail: `Fused ${top.length} passage(s)`, status: "completed" }],
-    evaluation: { groundedness: 8, verdict: "grounded", issues: [] },
+    evaluation: evaluateCitationCoverage(answer, sources.length),
   };
-}
-
-function toCitations(chunks: RetrievedChunk[]): NotebookSourceCitation[] {
-  return chunks.map((r, i) => ({
-    index: i + 1,
-    sourceId: r.sourceId,
-    sourceName: r.sourceName,
-    chunkId: r.chunkId,
-    heading: r.headingPath.join(" › ") || r.sourceName,
-    excerpt: r.text.slice(0, 400),
-    snippet: r.text.replace(/\s+/g, " ").trim().slice(0, 200),
-    score: Number(r.final.toFixed(4)),
-  }));
 }
 
 /** Single-chunk passage view: chunk + neighbors + section summary. */

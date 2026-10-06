@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronsDownUp, ChevronsUpDown, Maximize, Maximize2, Minimize2, PanelRight, RotateCcw, X, ZoomIn, ZoomOut } from "lucide-react";
 import { Modal } from "../common/Modal.js";
+import { UNVERIFIED_CITATION_TITLE } from "./CitationSources.js";
 import type { NotebookMindmap, NotebookMindmapNode } from "../../types.js";
 
 const PALETTE = ["#e879a0", "#39c5cf", "#7ee787", "#f0b429", "#a371f7", "#ff9e64", "#58a6ff", "#ff7b72"];
@@ -31,8 +32,40 @@ function collectIds(nodes: NotebookMindmapNode[], out: string[] = []): string[] 
   return out;
 }
 
-function truncate(label: string, max = 44): string {
+function truncate(label: string, max: number): string {
   return label.length > max ? `${label.slice(0, max - 1)}…` : label;
+}
+
+// Map-label rules: the central topic and depth-1 branches carry the map's
+// structure, so they wrap to two lines instead of being cut mid-title; deeper
+// nodes stay single-line with a wider cap. Overflow past 2×64 chars (the
+// sanitizer stores up to 120) truncates only the final line.
+const LEAF_LABEL_MAX = 64;
+const BRANCH_LINE_MAX = 64;
+const BRANCH_MAX_LINES = 2;
+
+/** Greedy word-wrap into at most `maxLines` lines of `maxChars`; overflow
+ *  goes on the last line, truncated. */
+function wrapLabel(label: string, maxChars: number, maxLines: number): string[] {
+  if (label.length <= maxChars) return [label];
+  const words = label.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let idx = 0;
+  while (idx < words.length && lines.length < maxLines - 1) {
+    let line = words[idx++];
+    while (idx < words.length && `${line} ${words[idx]}`.length <= maxChars) line += ` ${words[idx++]}`;
+    lines.push(line);
+  }
+  if (idx < words.length) lines.push(truncate(words.slice(idx).join(" "), maxChars));
+  return lines;
+}
+
+function nodeLabelLines(p: PlacedNode): string[] {
+  const lines = p.depth <= 1
+    ? wrapLabel(p.label, BRANCH_LINE_MAX, BRANCH_MAX_LINES)
+    : [truncate(p.label, LEAF_LABEL_MAX)];
+  if (p.isCollapsed) lines[lines.length - 1] += ` (+${p.childCount})`;
+  return lines;
 }
 
 /**
@@ -70,10 +103,21 @@ function layoutMap(roots: NotebookMindmapNode[], title: string, collapsed: Set<s
       self.y = TOP_PAD + cursor * V_GAP;
       cursor++;
     } else {
+      // A two-line branch label is taller than one row, so centering the
+      // branch on its children puts a child row inside the label band. Such
+      // branches get a dedicated row above their subtree instead; short
+      // branches keep the classic centered look.
+      const wrapsToTwoLines = depth <= 1 && label.length > BRANCH_LINE_MAX;
+      if (wrapsToTwoLines) {
+        self.y = TOP_PAD + cursor * V_GAP;
+        cursor++;
+      }
       const kids = visibleChildren.map((child) =>
         place(child, child.id, child.label, depth + 1, color, self, child.children)
       );
-      self.y = (kids[0].y + kids[kids.length - 1].y) / 2;
+      if (!wrapsToTwoLines) {
+        self.y = (kids[0].y + kids[kids.length - 1].y) / 2;
+      }
     }
     return self;
   };
@@ -349,7 +393,13 @@ export function MindmapViewerModal({ map, onClose }: { map: NotebookMindmap; onC
                   const isSelected = p.id === selectedId;
                   const r = p.depth === 0 ? 9 : 5.5;
                   const isCentral = p.depth === 0;
-                  const displayLabel = p.isCollapsed ? `${truncate(p.label)} (+${p.childCount})` : truncate(p.label);
+                  const lines = nodeLabelLines(p);
+                  const fontSize = isCentral ? 15 : p.depth === 1 ? 13.5 : 12.5;
+                  const lineHeight = fontSize * 1.2;
+                  // Baseline of the first line, so the whole block stays
+                  // vertically centered on the node dot.
+                  const firstBaseline = (isCentral ? 5 : 4) - ((lines.length - 1) * lineHeight) / 2;
+                  const labelX = isCentral ? -(r + 10) : r + 9;
                   return (
                     <g key={p.id} transform={`translate(${p.x},${p.y})`} style={{ cursor: "pointer" }} onClick={() => handleNodeClick(p)}>
                       <title>{p.isCollapsed ? `${p.label} — click to expand (${p.childCount} hidden)` : `${p.label} — click to ${p.hasChildren ? "fold" : "inspect"}`}</title>
@@ -363,10 +413,10 @@ export function MindmapViewerModal({ map, onClose }: { map: NotebookMindmap; onC
                       <circle r={r} fill="var(--panel)" stroke={p.color} strokeWidth={2.5} />
                       <circle r={r - 2.5} fill={p.color} opacity={0.9} pointerEvents="none" />
                       <text
-                        x={isCentral ? -(r + 10) : r + 9}
-                        y={isCentral ? 5 : 4}
+                        x={labelX}
+                        y={firstBaseline}
                         textAnchor={isCentral ? "end" : "start"}
-                        fontSize={isCentral ? 15 : p.depth === 1 ? 13.5 : 12.5}
+                        fontSize={fontSize}
                         fontWeight={p.depth <= 1 ? 700 : 400}
                         fill="var(--text)"
                         stroke="var(--bg)"
@@ -374,7 +424,11 @@ export function MindmapViewerModal({ map, onClose }: { map: NotebookMindmap; onC
                         paintOrder="stroke"
                         pointerEvents="none"
                       >
-                        {displayLabel}
+                        {lines.map((line, i) => (
+                          <tspan key={i} x={labelX} dy={i === 0 ? 0 : lineHeight}>
+                            {line}
+                          </tspan>
+                        ))}
                       </text>
                     </g>
                   );
@@ -455,9 +509,13 @@ export function MindmapViewerModal({ map, onClose }: { map: NotebookMindmap; onC
                       <span className="passage-label">SOURCES ({selectedNode.citations.length})</span>
                       <div className="mindmap-sources-list">
                         {selectedNode.citations.map((c, i) => (
-                          <div key={i} className="mindmap-source-item" title={`${c.sourceName} — ${c.heading}`}>
-                            <span className="citation-tag">[S{c.index}]</span>
-                            <span className="mindmap-source-text">{c.sourceName} — {c.heading}</span>
+                          <div
+                            key={i}
+                            className="mindmap-source-item"
+                            title={c.verified === false ? UNVERIFIED_CITATION_TITLE : `${c.sourceName} — ${c.heading}`}
+                          >
+                            <span className={`citation-tag${c.verified === false ? " unverified" : ""}`}>[S{c.index}]</span>
+                            <span className="mindmap-source-text">{c.sourceName} — {c.heading}{c.verified === false ? " (unverified)" : ""}</span>
                           </div>
                         ))}
                       </div>
@@ -471,9 +529,9 @@ export function MindmapViewerModal({ map, onClose }: { map: NotebookMindmap; onC
                   <summary>All cited passages ({map.citations.length})</summary>
                   <div className="citation-list" style={{ marginTop: 8 }}>
                     {map.citations.map((cite) => (
-                      <div key={cite.chunkId} className="citation-row" title={cite.snippet}>
-                        <span className="citation-tag">[S{cite.index}]</span>
-                        <span className="citation-name">{cite.sourceName} — {cite.heading}</span>
+                      <div key={cite.chunkId} className="citation-row" title={cite.verified === false ? UNVERIFIED_CITATION_TITLE : cite.snippet}>
+                        <span className={`citation-tag${cite.verified === false ? " unverified" : ""}`}>[S{cite.index}]</span>
+                        <span className="citation-name">{cite.sourceName} — {cite.heading}{cite.verified === false ? " (unverified)" : ""}</span>
                         <span className="citation-score">{cite.score.toFixed(2)}</span>
                       </div>
                     ))}

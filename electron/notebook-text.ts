@@ -52,7 +52,7 @@ export function validateUpload(filename: string, byteLength: number): { ok: bool
 
 // ---- Markdown cleaning (conservative boilerplate removal) ----
 
-const STOPWORDS = new Set(
+export const NOTEBOOK_STOPWORDS = new Set(
   "the,a,an,and,or,of,to,in,on,for,with,as,at,by,from,is,are,was,were,be,been,being,it,its,this,that,these,those,you,your,he,she,they,them,his,her,their,our,we,us,i,me,my,not,no,yes,if,then,else,when,where,which,who,whom,what,how,why,can,could,should,would,will,do,does,did,have,has,had,all,any,each,more,most,other,some,such,than,too,very,into,over,after,before,between,through,during,about,against,per,via,also,within,without".split(",")
 );
 
@@ -60,7 +60,7 @@ export function notebookTokens(text: string): string[] {
   // Unicode-aware tokenization is important for education content: Arabic,
   // French accents, Greek, Cyrillic, and mixed-language course notes must be
   // searchable just like English documents.
-  return (text.toLocaleLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_\-]{2,}/gu) || []).filter((t) => !STOPWORDS.has(t));
+  return (text.toLocaleLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_\-]{2,}/gu) || []).filter((t) => !NOTEBOOK_STOPWORDS.has(t));
 }
 
 export function meaningfulQueryTerms(query: string): string[] {
@@ -441,7 +441,93 @@ export function gateDecision(query: string, bestSemantic: number, retrievedTexts
   return { refused: false };
 }
 
-// ---- Context composition (bounded, deduped) ----
+// ---- Citation coverage (structural, no extra model call) ----
+
+export type CitationCoverageEvaluation = {
+  citationCoverage: number;
+  verdict: "grounded" | "partial" | "ungrounded";
+  issues: string[];
+};
+
+function coverageSentences(answer: string): string[] {
+  // Code blocks, tables and headings are not prose claims; drop them before
+  // splitting so formatting noise doesn't dilute the coverage ratio.
+  const prose = (answer || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/^\s*\|.*\|\s*$/gm, " ")
+    .replace(/^\s*#{1,6}\s.*$/gm, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!prose) return [];
+  const protected_ = prose.replace(/\b(e\.g|i\.e|vs|etc|Mr|Mrs|Ms|Dr|Fig|Eq|Sec|Ch)\./gi, (m) => m.replace(/\./g, "\u0001"));
+  return protected_
+    .split(/(?<=[.!?…])\s+/)
+    .map((s) => s.replace(/\u0001/g, ".").trim())
+    .filter(Boolean);
+}
+
+/**
+ * Structural check of how well an answer's claims are tied to its citations:
+ * every [Sn] marker must resolve to a registered passage, and coverage is the
+ * share of prose sentences carrying at least one marker. This measures
+ * citation discipline — it cannot verify that a claim is true, only that it
+ * is anchored.
+ */
+export function evaluateCitationCoverage(answer: string, registeredCount: number): CitationCoverageEvaluation {
+  const issues: string[] = [];
+  const sentences = coverageSentences(answer);
+  const markerRe = /\[S(\d+)\]/g;
+  const citedMarkers = new Set<number>();
+  let unresolved = 0;
+  let match: RegExpExecArray | null;
+  while ((match = markerRe.exec(answer || ""))) {
+    const n = Number(match[1]);
+    if (n >= 1 && n <= registeredCount) citedMarkers.add(n);
+    else unresolved++;
+  }
+  if (unresolved > 0) issues.push(`${unresolved} citation marker${unresolved === 1 ? "" : "s"} point past the retrieved passages`);
+  const citedSentences = sentences.filter((s) => /\[S\d+\]/.test(s)).length;
+  const coverage = sentences.length ? citedSentences / sentences.length : citedMarkers.size > 0 ? 1 : 0;
+  if (!citedMarkers.size) issues.push("answer contains no [Sn] citation markers despite sources being present");
+  else if (coverage < 0.6) issues.push(`only ${Math.round(coverage * 100)}% of sentences carry a citation marker`);
+  let verdict: CitationCoverageEvaluation["verdict"];
+  if (coverage >= 0.6 && !unresolved && citedMarkers.size) verdict = "grounded";
+  else if (coverage >= 0.2 || citedMarkers.size >= 2) verdict = "partial";
+  else verdict = "ungrounded";
+  return { citationCoverage: Math.round(coverage * 100) / 100, verdict, issues };
+}
+
+// ---- Citations (shared by the chat pipeline and the generators) ----
+
+export type NotebookCitationLike = {
+  index: number;
+  sourceId: string;
+  sourceName: string;
+  chunkId: string;
+  heading: string;
+  excerpt: string;
+  snippet: string;
+  score: number;
+  verified?: boolean;
+};
+
+/** Ranked passages → numbered citation list. Retrieval citations are always
+ *  `verified: true` (they came from the index, not a positional fallback). */
+export function toCitations(results: Array<{ sourceId: string; sourceName: string; chunkId: string; headingPath: string[]; text: string; final: number }>): NotebookCitationLike[] {
+  return results.map((r, i) => ({
+    index: i + 1,
+    sourceId: r.sourceId,
+    sourceName: r.sourceName,
+    chunkId: r.chunkId,
+    heading: r.headingPath.join(" › ") || r.sourceName,
+    excerpt: r.text.slice(0, 400),
+    snippet: r.text.replace(/\s+/g, " ").trim().slice(0, 200),
+    score: Number(r.final.toFixed(4)),
+    verified: true,
+  }));
+}
+
+
 
 /**
  * Like composeContextBlock but also returns which input chunk indices were

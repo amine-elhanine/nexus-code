@@ -28,8 +28,4 @@ export const notebookFlags = {
   get cloudParser() {
     return envFlag("CLOUD_PARSER", false);
   },
-  /** LLM cross-encoder rerank of fused candidates (else local rerank). */
-  get llmRerank() {
-    return envFlag("LLM_RERANK", false);
-  },
 };

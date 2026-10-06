@@ -35,6 +35,8 @@ export function useNotebookController(enabled: boolean) {
   const [generatingFlashcards, setGeneratingFlashcards] = useState(false);
   const [importingLink, setImportingLink] = useState<{ kind: "youtube" | "website"; url: string } | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  // Current ingestion sub-step (vision image analysis, page OCR) for the card.
+  const [ingestDetail, setIngestDetail] = useState("");
   const activeChatRef = useRef<NotebookChat | null>(null);
   activeChatRef.current = activeChat;
   // Guards the one-chat-per-session ensure below against parallel creates
@@ -162,11 +164,13 @@ export function useNotebookController(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
     const typed = api as unknown as {
-      onNotebookJobProgress?: (listener: (progress: { notebookId: string; sourceId: string; status: NotebookSource["status"]; chunks?: number; error?: string }) => void) => () => void;
+      onNotebookJobProgress?: (listener: (progress: { notebookId: string; sourceId: string; status: NotebookSource["status"]; chunks?: number; error?: string; detail?: string }) => void) => () => void;
     };
     if (typeof typed.onNotebookJobProgress !== "function") return;
     return typed.onNotebookJobProgress((progress) => {
       if (activeNotebook && progress.notebookId === activeNotebook.id) {
+        // Vision/parsing sub-step detail (e.g. "Analyzing image page-3.png…").
+        setIngestDetail(progress.status === "ready" || progress.status === "failed" || !progress.detail ? "" : progress.detail);
         setSources((prev) => {
           const index = prev.findIndex((s) => s.id === progress.sourceId);
           if (index === -1) {
@@ -589,10 +593,11 @@ export function useNotebookController(enabled: boolean) {
     setIsUploading(true);
     setNotice("Importing files…");
     try {
-      const typed = api as unknown as { notebookPickFiles: (id: string) => Promise<NotebookSource[]> };
-      const next = await typed.notebookPickFiles(activeNotebook.id);
+      const typed = api as unknown as { notebookPickFiles: (id: string) => Promise<{ sources: NotebookSource[]; failures: string[] }> };
+      const { sources: next, failures } = await typed.notebookPickFiles(activeNotebook.id);
       setSources(next);
-      setNotice("Indexing in the background — ask in a moment if sources show “indexing”.");
+      const failureNote = failures.length ? ` ${failures.length} file${failures.length === 1 ? "" : "s"} failed: ${failures.slice(0, 3).join(" · ")}${failures.length > 3 ? ` +${failures.length - 3} more` : ""}` : "";
+      setNotice(`Indexing in the background — ask in a moment if sources show “indexing”.${failureNote}`);
       void refreshNotebookDetail(activeNotebook.id);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Import failed.");
@@ -650,8 +655,9 @@ export function useNotebookController(enabled: boolean) {
     setNotice(`Uploading ${list.length} file(s)…`);
     try {
       for (const file of list) {
-        if (file.size > 8 * 1024 * 1024) {
-          setNotice(`${file.name} is over 8 MB — use the file picker instead.`);
+        // Same limit the backend enforces (NOTEBOOK_MAX_UPLOAD_BYTES).
+        if (file.size > 15 * 1024 * 1024) {
+          setNotice(`${file.name} is over 15 MB — the upload limit is 15 MB.`);
           continue;
         }
         if (/\.(txt|md|markdown|json|csv|log|tex)$/i.test(file.name)) {
@@ -818,6 +824,7 @@ export function useNotebookController(enabled: boolean) {
     uploadBrowserFiles,
     importingLink,
     isUploading,
+    ingestDetail,
     ask,
     stopAsk,
   };
