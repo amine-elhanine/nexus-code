@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { composeContextBlock } from "./notebook-text.js";
+import { composeContextBlock, toCitations } from "./notebook-text.js";
 import { listNotebookSources, notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
 import { hybridRetrieve } from "./notebook-rag.js";
 import { loadLibrary, sessionOutline } from "./notebook-library.js";
@@ -157,18 +157,9 @@ export async function downloadNotebookDocument(notebookId: string, docId: string
   return filePath;
 }
 
-export function toCitations(results: Array<{ sourceId: string; sourceName: string; chunkId: string; headingPath: string[]; text: string; final: number }>): NotebookSourceCitation[] {
-  return results.map((r, i) => ({
-    index: i + 1,
-    sourceId: r.sourceId,
-    sourceName: r.sourceName,
-    chunkId: r.chunkId,
-    heading: r.headingPath.join(" › ") || r.sourceName,
-    excerpt: r.text.slice(0, 400),
-    snippet: r.text.replace(/\s+/g, " ").trim().slice(0, 200),
-    score: Number(r.final.toFixed(4)),
-  }));
-}
+// Shared ranked-passages → citations helper now lives in notebook-text.js;
+// re-exported here for existing importers of the documents module.
+export { toCitations };
 
 async function planWithLlm(system: string, user: string, input: GenerateDocumentInput): Promise<string> {
   if (input.generate) return input.generate(system, user);

@@ -3176,3 +3176,10 @@
 .context-pane.narrow .context-section { padding: 12px 8px 0; }
 .context-pane.narrow .diff-file-row { padding: 0 8px; gap: 6px; }
 .context-pane.narrow .diff-file-stats { gap: 6px; min-width: 0; }
+
+/* Unverified citations: positional fallback links from the study generators.
+   Dimmed + dashed so they read as "auto-linked", never as model-cited. */
+.citation-tag.unverified {
+  opacity: 0.55;
+  border-style: dashed;
+}

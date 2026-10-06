@@ -72,6 +72,9 @@ export type NotebookSourceCitation = {
   excerpt: string;
   snippet: string;
   score: number;
+  /** False only for position-based fallback links (generators), which may not
+   *  actually support the claim. Real retrieval citations omit the flag. */
+  verified?: boolean;
 };
 
 export type NotebookAgentStep = {
@@ -88,7 +91,7 @@ export type NotebookChatMessage = {
   text: string;
   createdAt: string;
   citations?: NotebookSourceCitation[];
-  evaluation?: { groundedness: number; verdict: "grounded" | "partial" | "ungrounded"; issues: string[] };
+  evaluation?: { citationCoverage: number; verdict: "grounded" | "partial" | "ungrounded"; issues: string[] };
   retrieval?: Array<{ chunkId: string; sourceName: string; score: number; methods: string[] }>;
   metadata?: { routing?: string; topScore?: number; refused?: boolean; fallbackModel?: boolean };
   steps?: NotebookAgentStep[];
@@ -261,14 +264,14 @@ export async function getNotebookSource(notebookId: string, sourceId: string): P
   return (await listNotebookSources(notebookId)).find((s) => s.id === sourceId) || null;
 }
 
-export async function pickAndImportSourceFiles(notebookId: string): Promise<NotebookSource[]> {
+export async function pickAndImportSourceFiles(notebookId: string): Promise<{ sources: NotebookSource[]; failures: string[] }> {
   const dialog = electronApi().dialog;
   if (!dialog) throw new Error("File picker is only available in the desktop app.");
   const result = await dialog.showOpenDialog({
     properties: ["openFile", "multiSelections"],
     filters: [{ name: "Documents and images", extensions: ["txt", "md", "markdown", "json", "csv", "tsv", "log", "tex", "html", "htm", "pdf", "docx", "pptx", "png", "jpg", "jpeg", "webp"] }],
   });
-  if (result.canceled || !result.filePaths.length) return listNotebookSources(notebookId);
+  if (result.canceled || !result.filePaths.length) return { sources: await listNotebookSources(notebookId), failures: [] };
   const failures: string[] = [];
   for (const filePath of result.filePaths.slice(0, 20)) {
     try {
@@ -278,9 +281,9 @@ export async function pickAndImportSourceFiles(notebookId: string): Promise<Note
       failures.push(`${path.basename(filePath)}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  const sources = await listNotebookSources(notebookId);
-  if (!sources.length && failures.length) throw new Error(failures.join("\n"));
-  return sources;
+  // Partial failures are reported to the caller (shown in the UI notice)
+  // instead of being swallowed whenever at least one file imported.
+  return { sources: await listNotebookSources(notebookId), failures };
 }
 
 /**

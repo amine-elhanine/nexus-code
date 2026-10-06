@@ -7,7 +7,11 @@
  *
  * Plain HTTP fetching only: heavily JS-rendered pages may come back thin —
  * the importer says so per page instead of silently storing shells.
+ * Every fetch target (start URL, crawled links, redirect destinations) is
+ * checked against the SSRF guard — local/private addresses are never fetched.
  */
+
+import { assertPublicHttpUrl, isPublicHttpUrl } from "./net-guard.js";
 
 export interface CrawledPage {
   url: string;
@@ -248,6 +252,8 @@ async function fetchHtml(url: string, timeoutMs: number): Promise<{ html: string
  */
 export async function crawlWebsite(rawUrl: string, options?: CrawlOptions): Promise<WebsiteCrawl> {
   const startUrl = normalizeWebUrl(rawUrl);
+  // Throw early with the friendly message for a blocked start URL.
+  await assertPublicHttpUrl(startUrl);
   const opt = { ...DEFAULTS, ...options };
   const host = new URL(startUrl).host;
 
@@ -263,8 +269,12 @@ export async function crawlWebsite(rawUrl: string, options?: CrawlOptions): Prom
     const batch = queue.splice(0, 3);
     const results = await Promise.all(
       batch.map(async ({ url, depth }) => {
+        // Private/loopback targets (incl. redirect destinations) are skipped,
+        // surfacing as thin pages rather than being fetched.
+        if (!(await isPublicHttpUrl(url))) return { url, depth, html: null as string | null, finalUrl: url };
         const fetched = await fetchHtml(url, opt.timeoutMs);
         if (!fetched) return { url, depth, html: null as string | null, finalUrl: url };
+        if (!(await isPublicHttpUrl(fetched.finalUrl))) return { url, depth, html: null as string | null, finalUrl: url };
         return { url, depth, html: fetched.html, finalUrl: fetched.finalUrl };
       })
     );

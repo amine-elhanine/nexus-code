@@ -2,6 +2,7 @@ import React, { useMemo, useState } from "react";
 import { Check, HelpCircle, RotateCcw, X } from "lucide-react";
 import { Modal } from "../common/Modal.js";
 import type { NotebookQuiz } from "../../types.js";
+import { CitationSources } from "./CitationSources.js";
 
 /** Interactive quiz runner: pick one answer per question, Finish grades it. */
 export function QuizPlayerModal({ quiz, onClose }: { quiz: NotebookQuiz; onClose: () => void }) {
@@ -125,7 +126,7 @@ export function QuizPlayerModal({ quiz, onClose }: { quiz: NotebookQuiz; onClose
                   <div style={{ fontSize: 12, opacity: 0.9, marginTop: 4 }}>{q.explanation}</div>
                   {!!q.citations.length && (
                     <small style={{ opacity: 0.8 }}>
-                      Sources: {q.citations.map((c) => `[S${c.index}] ${c.sourceName} — ${c.heading}`).join("; ")}
+                      <CitationSources citations={q.citations} />
                     </small>
                   )}
                 </div>

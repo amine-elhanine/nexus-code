@@ -24,8 +24,12 @@ export type SplitDiffRow = { kind: "context" | "change" | "added" | "deleted" | 
 export type NotebookMeta = { id: string; name: string; description?: string; createdAt: string; updatedAt: string };
 export type NotebookSourceStatus = "uploaded" | "parsing" | "chunking" | "indexing" | "ready" | "failed";
 export type NotebookSource = { id: string; notebookId: string; filename: string; size: number; chars: number; chunks: number; status: NotebookSourceStatus; parser?: string; fingerprint?: string; pageCount?: number; error?: string; createdAt: string; updatedAt: string };
-export type NotebookCitation = { index: number; sourceId: string; sourceName: string; chunkId: string; heading: string; excerpt: string; snippet: string; score: number };
-export type NotebookEvaluation = { groundedness: number; verdict: "grounded" | "partial" | "ungrounded"; issues: string[] };
+export type NotebookCitation = { index: number; sourceId: string; sourceName: string; chunkId: string; heading: string; excerpt: string; snippet: string; score: number; verified?: boolean };
+/** New shape: structural citation coverage. Legacy shape: the old 1-10 score.
+ *  Old messages persist in chats.json, so both must render. */
+export type NotebookEvaluation =
+  | { citationCoverage: number; verdict: "grounded" | "partial" | "ungrounded"; issues: string[] }
+  | { groundedness: number; verdict: "grounded" | "partial" | "ungrounded"; issues: string[] };
 export type NotebookMessageMetadata = { routing?: string; topScore?: number; refused?: boolean; fallbackModel?: boolean };
 export type NotebookAgentStep = { id: string; name: string; title: string; detail?: string; status: "running" | "completed" | "failed" };
 export type NotebookChatMessage = { id?: string; role: "user" | "assistant"; text: string; createdAt: string; citations?: NotebookCitation[]; evaluation?: NotebookEvaluation; retrieval?: Array<{ chunkId: string; sourceName: string; score: number; methods: string[] }>; metadata?: NotebookMessageMetadata; steps?: NotebookAgentStep[] };

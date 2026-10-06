@@ -15,7 +15,7 @@ import { QuizPlayerModal } from "../components/notebook/QuizPlayerModal.js";
 import { FlashcardPlayerModal } from "../components/notebook/FlashcardPlayerModal.js";
 import { MindmapViewerModal } from "../components/notebook/MindmapViewerModal.js";
 import { FilePreviewModal } from "../components/home/FilePreviewModal.js";
-import type { ChatItem, NotebookChat, NotebookDocument, NotebookFlashcardSet, NotebookMeta, NotebookMindmap, NotebookNote, NotebookPassage, NotebookQuiz, NotebookQuizType, NotebookSettings, NotebookSource, NotebookStats, NotebookSummary, NotebookSummaryLength, ProviderConfig, ProviderDefinition } from "../types.js";
+import type { ChatItem, NotebookChat, NotebookDocument, NotebookEvaluation, NotebookFlashcardSet, NotebookMeta, NotebookMindmap, NotebookNote, NotebookPassage, NotebookQuiz, NotebookQuizType, NotebookSettings, NotebookSource, NotebookStats, NotebookSummary, NotebookSummaryLength, ProviderConfig, ProviderDefinition } from "../types.js";
 
 function verdictColor(verdict?: string) {
   if (verdict === "grounded") return "#3fb950";
@@ -351,6 +351,7 @@ export function NotebookView({
   customCommands,
   importingLink,
   isUploading,
+  ingestDetail,
 }: {
   notebooks: NotebookMeta[];
   activeNotebook: NotebookMeta | null;
@@ -386,25 +387,26 @@ export function NotebookView({
   summarySteps: string[];
   onGenerateDocument: (kind: NotebookDocument["kind"], format: NotebookDocument["format"], prompt: string) => void;
   onGenerateQuiz: (topic: string, count: number, quizType: NotebookQuizType) => void;
-  onDeleteQuiz: (quizId: string) => void;
+  onDeleteQuiz: (quiz: NotebookQuiz) => void;
   onGenerateFlashcards: (topic: string, count: number) => void;
-  onDeleteFlashcards: (setId: string) => void;
+  onDeleteFlashcards: (set: NotebookFlashcardSet) => void;
   onGenerateMindmap: (topic: string) => void;
-  onDeleteMindmap: (mapId: string) => void;
+  onDeleteMindmap: (map: NotebookMindmap) => void;
   onGenerateSummary: (topic: string, length: NotebookSummaryLength) => void;
-  onDeleteSummary: (summaryId: string) => void;
+  onDeleteSummary: (summary: NotebookSummary) => void;
   onDownloadDocument: (docId: string) => void;
-  onDeleteDocument: (docId: string) => void;
+  onDeleteDocument: (doc: NotebookDocument) => void;
   onCreateNotebook: (name: string) => void;
-  onDeleteNotebook: (id: string) => void;
+  onDeleteNotebook: (nb: NotebookMeta) => void;
   onPickFiles: () => void;
   onImportYouTube: (url: string) => void;
   onImportWebsite: (url: string) => void;
   onBrowserFiles: (files: FileList | File[]) => void;
   importingLink?: { kind: "youtube" | "website"; url: string } | null;
   isUploading?: boolean;
+  ingestDetail?: string;
   onRefresh: () => void;
-  onDeleteSource: (sourceId: string) => void;
+  onDeleteSource: (source: NotebookSource) => void;
   onReindexSource: (sourceId: string) => void;
   onReindexAll: () => void;
   onToggleScope: (sourceId: string) => void;
@@ -414,7 +416,7 @@ export function NotebookView({
   onPassageAction: (action: PassageAction, passage: NotebookPassage) => void;
   onSaveInstructions: (instructions: string) => void;
   onSaveNote: (note: { title: string; content: string; citations: NotebookNote["citations"] }) => void;
-  onDeleteNote: (noteId: string) => void;
+  onDeleteNote: (note: NotebookNote) => void;
   onRename: (name: string) => void;
   onAsk: () => void;
   onStop: () => void;
@@ -658,10 +660,14 @@ export function NotebookView({
   const latestAnswer = [...(activeChat?.messages || [])].reverse().find((message) => message.role === "assistant" && message.text.trim());
 
   const evalSummary = useMemo(() => {
-    const evals = (activeChat?.messages || []).filter((m) => m.role === "assistant" && m.evaluation);
+    // Average over the new structural shape only — legacy messages carry the
+    // old 1-10 groundedness score, which measures something else entirely.
+    const evals = (activeChat?.messages || [])
+      .map((m) => m.evaluation)
+      .filter((e): e is Extract<NotebookEvaluation, { citationCoverage: number }> => Boolean(e && "citationCoverage" in e));
     if (!evals.length) return null;
-    const avg = evals.reduce((sum, m) => sum + (m.evaluation?.groundedness || 0), 0) / evals.length;
-    return { count: evals.length, avg: Math.round(avg * 10) / 10 };
+    const avg = evals.reduce((sum, e) => sum + e.citationCoverage, 0) / evals.length;
+    return { count: evals.length, avgPct: Math.round(avg * 100) };
   }, [activeChat]);
 
   function exportTranscript() {
@@ -712,7 +718,7 @@ export function NotebookView({
                 title="Delete session"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onDeleteNotebook(nb.id);
+                  onDeleteNotebook(nb);
                 }}
               >
                 <Trash2 size={12} />
@@ -932,6 +938,13 @@ export function NotebookView({
                     </div>
                   )}
 
+                  {ingestDetail && (
+                    <div className="notebook-ingestion-in-flight">
+                      <Cpu size={12} className="spin" />
+                      <span className="in-flight-url">{ingestDetail}</span>
+                    </div>
+                  )}
+
                   <div className="notebook-ingestion-progress-track">
                     <div
                       className="notebook-ingestion-progress-fill"
@@ -1013,7 +1026,7 @@ export function NotebookView({
                           </button>
                           <button
                             className="pane-action danger"
-                            onClick={() => onDeleteSource(source.id)}
+                            onClick={() => onDeleteSource(source)}
                             title="Delete source and all its derived data"
                           >
                             <Trash2 size={11} />
@@ -1162,8 +1175,10 @@ export function NotebookView({
                   </span>
                 )}
                 {message.role === "assistant" && message.evaluation && (
-                  <span className="eval-pill" style={{ borderColor: verdictColor(message.evaluation.verdict) }} title={(message.evaluation.issues || []).join("\n") || "Self-evaluation"}>
-                    groundedness {message.evaluation.groundedness}/10 · {message.evaluation.verdict}
+                  <span className="eval-pill" style={{ borderColor: verdictColor(message.evaluation.verdict) }} title={(message.evaluation.issues || []).join("\n") || "Citation coverage"}>
+                    {"citationCoverage" in message.evaluation
+                      ? `citations cover ${Math.round(message.evaluation.citationCoverage * 100)}% · ${message.evaluation.verdict}`
+                      : `groundedness ${message.evaluation.groundedness}/10 · ${message.evaluation.verdict}`}
                   </span>
                 )}
                 {message.role === "assistant" && !!message.citations?.length && (
@@ -1267,7 +1282,6 @@ export function NotebookView({
         </div>
 
         {/* Right sidebar: Studio (output types on top, generated outputs below) */}
-        {/* Right sidebar: Studio (output types on top, generated outputs below) */}
         {showStudio ? (
           <aside className="notebook-side notebook-side-studio" style={{ width: studioWidth }}>
             <div className="context-resize" onPointerDown={startStudioResize} title="Drag to resize studio sidebar" />
@@ -1320,7 +1334,7 @@ export function NotebookView({
                   <div className="notebook-artifact-card clickable" key={summary.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewQuizId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(summary.id); }} title="Read this summary">
                     <div className="notebook-artifact-top">
                       <span className="notebook-artifact-type-pill tone-summary"><Sparkles size={10} /> Summary</span>
-                      <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteSummary(summary.id); }} title="Delete summary"><Trash2 size={11} /></button>
+                      <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteSummary(summary); }} title="Delete summary"><Trash2 size={11} /></button>
                     </div>
                     <strong className="notebook-artifact-title">{summary.title}</strong>
                     <div className="notebook-artifact-excerpt">{summary.sections.length} sections · {summary.length} · {summary.citations.length} cited passages</div>
@@ -1331,7 +1345,7 @@ export function NotebookView({
                   <div className="notebook-artifact-card clickable" key={map.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewQuizId(null); setViewFichesId(null); setViewSummaryId(null); setViewMapId(map.id); }} title="Open this mind map">
                     <div className="notebook-artifact-top">
                       <span className="notebook-artifact-type-pill tone-mindmap"><Network size={10} /> Mind map</span>
-                      <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteMindmap(map.id); }} title="Delete mind map"><Trash2 size={11} /></button>
+                      <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteMindmap(map); }} title="Delete mind map"><Trash2 size={11} /></button>
                     </div>
                     <strong className="notebook-artifact-title">{map.title}</strong>
                     <div className="notebook-artifact-excerpt">{map.nodeCount} nodes · {map.citations.length} cited passages</div>
@@ -1342,7 +1356,7 @@ export function NotebookView({
                   <div className="notebook-artifact-card clickable" key={set.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewQuizId(null); setViewMapId(null); setViewSummaryId(null); setViewFichesId(set.id); }} title="Study these flashcards">
                     <div className="notebook-artifact-top">
                       <span className="notebook-artifact-type-pill tone-flashcards"><Layers size={10} /> Flashcards</span>
-                      <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteFlashcards(set.id); }} title="Delete flashcards"><Trash2 size={11} /></button>
+                      <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteFlashcards(set); }} title="Delete flashcards"><Trash2 size={11} /></button>
                     </div>
                     <strong className="notebook-artifact-title">{set.title}</strong>
                     <div className="notebook-artifact-excerpt">{set.cards.length} cards · {set.citations.length} cited passages</div>
@@ -1353,7 +1367,7 @@ export function NotebookView({
                   <div className="notebook-artifact-card clickable" key={quiz.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(null); setViewQuizId(quiz.id); }} title="Take this quiz">
                     <div className="notebook-artifact-top">
                       <span className="notebook-artifact-type-pill tone-quiz"><HelpCircle size={10} /> Quiz</span>
-                      <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteQuiz(quiz.id); }} title="Delete quiz"><Trash2 size={11} /></button>
+                      <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteQuiz(quiz); }} title="Delete quiz"><Trash2 size={11} /></button>
                     </div>
                     <strong className="notebook-artifact-title">{quiz.title}</strong>
                     <div className="notebook-artifact-excerpt">{quiz.questions.length} questions · {quiz.quizType === "mcq" ? "MCQ" : quiz.quizType === "truefalse" ? "True/False" : "Mixed"} · {quiz.citations.length} cited passages</div>
@@ -1366,7 +1380,7 @@ export function NotebookView({
                       <span className="notebook-artifact-type-pill tone-doc"><FileText size={10} /> {doc.kind === "slides" ? "Slides" : "Report"} ({doc.format.toUpperCase()})</span>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                         <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDownloadDocument(doc.id); }} title={`Download ${doc.filename}`}><Download size={11} /></button>
-                        <button className="pane-action danger" onClick={(e) => { e.stopPropagation(); onDeleteDocument(doc.id); }} title="Delete document"><Trash2 size={11} /></button>
+                        <button className="pane-action danger" onClick={(e) => { e.stopPropagation(); onDeleteDocument(doc); }} title="Delete document"><Trash2 size={11} /></button>
                       </div>
                     </div>
                     <strong className="notebook-artifact-title">{doc.title}</strong>
@@ -1378,7 +1392,7 @@ export function NotebookView({
                   <div className="notebook-artifact-card clickable" key={note.id} onClick={() => { setViewDocId(null); setViewQuizId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(null); setViewNoteId(note.id); }} title="Open in window">
                     <div className="notebook-artifact-top">
                       <span className="notebook-artifact-type-pill tone-note"><FileText size={10} /> Note</span>
-                      <button className="pane-action danger" onClick={(e) => { e.stopPropagation(); onDeleteNote(note.id); }} title="Delete note"><Trash2 size={11} /></button>
+                      <button className="pane-action danger" onClick={(e) => { e.stopPropagation(); onDeleteNote(note); }} title="Delete note"><Trash2 size={11} /></button>
                     </div>
                     <strong className="notebook-artifact-title">{note.title}</strong>
                     <div className="notebook-artifact-excerpt">{note.content.slice(0, 160)}</div>
@@ -1436,7 +1450,7 @@ export function NotebookView({
               )}
               {!!evalSummary && (
                 <div className="settings-note" style={{ margin: "8px 0" }}>
-                  <span>⌀ groundedness {evalSummary.avg}/10 across {evalSummary.count} answer{evalSummary.count === 1 ? "" : "s"}</span>
+                  <span>⌀ citation coverage {evalSummary.avgPct}% across {evalSummary.count} answer{evalSummary.count === 1 ? "" : "s"}</span>
                 </div>
               )}
               <div style={{ display: "flex", gap: 6, marginTop: 10 }}>

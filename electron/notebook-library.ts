@@ -121,19 +121,49 @@ async function withMutationLock<T>(key: string, work: () => Promise<T>): Promise
   }
 }
 
+// ---- Parse caches ----
+// Every retrieval call (multi-query variants, agent tool calls, evidence
+// packs) reads the library and the vector partition; JSON.parse of all chunk
+// text dominates large-notebook chat latency. The caches turn repeat reads
+// into a stat() + Map lookup. Conventions:
+// - Library (JSON): validated by mtime, so external writers are picked up.
+// - Vectors: invalidated on in-process writes only (the SQLite backend's WAL
+//   makes mtime unreliable; the app is single-instance).
+// - Callers treat loaded objects as read-only; the only mutators
+//   (replaceFileEntries / deleteFileEntries / vector upserts) save afterwards,
+//   which refreshes the cache entry.
+
+const libraryCache = new Map<string, { mtimeMs: number; lib: SessionLibrary }>();
+const vectorCache = new Map<string, VectorPartition>();
+
 export async function loadLibrary(root: string, sessionId: string): Promise<SessionLibrary> {
-  const lib = await readJson<SessionLibrary | null>(libraryPath(root), null);
-  if (!lib || lib.sessionId !== sessionId) return emptyLibrary(sessionId);
-  lib.documents = lib.documents || {};
-  lib.sections = lib.sections || {};
-  lib.chunks = lib.chunks || {};
-  lib.order = lib.order || [];
-  return lib;
+  const file = libraryPath(root);
+  try {
+    const stat = await fs.stat(file);
+    const cached = libraryCache.get(file);
+    if (cached && cached.mtimeMs === stat.mtimeMs) return cached.lib;
+    const lib = await readJson<SessionLibrary | null>(file, null);
+    if (!lib || lib.sessionId !== sessionId) return emptyLibrary(sessionId);
+    lib.documents = lib.documents || {};
+    lib.sections = lib.sections || {};
+    lib.chunks = lib.chunks || {};
+    lib.order = lib.order || [];
+    libraryCache.set(file, { mtimeMs: stat.mtimeMs, lib });
+    return lib;
+  } catch {
+    libraryCache.delete(file);
+    return emptyLibrary(sessionId);
+  }
 }
 
 export async function saveLibrary(root: string, lib: SessionLibrary): Promise<void> {
   lib.updatedAt = new Date().toISOString();
-  await writeJson(libraryPath(root), lib);
+  const file = libraryPath(root);
+  await writeJson(file, lib);
+  try {
+    const stat = await fs.stat(file);
+    libraryCache.set(file, { mtimeMs: stat.mtimeMs, lib });
+  } catch { /* next load re-reads from disk */ }
 }
 
 /** Replace-not-append: wipe this file's entries, then write the fresh ones. */
@@ -190,6 +220,8 @@ export async function deleteSessionLibrary(root: string): Promise<void> {
     try {
       await fs.unlink(file);
     } catch { /* already gone */ }
+    libraryCache.delete(file);
+    vectorCache.delete(file);
   }
   await sqliteStore.deleteSqliteVectors(root);
 }
@@ -272,27 +304,45 @@ async function useSqliteVectors(root: string, sessionId: string): Promise<boolea
 }
 
 export async function loadVectors(root: string, sessionId: string): Promise<VectorPartition> {
-  if (await useSqliteVectors(root, sessionId)) return sqliteStore.loadVectorsSqlite(root, sessionId);
-  const stored = await readJson<VectorPartition | null>(vectorsPath(root), null);
-  if (!stored || stored.sessionId !== sessionId) {
-    return { sessionId, embeddingModel: "", dims: 0, updatedAt: new Date().toISOString(), vectors: {} };
+  const file = vectorsPath(root);
+  const cached = vectorCache.get(file);
+  if (cached) return cached;
+  let partition: VectorPartition;
+  if (await useSqliteVectors(root, sessionId)) {
+    partition = await sqliteStore.loadVectorsSqlite(root, sessionId);
+  } else {
+    const stored = await readJson<VectorPartition | null>(file, null);
+    if (!stored || stored.sessionId !== sessionId) {
+      partition = { sessionId, embeddingModel: "", dims: 0, updatedAt: new Date().toISOString(), vectors: {} };
+    } else {
+      stored.vectors = stored.vectors || {};
+      partition = stored;
+    }
   }
-  stored.vectors = stored.vectors || {};
-  return stored;
+  vectorCache.set(file, partition);
+  return partition;
 }
 
 export async function saveVectors(root: string, partition: VectorPartition): Promise<void> {
-  if (await useSqliteVectors(root, partition.sessionId)) return sqliteStore.saveVectorsSqlite(root, partition);
-  partition.updatedAt = new Date().toISOString();
-  await writeJson(vectorsPath(root), partition);
+  const file = vectorsPath(root);
+  if (await useSqliteVectors(root, partition.sessionId)) {
+    await sqliteStore.saveVectorsSqlite(root, partition);
+  } else {
+    partition.updatedAt = new Date().toISOString();
+    await writeJson(file, partition);
+  }
+  vectorCache.set(file, partition);
 }
 
 /** Delete-then-upsert for one file's points (never append-only). */
 export async function upsertFileVectors(root: string, sessionId: string, embeddingModel: string, dims: number, entries: Array<{ chunkId: string; vector: number[] }>): Promise<void> {
+  const file = vectorsPath(root);
   if (await useSqliteVectors(root, sessionId)) {
-    return sqliteStore.upsertFileVectorsSqlite(root, sessionId, embeddingModel, dims, entries);
+    await sqliteStore.upsertFileVectorsSqlite(root, sessionId, embeddingModel, dims, entries);
+    vectorCache.delete(file);
+    return;
   }
-  await withMutationLock(vectorsPath(root), async () => {
+  await withMutationLock(file, async () => {
     const partition = await loadVectors(root, sessionId);
     if (partition.embeddingModel && (partition.embeddingModel !== embeddingModel || partition.dims !== dims)) {
       // Dimension/space mismatch: the whole partition is invalid, not just
@@ -308,8 +358,13 @@ export async function upsertFileVectors(root: string, sessionId: string, embeddi
 
 export async function removeFileVectors(root: string, sessionId: string, chunkIds: string[]): Promise<void> {
   if (!chunkIds.length) return;
-  if (await useSqliteVectors(root, sessionId)) return sqliteStore.removeFileVectorsSqlite(root, sessionId, chunkIds);
-  await withMutationLock(vectorsPath(root), async () => {
+  const file = vectorsPath(root);
+  if (await useSqliteVectors(root, sessionId)) {
+    await sqliteStore.removeFileVectorsSqlite(root, sessionId, chunkIds);
+    vectorCache.delete(file);
+    return;
+  }
+  await withMutationLock(file, async () => {
     const partition = await loadVectors(root, sessionId);
     for (const id of chunkIds) delete partition.vectors[id];
     await saveVectors(root, partition);
@@ -317,8 +372,13 @@ export async function removeFileVectors(root: string, sessionId: string, chunkId
 }
 
 export async function clearVectors(root: string, sessionId: string): Promise<void> {
-  if (await useSqliteVectors(root, sessionId)) return sqliteStore.clearVectorsSqlite(root, sessionId);
-  await withMutationLock(vectorsPath(root), () => saveVectors(root, { sessionId, embeddingModel: "", dims: 0, updatedAt: new Date().toISOString(), vectors: {} }));
+  const file = vectorsPath(root);
+  if (await useSqliteVectors(root, sessionId)) {
+    await sqliteStore.clearVectorsSqlite(root, sessionId);
+  } else {
+    await withMutationLock(file, () => saveVectors(root, { sessionId, embeddingModel: "", dims: 0, updatedAt: new Date().toISOString(), vectors: {} }));
+  }
+  vectorCache.delete(file);
 }
 
 /** Wipe one file's derived data (library + vectors). Retry/replace converge. */

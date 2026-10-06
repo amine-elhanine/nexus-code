@@ -149,6 +149,26 @@ await test("wipeFileDerivedData clears one file completely", async () => {
   assert.equal(Object.keys(part.vectors).length, 0);
 });
 
+await test("loadLibrary cache serves fresh data after replaceFileEntries", async () => {
+  const doc = { id: "cachedoc", sessionId: SID, filename: "cache.txt", fingerprint: "fp", parser: "text", sectionIds: ["sec"], chunkCount: 1, updatedAt: new Date().toISOString() };
+  const section = { id: "sec", sessionId: SID, fileId: "cachedoc", heading: "Cache", level: 1, headingPath: ["Cache"], text: "cached body", summary: "s", keyTerms: [], tableCount: 0, codeBlockCount: 0, chunkIds: ["ch"] };
+  const chunk = { id: "ch", sessionId: SID, fileId: "cachedoc", sectionId: "sec", headingPath: ["Cache"], ordinalInSection: 0, docIndex: 0, text: "cached body", tokenCount: 2, structured: false, prevId: null, nextId: null };
+  await replaceFileEntries(tmp, doc, [section], [chunk]);
+  const first = await loadLibrary(tmp, SID);
+  assert.equal(first.chunks["ch"].text, "cached body");
+  // Replace again through the same in-process path: the cache must not serve
+  // the pre-write snapshot.
+  const chunk2 = { ...chunk, id: "ch2", text: "updated body" };
+  await replaceFileEntries(tmp, doc, [section], [chunk2]);
+  const second = await loadLibrary(tmp, SID);
+  assert.equal(second.chunks["ch2"].text, "updated body");
+  assert.equal(second.chunks["ch"], undefined);
+  // And deleteFileEntries clears it again.
+  await deleteFileEntries(tmp, SID, "cachedoc");
+  const third = await loadLibrary(tmp, SID);
+  assert.equal(third.chunks["ch2"], undefined);
+});
+
 await fs.rm(tmp, { recursive: true, force: true });
 console.log(`\nnotebook-library: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

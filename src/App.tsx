@@ -833,26 +833,81 @@ function App() {
                   mapSteps={notebook.activeNotebook ? notebook.stepsByChat[`nbmap:${notebook.activeNotebook.id}`] || [] : []}
                   onGenerateDocument={(kind, format, prompt) => void notebook.generateDocument(kind, format, prompt, selectedProviderId, selectedModel)}
                   onGenerateQuiz={(topic, count, quizType) => void notebook.generateQuiz(topic, count, quizType, selectedProviderId, selectedModel)}
-                  onDeleteQuiz={(id) => void notebook.removeQuiz(id)}
+                  onDeleteQuiz={(quiz) => setConfirmDialog({
+                    title: `Delete quiz "${quiz.title}"?`,
+                    message: "This permanently deletes the quiz. It can't be undone.",
+                    confirmLabel: "Delete quiz",
+                    danger: true,
+                    onConfirm: () => {
+                      setConfirmDialog(null);
+                      void notebook.removeQuiz(quiz.id);
+                    },
+                  })}
                   onGenerateFlashcards={(topic, count) => void notebook.generateFlashcards(topic, count, selectedProviderId, selectedModel)}
-                  onDeleteFlashcards={(id) => void notebook.removeFlashcards(id)}
+                  onDeleteFlashcards={(set) => setConfirmDialog({
+                    title: `Delete flashcards "${set.title}"?`,
+                    message: "This permanently deletes the card set. It can't be undone.",
+                    confirmLabel: "Delete flashcards",
+                    danger: true,
+                    onConfirm: () => {
+                      setConfirmDialog(null);
+                      void notebook.removeFlashcards(set.id);
+                    },
+                  })}
                   onGenerateMindmap={(topic) => void notebook.generateMindmap(topic, selectedProviderId, selectedModel)}
-                  onDeleteMindmap={(id) => void notebook.removeMindmap(id)}
+                  onDeleteMindmap={(map) => setConfirmDialog({
+                    title: `Delete mind map "${map.title}"?`,
+                    message: "This permanently deletes the mind map. It can't be undone.",
+                    confirmLabel: "Delete mind map",
+                    danger: true,
+                    onConfirm: () => {
+                      setConfirmDialog(null);
+                      void notebook.removeMindmap(map.id);
+                    },
+                  })}
                   summaries={notebook.summaries}
                   generatingSummary={notebook.generatingSummary}
                   summarySteps={notebook.activeNotebook ? notebook.stepsByChat[`nbsum:${notebook.activeNotebook.id}`] || [] : []}
                   onGenerateSummary={(topic, length) => void notebook.generateSummary(topic, length, selectedProviderId, selectedModel)}
-                  onDeleteSummary={(id) => void notebook.removeSummary(id)}
+                  onDeleteSummary={(summary) => setConfirmDialog({
+                    title: `Delete summary "${summary.title}"?`,
+                    message: "This permanently deletes the summary. It can't be undone.",
+                    confirmLabel: "Delete summary",
+                    danger: true,
+                    onConfirm: () => {
+                      setConfirmDialog(null);
+                      void notebook.removeSummary(summary.id);
+                    },
+                  })}
                   onDownloadDocument={(id) => void notebook.downloadDocument(id)}
-                  onDeleteDocument={(id) => void notebook.removeDocument(id)}
+                  onDeleteDocument={(doc) => setConfirmDialog({
+                    title: `Delete document "${doc.title}"?`,
+                    message: "This permanently deletes the document — the generated file on disk is removed too.",
+                    confirmLabel: "Delete document",
+                    danger: true,
+                    onConfirm: () => {
+                      setConfirmDialog(null);
+                      void notebook.removeDocument(doc.id);
+                    },
+                  })}
                   onCreateNotebook={(name) => void notebook.createNotebook(name)}
-                  onDeleteNotebook={(id) => void notebook.removeNotebook(id)}
+                  onDeleteNotebook={(nb) => setConfirmDialog({
+                    title: `Delete session "${nb.name}"?`,
+                    message: "This permanently deletes the session with all its sources, index, chats, notes, and generated outputs.",
+                    confirmLabel: "Delete session",
+                    danger: true,
+                    onConfirm: () => {
+                      setConfirmDialog(null);
+                      void notebook.removeNotebook(nb.id);
+                    },
+                  })}
                   onPickFiles={() => void notebook.uploadFromPicker()}
                   onImportYouTube={(url) => void notebook.importYouTube(url)}
                   onImportWebsite={(url) => void notebook.importWebsite(url)}
                   onBrowserFiles={(files) => void notebook.uploadBrowserFiles(files)}
                   importingLink={notebook.importingLink}
                   isUploading={notebook.isUploading}
+                  ingestDetail={notebook.ingestDetail}
                   onRefresh={() => {
                     if (notebook.activeNotebook) void notebook.refreshNotebookDetail(notebook.activeNotebook.id);
                   }}
@@ -886,18 +941,34 @@ function App() {
                   }}
                   onSaveInstructions={(value) => void notebook.saveInstructions(value)}
                   onSaveNote={(note) => void notebook.saveNote(note)}
-                  onDeleteNote={(id) => void notebook.removeNote(id)}
+                  onDeleteNote={(note) => setConfirmDialog({
+                    title: `Delete note "${note.title}"?`,
+                    message: "This permanently deletes the note. It can't be undone.",
+                    confirmLabel: "Delete note",
+                    danger: true,
+                    onConfirm: () => {
+                      setConfirmDialog(null);
+                      void notebook.removeNote(note.id);
+                    },
+                  })}
                   onRename={(name) => void notebook.renameCurrentNotebook(name)}
                   onReindexAll={() => void notebook.reindexAll()}
-                  onDeleteSource={async (sourceId) => {
-                    if (!notebook.activeNotebook) return;
-                    try {
-                      await (api as unknown as { notebookDeleteSource: (a: string, b: string) => Promise<unknown> }).notebookDeleteSource(notebook.activeNotebook.id, sourceId);
-                      await notebook.refreshNotebookDetail(notebook.activeNotebook.id);
-                    } catch (error) {
-                      notebook.setNotice(error instanceof Error ? error.message : "Delete failed.");
-                    }
-                  }}
+                  onDeleteSource={(source) => setConfirmDialog({
+                    title: `Delete source "${source.filename}"?`,
+                    message: "This removes the file and all its derived index data. Re-upload it to restore.",
+                    confirmLabel: "Delete source",
+                    danger: true,
+                    onConfirm: async () => {
+                      setConfirmDialog(null);
+                      if (!notebook.activeNotebook) return;
+                      try {
+                        await (api as unknown as { notebookDeleteSource: (a: string, b: string) => Promise<unknown> }).notebookDeleteSource(notebook.activeNotebook.id, source.id);
+                        await notebook.refreshNotebookDetail(notebook.activeNotebook.id);
+                      } catch (error) {
+                        notebook.setNotice(error instanceof Error ? error.message : "Delete failed.");
+                      }
+                    },
+                  })}
                   onReindexSource={async (sourceId) => {
                     if (!notebook.activeNotebook) return;
                     try {

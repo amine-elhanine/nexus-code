@@ -258,8 +258,8 @@ const nexusApi = {
     ipcRenderer.on("agent:event", handler);
     return () => ipcRenderer.removeListener("agent:event", handler);
   },
-  onNotebookJobProgress: (listener: (progress: { notebookId: string; sourceId: string; status: string; chunks?: number; error?: string }) => void) => {
-    const handler = (_event: IpcRendererEvent, payload: { notebookId: string; sourceId: string; status: string; chunks?: number; error?: string }) => listener(payload);
+  onNotebookJobProgress: (listener: (progress: { notebookId: string; sourceId: string; status: string; chunks?: number; error?: string; detail?: string }) => void) => {
+    const handler = (_event: IpcRendererEvent, payload: { notebookId: string; sourceId: string; status: string; chunks?: number; error?: string; detail?: string }) => listener(payload);
     ipcRenderer.on("notebook:progress", handler);
     return () => ipcRenderer.removeListener("notebook:progress", handler);
   },

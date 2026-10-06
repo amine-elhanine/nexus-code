@@ -17,6 +17,7 @@ import {
   isSessionWideAsk,
   gateDecision,
   composeContextBlock,
+  evaluateCitationCoverage,
 } from "../dist-electron/notebook-text.js";
 
 let passed = 0;
@@ -169,6 +170,46 @@ await test("composeContextBlock dedupes and caps", () => {
 await test("notebookTokens + meaningfulQueryTerms filter noise", () => {
   assert.ok(!notebookTokens("the and of a").length);
   assert.ok(meaningfulQueryTerms("What is the hippocampus?").includes("hippocampus"));
+});
+
+await test("evaluateCitationCoverage: fully cited answer is grounded", () => {
+  const answer = "Revenue grew 12 percent [S1]. Margin reached 24 percent [S2].";
+  const ev = evaluateCitationCoverage(answer, 5);
+  assert.equal(ev.verdict, "grounded");
+  assert.equal(ev.citationCoverage, 1);
+  assert.deepEqual(ev.issues, []);
+});
+
+await test("evaluateCitationCoverage: sparse citations are partial", () => {
+  const answer = "Revenue grew 12 percent [S1]. Margin reached 24 percent. Costs fell. Hiring slowed.";
+  const ev = evaluateCitationCoverage(answer, 5);
+  assert.equal(ev.verdict, "partial");
+  assert.ok(ev.citationCoverage > 0 && ev.citationCoverage < 0.6);
+});
+
+await test("evaluateCitationCoverage: no markers at all is ungrounded", () => {
+  const ev = evaluateCitationCoverage("Revenue grew. Margin held.", 5);
+  assert.equal(ev.verdict, "ungrounded");
+  assert.equal(ev.citationCoverage, 0);
+  assert.ok(ev.issues.some((i) => i.includes("no [Sn]")));
+});
+
+await test("evaluateCitationCoverage: markers past the registry cap the verdict at partial", () => {
+  const ev = evaluateCitationCoverage("Claim one [S1]. Claim two [S9].", 2);
+  assert.equal(ev.verdict, "partial");
+  assert.ok(ev.issues.some((i) => i.includes("point past")));
+});
+
+await test("evaluateCitationCoverage: code fences and tables do not dilute coverage", () => {
+  const answer = "Growth was strong [S1]." + "\\n\\n```json\\n{ \"revenue\": 12 }\\n```\\n" + "| a | b |\\n|---|---|\\n| 1 | 2 |" + "\\n\\nMargin held [S2].";
+  const ev = evaluateCitationCoverage(answer, 3);
+  assert.equal(ev.verdict, "grounded");
+  assert.equal(ev.citationCoverage, 1);
+});
+
+await test("evaluateCitationCoverage: empty answer with no markers is ungrounded", () => {
+  const ev = evaluateCitationCoverage("", 3);
+  assert.equal(ev.verdict, "ungrounded");
 });
 
 console.log(`\nnotebook-text: ${passed} passed, ${failed} failed`);
