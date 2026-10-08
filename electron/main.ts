@@ -157,6 +157,20 @@ function emit(event: AgentEvent) {
 function emitFor(sessionId: string, event: Omit<AgentEvent, "sessionId" | "timestamp">) {
   emit({ ...event, sessionId, timestamp: new Date().toISOString() });
 }
+
+async function runNotebookGeneration<T>(runId: string, work: (isCancelled: () => boolean) => Promise<T>): Promise<T> {
+  if (activeRunSessions.has(runId)) throw new Error("A generation task is already running for this notebook output.");
+  activeRunSessions.add(runId);
+  beginCommandRun(runId);
+  try {
+    const result = await work(() => isCommandRunCancelled(runId));
+    if (isCommandRunCancelled(runId)) throw new RunCancelledError();
+    return result;
+  } finally {
+    activeRunSessions.delete(runId);
+    endCommandRun(runId);
+  }
+}
 function requireRoot() { if (!activeProjectRoot) throw new Error("Select or create a project first."); return activeProjectRoot; }
 
 // Checkpoints left over from deleted/kept runs would keep the Undo card
@@ -545,22 +559,41 @@ app.whenReady().then(async () => {
     return listNotebookDocuments(notebookId);
   });
   ipcMain.handle("notebook:document:generate", async (_event, payload: { notebookId: string; kind: "report" | "slides"; format: "docx" | "pdf" | "pptx"; prompt?: string; fileIds?: string[]; providerId?: string; model?: string }) => {
-    const { generateNotebookDocument } = await import("./notebook-documents.js");
-    const notebookSettings = await getNotebookSettings(payload.notebookId);
     const statusKey = `nbdoc:${payload.notebookId}`;
-    emitFor(statusKey, { type: "status", text: "Generating document…" });
-    const { doc, fallbackReason } = await generateNotebookDocument(payload.notebookId, {
-      kind: payload.kind,
-      format: payload.format,
-      prompt: payload.prompt,
-      fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
-      providerId: payload.providerId,
-      model: payload.model,
-      instructions: notebookSettings.instructions,
-      onStatus: (text) => emitFor(statusKey, { type: "status", text }),
-    });
-    emitFor(statusKey, { type: "status", text: `Saved ${doc.filename}` });
-    return { doc, fallbackReason };
+    const runId = statusKey;
+    if (activeRunSessions.has(runId)) throw new Error("A document is already being generated for this notebook.");
+    activeRunSessions.add(runId);
+    beginCommandRun(runId);
+    try {
+      const { generateNotebookDocument } = await import("./notebook-documents.js");
+      const notebookSettings = await getNotebookSettings(payload.notebookId);
+      if (isCommandRunCancelled(runId)) throw new RunCancelledError();
+      emitFor(statusKey, { type: "status", text: "Generating document…" });
+      const { doc, fallbackReason } = await generateNotebookDocument(payload.notebookId, {
+        kind: payload.kind,
+        format: payload.format,
+        prompt: payload.prompt,
+        fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
+        providerId: payload.providerId,
+        model: payload.model,
+        instructions: notebookSettings.instructions,
+        runId,
+        isCancelled: () => isCommandRunCancelled(runId),
+        onStatus: (text) => emitFor(statusKey, { type: "status", text }),
+      });
+      if (isCommandRunCancelled(runId)) throw new RunCancelledError();
+      emitFor(statusKey, { type: "status", text: `Saved ${doc.filename}` });
+      return { doc, fallbackReason };
+    } catch (error) {
+      if (error instanceof RunCancelledError || isCommandRunCancelled(runId)) {
+        emitFor(statusKey, { type: "status", text: "Document generation cancelled." });
+        throw new Error("Document generation cancelled.");
+      }
+      throw error;
+    } finally {
+      activeRunSessions.delete(runId);
+      endCommandRun(runId);
+    }
   });
   ipcMain.handle("notebook:document:delete", async (_event, notebookId: string, docId: string) => {
     const { deleteNotebookDocument } = await import("./notebook-documents.js");
@@ -579,19 +612,24 @@ app.whenReady().then(async () => {
     return listNotebookQuizzes(notebookId);
   });
   ipcMain.handle("notebook:quiz:generate", async (_event, payload: { notebookId: string; topic?: string; count?: number; quizType?: "mcq" | "truefalse" | "mixed"; fileIds?: string[]; providerId?: string; model?: string }) => {
-    const { generateNotebookQuiz } = await import("./notebook-quiz.js");
-    const notebookSettings = await getNotebookSettings(payload.notebookId);
     const statusKey = `nbquiz:${payload.notebookId}`;
-    emitFor(statusKey, { type: "status", text: "Generating quiz…" });
-    const quiz = await generateNotebookQuiz(payload.notebookId, {
-      topic: payload.topic,
-      count: payload.count,
-      quizType: payload.quizType,
-      fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
-      providerId: payload.providerId,
-      model: payload.model,
-      instructions: notebookSettings.instructions,
-      onStatus: (text) => emitFor(statusKey, { type: "status", text }),
+    const quiz = await runNotebookGeneration(statusKey, async (isCancelled) => {
+      const { generateNotebookQuiz } = await import("./notebook-quiz.js");
+      const notebookSettings = await getNotebookSettings(payload.notebookId);
+      if (isCancelled()) throw new RunCancelledError();
+      emitFor(statusKey, { type: "status", text: "Generating quiz…" });
+      return generateNotebookQuiz(payload.notebookId, {
+        topic: payload.topic,
+        count: payload.count,
+        quizType: payload.quizType,
+        fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
+        providerId: payload.providerId,
+        model: payload.model,
+        instructions: notebookSettings.instructions,
+        runId: statusKey,
+        isCancelled,
+        onStatus: (text) => emitFor(statusKey, { type: "status", text }),
+      });
     });
     emitFor(statusKey, { type: "status", text: `Saved ${quiz.title}` });
     return { quiz };
@@ -605,18 +643,23 @@ app.whenReady().then(async () => {
     return listNotebookFlashcardSets(notebookId);
   });
   ipcMain.handle("notebook:flashcards:generate", async (_event, payload: { notebookId: string; topic?: string; count?: number; fileIds?: string[]; providerId?: string; model?: string }) => {
-    const { generateNotebookFlashcards } = await import("./notebook-flashcards.js");
-    const notebookSettings = await getNotebookSettings(payload.notebookId);
     const statusKey = `nbfiches:${payload.notebookId}`;
-    emitFor(statusKey, { type: "status", text: "Generating flashcards…" });
-    const set = await generateNotebookFlashcards(payload.notebookId, {
-      topic: payload.topic,
-      count: payload.count,
-      fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
-      providerId: payload.providerId,
-      model: payload.model,
-      instructions: notebookSettings.instructions,
-      onStatus: (text) => emitFor(statusKey, { type: "status", text }),
+    const set = await runNotebookGeneration(statusKey, async (isCancelled) => {
+      const { generateNotebookFlashcards } = await import("./notebook-flashcards.js");
+      const notebookSettings = await getNotebookSettings(payload.notebookId);
+      if (isCancelled()) throw new RunCancelledError();
+      emitFor(statusKey, { type: "status", text: "Generating flashcards…" });
+      return generateNotebookFlashcards(payload.notebookId, {
+        topic: payload.topic,
+        count: payload.count,
+        fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
+        providerId: payload.providerId,
+        model: payload.model,
+        instructions: notebookSettings.instructions,
+        runId: statusKey,
+        isCancelled,
+        onStatus: (text) => emitFor(statusKey, { type: "status", text }),
+      });
     });
     emitFor(statusKey, { type: "status", text: `Saved ${set.title}` });
     return { set };
@@ -630,18 +673,23 @@ app.whenReady().then(async () => {
     return listNotebookMindmaps(notebookId);
   });
   ipcMain.handle("notebook:mindmaps:generate", async (_event, payload: { notebookId: string; topic?: string; maxNodes?: number; fileIds?: string[]; providerId?: string; model?: string }) => {
-    const { generateNotebookMindmap } = await import("./notebook-mindmaps.js");
-    const notebookSettings = await getNotebookSettings(payload.notebookId);
     const statusKey = `nbmap:${payload.notebookId}`;
-    emitFor(statusKey, { type: "status", text: "Generating mind map…" });
-    const map = await generateNotebookMindmap(payload.notebookId, {
-      topic: payload.topic,
-      maxNodes: payload.maxNodes,
-      fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
-      providerId: payload.providerId,
-      model: payload.model,
-      instructions: notebookSettings.instructions,
-      onStatus: (text) => emitFor(statusKey, { type: "status", text }),
+    const map = await runNotebookGeneration(statusKey, async (isCancelled) => {
+      const { generateNotebookMindmap } = await import("./notebook-mindmaps.js");
+      const notebookSettings = await getNotebookSettings(payload.notebookId);
+      if (isCancelled()) throw new RunCancelledError();
+      emitFor(statusKey, { type: "status", text: "Generating mind map…" });
+      return generateNotebookMindmap(payload.notebookId, {
+        topic: payload.topic,
+        maxNodes: payload.maxNodes,
+        fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
+        providerId: payload.providerId,
+        model: payload.model,
+        instructions: notebookSettings.instructions,
+        runId: statusKey,
+        isCancelled,
+        onStatus: (text) => emitFor(statusKey, { type: "status", text }),
+      });
     });
     emitFor(statusKey, { type: "status", text: `Saved ${map.title}` });
     return { map };
@@ -655,18 +703,23 @@ app.whenReady().then(async () => {
     return listNotebookSummaries(notebookId);
   });
   ipcMain.handle("notebook:summaries:generate", async (_event, payload: { notebookId: string; topic?: string; length?: "brief" | "standard" | "detailed"; fileIds?: string[]; providerId?: string; model?: string }) => {
-    const { generateNotebookSummary } = await import("./notebook-summaries.js");
-    const notebookSettings = await getNotebookSettings(payload.notebookId);
     const statusKey = `nbsum:${payload.notebookId}`;
-    emitFor(statusKey, { type: "status", text: "Generating summary…" });
-    const summary = await generateNotebookSummary(payload.notebookId, {
-      topic: payload.topic,
-      length: payload.length,
-      fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
-      providerId: payload.providerId,
-      model: payload.model,
-      instructions: notebookSettings.instructions,
-      onStatus: (text) => emitFor(statusKey, { type: "status", text }),
+    const summary = await runNotebookGeneration(statusKey, async (isCancelled) => {
+      const { generateNotebookSummary } = await import("./notebook-summaries.js");
+      const notebookSettings = await getNotebookSettings(payload.notebookId);
+      if (isCancelled()) throw new RunCancelledError();
+      emitFor(statusKey, { type: "status", text: "Generating summary…" });
+      return generateNotebookSummary(payload.notebookId, {
+        topic: payload.topic,
+        length: payload.length,
+        fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
+        providerId: payload.providerId,
+        model: payload.model,
+        instructions: notebookSettings.instructions,
+        runId: statusKey,
+        isCancelled,
+        onStatus: (text) => emitFor(statusKey, { type: "status", text }),
+      });
     });
     emitFor(statusKey, { type: "status", text: `Saved ${summary.title}` });
     return { summary };
@@ -681,21 +734,28 @@ app.whenReady().then(async () => {
   ipcMain.handle("notebook:deleteChat", (_event, notebookId: string, chatId: string) => deleteNotebookChat(notebookId, chatId));
   ipcMain.handle("notebook:retrieve", (_event, notebookId: string, query: string, topK?: number, fileIds?: string[]) => hybridRetrieve(notebookId, query, topK || 8, fileIds));
   ipcMain.handle("notebook:ask", async (_event, payload: { notebookId: string; chatId: string; question: string; fileIds?: string[]; providerId?: string; model?: string; topK?: number }) => {
-    const started = Date.now();
-    // Persist the user turn FIRST: a crash mid-answer must not lose it.
-    await appendNotebookMessage(payload.notebookId, payload.chatId, {
-      role: "user",
-      text: payload.question,
-      createdAt: new Date().toISOString(),
-    });
-    emitFor(payload.chatId, { type: "status", text: "Searching notebook sources…" });
-    const history = (await recentChatHistory(payload.notebookId, payload.chatId))
-      .slice(0, -1)
-      .map((m) => ({ role: m.role as "user" | "assistant", text: m.text }));
-    const notebookSettings = await getNotebookSettings(payload.notebookId);
-    const appSettings = await getAppSettings();
+    if (activeRunSessions.has(payload.chatId)) {
+      throw new Error("A response is already running in this chat. Stop it before sending another question.");
+    }
+    activeRunSessions.add(payload.chatId);
     beginCommandRun(payload.chatId);
+    const started = Date.now();
     try {
+      // Register the run before any async setup so cancellation during storage
+      // or settings reads cannot be erased by a later beginCommandRun call.
+      // Persist the user turn FIRST: a crash mid-answer must not lose it.
+      await appendNotebookMessage(payload.notebookId, payload.chatId, {
+        role: "user",
+        text: payload.question,
+        createdAt: new Date().toISOString(),
+      });
+      emitFor(payload.chatId, { type: "status", text: "Searching notebook sources…" });
+      const history = (await recentChatHistory(payload.notebookId, payload.chatId))
+        .slice(0, -1)
+        .map((m) => ({ role: m.role as "user" | "assistant", text: m.text }));
+      const notebookSettings = await getNotebookSettings(payload.notebookId);
+      const appSettings = await getAppSettings();
+      if (isCommandRunCancelled(payload.chatId)) throw new RunCancelledError();
       const result = await answerNotebookQuestion(payload.notebookId, payload.question, history, {
         fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
         chatProviderId: payload.providerId,
@@ -751,6 +811,7 @@ app.whenReady().then(async () => {
       }
       throw error;
     } finally {
+      activeRunSessions.delete(payload.chatId);
       endCommandRun(payload.chatId);
     }
   });

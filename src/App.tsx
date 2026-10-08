@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   Brain, BookOpen, Check, ChevronDown, ChevronRight, Code2, Coins, Download, FileCode2, FileText,
   Folder, FolderOpen, GitBranch, Globe, Home, Info, Loader2, Menu, Sparkles, X,
@@ -12,21 +12,21 @@ import { McpModal } from "./modals/McpModal.js";
 import { SkillsModal } from "./modals/SkillsModal.js";
 import { SettingsModal } from "./modals/SettingsModal.js";
 import { DaemonsModal } from "./components/daemons/DaemonsModal.js";
-import { MonacoDiffModal } from "./components/diff/MonacoDiffModal.js";
 import { ProjectRulesModal } from "./components/rules/ProjectRulesModal.js";
-import { ArtifactViewer } from "./components/artifacts/ArtifactViewer.js";
-import { FilePreviewModal } from "./components/home/FilePreviewModal.js";
-import { AttachmentPreviewModal } from "./components/home/AttachmentPreviewModal.js";
+const MonacoDiffModal = lazy(() => import("./components/diff/MonacoDiffModal.js").then((module) => ({ default: module.MonacoDiffModal })));
+const ArtifactViewer = lazy(() => import("./components/artifacts/ArtifactViewer.js").then((module) => ({ default: module.ArtifactViewer })));
+const FilePreviewModal = lazy(() => import("./components/home/FilePreviewModal.js").then((module) => ({ default: module.FilePreviewModal })));
+const AttachmentPreviewModal = lazy(() => import("./components/home/AttachmentPreviewModal.js").then((module) => ({ default: module.AttachmentPreviewModal })));
 import { SidebarBrowser } from "./components/browser/SidebarBrowser.js";
-import { MonacoEditorView } from "./components/editor/MonacoEditorView.js";
-import { XTermView } from "./components/terminal/XTermView.js";
+const XTermView = lazy(() => import("./components/terminal/XTermView.js").then((module) => ({ default: module.XTermView })));
 import { AgentBrowserHost } from "./components/browser/AgentBrowserHost.js";
 import { AgentView } from "./views/AgentView.js";
-import { HomeView } from "./views/HomeView.js";
-import { NotebookView } from "./views/NotebookView.js";
+const HomeView = lazy(() => import("./views/HomeView.js").then((module) => ({ default: module.HomeView })));
+const NotebookView = lazy(() => import("./views/NotebookView.js").then((module) => ({ default: module.NotebookView })));
+const MonacoEditorView = lazy(() => import("./components/editor/MonacoEditorView.js").then((module) => ({ default: module.MonacoEditorView })));
 import { useNotebookController } from "./state/useNotebookController.js";
 import { useHomeController } from "./state/useHomeController.js";
-import { DiffView } from "./views/DiffView.js";
+const DiffView = lazy(() => import("./views/DiffView.js").then((module) => ({ default: module.DiffView })));
 import { MemoryView, ContextRow, MemoryRow } from "./views/MemoryView.js";
 import { useAppController, sortSessionsByUpdatedAt } from "./state/useAppController.js";
 import { applyTheme } from "./state/theme.js";
@@ -450,6 +450,7 @@ function App() {
 
   const [homeSideTab, setHomeSideTab] = useState<"session" | "artifacts" | "browser" | "memory">("session");
   const [codeSideTab, setCodeSideTab] = useState<"session" | "files" | "browser" | "terminal" | "diff" | "memory">("session");
+  const [terminalOpened, setTerminalOpened] = useState(false);
   const [updater, setUpdater] = useState<UpdaterState>({ status: "idle" });
   const [appVersion, setAppVersion] = useState("");
   const [approvalRequest, setApprovalRequest] = useState<{ id: string; runId?: string; command: string; cwd: string; reason: string; approvalKey?: string } | null>(null);
@@ -799,6 +800,7 @@ function App() {
           )}
 
           <div className="workspace-content">
+            <Suspense fallback={<section className="center-pane"><div className="empty-pane">Loading workspace…</div></section>}>
             {area === "notebook" ? (
               <section className="center-pane">
                 <NotebookView
@@ -832,6 +834,7 @@ function App() {
                   fichesSteps={notebook.activeNotebook ? notebook.stepsByChat[`nbfiches:${notebook.activeNotebook.id}`] || [] : []}
                   mapSteps={notebook.activeNotebook ? notebook.stepsByChat[`nbmap:${notebook.activeNotebook.id}`] || [] : []}
                   onGenerateDocument={(kind, format, prompt) => void notebook.generateDocument(kind, format, prompt, selectedProviderId, selectedModel)}
+                  onCancelGeneration={(kind) => void notebook.stopGeneration(kind)}
                   onGenerateQuiz={(topic, count, quizType) => void notebook.generateQuiz(topic, count, quizType, selectedProviderId, selectedModel)}
                   onDeleteQuiz={(quiz) => setConfirmDialog({
                     title: `Delete quiz "${quiz.title}"?`,
@@ -1098,6 +1101,7 @@ function App() {
               )}
             </section>
             )}
+            </Suspense>
           </div>
         </main>
 
@@ -1134,7 +1138,7 @@ function App() {
               <button type="button" role="tab" aria-selected={codeSideTab === "browser"} className={codeSideTab === "browser" ? "active" : ""} onClick={() => setCodeSideTab("browser")} title="Built-in browser">
                 <Globe size={12} /> <span className="context-tab-label">Browser</span>
               </button>
-              <button type="button" role="tab" aria-selected={codeSideTab === "terminal"} className={codeSideTab === "terminal" ? "active" : ""} onClick={() => setCodeSideTab("terminal")} title="Interactive terminal">
+              <button type="button" role="tab" aria-selected={codeSideTab === "terminal"} className={codeSideTab === "terminal" ? "active" : ""} onClick={() => { setTerminalOpened(true); setCodeSideTab("terminal"); }} title="Interactive terminal">
                 <Terminal size={12} /> <span className="context-tab-label">Term</span>
               </button>
               <button type="button" role="tab" aria-selected={codeSideTab === "diff"} className={codeSideTab === "diff" ? "active" : ""} onClick={() => { setCodeSideTab("diff"); void refreshDiff(); }} title="Git diff">
@@ -1238,10 +1242,12 @@ function App() {
                 onAgentNavigate={() => setCodeSideTab("browser")}
               />
             </div>
-            <div className={`context-tab-panel${codeSideTab === "terminal" ? "" : " hidden"}`}>
-              <XTermView projectRoot={activeProject?.root} files={files} />
-            </div>
-            <div className={`context-tab-panel${codeSideTab === "diff" ? "" : " hidden"}`}>
+            {terminalOpened && <div className={`context-tab-panel${codeSideTab === "terminal" ? "" : " hidden"}`}>
+              <Suspense fallback={<div className="context-tab-body">Loading terminal…</div>}>
+                <XTermView projectRoot={activeProject?.root} files={files} />
+              </Suspense>
+            </div>}
+            {codeSideTab === "diff" && <div className="context-tab-panel">
               <DiffView
                 diff={diff}
                 checkpointId={activeSession?.checkpointId}
@@ -1253,7 +1259,7 @@ function App() {
                 onRevertAll={() => void revertAllChanges()}
                 onInspectFile={(f) => setInspectDiffFile(f)}
               />
-            </div>
+            </div>}
             <div className={`context-tab-panel${codeSideTab === "memory" ? "" : " hidden"}`}>
               <MemoryView project={activeProject} session={activeSession} onRemoveFact={(fact) => void removeProjectFact(fact)} onClearSessionMemory={() => void clearSessionMemory()} />
             </div>
@@ -1496,6 +1502,7 @@ function App() {
         />
       )}
       {inspectDiffFile && (
+        <Suspense fallback={null}>
         <MonacoDiffModal
           fileName={inspectDiffFile.name}
           filePath={inspectDiffFile.path}
@@ -1508,6 +1515,7 @@ function App() {
             setInspectDiffFile(null);
           }}
         />
+        </Suspense>
       )}
       {showRulesModal && projectRules && (
         <ProjectRulesModal
@@ -1516,6 +1524,7 @@ function App() {
         />
       )}
       {activeArtifact && (
+        <Suspense fallback={null}>
         <ArtifactViewer
           artifact={activeArtifact}
           onClose={() => setActiveArtifact(null)}
@@ -1530,6 +1539,7 @@ function App() {
             }
           }}
         />
+        </Suspense>
       )}
       {confirmDialog && (
         <ConfirmModal
@@ -1653,21 +1663,25 @@ function App() {
         </div>
       )}
       {homePreviewPath && (
+        <Suspense fallback={null}>
         <FilePreviewModal
           filePath={homePreviewPath}
           onClose={() => setHomePreviewPath(null)}
           onDownload={(p) => void api.downloadHomeFile(p)}
         />
+        </Suspense>
       )}
       {workspacePreviewPath && (
+        <Suspense fallback={null}>
         <FilePreviewModal
           filePath={workspacePreviewPath}
           onClose={() => setWorkspacePreviewPath(null)}
           onDownload={(p) => void api.downloadWorkspaceFile(p)}
           load={() => api.readWorkspaceFileBase64(workspacePreviewPath)}
         />
+        </Suspense>
       )}
-      {attachmentPreview && <AttachmentPreviewModal attachment={attachmentPreview} onClose={() => setAttachmentPreview(null)} />}
+      {attachmentPreview && <Suspense fallback={null}><AttachmentPreviewModal attachment={attachmentPreview} onClose={() => setAttachmentPreview(null)} /></Suspense>}
       {/* Hidden executor for the agent's browsing — same session as the tabs. */}
       <AgentBrowserHost />
     </div>

@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from "react";
-import mermaid from "mermaid";
 import { renderMarkdown } from "../../markdown.js";
 import { parseBarChart, parseLineChart, parseScatterChart, type CategoryChartSpec } from "../../utils/chart-blocks.js";
 
@@ -14,6 +13,8 @@ function MermaidBlock({ source }: { source: string }) {
     const id = `nexus-mermaid-${++mermaidSequence}`;
     void (async () => {
       try {
+        const { default: mermaid } = await import("mermaid");
+        if (!alive) return;
         if (!mermaidConfigured) {
           mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "dark" });
           mermaidConfigured = true;

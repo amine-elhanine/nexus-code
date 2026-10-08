@@ -42,6 +42,8 @@ export type AgentMemoryContext = { projectMemory: string; sessionMemory: string;
 // different system prompt.
 export type AgentTaskKind = "code" | "general";
 
+export type HomeArtifactFormat = "docx" | "pdf" | "pptx" | "xlsx" | "tex" | "md" | "csv" | "txt";
+
 /**
  * Generic contract inferred from a Home request. This deliberately does not
  * classify formats or domains (PDF, courses, reports, etc.). It only captures
@@ -52,6 +54,8 @@ export type AgentTaskKind = "code" | "general";
 export type HomeTaskContract = {
   expectsOutput: boolean;
   needsResearch: boolean;
+  /** Required output extensions when the request clearly names a file format. */
+  expectedFormats: HomeArtifactFormat[];
 };
 
 export type AttachmentDoc = { name: string; mimeType: string; text: string; truncated: boolean };

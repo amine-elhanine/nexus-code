@@ -1,15 +1,18 @@
 #!/usr/bin/env node
-// Headless Code-mode runner: executes ONE agent task from the command line,
+// Headless agent runner: executes ONE agent task from the command line,
 // streams the live AgentEvent feed as JSONL on stdout, and exits with the
 // verification outcome — so Nexus runs in CI and scripts.
 //
 // Usage:
 //   node scripts/agent-cli.mjs --project . --mode auto --request "Fix the failing test"
+//   node scripts/agent-cli.mjs --project . --task-kind general --request "Create a report.md"
 //
 // Provider selection (first match wins):
 //   1. --provider <id|label> from the app's configured providers (the shared
-//      nexus-state.json); keys encrypted by the app's safeStorage cannot be
-//      decrypted headless — pass --api-key or NEXUS_API_KEY instead.
+//      nexus-state.json); without an explicit provider, selects a usable
+//      plaintext-key provider, keyless Ollama, or endpoint-configured custom.
+//      Keys encrypted by the app's safeStorage cannot be decrypted headless —
+//      pass --api-key or NEXUS_API_KEY instead.
 //   2. --api-key / NEXUS_API_KEY / OPENAI_API_KEY with NEXUS_PROVIDER_KIND
 //      (default "openai") and NEXUS_BASE_URL.
 //
@@ -18,10 +21,11 @@
 // Risky commands are DENIED headless unless NEXUS_APPROVAL=allow.
 import { parseArgs } from "node:util";
 import path from "node:path";
+import { selectConfiguredProvider } from "./provider-selection.mjs";
 
 const usage = () => {
   process.stderr.write(
-    "Usage: nexus-agent --project <root> --request <task> [--mode plan|ask|auto] [--provider <id|label>] [--model <name>] [--api-key <key>] [--base-url <url>]\n"
+    "Usage: nexus-agent --project <root> --request <task> [--mode plan|ask|auto] [--without-assets skills,rules,agents,commands] [--provider <id|label>] [--model <name>] [--api-key <key>] [--base-url <url>]\n"
   );
 };
 
@@ -34,10 +38,25 @@ const { values } = parseArgs({
     model: { type: "string" },
     "api-key": { type: "string" },
     "base-url": { type: "string" },
+    "task-kind": { type: "string", default: "code" },
+    "without-assets": { type: "string", default: "" },
   },
 });
+const { parseDisabledPromptAssets } = await import("../dist-electron/prompt-assets.js");
+let disabledPromptAssets;
+try {
+  disabledPromptAssets = parseDisabledPromptAssets(values["without-assets"]);
+} catch (error) {
+  process.stderr.write(`${error.message}\n`);
+  process.exit(3);
+}
 
 const mode = ["plan", "ask", "auto"].includes(String(values.mode)) ? values.mode : "auto";
+const taskKind = String(values["task-kind"] || "code");
+if (!["code", "general"].includes(taskKind)) {
+  process.stderr.write(`Unknown task kind "${taskKind}". Choose code or general.\n`);
+  process.exit(3);
+}
 if (!values.request || !String(values.request).trim()) {
   usage();
   process.exit(3);
@@ -48,29 +67,19 @@ const { listProviders } = await import("../dist-electron/store.js");
 const { getAgentBackend, endCommandRun } = await import("../dist-electron/command-service.js");
 const { runProjectAgent } = await import("../dist-electron/agent-service.js");
 
-const ENCRYPTED_PREFIX = "safeStorage:v1:";
-
 async function resolveProvider() {
   const explicitKey = String(values["api-key"] || process.env.NEXUS_API_KEY || process.env.OPENAI_API_KEY || "");
   const modelFlag = String(values.model || process.env.NEXUS_MODEL || "");
   const baseUrlFlag = String(values["base-url"] || process.env.NEXUS_BASE_URL || "");
 
   let provider = null;
-  if (values.provider) {
-    const wanted = String(values.provider).toLowerCase();
+  if (values.provider || !explicitKey) {
     const all = await listProviders().catch(() => []);
-    provider = all.find((p) => p.id?.toLowerCase() === wanted || p.label?.toLowerCase() === wanted) ?? null;
-    if (!provider) {
+    provider = selectConfiguredProvider(all, values.provider);
+    if (values.provider && !provider) {
       process.stderr.write(`No configured provider matches "${values.provider}".\n`);
       process.exit(3);
     }
-  } else if (!explicitKey) {
-    // Pick the first configured provider with a key this headless process can
-    // actually use (plaintext or legacy); safeStorage-encrypted keys are tied
-    // to the desktop app's OS profile.
-    const all = await listProviders().catch(() => []);
-    provider = all.find((p) => p.apiKey && !p.apiKey.startsWith(ENCRYPTED_PREFIX)) ?? null;
-    if (provider && provider.apiKey.startsWith(ENCRYPTED_PREFIX)) provider = null;
   }
 
   if (provider && explicitKey) provider = { ...provider, apiKey: explicitKey };
@@ -140,8 +149,9 @@ try {
       process.stdout.write(`${JSON.stringify(event)}\n`);
     },
     isCancelled: () => false,
-    taskKind: "code",
-    skillsMode: "code",
+    taskKind,
+    skillsMode: taskKind === "general" ? "home" : "code",
+    disabledPromptAssets,
   });
 } catch (error) {
   process.stderr.write(`Run failed: ${error?.message || error}\n`);
@@ -152,6 +162,6 @@ process.stderr.write(
   `\n[verification: ${result.verification}] ${String(result.response || "").slice(0, 600)}${String(result.response || "").length > 600 ? "…" : ""}\n`
 );
 process.stdout.write(
-  `${JSON.stringify({ type: "result", response: result.response, verification: result.verification, usage: result.usage })}\n`
+  `${JSON.stringify({ type: "result", response: result.response, verification: result.verification, usage: result.usage, disabledPromptAssets })}\n`
 );
 process.exit(result.verification === "passed" || result.verification === "none" ? 0 : result.verification === "interrupted" ? 2 : 1);

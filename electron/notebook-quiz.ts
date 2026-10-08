@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { composeContextBlock } from "./notebook-text.js";
 import { collectDocumentEvidence, extractDocumentJson, fallbackTitle } from "./notebook-documents.js";
+import { assertNotebookGenerationActive, planNotebookWithLlm } from "./notebook-generation.js";
 import { notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
 
 // Grounded quiz generation for Notebook Mode: MCQ (4 options), True/False,
@@ -44,6 +45,8 @@ export type GenerateQuizInput = {
   providerId?: string;
   model?: string;
   instructions?: string;
+  runId?: string;
+  isCancelled?: () => boolean;
   generate?: (system: string, user: string) => Promise<string>;
   onStatus?: (text: string) => void;
 };
@@ -90,23 +93,6 @@ export function clampQuizCount(raw: unknown): number {
 export function normalizeQuizType(raw: unknown): NotebookQuizType {
   if (raw === "mcq" || raw === "truefalse" || raw === "mixed") return raw;
   return "mixed";
-}
-
-async function planWithLlm(system: string, user: string, input: GenerateQuizInput): Promise<string> {
-  if (input.generate) return input.generate(system, user);
-  const { listProviders } = await import("./store.js");
-  const { createChatModel } = await import("./providers.js");
-  const providers = await listProviders();
-  const provider = input.providerId ? providers.find((p) => p.id === input.providerId) : providers[0];
-  if (!provider) throw new Error("Configure a chat provider first (Providers button, top right).");
-  const modelName = input.model || provider.models[0];
-  if (!modelName) throw new Error("No chat model selected.");
-  const llm = await createChatModel(provider, modelName);
-  const res = await llm.invoke([
-    { role: "system", content: system } as never,
-    { role: "user", content: user } as never,
-  ]);
-  return typeof res.content === "string" ? res.content : JSON.stringify(res.content);
 }
 
 function citationByIndex(citations: NotebookSourceCitation[], index: number): NotebookSourceCitation | undefined {
@@ -218,7 +204,9 @@ export async function generateNotebookQuiz(
   const scope = input.fileIds?.length ? input.fileIds : undefined;
 
   status("Searching notebook sources…");
+  assertNotebookGenerationActive(input);
   const evidence = await collectDocumentEvidence(notebookId, topic, scope);
+  assertNotebookGenerationActive(input);
   if (!evidence.ranked.length) {
     throw new Error("Not covered in your files — upload the relevant sources or widen the file scope first.");
   }
@@ -241,13 +229,15 @@ export async function generateNotebookQuiz(
   status("Drafting grounded quiz questions…");
   let parsed: unknown;
   try {
-    parsed = extractDocumentJson(await planWithLlm(system, user, input));
+    parsed = extractDocumentJson(await planNotebookWithLlm(system, user, input));
     sanitizeQuestions(parsed, count, quizType, evidence.citations);
   } catch {
+    assertNotebookGenerationActive(input);
     status("First draft came back malformed — retrying with stricter format…");
     const repairSystem = `${system}\nCRITICAL: your previous reply was not usable. Reply with a single valid JSON object only — no markdown fences, no prose before or after.`;
-    parsed = extractDocumentJson(await planWithLlm(repairSystem, user, input));
+    parsed = extractDocumentJson(await planNotebookWithLlm(repairSystem, user, input));
   }
+  assertNotebookGenerationActive(input);
   const questions = sanitizeQuestions(parsed, count, quizType, evidence.citations);
   const rawTitle = ((parsed || {}) as { title?: unknown }).title;
   const title = (typeof rawTitle === "string" && rawTitle.trim() ? rawTitle.trim() : fallbackTitle(topic, "report")).slice(0, 120);
@@ -265,6 +255,7 @@ export async function generateNotebookQuiz(
     updatedAt: now,
   };
   const quizzes = await readQuizzes(notebookId);
+  assertNotebookGenerationActive(input);
   await writeQuizzes(notebookId, [quiz, ...quizzes]);
   return quiz;
 }

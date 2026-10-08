@@ -200,6 +200,27 @@ await test("evaluateCitationCoverage: markers past the registry cap the verdict 
   assert.ok(ev.issues.some((i) => i.includes("point past")));
 });
 
+await test("evaluateCitationCoverage: a trailing sources list cannot stand in for claim citations", () => {
+  const answer = "Revenue grew 12 percent.\n\nSources: [S1] Annual report — Revenue";
+  const ev = evaluateCitationCoverage(answer, 1);
+  assert.equal(ev.verdict, "ungrounded");
+  assert.equal(ev.citationCoverage, 0);
+  assert.ok(ev.issues.some((issue) => issue.includes("attached to prose claims")));
+});
+
+await test("evaluateCitationCoverage: bibliography headings with dash separators are excluded", () => {
+  const ev = evaluateCitationCoverage("Revenue grew 12 percent.\n\nSources — [S1] Annual report", 1);
+  assert.equal(ev.verdict, "ungrounded");
+  assert.equal(ev.citationCoverage, 0);
+});
+
+await test("evaluateCitationCoverage: unresolved-only claims are ungrounded", () => {
+  const ev = evaluateCitationCoverage("Revenue grew 12 percent [S99]. Margin held [S100].", 2);
+  assert.equal(ev.verdict, "ungrounded");
+  assert.equal(ev.citationCoverage, 0);
+  assert.ok(ev.issues.some((issue) => issue.includes("point past")));
+});
+
 await test("evaluateCitationCoverage: code fences and tables do not dilute coverage", () => {
   const answer = "Growth was strong [S1]." + "\\n\\n```json\\n{ \"revenue\": 12 }\\n```\\n" + "| a | b |\\n|---|---|\\n| 1 | 2 |" + "\\n\\nMargin held [S2].";
   const ev = evaluateCitationCoverage(answer, 3);

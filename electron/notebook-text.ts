@@ -451,8 +451,13 @@ export type CitationCoverageEvaluation = {
 
 function coverageSentences(answer: string): string[] {
   // Code blocks, tables and headings are not prose claims; drop them before
-  // splitting so formatting noise doesn't dilute the coverage ratio.
-  const prose = (answer || "")
+  // splitting so formatting noise doesn't dilute the coverage ratio. A final
+  // bibliography is also excluded: references there do not support a claim
+  // unless the claim itself carries the marker.
+  const lines = (answer || "").split(/\r?\n/);
+  const bibliographyStart = lines.findIndex((line) => /^\s*(?:#{1,6}\s*)?(?:sources|references|citations)(?:\s*[:：—–-]|\s+\[S\d+\]|\s*$)/i.test(line));
+  const claimText = (bibliographyStart < 0 ? lines : lines.slice(0, bibliographyStart)).join("\n");
+  const prose = claimText
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/^\s*\|.*\|\s*$/gm, " ")
     .replace(/^\s*#{1,6}\s.*$/gm, " ")
@@ -482,17 +487,29 @@ export function evaluateCitationCoverage(answer: string, registeredCount: number
   let match: RegExpExecArray | null;
   while ((match = markerRe.exec(answer || ""))) {
     const n = Number(match[1]);
-    if (n >= 1 && n <= registeredCount) citedMarkers.add(n);
-    else unresolved++;
+    if (n < 1 || n > registeredCount) {
+      unresolved++;
+    }
   }
   if (unresolved > 0) issues.push(`${unresolved} citation marker${unresolved === 1 ? "" : "s"} point past the retrieved passages`);
-  const citedSentences = sentences.filter((s) => /\[S\d+\]/.test(s)).length;
+  const citedSentences = sentences.filter((sentence) => {
+    const sentenceMarkers = sentence.matchAll(/\[S(\d+)\]/g);
+    let hasResolvedMarker = false;
+    for (const marker of sentenceMarkers) {
+      const n = Number(marker[1]);
+      if (n >= 1 && n <= registeredCount) {
+        citedMarkers.add(n);
+        hasResolvedMarker = true;
+      }
+    }
+    return hasResolvedMarker;
+  }).length;
   const coverage = sentences.length ? citedSentences / sentences.length : citedMarkers.size > 0 ? 1 : 0;
-  if (!citedMarkers.size) issues.push("answer contains no [Sn] citation markers despite sources being present");
+  if (!citedMarkers.size) issues.push("answer contains no [Sn] citation markers attached to prose claims that resolve to retrieved passages");
   else if (coverage < 0.6) issues.push(`only ${Math.round(coverage * 100)}% of sentences carry a citation marker`);
   let verdict: CitationCoverageEvaluation["verdict"];
   if (coverage >= 0.6 && !unresolved && citedMarkers.size) verdict = "grounded";
-  else if (coverage >= 0.2 || citedMarkers.size >= 2) verdict = "partial";
+  else if (citedMarkers.size && (coverage >= 0.2 || citedMarkers.size >= 2)) verdict = "partial";
   else verdict = "ungrounded";
   return { citationCoverage: Math.round(coverage * 100) / 100, verdict, issues };
 }

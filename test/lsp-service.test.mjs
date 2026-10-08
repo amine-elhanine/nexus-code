@@ -7,7 +7,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
-import { parseLspFrames, lspSymbolKindToKind, languageForFile, lspDocumentSymbols } from '../dist-electron/lsp-service.js';
+import { parseLspFrames, lspSymbolKindToKind, languageForFile, lspDocumentSymbols, resetLspForTests } from '../dist-electron/lsp-service.js';
 
 let passed = 0;
 let failed = 0;
@@ -114,5 +114,9 @@ if (serverAvailable) {
     }
   });
 }
+
+// The live server is intentionally reused in the app, but this standalone test
+// must release its child process so the full suite can continue immediately.
+resetLspForTests();
 
 if (failed > 0) process.exitCode = 1;

@@ -15,9 +15,8 @@ export default defineConfig({
       output: {
         manualChunks(id: string) {
           if (id.includes("node_modules")) {
-            // Preview libs stay in their own lazy chunks (loaded only when
-            // previewing that file type) instead of bloating the vendor
-            // bundle pulled on every launch.
+            // Preview libraries stay with their dynamic import path and load
+            // only when a file of that type is opened.
             if (
               id.includes("@aiden0z") ||
               id.includes("docx-preview") ||
@@ -31,7 +30,6 @@ export default defineConfig({
             if (id.includes("@monaco-editor")) return "monaco";
             if (id.includes("@xterm")) return "xterm";
             if (id.includes("lucide-react")) return "icons";
-            return "vendor";
           }
         },
       },

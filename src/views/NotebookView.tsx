@@ -81,7 +81,7 @@ function summaryToMarkdown(summary: NotebookSummary): string {
 }
 
 /** Right-panel Studio: output-type tiles on top, generation composer, outputs below. */
-function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generatingMindmap, generatingSummary, hasSources, docSteps, quizSteps, fichesSteps, mapSteps, summarySteps, onGenerate, onGenerateQuiz, onGenerateFlashcards, onGenerateMindmap, onGenerateSummary }: {
+function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generatingMindmap, generatingSummary, hasSources, docSteps, quizSteps, fichesSteps, mapSteps, summarySteps, onGenerate, onCancelGeneration, onGenerateQuiz, onGenerateFlashcards, onGenerateMindmap, onGenerateSummary }: {
   generating: boolean;
   generatingQuiz: boolean;
   generatingFlashcards: boolean;
@@ -94,6 +94,7 @@ function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generat
   mapSteps: string[];
   summarySteps: string[];
   onGenerate: (kind: NotebookDocument["kind"], format: NotebookDocument["format"], prompt: string) => void;
+  onCancelGeneration: (kind: "document" | "quiz" | "flashcards" | "mindmap" | "summary") => void;
   onGenerateQuiz: (topic: string, count: number, quizType: NotebookQuizType) => void;
   onGenerateFlashcards: (topic: string, count: number) => void;
   onGenerateMindmap: (topic: string) => void;
@@ -122,6 +123,13 @@ function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generat
 
   const busy = kind === "quiz" ? generatingQuiz : kind === "fiches" ? generatingFlashcards : kind === "mindmap" ? generatingMindmap : kind === "summary" ? generatingSummary : generating;
   const steps = kind === "quiz" ? quizSteps : kind === "fiches" ? fichesSteps : kind === "mindmap" ? mapSteps : kind === "summary" ? summarySteps : docSteps;
+  const activeGenerations: Array<{ kind: "document" | "quiz" | "flashcards" | "mindmap" | "summary"; label: string; running: boolean }> = [
+    { kind: "document", label: "document", running: generating },
+    { kind: "quiz", label: "quiz", running: generatingQuiz },
+    { kind: "flashcards", label: "flashcards", running: generatingFlashcards },
+    { kind: "mindmap", label: "mind map", running: generatingMindmap },
+    { kind: "summary", label: "summary", running: generatingSummary },
+  ];
 
   return (
     <div>
@@ -253,6 +261,11 @@ function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generat
           </button>
         )}
       </div>
+      {activeGenerations.filter((job) => job.running).map((job) => (
+        <button key={job.kind} className="studio-generate" onClick={() => onCancelGeneration(job.kind)} style={{ marginTop: 6 }}>
+          Stop {job.label} generation
+        </button>
+      ))}
       {(busy || steps.length > 0) && (
         <div style={{ marginTop: 8 }}>
           <ActivityGroupView
@@ -309,6 +322,7 @@ export function NotebookView({
   mapSteps,
   summarySteps,
   onGenerateDocument,
+  onCancelGeneration,
   onGenerateQuiz,
   onDeleteQuiz,
   onGenerateFlashcards,
@@ -386,6 +400,7 @@ export function NotebookView({
   mapSteps: string[];
   summarySteps: string[];
   onGenerateDocument: (kind: NotebookDocument["kind"], format: NotebookDocument["format"], prompt: string) => void;
+  onCancelGeneration: (kind: "document" | "quiz" | "flashcards" | "mindmap" | "summary") => void;
   onGenerateQuiz: (topic: string, count: number, quizType: NotebookQuizType) => void;
   onDeleteQuiz: (quiz: NotebookQuiz) => void;
   onGenerateFlashcards: (topic: string, count: number) => void;
@@ -1175,9 +1190,15 @@ export function NotebookView({
                   </span>
                 )}
                 {message.role === "assistant" && message.evaluation && (
-                  <span className="eval-pill" style={{ borderColor: verdictColor(message.evaluation.verdict) }} title={(message.evaluation.issues || []).join("\n") || "Citation coverage"}>
+                  <span
+                    className="eval-pill"
+                    style={{ borderColor: verdictColor(message.evaluation.verdict) }}
+                    title={"citationCoverage" in message.evaluation
+                      ? `Structural citation check only. It verifies that prose claims carry registered [Sn] markers; it does not verify that a passage entails a claim.${message.evaluation.issues?.length ? `\n${message.evaluation.issues.join("\n")}` : ""}`
+                      : (message.evaluation.issues || []).join("\n") || "Legacy groundedness evaluation"}
+                  >
                     {"citationCoverage" in message.evaluation
-                      ? `citations cover ${Math.round(message.evaluation.citationCoverage * 100)}% · ${message.evaluation.verdict}`
+                      ? `citation coverage ${Math.round(message.evaluation.citationCoverage * 100)}% · ${message.evaluation.verdict === "grounded" ? "well-cited" : message.evaluation.verdict === "partial" ? "citation gaps" : "citation check failed"}`
                       : `groundedness ${message.evaluation.groundedness}/10 · ${message.evaluation.verdict}`}
                   </span>
                 )}
@@ -1320,6 +1341,7 @@ export function NotebookView({
                 mapSteps={mapSteps}
                 summarySteps={summarySteps}
                 onGenerate={onGenerateDocument}
+                onCancelGeneration={onCancelGeneration}
                 onGenerateQuiz={onGenerateQuiz}
                 onGenerateFlashcards={onGenerateFlashcards}
                 onGenerateMindmap={onGenerateMindmap}
@@ -1449,7 +1471,7 @@ export function NotebookView({
                 </>
               )}
               {!!evalSummary && (
-                <div className="settings-note" style={{ margin: "8px 0" }}>
+                <div className="settings-note" style={{ margin: "8px 0" }} title="Structural citation coverage across new answers; this does not measure whether each cited passage semantically supports its claim.">
                   <span>⌀ citation coverage {evalSummary.avgPct}% across {evalSummary.count} answer{evalSummary.count === 1 ? "" : "s"}</span>
                 </div>
               )}

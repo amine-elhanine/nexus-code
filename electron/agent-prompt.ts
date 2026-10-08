@@ -1,6 +1,6 @@
 // System-prompt construction for Code and Home runs, plus the Home task
 // contract inference. Extracted from agent-service.ts.
-import type { AgentMemoryContext, AgentMode, AgentTaskKind, HomeTaskContract } from "./agent-types.js";
+import type { AgentMemoryContext, AgentMode, AgentTaskKind, HomeArtifactFormat, HomeTaskContract } from "./agent-types.js";
 import type { TaskComplexity } from "./task-routing.js";
 
 function tail(value: string | undefined, cap: number) {
@@ -38,10 +38,32 @@ export function inferHomeTaskContract(request: string): HomeTaskContract {
   // "I need to understand…" is intent, not a deliverable; "I need a report" is.
   const expectsOutput =
     /\b(create|make|generate|build|write|draft|prepare|produce|export|save|deliver|develop|design|turn|convert|transform|need|want|give\s+me)\b/i.test(stripped) &&
-    !/\b(?:need|want)\s+to\b/i.test(stripped) &&
+    !/\b(?:need|want)\s+to\s+(?:know|understand|learn|find\s+out|figure\s+out)\b/i.test(stripped) &&
     !/^\s*(what|why|how|where|when|which|who|should)\b/i.test(stripped);
   const needsResearch = /\b(research|read|docs?|documentation|investigate|look\s+up|find\s+out|compare|sources?|latest|current)\b/i.test(stripped);
-  return { expectsOutput, needsResearch };
+  return { expectsOutput, needsResearch, expectedFormats: expectsOutput ? inferHomeOutputFormats(stripped) : [] };
+}
+
+const HOME_OUTPUT_FORMATS: Array<{ format: HomeArtifactFormat; pattern: RegExp }> = [
+  { format: "docx", pattern: /\.(?:docx)\b|\b(?:docx|word\s+(?:document|file|report|letter))\b/i },
+  { format: "pdf", pattern: /\.(?:pdf)\b|\bpdf\s+(?:file|document|report|version|copy|course|guide|book)\b|\b(?:as|in|to)\s+(?:a\s+)?pdf\b/i },
+  { format: "pptx", pattern: /\.(?:pptx?)\b|\b(?:powerpoint|slides?|slide\s+deck|slideshow)\b/i },
+  { format: "xlsx", pattern: /\.(?:xlsx?)\b|\b(?:excel\s+(?:file|spreadsheet|workbook)|spreadsheet|workbook)\b/i },
+  { format: "tex", pattern: /\.(?:tex)\b|\blatex\s+(?:file|document|report)\b|\b(?:as|in|to)\s+(?:a\s+)?latex\b/i },
+  { format: "md", pattern: /\.(?:md|markdown)\b|\bmarkdown\s+(?:file|document|report|note|brief)\b|\b(?:as|in)\s+markdown\b/i },
+  { format: "csv", pattern: /\.(?:csv)\b|\bcsv\s+(?:file|export|version)\b|\b(?:as|in|to)\s+(?:a\s+)?csv\b/i },
+  { format: "txt", pattern: /\.(?:txt)\b|\b(?:plain\s+text|text)\s+(?:file|document|version)\b|\b(?:as|in)\s+plain\s+text\b/i },
+];
+
+/** Infer concrete file formats from the output portion of a creation request. */
+export function inferHomeOutputFormats(request: string): HomeArtifactFormat[] {
+  const text = (request || "").trim();
+  const action = /\b(?:create|make|generate|build|write|draft|prepare|produce|export|save|deliver|convert|turn|need|want)\b/i.exec(text);
+  if (!action) return [];
+  // Drop the subject/topic clause so a format mentioned as the report's topic
+  // ("write a report about PDF compression") is not mistaken for its format.
+  const outputClause = text.slice(action.index).split(/\b(?:about|regarding|covering|explaining|on the topic of)\b/i, 1)[0].slice(0, 180);
+  return HOME_OUTPUT_FORMATS.filter(({ pattern }) => pattern.test(outputClause)).map(({ format }) => format);
 }
 
 const HOME_FORMAT_NAMED_PATTERN =
@@ -158,7 +180,7 @@ Working rules:
 - Inspect the relevant code before proposing or making changes; never assume file contents.
 - Follow the engineering harness loop: Plan -> Test -> Implement -> Review -> Verify.
 - Durable memory: when a task teaches something future tasks will need — a build/test command that actually works, a convention the user states, an environment gotcha, a decision and its reason — save it with the project_memory tool (action='remember'). Never save transient task details or anything evident from the code, and trust the recorded facts above instead of re-deriving them.
-- Be efficient: act in at most 3 exploration calls (grep_search/read_file_range) before editing or answering. Read files directly; do not chain outline -> definition -> references -> read for the same symbol. (SKILL.md reads don't count — always check skills first.)
+- Scope exploration to the task. Before changing code, inspect the relevant implementation and the nearest tests, callers, or configuration that could change the right solution. For broad or risky work, follow the behavior across the affected boundaries; for a narrow task, avoid scanning unrelated areas. Stop when the remaining uncertainty would not change the implementation or conclusion. Do not start editing just to meet an exploration-call limit. Read files directly; do not chain outline -> definition -> references -> read for the same symbol. (SKILL.md reads don't count — always check skills first.)
 - Never list the repository root (ls /) or run unscoped globs (**/*): they return thousands of entries (node_modules/dist) and stall the run. Always scope to a subdirectory or a narrow pattern like src/**/*.tsx.
 - Prefer grep_search with a tight query over browsing; if a listing is truncated, narrow it instead of paging through it.
 - For multi-file edits, prefer a single apply_patch call over N sequential writes/edits.

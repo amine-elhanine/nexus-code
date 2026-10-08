@@ -125,9 +125,9 @@ LangGraph 1.x · DeepAgents 1.x · SQLite (notebook vectors) · electron-builder
 Nexus executes real commands and edits real files — by design. Its safety model is **approvals +
 deny-backstop + encryption**, not a sandbox:
 
-- **Approval gates**: risky commands open a modal with **Deny / Allow once / Allow for session** (120 s timeout defaults to deny). Ask-class heuristics cover `git push/reset/clean/rebase`, package installs, `curl | sh`, PowerShell downloads.
-- **Deny backstop**: ~25 hardcoded destructive patterns are always refused (`rm -rf /`, `mkfs`, `dd of=/dev/…`, fork bombs, diskpart/format, registry deletes, user adds, …).
-- **Custom policy**: `.nexus/permissions.json` or `package.json → nexus.permissions` with allow/ask/deny glob lists.
+- **Approval gates**: risky commands open a modal with **Deny / Allow once / Allow for session** (120 s timeout defaults to deny). Ask-class heuristics cover `git push/reset/clean/rebase`, package installs, downloaded-code execution, PowerShell dynamic execution/download utilities, and HTTP uploads or mutating requests; ordinary HTTP reads remain allowed.
+- **Deny backstop**: hardcoded destructive patterns are always refused, including recursive deletion of system roots, Windows system directories, user profiles (including shell-expanded variables), or relative parent paths (`rm -rf /`, `rm -rf ..`, `Remove-Item -Recurse ..\..`), `mkfs`, `dd of=/dev/…`, fork bombs, diskpart/format, registry deletes, and user adds.
+- **Custom policy**: `.nexus/permissions.json` or `package.json → nexus.permissions` with allow/ask/deny glob lists. Agent runs pin the policy when their backend starts, so an agent cannot change its own shell permissions mid-run; user-entered terminal commands use the current policy.
 - **Plan mode is hard read-only** — writes, edits, deletes, shell and MCP are all refused.
 - **Secrets encrypted at rest** with Electron safeStorage (DPAPI on Windows, Keychain on macOS, libsecret on Linux). Child processes never inherit secrets: terminal env is scrubbed, daemons run with a strict structural allowlist.
 - **No telemetry leaves your machine**; transcripts are local JSONL. External links open in your system browser.
@@ -180,6 +180,10 @@ npm run dist          # or: npm run dist:dir
 Every provider can also be configured in-app (Settings → AI Providers); keys are encrypted at rest. Env vars are supported for zero-UI setups:
 
 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `MISTRAL_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `OPENCODE_API_KEY`, `TOGETHER_AI_API_KEY`, `FIREWORKS_API_KEY`, `AZURE_OPENAI_API_KEY`, `AWS_ACCESS_KEY_ID`, `CUSTOM_API_KEY`, `OLLAMA_BASE_URL` (default `http://127.0.0.1:11434`), plus `OPENAI_BASE_URL` / `OPENAI_MODEL` overrides and `NEXUS_HOME_ROOT` (Home workspace override, used by tests). Notebook feature flags live in `electron/notebook-flags.ts` (`NEXUS_NOTEBOOK_*`).
+
+### Agent evaluations
+
+`npm run eval:agent` runs the Code/Home benchmark cases against a configured headless provider and writes a JSON report under `.nexus/evals/`. Use `npm run eval:agent -- --repeat 3` to measure consistency, or `npm run eval:agent -- --case code-subtotal-cents --compare-assets skills,rules --repeat 2` for a paired baseline/ablation report with wins, losses, ties, pass-rate, token, and estimated-cost deltas. That comparison runs one baseline plus one run per selected asset for every case and repeat. `--without-assets skills,rules,commands,agents` runs one ablated configuration. Keys encrypted for the desktop app cannot be read by the headless CLI; pass `--api-key <key>` or set `NEXUS_API_KEY` for that run. The evaluator checks provider readiness before creating fixtures and reports missing or desktop-only credentials without printing their values. Notebook's deterministic offline benchmark is `npm run eval:notebook`.
 
 ## Project structure
 

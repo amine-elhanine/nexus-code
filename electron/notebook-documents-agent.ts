@@ -155,18 +155,24 @@ export async function generateNotebookDocumentViaAgent(
   const skillName = isSlides ? "pptx" : input.format === "pdf" ? "pdf" : input.format === "xlsx" ? "xlsx" : "docx";
   const lib = DOC_SKILL_LIB[skillName];
   const ext = input.format;
+  const workId = `nbdoc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const runId = input.runId || `nbdoc-${workId}`;
+  const checkCancelled = () => {
+    if (input.isCancelled?.()) throw new Error("Document generation cancelled.");
+  };
 
   status("Preparing the document agent (resolving Python)…");
   const py = await resolvePython();
+  checkCancelled();
 
   status(`Installing ${lib} (one-time setup)…`);
-  const installed = await executeCommand(process.cwd(), `${py} -m pip install ${lib}`, { timeoutSeconds: 240 });
+  const installed = await executeCommand(process.cwd(), `${py} -m pip install ${lib}`, { timeoutSeconds: 240, runId, requireApproval: true });
+  checkCancelled();
   if (installed.exitCode !== 0) {
     throw new Error(`${lib} install failed: ${installed.output.slice(-400)}`);
   }
 
   const root = docsDir(notebookId);
-  const workId = `nbdoc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
   const workDir = path.join(root, ".work", workId);
   await fs.mkdir(workDir, { recursive: true });
   const evidenceText = evidenceMarkdown(evidence);
@@ -178,12 +184,15 @@ export async function generateNotebookDocumentViaAgent(
   // Test seam (mirrors the old single-shot path): deterministic callers can
   // inject `generate` to skip the LLM agent loop entirely.
   if (input.generate) {
+    checkCancelled();
     const reply = await input.generate("notebook-doc-agent", `Topic: ${evidence.topic}\n\n${evidenceText}`);
+    checkCancelled();
     const title = parseAgentTitle(reply) || fallbackTitle(evidence.topic, input.kind);
     const script = extractPythonBlock(reply);
     if (!script) throw new Error("The model did not return a usable generator script.");
     await fs.writeFile(path.join(workDir, "generate_doc.py"), script, "utf8");
-    const run = await executeCommand(workDir, `${py} generate_doc.py`, { timeoutSeconds: 300 });
+    const run = await executeCommand(workDir, `${py} generate_doc.py`, { timeoutSeconds: 300, runId, requireApproval: true });
+    checkCancelled();
     if (run.exitCode !== 0) throw new Error(`Generator script failed: ${run.output.slice(-600)}`);
     return finishDeliverable(notebookId, input, evidence, { root, workDir, workId, outFile, ext, isSlides, py, t0, title, status });
   }
@@ -191,17 +200,18 @@ export async function generateNotebookDocumentViaAgent(
   const { provider, modelName } = await resolveProvider(input);
 
   // Isolated backend rooted at the run workdir: the agent can only see
-  // EVIDENCE.md + what it creates there — never other notebooks. Approval is
-  // bypassed (notebook generation is autonomous like Home doc runs); the
-  // permission denylist still applies inside executeCommand.
+  // EVIDENCE.md + what it creates there — never other notebooks. Keep the
+  // shared approval gate on shell commands, including package installation.
   const { getAgentBackend } = await import("./command-service.js");
   const { backend } = await getAgentBackend(
     { id: `notebook-${notebookId}`, name: `notebook-${notebookId}`, root: workDir } as never,
-    { runId: `nbdoc-${workId}` }
+    { runId }
   );
-  backend.execute = (command: string) => executeCommand(workDir, command, { runId: `nbdoc-${workId}` });
   const { beginCommandRun, endCommandRun, isCommandRunCancelled } = await import("./command-service.js");
-  beginCommandRun(`nbdoc-${workId}`);
+  // IPC callers register the run before any async setup. Direct callers still
+  // get a complete run lifecycle here.
+  const ownsRun = !input.runId;
+  if (ownsRun) beginCommandRun(runId);
   try {
     status("The agent is designing your document from your sources…");
     const { runProjectAgent } = await import("./agent-service.js");
@@ -239,12 +249,12 @@ export async function generateNotebookDocumentViaAgent(
       onEvent: (event) => {
         if (event.type === "status" || event.type === "tool") status(event.text);
       },
-      isCancelled: () => isCommandRunCancelled(`nbdoc-${workId}`),
+      isCancelled: () => isCommandRunCancelled(runId),
     });
     const title = parseAgentTitle(result.response) || fallbackTitle(evidence.topic, input.kind);
     return finishDeliverable(notebookId, input, evidence, { root, workDir, workId, outFile, ext, isSlides, py, t0, title, status });
   } finally {
-    endCommandRun(`nbdoc-${workId}`);
+    if (ownsRun) endCommandRun(runId);
   }
 }
 

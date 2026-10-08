@@ -154,6 +154,13 @@ export function pickVerificationCommands(projectRoot: string): string[] {
   return fallback ? [fallback] : [];
 }
 
+/** Include a discovered formatter even when it is the only available check. */
+export function buildVerificationBatch(configuredCommands: string[], formatterCommand: string | null): string[] {
+  const commands = configuredCommands.slice(0, 4);
+  if (formatterCommand && !commands.includes(formatterCommand)) commands.push(formatterCommand);
+  return commands;
+}
+
 /**
  * Finds package-local verification commands for changed files in a workspace.
  * Commands use the package manager's prefix/filter mechanism so the caller
@@ -339,6 +346,11 @@ const EDIT_VERB_PATTERN =
 // reproduce + locate + fix + verify, so it must never route simple.
 const BUG_PATTERN =
   /\b(bug|error|failing|failed|broken|crash|issue|wrong|exception|stack|traceback|doesn'?t work|not working)\b/i;
+// Short change requests can still touch high-impact boundaries. These need
+// the full rules, project context, and verifier path even when the user names
+// only one file or describes the change in a sentence.
+const HIGH_IMPACT_CHANGE_PATTERN =
+  /\b(authentication|authorization|\bauth\b|security|permission|credential|secret|token|encryption|cryptography|database|schema|migration|transaction|concurrency|race\s+condition|thread(?:ing)?|async(?:hronous)?|retry|timeout|rate\s+limit(?:ing)?|network|\bapi\b|protocol|routing|cache|caching|payment|billing|oauth|jwt|performance)\b/i;
 
 /** Heuristic router: trivial lookups / single edits skip planning, delegation and full verification. */
 export function classifyTaskComplexity(request: string): TaskComplexity {
@@ -356,6 +368,9 @@ export function classifyTaskComplexity(request: string): TaskComplexity {
   if (DOC_WRITE_PATTERN.test(text)) return "complex";
   // Debugging always needs reproduce + locate + fix + verify: never simple.
   if (BUG_PATTERN.test(text) && EDIT_VERB_PATTERN.test(text)) return "complex";
+  // A terse high-impact change must not lose investigation and verification
+  // simply because it lacks a filename, test command, or long description.
+  if (EDIT_VERB_PATTERN.test(text) && HIGH_IMPACT_CHANGE_PATTERN.test(text)) return "complex";
   // An edit verb with any scope signal is real work, not a lookup: two files,
   // a non-trivial description, pasted code/traces, or verify/test language.
   const fileMentions = (text.match(/[\w\-./]+\.\w{1,5}/g) || []).length;

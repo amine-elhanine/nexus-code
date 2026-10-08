@@ -29,25 +29,26 @@ import { RunCancelledError, getRunAbortSignal } from "./command-service.js";
 import { requestCommandApproval } from "./approval-service.js";
 import { createHomeMemoryTool, addMemoryFact, removeMemoryFactWithCount, selectRelevantHomeMemory, parseCandidateFacts, capMemoryItems, shouldExtractMemory, type MemoryCandidate } from "./home-memory-service.js";
 import { createHomeTaskJournal, finishHomeTaskJournal, recordHomeTaskAction, saveHomeTaskJournal, type HomeTaskJournal, type HomeTaskPhase } from "./home-task-service.js";
-import { selectHomeArtifactCandidates, validateHomeArtifacts } from "./home-artifact-service.js";
-import { createCodeTaskJournal, finishCodeTaskJournal, inferCodeTaskContract, loadCodeTaskJournal, parseBlockingReviewFindings, recordCodeTaskAction, recordCodeTaskPlan, saveCodeTaskJournal, type CodeTaskContract, type CodeTaskJournal, type CodeTaskPhase } from "./code-task-service.js";
+import { validateHomeArtifactContract } from "./home-artifact-service.js";
+import { codeVerificationOutcome, createCodeTaskJournal, finishCodeTaskJournal, inferCodeTaskContract, loadCodeTaskJournal, parseBlockingReviewFindings, recordCodeTaskAction, recordCodeTaskPlan, saveCodeTaskJournal, shouldRunCodeReview, type CodeTaskContract, type CodeTaskJournal, type CodeTaskPhase } from "./code-task-service.js";
 import type { ProviderConfig } from "./store.js";
 
 import type { AgentEvent, AgentMemoryContext, AgentMode, AgentSettings, AgentTaskKind, AgentUsage, AttachmentDoc, HistoryInput, HomeTaskContract, PlanItem } from "./agent-types.js";
 import type { TaskComplexity } from "./task-routing.js";
-import { buildSystemPrompt, homeRequestNamesFileFormat, inferHomeTaskContract } from "./agent-prompt.js";
+import { buildSystemPrompt, homeRequestNamesFileFormat, inferHomeOutputFormats, inferHomeTaskContract } from "./agent-prompt.js";
 import { DoomLoopError, loopPreventionMiddleware, toolParameterNormalizationMiddleware } from "./loop-prevention.js";
-import { classifyTaskComplexity, detectPackageManager, findTargetedTests, isContinueRequest, isNewProjectTask, isWebTask, pickAffectedPackageCommands, pickFileScopedVerification, pickVerificationCommands, shouldSkipMcpForTask } from "./task-routing.js";
+import { buildVerificationBatch, classifyTaskComplexity, detectPackageManager, findTargetedTests, isContinueRequest, isNewProjectTask, isWebTask, pickAffectedPackageCommands, pickFileScopedVerification, pickVerificationCommands, shouldSkipMcpForTask } from "./task-routing.js";
 import { describeToolCall, extractGithubLogin, extractSkillNameFromPath, loadedSkillNamesFromMessages, toolCallSummary, toolResultExcerpt } from "./tool-describe.js";
 import { saveLastRunCheckpoint, summarizeCompletedSteps } from "./run-checkpoint.js";
+import type { AgentPromptAsset } from "./prompt-assets.js";
 
 // Backward-compatible re-exports: main.ts and tests import these from
 // agent-service; the implementations now live in the focused modules above.
 export type { AgentMode, PlanItem, AgentTurn, HistoryEventItem, HistoryInput, AgentSettings, AgentUsage, AgentEvent, AgentMemoryContext, AgentTaskKind, HomeTaskContract, AttachmentDoc } from "./agent-types.js";
-export { inferHomeTaskContract, homeRequestNamesFileFormat } from "./agent-prompt.js";
+export { inferHomeTaskContract, inferHomeOutputFormats, homeRequestNamesFileFormat } from "./agent-prompt.js";
 export { DoomLoopError, toolParameterNormalizationMiddleware, loopPreventionMiddleware } from "./loop-prevention.js";
 export type { PackageManagerName, PackageManager, TaskComplexity } from "./task-routing.js";
-export { detectPackageManager, pickVerificationCommand, pickVerificationCommands, pickAffectedPackageCommands, pickFileScopedVerification, findTargetedTests, classifyTaskComplexity, shouldSkipMcpForTask, isWebTask, isNewProjectTask, isContinueRequest } from "./task-routing.js";
+export { detectPackageManager, pickVerificationCommand, pickVerificationCommands, pickAffectedPackageCommands, pickFileScopedVerification, findTargetedTests, buildVerificationBatch, classifyTaskComplexity, shouldSkipMcpForTask, isWebTask, isNewProjectTask, isContinueRequest } from "./task-routing.js";
 export { extractSkillNameFromPath, loadedSkillNamesFromMessages, describeToolCall, extractGithubLogin, toolResultExcerpt } from "./tool-describe.js";
 export type { TaskLedger, RunCheckpoint } from "./run-checkpoint.js";
 export { getLastRunCheckpoint, saveLastRunCheckpoint, persistLastRunCheckpoint, loadLastRunCheckpoint, clearLastRunCheckpoint, summarizeCompletedSteps } from "./run-checkpoint.js";
@@ -411,16 +412,22 @@ export async function runProjectAgent(options: {
   onProjectMemoryUpdate?: (mutate: (current: string) => string) => void | Promise<unknown>;
   /** Blocking clarifying-question handler: return the user's answers or null to best-guess. */
   onUserQuestion?: (questions: Array<{ header: string; question: string; options: string[] }>) => Promise<string | null>;
+  /** Controlled evaluation only: omit selected prompt assets from this run. */
+  disabledPromptAssets?: AgentPromptAsset[];
 }) {
   const { projectRoot, telemetryRoot, sessionId, request: rawRequest, images, attachments, attachmentDocs, importableAttachments, settings, memory, history, mode, agentBackend, onEvent, isCancelled, onHomeMemoryUpdate, onProjectMemoryUpdate, onUserQuestion } = options;
   const { resumeMessages, resumePlanItems, resumeNote, skillsMode } = options;
+  const disabledAssets = new Set(options.disabledPromptAssets || []);
+  const assetsEnabled = (asset: AgentPromptAsset) => !disabledAssets.has(asset);
   const taskKind: AgentTaskKind = options.taskKind ?? "code";
   const isGeneral = taskKind === "general";
   // Slash-command expansion: "/review 123" becomes the command's full prompt
   // template with "123" as its input. Single choke point for every run path
   // (Code IPC, Home IPC, headless CLI). Unknown commands and plain text pass
   // through untouched.
-  const request = await expandSlashCommand(rawRequest || "", projectRoot, isGeneral ? "home" : "code").catch(() => rawRequest || "");
+  const request = assetsEnabled("commands")
+    ? await expandSlashCommand(rawRequest || "", projectRoot, isGeneral ? "home" : "code").catch(() => rawRequest || "")
+    : rawRequest || "";
   const homeTaskContract = isGeneral ? inferHomeTaskContract(request) : null;
   const codeTaskContract = isGeneral ? null : inferCodeTaskContract(request);
   const targetTelemetryRoot = telemetryRoot || projectRoot;
@@ -494,14 +501,14 @@ export async function runProjectAgent(options: {
     // Rules loading: Home runs skip rules entirely; Code runs honor the
     // user-facing toggle, and simple tasks get only the project's own rules —
     // the bundled standards corpus is for real engineering work, not lookups.
-    (isGeneral
+    (isGeneral || !assetsEnabled("rules")
       ? Promise.resolve({ hasRules: false, ruleFiles: [], combinedPromptSection: "" })
       : getRulesConfig()
           .then((config) => (config.enabled === false || effectiveComplexity === "simple"
             ? discoverProjectRules(projectRoot)
             : discoverAllRules(projectRoot)))
           .catch(() => ({ hasRules: false, ruleFiles: [], combinedPromptSection: "" }))),
-    getSkillsConfig(),
+    getSkillsConfig().then((config) => ({ ...config, enabled: config.enabled && assetsEnabled("skills") })),
     // Code runs get a symbol-outline map so the model orients without
     // re-listing the tree every task. Home/doc runs skip it (a documents
     // folder has no useful symbols). Never fails the run.
@@ -515,7 +522,7 @@ export async function runProjectAgent(options: {
     // instruction file loads for every Code run regardless of the rules
     // toggle or task complexity — it is project memory, not the standards
     // corpus. Never fails the run.
-    (isGeneral ? Promise.resolve({ files: [], section: "" }) : discoverProjectInstructions(projectRoot).catch(() => ({ files: [], section: "" }))),
+    (isGeneral || !assetsEnabled("rules") ? Promise.resolve({ files: [], section: "" }) : discoverProjectInstructions(projectRoot).catch(() => ({ files: [], section: "" }))),
   ]);
 
   let mcpTools: any[] = [];
@@ -843,7 +850,7 @@ export async function runProjectAgent(options: {
     ],
     tools: isSimple
       ? [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...homeMemoryTool, ...projectMemoryTool, ...mcpTools]
-      : [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...homeMemoryTool, ...projectMemoryTool, subagentTool, ...mcpTools],
+      : [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...homeMemoryTool, ...projectMemoryTool, ...(assetsEnabled("agents") ? [subagentTool] : []), ...mcpTools],
     skills: skillDirs,
     // Relevance-ranked memory for the prompt: profile/preferences always in,
     // facts and recent activity filtered to the current request so unrelated
@@ -865,7 +872,7 @@ export async function runProjectAgent(options: {
       homeTaskContract,
       // Full role catalog only where delegate_task is actually bound — simple
       // runs drop the tool, Home runs never mention delegation.
-      !isGeneral && effectiveComplexity !== "simple" ? buildSubagentCatalog() : "",
+      assetsEnabled("agents") && !isGeneral && effectiveComplexity !== "simple" ? buildSubagentCatalog() : "",
       projectInstructions.section
     ),
   });
@@ -1319,12 +1326,10 @@ export async function runProjectAgent(options: {
           ? await findFreshHomeFiles(projectRoot, initialHomeFiles, runStartMs)
           : [];
         const createdDeliverable = freshFiles.length > 0;
-        const artifactCandidates = selectHomeArtifactCandidates(freshFiles);
-        const artifactChecks = artifactCandidates.length
-          ? await validateHomeArtifacts(projectRoot, artifactCandidates)
-          : [];
-        const invalidArtifacts = artifactChecks.filter((check) => !check.valid);
-        const validatedDeliverable = createdDeliverable && invalidArtifacts.length === 0;
+        const artifactContract = await validateHomeArtifactContract(projectRoot, freshFiles, homeTaskContract?.expectedFormats);
+        const invalidArtifacts = artifactContract.invalidArtifacts;
+        const missingFormats = artifactContract.missingFormats;
+        const validatedDeliverable = createdDeliverable && artifactContract.valid;
         // Chat-answer escape: a genuinely chat-shaped request (poem,
         // explanation, email text) that names no file format may be answered
         // directly in chat, marked with [[answer-in-chat]]. The model decides
@@ -1345,8 +1350,12 @@ export async function runProjectAgent(options: {
 
         if (wantsDeliverable && (!createdDeliverable || !validatedDeliverable) && (conversationalPromise || currentRepairs < maxRepairs)) {
           if (currentRepairs < maxRepairs) {
-            const validationNote = invalidArtifacts.length
-              ? ` Output validation failed: ${invalidArtifacts.map((check) => `${check.path} (${check.error || "invalid"})`).join(", ")}.`
+            const validationDetails = [
+              ...invalidArtifacts.map((check) => `${check.path} (${check.error || "invalid"})`),
+              ...(missingFormats.length ? [`missing requested format${missingFormats.length > 1 ? "s" : ""}: ${missingFormats.map((format) => `.${format}`).join(", ")}`] : []),
+            ];
+            const validationNote = validationDetails.length
+              ? ` Output validation failed: ${validationDetails.join("; ")}.`
               : " No new workspace output was created.";
             emit("tool", `Verification · output check failed.${validationNote}`);
             const failedSkills = loadedSkillNamesFromMessages(runMessages);
@@ -1376,11 +1385,11 @@ export async function runProjectAgent(options: {
       // A denied or timed-out approval is a UI permission decision, not a
       // code problem: report skipped checks instead of sending the model
       // into "fix the dependency setup" repair loops over exit code 126.
-      let anyCheckRan = false;
-      const deniedCommands: string[] = [];
-      const skipIfApprovalDenied = (command: string, res: any): boolean => {
+      let anyVerificationCheckPassed = false;
+      const requiredDeniedCommands: string[] = [];
+      const skipIfApprovalDenied = (command: string, res: any, required = true): boolean => {
         if (!res?.approvalDenied) return false;
-        deniedCommands.push(command);
+        if (required) requiredDeniedCommands.push(command);
         emit("tool", `Verification skipped · \`${command}\` was not approved`);
         return true;
       };
@@ -1437,7 +1446,7 @@ export async function runProjectAgent(options: {
         const scopedResult = await runCommand(scoped);
         if (isCancelled() || signal?.aborted) throw new RunCancelledError();
         const scopedOutput = String((scopedResult as any)?.output ?? "").trim();
-        if ((scopedResult as any)?.exitCode !== 0 && !skipIfApprovalDenied(scoped, scopedResult)) {
+        if ((scopedResult as any)?.exitCode !== 0 && !skipIfApprovalDenied(scoped, scopedResult, false)) {
           emit("tool", `Verification failed · ${scoped}`, undefined, undefined, undefined, undefined, extractDiagnosticFeedback(scopedOutput));
           if (currentRepairs < maxRepairs && scopedOutput) {
             return {
@@ -1448,7 +1457,7 @@ export async function runProjectAgent(options: {
           return { verification: "failed" };
         }
         if (!(scopedResult as any)?.approvalDenied) {
-          anyCheckRan = true;
+          anyVerificationCheckPassed = true;
           emit("tool", `Verification passed · ${scoped}`);
           if (isSimple) return { verification: "passed" };
         }
@@ -1482,8 +1491,7 @@ export async function runProjectAgent(options: {
             }
             return { verification: "failed" };
           }
-          anyCheckRan = true;
-          emit("tool", `Verification passed · ${pm.install}`);
+          emit("tool", `Dependency installation completed · ${pm.install}`);
           try {
             const scripts = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).scripts ?? {};
             if (typeof scripts.build === "string") staticCommand = `${pm.run} build`;
@@ -1516,8 +1524,7 @@ export async function runProjectAgent(options: {
           return null;
         }
       })();
-      const verifyBatch = [...configuredCommands.slice(0, 4)];
-      if (pickFormatterCommand && !verifyBatch.includes(pickFormatterCommand)) verifyBatch.push(pickFormatterCommand);
+      const verifyBatch = buildVerificationBatch(configuredCommands, pickFormatterCommand);
       if (verifyBatch.length > 1) {
         emit("status", `Verifying changes (${verifyBatch.length} checks in parallel)`);
         const settled = await Promise.allSettled(verifyBatch.map((cmd) => runCommand(cmd)));
@@ -1531,11 +1538,11 @@ export async function runProjectAgent(options: {
           } else {
             const output = String((entry.value as any)?.output ?? "").trim();
             if ((entry.value as any)?.exitCode !== 0) {
-              if (skipIfApprovalDenied(command, entry.value)) return;
+              if (skipIfApprovalDenied(command, entry.value, configuredCommands.includes(command))) return;
               failures.push({ command, output });
               emit("tool", `Verification failed · ${command}`, undefined, undefined, undefined, undefined, extractDiagnosticFeedback(output));
             } else {
-              anyCheckRan = true;
+              if (configuredCommands.includes(command)) anyVerificationCheckPassed = true;
               emit("tool", `Verification passed · ${command}`);
             }
           }
@@ -1550,14 +1557,14 @@ export async function runProjectAgent(options: {
           }
           return { verification: "failed" };
         }
-        if (deniedCommands.length && !anyCheckRan) return { verification: "none" };
-      } else for (const verificationCommand of configuredCommands) {
+      } else if (verifyBatch.length > 0) for (const verificationCommand of verifyBatch) {
+        const required = configuredCommands.includes(verificationCommand);
         emit("status", `Verifying changes with \`${verificationCommand}\``);
         const result = await runCommand(verificationCommand);
         if (isCancelled() || signal?.aborted) throw new RunCancelledError();
         const output = String((result as any)?.output ?? "").trim();
         if ((result as any)?.exitCode !== 0) {
-          if (skipIfApprovalDenied(verificationCommand, result)) continue;
+          if (skipIfApprovalDenied(verificationCommand, result, required)) continue;
           emit("tool", `Verification failed · ${verificationCommand}`, undefined, undefined, undefined, undefined, extractDiagnosticFeedback(output));
           if (currentRepairs < maxRepairs && output) {
             return {
@@ -1567,8 +1574,13 @@ export async function runProjectAgent(options: {
           }
           return { verification: "failed" };
         }
-        anyCheckRan = true;
+        if (required) anyVerificationCheckPassed = true;
         emit("tool", `Verification passed · ${verificationCommand}`);
+      }
+
+      if (requiredDeniedCommands.length) {
+        emit("status", `Verification incomplete — approval was denied for required checks: ${requiredDeniedCommands.join(", ")}`);
+        return { verification: "none" };
       }
 
       // 2. Targeted test detection for modified files (reuse the diff above)
@@ -1579,7 +1591,7 @@ export async function runProjectAgent(options: {
         if (isCancelled() || signal?.aborted) throw new RunCancelledError();
         const testOutput = String((testResult as any)?.output ?? "").trim();
         if ((testResult as any)?.exitCode !== 0) {
-          if (skipIfApprovalDenied(targetTestCmd, testResult)) {
+          if (skipIfApprovalDenied(targetTestCmd, testResult, true)) {
             // Skipped, not failed — approval is a user decision.
           } else {
             emit("tool", `Targeted test failed · ${targetTestCmd}`, undefined, undefined, undefined, undefined, extractDiagnosticFeedback(testOutput));
@@ -1592,14 +1604,20 @@ export async function runProjectAgent(options: {
             return { verification: "failed" };
           }
         } else {
-          anyCheckRan = true;
+          anyVerificationCheckPassed = true;
           emit("tool", `Targeted test passed · ${targetTestCmd}`);
         }
       }
 
       // Auto mode gets one bounded, read-only review after verification and
       // before completion. Blocking findings return the task to implementation.
-      if (mode === "auto" && codeTaskContract?.expectsChanges && currentRepairs < maxRepairs) {
+      if (shouldRunCodeReview({
+        agentsEnabled: assetsEnabled("agents"),
+        mode,
+        expectsChanges: Boolean(codeTaskContract?.expectsChanges),
+        currentRepairs,
+        maxRepairs,
+      })) {
         emit("status", "Reviewing the completed work with a read-only reviewer…");
         if (codeJournal) {
           queueCodeJournalWrite(recordCodeTaskAction(codeJournal, {
@@ -1661,11 +1679,12 @@ export async function runProjectAgent(options: {
           verifyFeedback: `The current work unit passed verification, but the execution plan is not complete. Continue with the next unfinished work unit instead of finishing early. Remaining plan items:\n${remaining}\n\nUpdate the todo plan as each unit is completed, then verify again.`,
         };
       }
-      if (deniedCommands.length && !anyCheckRan) {
-        emit("status", `Verification skipped — approval was denied for: ${deniedCommands.join(", ")}`);
-        return { verification: "none" };
-      }
-      return { verification: verifyBatch.length || scoped || targetTestCmd ? "passed" : "none" };
+      return {
+        verification: codeVerificationOutcome({
+          passedCheck: anyVerificationCheckPassed,
+          requiredCheckDenied: requiredDeniedCommands.length > 0,
+        }),
+      };
     })
     .addEdge(START, "deep_agent")
     .addConditionalEdges("deep_agent", () => (mode === "plan" ? "end" : "verify"), { verify: "verify", end: END })
@@ -1767,16 +1786,18 @@ export async function runProjectAgent(options: {
   const homeFreshFiles = isGeneral && homeTaskContract?.expectsOutput
     ? await findFreshHomeFiles(projectRoot, initialHomeFiles, runStartMs)
     : [];
-  const homeArtifactChecks = homeFreshFiles.length
-    ? await validateHomeArtifacts(projectRoot, selectHomeArtifactCandidates(homeFreshFiles))
-    : [];
-  const homeInvalidArtifacts = homeArtifactChecks.filter((check) => !check.valid);
+  const homeArtifactContract = await validateHomeArtifactContract(projectRoot, homeFreshFiles, homeTaskContract?.expectedFormats);
+  const homeInvalidArtifacts = homeArtifactContract.invalidArtifacts;
+  const homeMissingFormats = homeArtifactContract.missingFormats;
   if (isGeneral && homeTaskContract?.expectsOutput && result?.verification === "failed") {
     const freshFiles = homeFreshFiles;
-    if (freshFiles.length === 0 || homeInvalidArtifacts.length > 0) {
-      const detail = freshFiles.length === 0
-        ? "No new workspace artifact was created."
-        : `Output validation failed: ${homeInvalidArtifacts.map((check) => `${check.path} (${check.error || "invalid"})`).join(", ")}.`;
+    if (freshFiles.length === 0 || homeInvalidArtifacts.length > 0 || homeMissingFormats.length > 0) {
+      const details = [
+        ...(freshFiles.length === 0 ? ["no new workspace artifact was created"] : []),
+        ...homeInvalidArtifacts.map((check) => `${check.path} (${check.error || "invalid"})`),
+        ...(homeMissingFormats.length ? [`missing requested format${homeMissingFormats.length > 1 ? "s" : ""}: ${homeMissingFormats.map((format) => `.${format}`).join(", ")}`] : []),
+      ];
+      const detail = `Output validation failed: ${details.join("; ")}.`;
       result.response = `I could not complete the requested output in this run. ${detail} The work is checkpointed; say "continue" to resume from the last completed step.`;
       emit("error", `Home task incomplete · ${detail}`);
     }

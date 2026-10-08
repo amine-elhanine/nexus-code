@@ -129,5 +129,20 @@ await test("empty library returns empty evidence", async () => {
   assert.equal(ev.coverage.usedChunks, 0);
 });
 
+await test("cancelled document generation stops before the model or artifact write", async () => {
+  let modelCalls = 0;
+  await assert.rejects(
+    docs.generateNotebookDocument(NB, {
+      kind: "report",
+      format: "docx",
+      isCancelled: () => true,
+      generate: async () => { modelCalls++; return "should not run"; },
+    }),
+    /cancel/i,
+  );
+  assert.equal(modelCalls, 0);
+  assert.deepEqual(await docs.listNotebookDocuments(NB), []);
+});
+
 console.log(`\nnotebook-evidence: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

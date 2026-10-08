@@ -3,7 +3,7 @@ import type { ChildProcess } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { FilesystemBackend } from "deepagents";
-import { isDeniedCommand, classifyCommand } from "./permissions.js";
+import { isDeniedCommand, classifyCommand, isHttpMutationCommand, isWindowsDownloadCommand } from "./permissions.js";
 import type { CommandPolicy } from "./permissions.js";
 import { requestCommandApproval } from "./approval-service.js";
 import { scrubSecretEnv } from "./child-env.js";
@@ -11,7 +11,7 @@ import type { ProjectRecord } from "./store.js";
 
 const DEFAULT_COMMAND_TIMEOUT_SECONDS = 180;
 
-async function readCommandPolicy(projectRoot: string): Promise<CommandPolicy> {
+export async function readCommandPolicy(projectRoot: string): Promise<CommandPolicy> {
   const candidates = [path.join(projectRoot, ".nexus", "permissions.json")];
   try {
     const packageJson = JSON.parse(await readFile(path.join(projectRoot, "package.json"), "utf8"));
@@ -27,13 +27,14 @@ async function readCommandPolicy(projectRoot: string): Promise<CommandPolicy> {
 }
 
 function approvalKey(command: string): string {
+  if (isHttpMutationCommand(command)) return "network-write";
   if (/\bgit\s+push\b/i.test(command)) return "git-push";
   if (/\bgit\s+(reset|clean|rebase)\b/i.test(command)) return "git-history";
   if (/\b(?:npm|pnpm|yarn|pip|pip3|cargo|poetry|uv)\s+(?:install|add|remove|uninstall)\b/i.test(command)) return "dependency-change";
   if (/\bgo\s+get\b/i.test(command)) return "dependency-change";
   if (/\bmvn\s+(?:dependency|install)\b/i.test(command)) return "dependency-change";
   if (/\bdotnet\s+(?:add|remove|restore)\b/i.test(command)) return "dependency-change";
-  if (/\bcurl\b[^\n|]*\|\s*(?:sh|bash)\b|\b(?:Invoke-WebRequest|iwr|irm)\b/i.test(command)) return "download-execute";
+  if (/\bcurl\b[^\n|]*\|\s*(?:sh|bash)\b|\b(?:Invoke-WebRequest|iwr|irm)\b/i.test(command) || isWindowsDownloadCommand(command)) return "download-execute";
   return "command-change";
 }
 
@@ -175,7 +176,7 @@ function commandLeavesProjectRoot(projectRoot: string, command: string): boolean
   return false;
 }
 
-export async function executeCommand(projectRoot: string, command: string, options: { timeoutSeconds?: number; runId?: string; requireApproval?: boolean } = {}): Promise<CommandResult> {
+export async function executeCommand(projectRoot: string, command: string, options: { timeoutSeconds?: number; runId?: string; requireApproval?: boolean; policy?: CommandPolicy } = {}): Promise<CommandResult> {
   const state = stateFor(options.runId);
   if (state.cancelled || state.abortController.signal.aborted) {
     throw new RunCancelledError();
@@ -185,10 +186,10 @@ export async function executeCommand(projectRoot: string, command: string, optio
   if (commandLeavesProjectRoot(projectRoot, trimmed)) {
     return { output: "Command blocked: do not cd outside the selected project workspace. Commands already run with the correct project cwd; use relative paths instead.", exitCode: 1, truncated: false };
   }
-  const policy = await readCommandPolicy(projectRoot);
+  const policy = options.policy ?? await readCommandPolicy(projectRoot);
   if (isDeniedCommand(trimmed) || classifyCommand(trimmed, policy) === "deny") return { output: "Command blocked by permission policy (destructive pattern).", exitCode: 1, truncated: false };
   if (options.requireApproval && classifyCommand(trimmed, policy) === "ask") {
-    const decision = await requestCommandApproval({ runId: options.runId, approvalKey: approvalKey(trimmed), command: trimmed, cwd: path.resolve(projectRoot), reason: "This command can change dependencies, Git history, remote state, or execute downloaded code." });
+    const decision = await requestCommandApproval({ runId: options.runId, approvalKey: approvalKey(trimmed), command: trimmed, cwd: path.resolve(projectRoot), reason: "This command can change dependencies, Git history, remote state, execute downloaded code, or send data to a remote service." });
     if (state.cancelled || state.abortController.signal.aborted) throw new RunCancelledError();
     if (decision === "deny") return { output: "Command denied or approval timed out.", exitCode: 126, truncated: false, approvalDenied: true };
   }
@@ -262,7 +263,10 @@ export async function getAgentBackend(project: ProjectRecord, options: { readOnl
     backend.delete = refuse("delete");
     backend.execute = refuse("execute");
   } else {
-    backend.execute = (command: string) => executeCommand(project.root, command, { runId: options.runId, requireApproval: true });
+    // Pin policy at run start. Otherwise the agent could write an allow rule
+    // into the workspace and use it to self-approve a later shell command.
+    const commandPolicy = await readCommandPolicy(project.root);
+    backend.execute = (command: string) => executeCommand(project.root, command, { runId: options.runId, requireApproval: true, policy: commandPolicy });
     if (options.editPolicy === "ask") {
       // Opt-in edit approval (AppSettings.editPolicy="ask"): backend file
       // mutations wait for the same approval UI shell commands use. A
