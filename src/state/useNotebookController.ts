@@ -5,6 +5,7 @@ const INTERMEDIATE_STATUSES = new Set(["uploaded", "parsing", "chunking", "index
 
 export function useNotebookController(enabled: boolean) {
   const api = window.nexus || window.forgepilot;
+  const generationRunIds = useRef<Partial<Record<"document" | "quiz" | "flashcards" | "mindmap" | "summary", string>>>({});
   const [notebooks, setNotebooks] = useState<NotebookMeta[]>([]);
   const [activeNotebook, setActiveNotebook] = useState<NotebookMeta | null>(null);
   const [sources, setSources] = useState<NotebookSource[]>([]);
@@ -323,6 +324,7 @@ export function useNotebookController(enabled: boolean) {
   async function generateDocument(kind: NotebookDocument["kind"], format: NotebookDocument["format"], prompt: string, providerId?: string, model?: string) {
     if (!activeNotebook || generatingDoc) return null;
     const statusKey = `nbdoc:${activeNotebook.id}`;
+    generationRunIds.current.document = statusKey;
     setGeneratingDoc(true);
     // Reset the agent activity feed for this run so live tool steps render.
     setStepsByChat((prev) => ({ ...prev, [statusKey]: ["Starting the document agent…"] }));
@@ -352,13 +354,27 @@ export function useNotebookController(enabled: boolean) {
       setNotice(error instanceof Error ? error.message : "Document generation failed.");
       return null;
     } finally {
+      if (generationRunIds.current.document === statusKey) delete generationRunIds.current.document;
       setGeneratingDoc(false);
+    }
+  }
+
+  async function stopGeneration(kind: "document" | "quiz" | "flashcards" | "mindmap" | "summary") {
+    const runId = generationRunIds.current[kind];
+    if (!runId) return;
+    try {
+      const typed = api as unknown as { cancelAgent?: (sessionId?: string) => Promise<unknown> };
+      await typed.cancelAgent?.(runId);
+      setNotice(`Stopping ${kind} generation…`);
+    } catch {
+      setNotice(`Could not stop ${kind} generation.`);
     }
   }
 
   async function generateQuiz(topic: string, count: number, quizType: NotebookQuizType, providerId?: string, model?: string) {
     if (!activeNotebook || generatingQuiz) return null;
     const statusKey = `nbquiz:${activeNotebook.id}`;
+    generationRunIds.current.quiz = statusKey;
     setGeneratingQuiz(true);
     setStepsByChat((prev) => ({ ...prev, [statusKey]: ["Starting the quiz agent…"] }));
     setNotice("Generating a grounded quiz from your sources…");
@@ -380,6 +396,7 @@ export function useNotebookController(enabled: boolean) {
       setNotice(error instanceof Error ? error.message : "Quiz generation failed.");
       return null;
     } finally {
+      if (generationRunIds.current.quiz === statusKey) delete generationRunIds.current.quiz;
       setGeneratingQuiz(false);
     }
   }
@@ -397,6 +414,7 @@ export function useNotebookController(enabled: boolean) {
   async function generateFlashcards(topic: string, count: number, providerId?: string, model?: string) {
     if (!activeNotebook || generatingFlashcards) return null;
     const statusKey = `nbfiches:${activeNotebook.id}`;
+    generationRunIds.current.flashcards = statusKey;
     setGeneratingFlashcards(true);
     setStepsByChat((prev) => ({ ...prev, [statusKey]: ["Starting the flashcard agent…"] }));
     setNotice("Generating grounded flashcards from your sources…");
@@ -418,6 +436,7 @@ export function useNotebookController(enabled: boolean) {
       setNotice(error instanceof Error ? error.message : "Flashcard generation failed.");
       return null;
     } finally {
+      if (generationRunIds.current.flashcards === statusKey) delete generationRunIds.current.flashcards;
       setGeneratingFlashcards(false);
     }
   }
@@ -435,6 +454,7 @@ export function useNotebookController(enabled: boolean) {
   async function generateMindmap(topic: string, providerId?: string, model?: string) {
     if (!activeNotebook || generatingMindmap) return null;
     const statusKey = `nbmap:${activeNotebook.id}`;
+    generationRunIds.current.mindmap = statusKey;
     setGeneratingMindmap(true);
     setStepsByChat((prev) => ({ ...prev, [statusKey]: ["Starting the mind-map agent…"] }));
     setNotice("Generating a grounded mind map from your sources…");
@@ -456,6 +476,7 @@ export function useNotebookController(enabled: boolean) {
       setNotice(error instanceof Error ? error.message : "Mind-map generation failed.");
       return null;
     } finally {
+      if (generationRunIds.current.mindmap === statusKey) delete generationRunIds.current.mindmap;
       setGeneratingMindmap(false);
     }
   }
@@ -473,6 +494,7 @@ export function useNotebookController(enabled: boolean) {
   async function generateSummary(topic: string, length: NotebookSummaryLength, providerId?: string, model?: string) {
     if (!activeNotebook || generatingSummary) return null;
     const statusKey = `nbsum:${activeNotebook.id}`;
+    generationRunIds.current.summary = statusKey;
     setGeneratingSummary(true);
     setStepsByChat((prev) => ({ ...prev, [statusKey]: ["Starting the summary agent…"] }));
     setNotice("Generating a rich grounded summary from your sources…");
@@ -494,6 +516,7 @@ export function useNotebookController(enabled: boolean) {
       setNotice(error instanceof Error ? error.message : "Summary generation failed.");
       return null;
     } finally {
+      if (generationRunIds.current.summary === statusKey) delete generationRunIds.current.summary;
       setGeneratingSummary(false);
     }
   }
@@ -794,6 +817,7 @@ export function useNotebookController(enabled: boolean) {
     generatingQuiz,
     generatingFlashcards,
     generateDocument,
+    stopGeneration,
     generateQuiz,
     removeQuiz,
     generateFlashcards,

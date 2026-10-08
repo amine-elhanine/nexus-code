@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { composeContextBlock } from "./notebook-text.js";
 import { collectDocumentEvidence, extractDocumentJson, fallbackTitle } from "./notebook-documents.js";
+import { assertNotebookGenerationActive, planNotebookWithLlm } from "./notebook-generation.js";
 import { notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
 
 // Rich summary generation for Notebook Mode: an overview plus themed
@@ -39,6 +40,8 @@ export type GenerateSummaryInput = {
   providerId?: string;
   model?: string;
   instructions?: string;
+  runId?: string;
+  isCancelled?: () => boolean;
   generate?: (system: string, user: string) => Promise<string>;
   onStatus?: (text: string) => void;
 };
@@ -85,23 +88,6 @@ export async function deleteNotebookSummary(notebookId: string, summaryId: strin
 export function normalizeSummaryLength(raw: unknown): NotebookSummaryLength {
   if (raw === "brief" || raw === "standard" || raw === "detailed") return raw;
   return "standard";
-}
-
-async function planWithLlm(system: string, user: string, input: GenerateSummaryInput): Promise<string> {
-  if (input.generate) return input.generate(system, user);
-  const { listProviders } = await import("./store.js");
-  const { createChatModel } = await import("./providers.js");
-  const providers = await listProviders();
-  const provider = input.providerId ? providers.find((p) => p.id === input.providerId) : providers[0];
-  if (!provider) throw new Error("Configure a chat provider first (Providers button, top right).");
-  const modelName = input.model || provider.models[0];
-  if (!modelName) throw new Error("No chat model selected.");
-  const llm = await createChatModel(provider, modelName);
-  const res = await llm.invoke([
-    { role: "system", content: system } as never,
-    { role: "user", content: user } as never,
-  ]);
-  return typeof res.content === "string" ? res.content : JSON.stringify(res.content);
 }
 
 type RawSummarySection = {
@@ -152,7 +138,9 @@ export async function generateNotebookSummary(
   const scope = input.fileIds?.length ? input.fileIds : undefined;
 
   status("Searching notebook sources…");
+  assertNotebookGenerationActive(input);
   const evidence = await collectDocumentEvidence(notebookId, topic, scope);
+  assertNotebookGenerationActive(input);
   if (!evidence.ranked.length) {
     throw new Error("Not covered in your files — upload the relevant sources or widen the file scope first.");
   }
@@ -169,13 +157,15 @@ export async function generateNotebookSummary(
   status("Drafting rich summary…");
   let parsed: unknown;
   try {
-    parsed = extractDocumentJson(await planWithLlm(system, user, input));
+    parsed = extractDocumentJson(await planNotebookWithLlm(system, user, input));
     sanitizeSummary(parsed, length, evidence.citations);
   } catch {
+    assertNotebookGenerationActive(input);
     status("First draft came back thin — retrying with stricter format…");
     const repairSystem = `${system}\nCRITICAL: your previous reply was too thin or unusable. Write FULL bodies and reply with a single valid JSON object only — no markdown fences, no prose before or after.`;
-    parsed = extractDocumentJson(await planWithLlm(repairSystem, user, input));
+    parsed = extractDocumentJson(await planNotebookWithLlm(repairSystem, user, input));
   }
+  assertNotebookGenerationActive(input);
   const { overview, sections, takeaways } = sanitizeSummary(parsed, length, evidence.citations);
   const rawTitle = ((parsed || {}) as { title?: unknown }).title;
   const title = (typeof rawTitle === "string" && rawTitle.trim() ? rawTitle.trim() : fallbackTitle(topic, "report")).slice(0, 120);
@@ -194,6 +184,7 @@ export async function generateNotebookSummary(
     updatedAt: now,
   };
   const summaries = await readSummaries(notebookId);
+  assertNotebookGenerationActive(input);
   await writeSummaries(notebookId, [summary, ...summaries]);
   return summary;
 }

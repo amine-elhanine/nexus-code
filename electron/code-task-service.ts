@@ -9,6 +9,21 @@ export type CodeTaskContract = {
   needsVerification: boolean;
 };
 
+export function shouldRunCodeReview(input: {
+  agentsEnabled: boolean;
+  mode: "plan" | "ask" | "auto";
+  expectsChanges: boolean;
+  currentRepairs: number;
+  maxRepairs: number;
+}): boolean {
+  return input.agentsEnabled && input.mode === "auto" && input.expectsChanges && input.currentRepairs < input.maxRepairs;
+}
+
+/** A skipped required check prevents the run from claiming full verification. */
+export function codeVerificationOutcome(input: { passedCheck: boolean; requiredCheckDenied: boolean }): "passed" | "none" {
+  return input.passedCheck && !input.requiredCheckDenied ? "passed" : "none";
+}
+
 /** Require edits only for clear change requests, not reviews or explanations. */
 export function inferCodeTaskContract(request: string): CodeTaskContract {
   const text = (request || "").trim();

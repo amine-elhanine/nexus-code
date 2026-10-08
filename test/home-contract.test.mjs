@@ -9,7 +9,7 @@ const tempHome = path.join(os.tmpdir(), `nexus-test-home-contract-${Date.now()}`
 fs.mkdirSync(path.join(tempHome, ".nexus"), { recursive: true });
 process.env.NEXUS_HOME_ROOT = tempHome;
 
-const { inferHomeTaskContract, homeRequestNamesFileFormat } = await import("../dist-electron/agent-service.js");
+const { inferHomeTaskContract, inferHomeOutputFormats, homeRequestNamesFileFormat } = await import("../dist-electron/agent-service.js");
 const { cleanupHomeGeneratorScripts } = await import("../dist-electron/home-service.js");
 
 let passed = 0;
@@ -34,6 +34,8 @@ await test("polite requests keep the output contract", () => {
   assert.equal(inferHomeTaskContract("Would you write a cover letter for me?").expectsOutput, true);
   assert.equal(inferHomeTaskContract("Please prepare a budget spreadsheet").expectsOutput, true);
   assert.equal(inferHomeTaskContract("I need a budget spreadsheet").expectsOutput, true);
+  assert.equal(inferHomeTaskContract("I need to create a PDF report").expectsOutput, true);
+  assert.equal(inferHomeTaskContract("I want to write a Word document").expectsOutput, true);
   assert.equal(inferHomeTaskContract("Give me a one-page summary").expectsOutput, true);
 });
 
@@ -57,6 +59,15 @@ await test("format-named requests are detectable for the chat-answer guardrail",
   assert.equal(homeRequestNamesFileFormat("Export the data as PDF"), true);
   assert.equal(homeRequestNamesFileFormat("Write a poem about autumn"), false);
   assert.equal(homeRequestNamesFileFormat("Explain quantum computing"), false);
+});
+
+await test("output contract extracts requested file formats without mistaking topic mentions", () => {
+  assert.deepEqual(inferHomeOutputFormats("Create a PDF report about thermal storage"), ["pdf"]);
+  assert.deepEqual(inferHomeOutputFormats("I need a budget spreadsheet"), ["xlsx"]);
+  assert.deepEqual(inferHomeOutputFormats("Write a Word document and export a PDF version"), ["docx", "pdf"]);
+  assert.deepEqual(inferHomeOutputFormats("Create a Markdown file called runbook.md"), ["md"]);
+  assert.deepEqual(inferHomeOutputFormats("Create a report about PDF compression"), []);
+  assert.deepEqual(inferHomeOutputFormats("Explain how to create a PDF"), []);
 });
 
 function writeFresh(name, content) {

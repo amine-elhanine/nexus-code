@@ -5,6 +5,7 @@ import { composeContextBlock, toCitations } from "./notebook-text.js";
 import { listNotebookSources, notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
 import { hybridRetrieve } from "./notebook-rag.js";
 import { loadLibrary, sessionOutline } from "./notebook-library.js";
+import { notebookGenerationInvokeOptions } from "./notebook-generation.js";
 
 // Grounded document generation for Notebook Mode: reports (docx/pdf) and
 // slide decks (pptx). Retrieval + outline reuse the isolated notebook store,
@@ -41,6 +42,8 @@ export type GenerateDocumentInput = {
   providerId?: string;
   model?: string;
   instructions?: string;
+  runId?: string;
+  isCancelled?: () => boolean;
   generate?: (system: string, user: string) => Promise<string>;
   onStatus?: (text: string) => void;
 };
@@ -161,11 +164,21 @@ export async function downloadNotebookDocument(notebookId: string, docId: string
 // re-exported here for existing importers of the documents module.
 export { toCitations };
 
+function checkDocumentCancellation(input: GenerateDocumentInput) {
+  if (input.isCancelled?.()) throw new Error("Document generation cancelled.");
+}
+
 async function planWithLlm(system: string, user: string, input: GenerateDocumentInput): Promise<string> {
-  if (input.generate) return input.generate(system, user);
+  checkDocumentCancellation(input);
+  if (input.generate) {
+    const response = await input.generate(system, user);
+    checkDocumentCancellation(input);
+    return response;
+  }
   const { listProviders } = await import("./store.js");
   const { createChatModel } = await import("./providers.js");
   const providers = await listProviders();
+  checkDocumentCancellation(input);
   const provider = input.providerId ? providers.find((p) => p.id === input.providerId) : providers[0];
   if (!provider) throw new Error("Configure a chat provider first (Providers button, top right).");
   const modelName = input.model || provider.models[0];
@@ -174,7 +187,8 @@ async function planWithLlm(system: string, user: string, input: GenerateDocument
   const res = await llm.invoke([
     { role: "system", content: system } as never,
     { role: "user", content: user } as never,
-  ]);
+  ], notebookGenerationInvokeOptions(input.runId));
+  checkDocumentCancellation(input);
   return typeof res.content === "string" ? res.content : JSON.stringify(res.content);
 }
 
@@ -1032,6 +1046,7 @@ export async function generateNotebookDocument(
     collectDocumentEvidence(notebookId, topic, scope),
     sessionOutline(notebookSessionDir(notebookId), notebookId).catch(() => []),
   ]);
+  checkDocumentCancellation(input);
   if (!evidence.ranked.length) {
     throw new Error("Not covered in your files — upload the relevant sources or widen the file scope first.");
   }
@@ -1075,6 +1090,7 @@ export async function generateNotebookDocument(
     const doc = await generateNotebookDocumentViaAgent(notebookId, input, { ranked, citations, topic, coverage: evidence.coverage });
     return { doc, fallbackReason };
   } catch (error) {
+    if (input.isCancelled?.()) throw error;
     fallbackReason = error instanceof Error ? error.message : String(error);
     status(`Skill build failed (${fallbackReason}) — using built-in renderer…`);
   }
@@ -1087,6 +1103,7 @@ export async function generateNotebookDocument(
     try {
       plan = sanitizeReportPlan(await planWithRepair("report", system, user, input));
     } catch {
+      checkDocumentCancellation(input);
       // Tier 2: weak models can write prose but not JSON — parse Markdown.
       status("Structured draft failed — asking for a plain written report…");
       try {
@@ -1097,14 +1114,17 @@ export async function generateNotebookDocument(
         );
         plan = markdownToReportPlan(prose, fallbackTitle(topic, "report"));
       } catch {
+        checkDocumentCancellation(input);
         // Tier 3: assemble faithfully from passages — grounded by construction.
         status("Model draft failed — assembling the report directly from your sources…");
         plan = extractiveReport(topic, ranked, citations);
       }
     }
     const preview = reportMarkdown(plan, citations);
+    checkDocumentCancellation(input);
     status(input.format === "pdf" ? "Rendering PDF…" : "Rendering Word document…");
     const buffer = input.format === "pdf" ? await renderPdf(plan, citations) : await renderDocx(plan, citations);
+    checkDocumentCancellation(input);
     return { doc: await persistDocument(notebookId, input, plan.title, buffer, preview, citations, plan.sections.length, 0), fallbackReason };
   }
 
@@ -1115,6 +1135,7 @@ export async function generateNotebookDocument(
   try {
     plan = sanitizeSlidesPlan(await planWithRepair("slides", slidesSystem, slidesUser, input));
   } catch {
+    checkDocumentCancellation(input);
     // Tier 2: plain-Markdown outline ("## " slide title, "- " bullets).
     status("Structured draft failed — asking for a plain slide outline…");
     try {
@@ -1125,14 +1146,17 @@ export async function generateNotebookDocument(
       );
       plan = markdownToSlidesPlan(prose, fallbackTitle(topic, "slides"));
     } catch {
+      checkDocumentCancellation(input);
       // Tier 3: assemble faithfully from passages — grounded by construction.
       status("Model draft failed — assembling the slides directly from your sources…");
       plan = extractiveSlides(topic, ranked, citations);
     }
   }
   const preview = slidesMarkdown(plan, citations);
+  checkDocumentCancellation(input);
   status("Rendering PowerPoint file…");
   const buffer = await renderPptx(plan, citations);
+  checkDocumentCancellation(input);
   return { doc: await persistDocument(notebookId, input, plan.title, buffer, preview, citations, 0, plan.slides.length + 2), fallbackReason };
 }
 

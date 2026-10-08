@@ -98,6 +98,10 @@ test("Home Mode Continuity: complexity classification and continuation phrases",
   assert.equal(classifyTaskComplexity("generate a comprehensive pdf"), "complex");
   assert.equal(classifyTaskComplexity("write a word report for the meeting"), "complex");
   assert.equal(classifyTaskComplexity("continue working on the pdf i asked for"), "complex");
+  assert.equal(classifyTaskComplexity("Add token validation to the API"), "complex");
+  assert.equal(classifyTaskComplexity("Change the database schema for accounts"), "complex");
+  assert.equal(classifyTaskComplexity("Add rate limiting to requests"), "complex");
+  assert.equal(classifyTaskComplexity("Add a tooltip to the settings icon"), "simple");
 
   // Affirmative and continuation phrases must be recognized as continue requests
   assert.equal(isContinueRequest("ok"), true);
@@ -121,9 +125,11 @@ test("Home Mode Continuity: complexity classification and continuation phrases",
   assert.deepEqual(inferHomeTaskContract("read the CrewAI docs and generate me a PDF course"), {
     expectsOutput: true,
     needsResearch: true,
+    expectedFormats: ["pdf"],
   });
   assert.deepEqual(inferHomeTaskContract("what is CrewAI?"), {
     expectsOutput: false,
     needsResearch: false,
+    expectedFormats: [],
   });
 });
