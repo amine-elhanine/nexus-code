@@ -3,10 +3,12 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import { stripProjectRoot } from "./path-utils.js";
 
 async function safePath(projectRoot: string, requested: string) {
   const root = await fs.realpath(path.resolve(projectRoot));
-  const candidate = path.resolve(root, requested || ".");
+  const stripped = stripProjectRoot(requested, projectRoot);
+  const candidate = path.resolve(root, stripped || ".");
   if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
     throw new Error("Path escapes the selected project root.");
   }
@@ -299,7 +301,14 @@ export function createEditTools(projectRoot: string, options: { attachedImages?:
       // a pending approval never blocks parallel tool calls.
       const previewOps = parsePatchText(patchText || "");
       if (previewOps.length && options.beforeEdit) {
-        const denial = await options.beforeEdit({ tool: "apply_patch", files: previewOps.map((op) => (op.kind === "move" ? `${op.from} -> ${op.to}` : op.file)) });
+        const denial = await options.beforeEdit({
+          tool: "apply_patch",
+          files: previewOps.map((op) =>
+            op.kind === "move"
+              ? `${stripProjectRoot(op.from, projectRoot)} -> ${stripProjectRoot(op.to, projectRoot)}`
+              : stripProjectRoot(op.file, projectRoot)
+          ),
+        });
         if (denial) return denial;
       }
       const releaseWrite = await acquireProjectWriteLock(projectRoot);
@@ -331,8 +340,13 @@ export function createEditTools(projectRoot: string, options: { attachedImages?:
         // Validate every path and take all backups before changing anything.
         // This makes a multi-file patch recoverable if a later operation fails.
         const resolvedOps = await Promise.all(ops.map(async (op) => {
-          if (op.kind === "move") return { ...op, fromPath: await safePath(projectRoot, op.from), toPath: await safePath(projectRoot, op.to) };
-          return { ...op, targetPath: await safePath(projectRoot, op.file) };
+          if (op.kind === "move") {
+            const cleanFrom = stripProjectRoot(op.from, projectRoot);
+            const cleanTo = stripProjectRoot(op.to, projectRoot);
+            return { ...op, from: cleanFrom, to: cleanTo, fromPath: await safePath(projectRoot, op.from), toPath: await safePath(projectRoot, op.to) };
+          }
+          const cleanFile = stripProjectRoot(op.file, projectRoot);
+          return { ...op, file: cleanFile, targetPath: await safePath(projectRoot, op.file) };
         }));
         for (const op of resolvedOps) {
           if (op.kind === "move") {

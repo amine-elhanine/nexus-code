@@ -59,6 +59,34 @@ await test("format-named requests are detectable for the chat-answer guardrail",
   assert.equal(homeRequestNamesFileFormat("Export the data as PDF"), true);
   assert.equal(homeRequestNamesFileFormat("Write a poem about autumn"), false);
   assert.equal(homeRequestNamesFileFormat("Explain quantum computing"), false);
+  assert.equal(homeRequestNamesFileFormat("Compare sales between 2022 and 2023 with a bar chart"), false);
+  assert.equal(homeRequestNamesFileFormat("Plot monthly active users with a line graph"), false);
+  assert.equal(homeRequestNamesFileFormat("Show me a flowchart diagram of the auth flow"), false);
+});
+
+await test("visual requests without named file formats do not infer file deliverables", () => {
+  const chartContract = inferHomeTaskContract("Create a bar chart comparing sales between 2022 and 2023");
+  assert.equal(chartContract.expectsOutput, true);
+  assert.deepEqual(chartContract.expectedFormats, []);
+  assert.equal(homeRequestNamesFileFormat("Create a bar chart comparing sales between 2022 and 2023"), false);
+
+  const compareContract = inferHomeTaskContract("Compare sales between 2022 and 2023 with a bar chart");
+  assert.equal(compareContract.expectsOutput, false);
+
+  const graphContract = inferHomeTaskContract("Generate a scatter plot of hours vs scores");
+  assert.equal(graphContract.expectsOutput, true);
+  assert.deepEqual(graphContract.expectedFormats, []);
+  assert.equal(homeRequestNamesFileFormat("Generate a scatter plot of hours vs scores"), false);
+
+  const pieContract = inferHomeTaskContract("Create a pie chart of our market share");
+  assert.equal(pieContract.expectsOutput, true);
+  assert.deepEqual(pieContract.expectedFormats, []);
+  assert.equal(homeRequestNamesFileFormat("Create a pie chart of our market share"), false);
+
+  const radarContract = inferHomeTaskContract("Generate a radar chart comparing models");
+  assert.equal(radarContract.expectsOutput, true);
+  assert.deepEqual(radarContract.expectedFormats, []);
+  assert.equal(homeRequestNamesFileFormat("Generate a radar chart comparing models"), false);
 });
 
 await test("output contract extracts requested file formats without mistaking topic mentions", () => {

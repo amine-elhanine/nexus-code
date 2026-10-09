@@ -211,7 +211,7 @@ function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generat
         )}
         {kind === "quiz" ? (
           <button
-            className="studio-generate"
+            className={`studio-generate${busy ? " is-busy" : ""}`}
             disabled={busy || !hasSources}
             onClick={() => onGenerateQuiz(prompt.trim(), quizCount, quizType)}
             title={hasSources ? "Generate an interactive quiz with citations" : "Upload sources first"}
@@ -221,7 +221,7 @@ function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generat
           </button>
         ) : kind === "fiches" ? (
           <button
-            className="studio-generate"
+            className={`studio-generate${busy ? " is-busy" : ""}`}
             disabled={busy || !hasSources}
             onClick={() => onGenerateFlashcards(prompt.trim(), fichesCount)}
             title={hasSources ? "Generate interactive flashcards with citations" : "Upload sources first"}
@@ -231,7 +231,7 @@ function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generat
           </button>
         ) : kind === "mindmap" ? (
           <button
-            className="studio-generate"
+            className={`studio-generate${busy ? " is-busy" : ""}`}
             disabled={busy || !hasSources}
             onClick={() => onGenerateMindmap(prompt.trim())}
             title={hasSources ? "Generate an interactive mind map with citations" : "Upload sources first"}
@@ -241,7 +241,7 @@ function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generat
           </button>
         ) : kind === "summary" ? (
           <button
-            className="studio-generate"
+            className={`studio-generate${busy ? " is-busy" : ""}`}
             disabled={busy || !hasSources}
             onClick={() => onGenerateSummary(prompt.trim(), summaryLength)}
             title={hasSources ? "Generate a rich grounded summary with citations" : "Upload sources first"}
@@ -251,7 +251,7 @@ function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generat
           </button>
         ) : (
           <button
-            className="studio-generate"
+            className={`studio-generate${busy ? " is-busy" : ""}`}
             disabled={busy || !hasSources}
             onClick={() => onGenerate(kind as NotebookDocument["kind"], kind === "slides" ? "pptx" : format, prompt.trim())}
             title={hasSources ? "Generate from in-scope sources with citations" : "Upload sources first"}
@@ -262,8 +262,8 @@ function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generat
         )}
       </div>
       {activeGenerations.filter((job) => job.running).map((job) => (
-        <button key={job.kind} className="studio-generate" onClick={() => onCancelGeneration(job.kind)} style={{ marginTop: 6 }}>
-          Stop {job.label} generation
+        <button key={job.kind} className="studio-stop-btn" onClick={() => onCancelGeneration(job.kind)} style={{ marginTop: 6 }} title={`Stop ${job.label} generation`}>
+          <Square size={11} fill="currentColor" /> Stop {job.label} generation
         </button>
       ))}
       {(busy || steps.length > 0) && (
