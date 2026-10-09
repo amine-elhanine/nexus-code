@@ -4,6 +4,7 @@
 import { ToolMessage } from "@langchain/core/messages";
 import { createMiddleware } from "langchain";
 import { extractSkillNameFromPath } from "./tool-describe.js";
+import { normalizeVirtualPath, normalizeCommandPaths } from "./path-utils.js";
 
 // OpenCode-style doom-loop breaker: the model repeating the exact same tool
 // call is stuck, not working. Thrown from the stream consumer and converted
@@ -20,9 +21,10 @@ export class DoomLoopError extends Error {
 /**
  * Normalizes tool arguments so models passing `filePath` or `path` instead of
  * snake_case `file_path` for DeepAgents filesystem tools (read_file, write_file,
- * edit_file, delete) succeed without validation crashes.
+ * edit_file, delete) succeed without validation crashes, and strips host or
+ * hallucinated POSIX project root prefixes before tools receive them.
  */
-export function toolParameterNormalizationMiddleware() {
+export function toolParameterNormalizationMiddleware(projectRoot?: string) {
   const normalize = (toolCalls: any[]) => {
     if (!Array.isArray(toolCalls)) return;
     for (const tc of toolCalls) {
@@ -32,6 +34,28 @@ export function toolParameterNormalizationMiddleware() {
         }
         if ("path" in tc.args && !("file_path" in tc.args)) {
           tc.args.file_path = tc.args.path;
+        }
+        if (projectRoot) {
+          const pathKeys = [
+            "file_path",
+            "filePath",
+            "path",
+            "file",
+            "target",
+            "dirPath",
+            "dir_path",
+            "directory",
+            "search_path",
+            "searchPath",
+          ] as const;
+          for (const key of pathKeys) {
+            if (typeof tc.args[key] === "string" && tc.args[key]) {
+              tc.args[key] = normalizeVirtualPath(tc.args[key], projectRoot);
+            }
+          }
+          if (typeof tc.args.command === "string") {
+            tc.args.command = normalizeCommandPaths(tc.args.command, projectRoot);
+          }
         }
       }
     }

@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import { stripProjectRoot } from "./path-utils.js";
 import { ensureSymbolParsersReady, parseSymbolsWithTreeSitterSync, startSymbolParserWarmup, type SymbolEntry } from "./symbol-parser.js";
 import { lspDefinition, lspDiagnostics, lspDocumentSymbols, lspReferences } from "./lsp-service.js";
 
@@ -41,7 +42,8 @@ const CODE_EXTENSIONS = new Set([
 
 async function safePath(projectRoot: string, requested: string) {
   const root = await fs.realpath(path.resolve(projectRoot));
-  const candidate = path.resolve(root, requested || ".");
+  const stripped = stripProjectRoot(requested, projectRoot);
+  const candidate = path.resolve(root, stripped || ".");
   if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
     throw new Error("Path escapes the selected project root.");
   }

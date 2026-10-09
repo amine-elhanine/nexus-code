@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { FilesystemBackend } from "deepagents";
 import { isDeniedCommand, classifyCommand, isHttpMutationCommand, isWindowsDownloadCommand } from "./permissions.js";
+import { stripProjectRoot, normalizeCommandPaths, normalizeVirtualPath } from "./path-utils.js";
 import type { CommandPolicy } from "./permissions.js";
 import { requestCommandApproval } from "./approval-service.js";
 import { scrubSecretEnv } from "./child-env.js";
@@ -183,19 +184,20 @@ export async function executeCommand(projectRoot: string, command: string, optio
   }
   const trimmed = command.trim();
   if (!trimmed) return { output: "Command is empty.", exitCode: 1, truncated: false };
-  if (commandLeavesProjectRoot(projectRoot, trimmed)) {
+  const normalized = normalizeCommandPaths(trimmed, projectRoot);
+  if (commandLeavesProjectRoot(projectRoot, normalized)) {
     return { output: "Command blocked: do not cd outside the selected project workspace. Commands already run with the correct project cwd; use relative paths instead.", exitCode: 1, truncated: false };
   }
   const policy = options.policy ?? await readCommandPolicy(projectRoot);
-  if (isDeniedCommand(trimmed) || classifyCommand(trimmed, policy) === "deny") return { output: "Command blocked by permission policy (destructive pattern).", exitCode: 1, truncated: false };
-  if (options.requireApproval && classifyCommand(trimmed, policy) === "ask") {
-    const decision = await requestCommandApproval({ runId: options.runId, approvalKey: approvalKey(trimmed), command: trimmed, cwd: path.resolve(projectRoot), reason: "This command can change dependencies, Git history, remote state, execute downloaded code, or send data to a remote service." });
+  if (isDeniedCommand(normalized) || classifyCommand(normalized, policy) === "deny") return { output: "Command blocked by permission policy (destructive pattern).", exitCode: 1, truncated: false };
+  if (options.requireApproval && classifyCommand(normalized, policy) === "ask") {
+    const decision = await requestCommandApproval({ runId: options.runId, approvalKey: approvalKey(normalized), command: normalized, cwd: path.resolve(projectRoot), reason: "This command can change dependencies, Git history, remote state, execute downloaded code, or send data to a remote service." });
     if (state.cancelled || state.abortController.signal.aborted) throw new RunCancelledError();
     if (decision === "deny") return { output: "Command denied or approval timed out.", exitCode: 126, truncated: false, approvalDenied: true };
   }
 
   const shell = process.platform === "win32" ? (process.env.ComSpec || "cmd.exe") : "/bin/sh";
-  const args = process.platform === "win32" ? ["/d", "/s", "/c", trimmed] : ["-c", trimmed];
+  const args = process.platform === "win32" ? ["/d", "/s", "/c", normalized] : ["-c", normalized];
   const appNodeModules = path.resolve(process.cwd(), "node_modules");
   const existingNodePath = process.env.NODE_PATH || "";
   const nodePath = [existingNodePath, appNodeModules].filter(Boolean).join(path.delimiter);
@@ -239,6 +241,15 @@ function backendId(project: ProjectRecord) { return `workspace-${project.id}`; }
 export async function getAgentBackend(project: ProjectRecord, options: { readOnly?: boolean; runId?: string; editPolicy?: "auto" | "ask" } = {}) {
   const backend: any = new FilesystemBackend({ rootDir: path.resolve(project.root), virtualMode: true });
   backend.id = backendId(project);
+
+  // Intercept resolvePath so that any host or hallucinated POSIX project root
+  // prefix (e.g. /Users/<user>/Desktop/<project>/...) is automatically stripped
+  // before resolving inside the workspace, preventing duplicate nested directories.
+  const originalResolvePath = backend.resolvePath.bind(backend);
+  backend.resolvePath = (key: string) => {
+    const virtualKey = normalizeVirtualPath(key, project.root);
+    return originalResolvePath(virtualKey);
+  };
   // Cap listing/search fan-out: an uncapped `ls /` or `glob **/*` on a repo
   // with node_modules/dist returns thousands of entries into context and the
   // run looks busy while achieving nothing. Truncate with a hint instead.

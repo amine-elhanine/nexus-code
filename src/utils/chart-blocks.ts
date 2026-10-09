@@ -105,10 +105,84 @@ function parseCategoryChart(source: string, dataPattern: RegExp): CategoryChartS
 
 /** ```bar fence: one `bar "Label" value` line per category. */
 export function parseBarChart(source: string): CategoryChartSpec | null {
-  return parseCategoryChart(source, /^bar\s+"([\s\S]*)"\s+([-+\d.]+)$/i);
+  return parseCategoryChart(source, /^(?:bar)\s+"([\s\S]*)"\s+([-+\d.]+)$/i);
+}
+
+/** ```hbar fence: horizontal bars for categories with long labels. */
+export function parseHBarChart(source: string): CategoryChartSpec | null {
+  return parseCategoryChart(source, /^(?:bar|hbar)\s+"([\s\S]*)"\s+([-+\d.]+)$/i);
 }
 
 /** ```line fence: ordered `point "Label" value` lines. */
 export function parseLineChart(source: string): CategoryChartSpec | null {
-  return parseCategoryChart(source, /^point\s+"([\s\S]*)"\s+([-+\d.]+)$/i);
+  return parseCategoryChart(source, /^(?:point)\s+"([\s\S]*)"\s+([-+\d.]+)$/i);
+}
+
+/** ```area fence: ordered `point "Label" value` lines with filled area. */
+export function parseAreaChart(source: string): CategoryChartSpec | null {
+  return parseCategoryChart(source, /^(?:point|area)\s+"([\s\S]*)"\s+([-+\d.]+)$/i);
+}
+
+export type PieSlice = { label: string; value: number; percent: number };
+export type PieSpec = {
+  title: string;
+  donut: boolean;
+  total: number;
+  slices: PieSlice[];
+};
+
+/** ```pie and ```donut fences: `slice "Label" value` lines. */
+export function parsePieChart(source: string, forceDonut = false): PieSpec | null {
+  const spec: PieSpec = { title: "", donut: forceDonut, total: 0, slices: [] };
+  for (const line of lines(source)) {
+    let match: RegExpMatchArray | null;
+    if ((match = line.match(TITLE))) {
+      spec.title = match[1];
+    } else if (/^type\s+"?donut"?/i.test(line) || /^donut\b/i.test(line)) {
+      spec.donut = true;
+    } else if ((match = line.match(/^(?:slice|entry|point|bar|part)\s+"([\s\S]*)"\s+([-+\d.]+)$/i))) {
+      const val = Number(match[2]);
+      if (Number.isFinite(val) && val > 0) {
+        spec.slices.push({ label: match[1], value: val, percent: 0 });
+      }
+    }
+  }
+  if (!spec.slices.length) return null;
+  spec.total = spec.slices.reduce((sum, s) => sum + s.value, 0);
+  if (spec.total <= 0) return null;
+  for (const s of spec.slices) {
+    s.percent = Math.round((s.value / spec.total) * 1000) / 10;
+  }
+  return spec;
+}
+
+export type RadarAxis = { label: string; value: number };
+export type RadarSpec = {
+  title: string;
+  max: number;
+  axes: RadarAxis[];
+};
+
+/** ```radar fence: multivariate spider web with `axis "Dimension" value`. */
+export function parseRadarChart(source: string): RadarSpec | null {
+  const spec: RadarSpec = { title: "", max: 0, axes: [] };
+  let explicitMax: number | null = null;
+  for (const line of lines(source)) {
+    let match: RegExpMatchArray | null;
+    if ((match = line.match(TITLE))) {
+      spec.title = match[1];
+    } else if ((match = line.match(/^max\s+([-+\d.]+)$/i))) {
+      const m = Number(match[1]);
+      if (Number.isFinite(m) && m > 0) explicitMax = m;
+    } else if ((match = line.match(/^(?:axis|point|metric|item)\s+"([\s\S]*)"\s+([-+\d.]+)$/i))) {
+      const val = Number(match[2]);
+      if (Number.isFinite(val) && val >= 0) {
+        spec.axes.push({ label: match[1], value: val });
+      }
+    }
+  }
+  if (spec.axes.length < 3) return null;
+  spec.max = explicitMax ?? niceMax(Math.max(...spec.axes.map((a) => a.value), 0));
+  if (spec.max <= 0) return null;
+  return spec;
 }

@@ -946,6 +946,153 @@ html[data-theme="daylight"] .send-button {
   color: #ffffff;
 }
 
+/* Notebook Studio and Action buttons in Light Themes */
+html[data-theme="alabaster"] .studio-generate,
+html[data-theme="daylight"] .studio-generate {
+  background: var(--nexus-green);
+  color: #ffffff;
+  font-weight: 700;
+}
+
+html[data-theme="alabaster"] .studio-generate:hover:not(:disabled),
+html[data-theme="daylight"] .studio-generate:hover:not(:disabled) {
+  filter: brightness(1.1);
+  color: #ffffff;
+}
+
+html[data-theme="alabaster"] .studio-generate:disabled,
+html[data-theme="daylight"] .studio-generate:disabled {
+  background: var(--panel2);
+  border-color: var(--line2);
+  color: var(--muted);
+  opacity: 0.65;
+  box-shadow: none;
+  filter: none;
+}
+
+html[data-theme="alabaster"] .studio-generate.is-busy,
+html[data-theme="daylight"] .studio-generate.is-busy {
+  background: var(--panel2);
+  border-color: var(--nexus-green);
+  color: var(--nexus-green);
+  opacity: 1;
+  font-weight: 700;
+  box-shadow: 0 0 12px var(--nexus-glow);
+}
+
+html[data-theme="alabaster"] .studio-stop-btn,
+html[data-theme="daylight"] .studio-stop-btn {
+  background: #fee2e2;
+  border: 1px solid #f87171;
+  color: #b91c1c;
+  box-shadow: 0 2px 8px rgba(185, 28, 28, 0.1);
+}
+
+html[data-theme="alabaster"] .studio-stop-btn:hover,
+html[data-theme="daylight"] .studio-stop-btn:hover {
+  background: #fecaca;
+  border-color: #dc2626;
+  color: #7f1d1d;
+  box-shadow: 0 4px 14px rgba(185, 28, 28, 0.2);
+}
+
+html[data-theme="alabaster"] .doc-toggle.active,
+html[data-theme="daylight"] .doc-toggle.active {
+  background: var(--accent-soft);
+  color: var(--nexus-green);
+  font-weight: 700;
+}
+
+html[data-theme="alabaster"] .notebook-quick-btn,
+html[data-theme="daylight"] .notebook-quick-btn {
+  background: var(--panel);
+  border-color: var(--line2);
+  color: var(--text);
+}
+
+html[data-theme="alabaster"] .notebook-quick-btn.active,
+html[data-theme="daylight"] .notebook-quick-btn.active {
+  border-color: var(--nexus-green);
+  background: var(--accent-soft);
+  color: var(--nexus-green);
+  font-weight: 700;
+}
+
+html[data-theme="alabaster"] .notebook-quick-btn:hover,
+html[data-theme="daylight"] .notebook-quick-btn:hover {
+  border-color: var(--nexus-green);
+  color: var(--nexus-green);
+}
+
+html[data-theme="alabaster"] .notebook-add-btn.primary-add:hover,
+html[data-theme="daylight"] .notebook-add-btn.primary-add:hover {
+  border-color: var(--nexus-green);
+  color: var(--nexus-green);
+  background: var(--accent-soft);
+}
+
+html[data-theme="alabaster"] .notebook-link-submit,
+html[data-theme="daylight"] .notebook-link-submit {
+  background: var(--nexus-green);
+  color: #ffffff;
+  font-weight: 700;
+}
+
+html[data-theme="alabaster"] .notebook-pipeline-reindex-btn,
+html[data-theme="daylight"] .notebook-pipeline-reindex-btn {
+  background: var(--panel);
+  border-color: var(--line2);
+  color: var(--text);
+}
+
+html[data-theme="alabaster"] .notebook-pipeline-reindex-btn:hover,
+html[data-theme="daylight"] .notebook-pipeline-reindex-btn:hover {
+  color: var(--nexus-green);
+  border-color: var(--nexus-green);
+  background: var(--accent-soft);
+}
+
+html[data-theme="alabaster"] .new-session-btn,
+html[data-theme="daylight"] .new-session-btn {
+  background: var(--panel);
+  border-color: var(--line2);
+  color: var(--text);
+}
+
+html[data-theme="alabaster"] .new-session-btn:hover:not(:disabled),
+html[data-theme="daylight"] .new-session-btn:hover:not(:disabled) {
+  border-color: var(--nexus-green);
+  color: var(--nexus-green);
+  background: var(--accent-soft);
+}
+
+html[data-theme="alabaster"] .notebook-goal-save-btn,
+html[data-theme="daylight"] .notebook-goal-save-btn {
+  background: var(--panel);
+  border-color: var(--line2);
+  color: var(--text);
+}
+
+html[data-theme="alabaster"] .notebook-goal-save-btn:hover:not(:disabled),
+html[data-theme="daylight"] .notebook-goal-save-btn:hover:not(:disabled) {
+  border-color: var(--nexus-green);
+  color: var(--nexus-green);
+  background: var(--accent-soft);
+}
+
+html[data-theme="alabaster"] .studio-card.tone-green .studio-card-icon,
+html[data-theme="daylight"] .studio-card.tone-green .studio-card-icon { color: #059669; }
+html[data-theme="alabaster"] .studio-card.tone-yellow .studio-card-icon,
+html[data-theme="daylight"] .studio-card.tone-yellow .studio-card-icon { color: #d97706; }
+html[data-theme="alabaster"] .studio-card.tone-blue .studio-card-icon,
+html[data-theme="daylight"] .studio-card.tone-blue .studio-card-icon { color: #2563eb; }
+html[data-theme="alabaster"] .studio-card.tone-purple .studio-card-icon,
+html[data-theme="daylight"] .studio-card.tone-purple .studio-card-icon { color: #7c3aed; }
+html[data-theme="alabaster"] .studio-card.tone-pink .studio-card-icon,
+html[data-theme="daylight"] .studio-card.tone-pink .studio-card-icon { color: #db2777; }
+html[data-theme="alabaster"] .studio-card.tone-gray .studio-card-icon,
+html[data-theme="daylight"] .studio-card.tone-gray .studio-card-icon { color: #4b5563; }
+
 /* Notebook Studio Artifact Cards (Right sidebar OUTPUTS list) */
 html[data-theme="alabaster"] .notebook-artifact-card,
 html[data-theme="daylight"] .notebook-artifact-card {
@@ -1514,6 +1661,96 @@ html[data-theme="dark-white"] .diff-box-head {
 html[data-theme="dark-white"] .daemon-add-form {
   background: var(--bg);
   border-bottom-color: var(--line);
+}
+
+/* Notebook Studio & Action Buttons in Dark & White Theme */
+html[data-theme="dark-white"] .studio-generate {
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #101010;
+  font-weight: 700;
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="dark-white"] .studio-generate:hover:not(:disabled) {
+  background: #f0f0f0;
+  color: #000000;
+  box-shadow: 0 0 16px rgba(255, 255, 255, 0.3);
+}
+
+html[data-theme="dark-white"] .studio-generate:disabled {
+  background: #181818;
+  border-color: #2e2e2e;
+  color: #737373;
+  opacity: 0.7;
+  box-shadow: none;
+}
+
+html[data-theme="dark-white"] .studio-generate.is-busy {
+  background: #181818;
+  border-color: #ffffff;
+  color: #ffffff;
+  opacity: 1;
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="dark-white"] .studio-stop-btn {
+  background: #201214;
+  border: 1px solid #e05260;
+  color: #ff858d;
+  box-shadow: 0 2px 10px rgba(224, 82, 96, 0.15);
+}
+
+html[data-theme="dark-white"] .studio-stop-btn:hover {
+  background: #2e171a;
+  border-color: #ff6e78;
+  color: #ffffff;
+  box-shadow: 0 4px 16px rgba(224, 82, 96, 0.3);
+}
+
+html[data-theme="dark-white"] .studio-card.active {
+  border-color: #ffffff;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+html[data-theme="dark-white"] .studio-card:hover {
+  border-color: #ffffff;
+}
+
+html[data-theme="dark-white"] .doc-toggle.active {
+  background: rgba(255, 255, 255, 0.15);
+  color: #ffffff;
+  font-weight: 700;
+}
+
+html[data-theme="dark-white"] .notebook-quick-btn.active {
+  border-color: #ffffff;
+  background: rgba(255, 255, 255, 0.15);
+  color: #ffffff;
+}
+
+html[data-theme="dark-white"] .notebook-pipeline-reindex-btn:hover {
+  border-color: #ffffff;
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+html[data-theme="dark-white"] .notebook-link-submit {
+  background: #ffffff;
+  color: #101010;
+  font-weight: 700;
+}
+
+html[data-theme="dark-white"] .new-session-btn:hover:not(:disabled) {
+  border-color: #ffffff;
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+html[data-theme="dark-white"] .notebook-goal-save-btn:hover:not(:disabled) {
+  border-color: #ffffff;
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
 }
 
 

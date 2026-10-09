@@ -843,7 +843,7 @@ export async function runProjectAgent(options: {
     model: llm,
     backend: compositeBackend as any,
     middleware: [
-      toolParameterNormalizationMiddleware(),
+      toolParameterNormalizationMiddleware(projectRoot),
       loopPreventionMiddleware({ general: isGeneral, outputRequired: Boolean(homeTaskContract?.expectsOutput), beforeModify: beforeCodeModify }),
       ...(isSimple ? [] : [todoListMiddleware()]),
       ...(hooksMiddleware ? [hooksMiddleware] : []),
@@ -1055,7 +1055,7 @@ export async function runProjectAgent(options: {
       // A Home research run must not spend several retry windows replaying the
       // same long browse sequence. Preserve the checkpoint and surface a
       // resumable failure quickly instead of silently consuming 20+ minutes.
-      maxAttempts: isGeneral ? 2 : undefined,
+      maxAttempts: isGeneral ? 4 : undefined,
       maxProgressResets: isGeneral ? 0 : undefined,
       baseDelayMs: isGeneral ? 5_000 : undefined,
       signal,
@@ -1336,15 +1336,54 @@ export async function runProjectAgent(options: {
         // what the deliverable is; the sentinel + substance + no-named-format
         // guardrails keep it from dodging real file work.
         const responseTextTrimmed = String(state.response || "").trimEnd();
+        const hasVisualBlocks = /```(?:bar|hbar|line|area|pie|donut|scatter|radar|mermaid)\b/i.test(responseTextTrimmed);
         const chatAnswerDeclared =
           wantsDeliverable &&
-          !createdDeliverable &&
           !homeRequestNamesFileFormat(request) &&
-          responseTextTrimmed.length >= 200 &&
-          /\[\[answer-in-chat\]\]\s*$/i.test(responseTextTrimmed);
+          (hasVisualBlocks || (!createdDeliverable && responseTextTrimmed.length >= 200 && /\[\[answer-in-chat\]\]\s*$/i.test(responseTextTrimmed)));
         if (chatAnswerDeclared) {
-          emit("tool", "Verification passed · answered in chat (request names no file format)");
+          if (hasVisualBlocks) {
+            // Clean up any unrequested .md/.txt chart dump files created alongside the chat response
+            for (let i = freshFiles.length - 1; i >= 0; i--) {
+              const file = freshFiles[i];
+              if (/\.(md|markdown|txt)$/i.test(file)) {
+                try {
+                  const content = await fsPromises.readFile(path.join(projectRoot, file), "utf8");
+                  if (/```(?:bar|hbar|line|area|pie|donut|scatter|radar|mermaid)\b/i.test(content)) {
+                    await fsPromises.unlink(path.join(projectRoot, file)).catch(() => {});
+                    freshFiles.splice(i, 1);
+                  }
+                } catch { /* best effort */ }
+              }
+            }
+          }
+          emit("tool", hasVisualBlocks ? "Verification passed · visual charts rendered in chat" : "Verification passed · answered in chat (request names no file format)");
           return { verification: "none" };
+        }
+
+        const requestWantsVisuals = /\b(chart|charts|graph|graphs|diagram|diagrams|plot|plots|visual|visuals|visualization)\b/i.test(request);
+        const mdFilesWithCharts: Array<{ path: string; charts: string[] }> = [];
+        if (!hasVisualBlocks && (!homeRequestNamesFileFormat(request) || requestWantsVisuals)) {
+          for (const file of freshFiles) {
+            if (/\.(md|markdown|txt)$/i.test(file)) {
+              try {
+                const content = await fsPromises.readFile(path.join(projectRoot, file), "utf8");
+                const chartMatches = content.match(/```(?:bar|hbar|line|area|pie|donut|scatter|radar|mermaid)[\s\S]*?```/gi);
+                if (chartMatches?.length) {
+                  mdFilesWithCharts.push({ path: file, charts: chartMatches });
+                }
+              } catch { /* ignore */ }
+            }
+          }
+        }
+
+        if (mdFilesWithCharts.length > 0 && currentRepairs < maxRepairs) {
+          emit("tool", "Verification · graphs must be in the chat response, not inside an .md file");
+          return {
+            verification: "failed",
+            repairs: currentRepairs + 1,
+            verifyFeedback: `You placed charts/graphs inside ${mdFilesWithCharts.map((f) => f.path).join(", ")}, but graphs must be included DIRECTLY in your chat response so the user can see them rendered on screen! The chat interface natively renders \`\`\`bar, \`\`\`line, \`\`\`scatter, and \`\`\`mermaid blocks. Do not offload them to an .md file. Deliver the complete visual answer with the charts directly in chat now.`,
+          };
         }
         const conversationalPromise = /\b(let me|i will|now i'll|i am going to|i'll now|going to write|next step is to)\b.{0,50}\b(write|create|generate|run|execute|build)\b/i.test(state.response || "");
 
@@ -1786,6 +1825,38 @@ export async function runProjectAgent(options: {
   const homeFreshFiles = isGeneral && homeTaskContract?.expectsOutput
     ? await findFreshHomeFiles(projectRoot, initialHomeFiles, runStartMs)
     : [];
+
+  // Ensure visual charts are in the chat response: if the model placed charts inside an unrequested
+  // .md file instead of the response, extract the chart blocks and embed them directly in the chat response.
+  if (isGeneral && result?.response) {
+    let hasVisualBlocks = /```(?:bar|hbar|line|area|pie|donut|scatter|radar|mermaid)\b/i.test(result.response);
+    const requestWantsVisuals = /\b(chart|charts|graph|graphs|diagram|diagrams|plot|plots|visual|visuals|visualization)\b/i.test(request);
+    if (!homeRequestNamesFileFormat(request) || requestWantsVisuals) {
+      for (let i = homeFreshFiles.length - 1; i >= 0; i--) {
+        const file = homeFreshFiles[i];
+        if (/\.(md|markdown|txt)$/i.test(file)) {
+          try {
+            const content = await fsPromises.readFile(path.join(projectRoot, file), "utf8");
+            const chartMatches = content.match(/```(?:bar|hbar|line|area|pie|donut|scatter|radar|mermaid)[\s\S]*?```/gi);
+            if (chartMatches?.length) {
+              if (!hasVisualBlocks) {
+                result.response = `${result.response.trim()}\n\n${chartMatches.join("\n\n")}`;
+                hasVisualBlocks = true;
+              }
+              if (!homeRequestNamesFileFormat(request)) {
+                await fsPromises.unlink(path.join(projectRoot, file)).catch(() => {});
+                homeFreshFiles.splice(i, 1);
+              }
+            }
+          } catch { /* best effort */ }
+        }
+      }
+    }
+    if (hasVisualBlocks && !homeRequestNamesFileFormat(request) && result.verification === "failed") {
+      result.verification = "none";
+    }
+  }
+
   const homeArtifactContract = await validateHomeArtifactContract(projectRoot, homeFreshFiles, homeTaskContract?.expectedFormats);
   const homeInvalidArtifacts = homeArtifactContract.invalidArtifacts;
   const homeMissingFormats = homeArtifactContract.missingFormats;
