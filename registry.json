@@ -1,3 +1,34 @@
 {
-  "plugins": []
+  "plugins": [
+    {
+      "id": "nexus-engineering-suite",
+      "name": "Engineering Suite",
+      "version": "1.0.0",
+      "author": "Nexus",
+      "description": "Full-spectrum engineering plugin featuring specialized subagents, custom slash commands, software architecture skills, and stack coding rules.",
+      "capabilities": ["skills", "agents", "commands", "rules"],
+      "modes": ["code"],
+      "source": "plugins/nexus-engineering-suite"
+    },
+    {
+      "id": "nexus-research-studio",
+      "name": "Research & Document Studio",
+      "version": "1.0.0",
+      "author": "Nexus",
+      "description": "Office file processing (Word, PDF, Excel, PowerPoint), Exa deep web search, documentation mining, and evaluation tools.",
+      "capabilities": ["skills", "agents"],
+      "modes": ["all"],
+      "source": "plugins/nexus-research-studio"
+    },
+    {
+      "id": "nexus-content-engine",
+      "name": "Content & Brand Engine",
+      "version": "1.0.0",
+      "author": "Nexus",
+      "description": "Brand discovery, article writing, audience positioning, and web scraping workflows.",
+      "capabilities": ["skills"],
+      "modes": ["home"],
+      "source": "plugins/nexus-content-engine"
+    }
+  ]
 }

@@ -9,9 +9,30 @@ import path from "node:path";
 import JSZip from "jszip";
 import { getPluginRegistryConfig, savePluginRegistryConfig, type PluginRegistryEntry } from "./store.js";
 
-export type PluginManifest = { id?: string; name?: string; description?: string; version?: string; author?: string; capabilities?: string[] };
+export type PluginManifest = { id?: string; name?: string; description?: string; version?: string; author?: string; capabilities?: string[]; modes?: unknown };
 export type PluginInfo = { name: string; dir: string; manifest: PluginManifest };
 export type MarketplacePlugin = PluginRegistryEntry & { installed?: boolean; installedVersion?: string };
+
+/** Agent modes a plugin may serve. [] / omitted = all modes. Mirrors
+ * skills-service normalizeSkillModes but lives here so skills-service can
+ * import it without a require cycle (skills-service → plugins-service). */
+export type PluginMode = "home" | "code" | "notebook";
+export const ALL_PLUGIN_MODES: PluginMode[] = ["home", "code", "notebook"];
+
+export function normalizePluginModes(value: unknown): PluginMode[] {
+  const parts = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+  const cleaned = parts
+    .map((part) => String(part || "").trim().toLowerCase())
+    .filter((part): part is PluginMode => (ALL_PLUGIN_MODES as string[]).includes(part));
+  if (!cleaned.length) return [];
+  if (cleaned.length >= ALL_PLUGIN_MODES.length) return [];
+  return [...new Set(cleaned)];
+}
+
+export function pluginAppliesToMode(modes: unknown, mode: PluginMode): boolean {
+  const normalized = Array.isArray(modes) ? (modes as PluginMode[]) : normalizePluginModes(modes);
+  return normalized.length === 0 || normalized.includes(mode);
+}
 
 export function pluginsDir(projectRoot: string): string {
   return path.join(path.resolve(projectRoot), ".nexus", "plugins");
@@ -35,6 +56,11 @@ export async function discoverPlugins(projectRoot: string): Promise<PluginInfo[]
       manifest = JSON.parse(await fs.readFile(path.join(dir, "manifest.json"), "utf8"));
       if (typeof manifest !== "object" || manifest === null) manifest = {};
     } catch { /* manifest optional */ }
+    const detectedCaps = detectPluginCapabilities(dir);
+    const caps = Array.isArray(manifest.capabilities) && manifest.capabilities.length > 0
+      ? manifest.capabilities
+      : detectedCaps;
+    manifest = { ...manifest, capabilities: caps };
     plugins.push({
       name: typeof manifest.name === "string" && manifest.name.trim() ? manifest.name.trim() : entry.name,
       dir,
@@ -46,18 +72,95 @@ export async function discoverPlugins(projectRoot: string): Promise<PluginInfo[]
 
 /** Skill folders contributed by plugins (one per plugin, if present). */
 export async function pluginSkillDirs(projectRoot: string): Promise<string[]> {
+  return (await pluginSkillDirsWithModes(projectRoot)).map((entry) => entry.dir);
+}
+
+/** Skill folders with the owning plugin's default modes ([] = all modes).
+ * A skill's own `modes:` frontmatter overrides this default (see skills-service). */
+export async function pluginSkillDirsWithModes(projectRoot: string): Promise<Array<{ dir: string; modes: PluginMode[] }>> {
   const plugins = await discoverPlugins(projectRoot);
   return plugins
-    .map((plugin) => path.join(plugin.dir, "skills"))
-    .filter((dir) => existsSync(dir));
+    .map((plugin) => ({
+      dir: path.join(plugin.dir, "skills"),
+      modes: normalizePluginModes((plugin.manifest as { modes?: unknown })?.modes),
+    }))
+    .filter((entry) => existsSync(entry.dir));
+}
+
+/** Agent folders contributed by plugins (one per plugin, if present). */
+export async function pluginAgentDirs(projectRoot: string): Promise<string[]> {
+  return (await pluginAgentDirsWithModes(projectRoot)).map((entry) => entry.dir);
+}
+
+/** Agent folders with the owning plugin's default modes ([] = all modes). */
+export async function pluginAgentDirsWithModes(projectRoot: string): Promise<Array<{ dir: string; modes: PluginMode[] }>> {
+  const plugins = await discoverPlugins(projectRoot);
+  return plugins
+    .map((plugin) => ({
+      dir: path.join(plugin.dir, "agents"),
+      modes: normalizePluginModes((plugin.manifest as { modes?: unknown })?.modes),
+    }))
+    .filter((entry) => existsSync(entry.dir));
+}
+
+/** Command folders contributed by plugins (one per plugin, if present). */
+export async function pluginCommandDirs(projectRoot: string): Promise<string[]> {
+  return (await pluginCommandDirsWithModes(projectRoot)).map((entry) => entry.dir);
+}
+
+/** Command folders with the owning plugin's default modes ([] = all modes). */
+export async function pluginCommandDirsWithModes(projectRoot: string): Promise<Array<{ dir: string; modes: PluginMode[] }>> {
+  const plugins = await discoverPlugins(projectRoot);
+  return plugins
+    .map((plugin) => ({
+      dir: path.join(plugin.dir, "commands"),
+      modes: normalizePluginModes((plugin.manifest as { modes?: unknown })?.modes),
+    }))
+    .filter((entry) => existsSync(entry.dir));
+}
+
+/** Rule folders contributed by plugins (one per plugin, if present). */
+export async function pluginRuleDirs(projectRoot: string): Promise<string[]> {
+  return (await pluginRuleDirsWithModes(projectRoot)).map((entry) => entry.dir);
+}
+
+/** Rule folders with the owning plugin's default modes ([] = all modes). */
+export async function pluginRuleDirsWithModes(projectRoot: string): Promise<Array<{ dir: string; modes: PluginMode[] }>> {
+  const plugins = await discoverPlugins(projectRoot);
+  return plugins
+    .map((plugin) => ({
+      dir: path.join(plugin.dir, "rules"),
+      modes: normalizePluginModes((plugin.manifest as { modes?: unknown })?.modes),
+    }))
+    .filter((entry) => existsSync(entry.dir));
 }
 
 /** hooks.json paths contributed by plugins (one per plugin, if present). */
 export async function pluginHookFiles(projectRoot: string): Promise<string[]> {
+  return (await pluginHookFilesWithModes(projectRoot)).map((entry) => entry.file);
+}
+
+/** Hook files with the owning plugin's default modes ([] = all modes). */
+export async function pluginHookFilesWithModes(projectRoot: string): Promise<Array<{ file: string; modes: PluginMode[] }>> {
   const plugins = await discoverPlugins(projectRoot);
   return plugins
-    .map((plugin) => path.join(plugin.dir, "hooks.json"))
-    .filter((file) => existsSync(file));
+    .map((plugin) => ({
+      file: path.join(plugin.dir, "hooks.json"),
+      modes: normalizePluginModes((plugin.manifest as { modes?: unknown })?.modes),
+    }))
+    .filter((entry) => existsSync(entry.file));
+}
+
+export function detectPluginCapabilities(pluginDir: string): string[] {
+  const caps: string[] = [];
+  try {
+    if (existsSync(path.join(pluginDir, "skills"))) caps.push("skills");
+    if (existsSync(path.join(pluginDir, "agents"))) caps.push("agents");
+    if (existsSync(path.join(pluginDir, "commands"))) caps.push("commands");
+    if (existsSync(path.join(pluginDir, "rules"))) caps.push("rules");
+    if (existsSync(path.join(pluginDir, "hooks.json"))) caps.push("hooks");
+  } catch { /* ignore */ }
+  return caps;
 }
 
 function safeId(value: string): string {
@@ -68,10 +171,10 @@ function safeId(value: string): string {
 
 function normalizeEntry(raw: unknown): PluginRegistryEntry | null {
   if (!raw || typeof raw !== "object") return null;
-  const value = raw as Partial<PluginRegistryEntry>;
+  const value = raw as Partial<PluginRegistryEntry> & { modes?: unknown };
   if (typeof value.name !== "string" || typeof value.source !== "string" || !value.name.trim() || !value.source.trim()) return null;
   try {
-    return { id: safeId(typeof value.id === "string" ? value.id : value.name), name: value.name.trim(), source: value.source.trim(), description: typeof value.description === "string" ? value.description : "", version: typeof value.version === "string" ? value.version : "", author: typeof value.author === "string" ? value.author : "", capabilities: Array.isArray(value.capabilities) ? value.capabilities.filter((x): x is string => typeof x === "string") : [] };
+    return { id: safeId(typeof value.id === "string" ? value.id : value.name), name: value.name.trim(), source: value.source.trim(), description: typeof value.description === "string" ? value.description : "", version: typeof value.version === "string" ? value.version : "", author: typeof value.author === "string" ? value.author : "", capabilities: Array.isArray(value.capabilities) ? value.capabilities.filter((x): x is string => typeof x === "string") : [], modes: normalizePluginModes(value.modes) };
   } catch { return null; }
 }
 
@@ -105,14 +208,19 @@ export async function listMarketplace(projectRoot?: string): Promise<Marketplace
 }
 
 /** Adds a local bundle to the developer catalog. Publish the generated registry
- * JSON from any static host later; no app server or account is required. */
+ * JSON from any static host later; no app server or account is required.
+ * The manifest's `modes` (if any) is carried into the catalog entry. */
 export async function publishLocalPlugin(source: string): Promise<PluginRegistryEntry> {
   const stat = await fs.stat(source).catch(() => null);
   if (!stat?.isDirectory()) throw new Error("Choose a plugin folder containing manifest.json.");
   let manifest: PluginManifest;
   try { manifest = JSON.parse(await fs.readFile(path.join(source, "manifest.json"), "utf8")); }
   catch { throw new Error("The plugin folder must include a valid manifest.json."); }
-  const entry = normalizeEntry({ id: manifest.id || manifest.name || path.basename(source), name: manifest.name || path.basename(source), description: manifest.description, version: manifest.version || "0.1.0", author: manifest.author, capabilities: manifest.capabilities, source: path.resolve(source) });
+  const detectedCaps = detectPluginCapabilities(source);
+  const capabilities = Array.isArray(manifest.capabilities) && manifest.capabilities.length > 0
+    ? manifest.capabilities
+    : detectedCaps;
+  const entry = normalizeEntry({ id: manifest.id || manifest.name || path.basename(source), name: manifest.name || path.basename(source), description: manifest.description, version: manifest.version || "0.1.0", author: manifest.author, capabilities, modes: manifest.modes, source: path.resolve(source) });
   if (!entry) throw new Error("The plugin manifest needs a name.");
   const config = await getPluginRegistryConfig();
   const catalog = (config.developerCatalog || []).filter((item) => item.id !== entry.id);
@@ -156,14 +264,46 @@ async function extractZip(source: string, target: string) {
 export async function installMarketplacePlugin(projectRoot: string, entry: PluginRegistryEntry): Promise<PluginInfo> {
   const normalized = normalizeEntry(entry);
   if (!normalized) throw new Error("Invalid plugin listing.");
+  // Remote listings are untrusted JSON. Only https:// bundle URLs are
+  // fetched — plain http:// is rejected to prevent downgrade attacks, and any
+  // other URL scheme (file:, ftp:, data:, …) is rejected instead of falling
+  // through to a local-filesystem copy with a confusing error.
+  const isHttps = /^https:\/\//i.test(normalized.source);
+  const looksLikeUrl = /^[a-z][a-z0-9+.-]*:\/\//i.test(normalized.source);
+  if (!isHttps) {
+    if (/^http:\/\//i.test(normalized.source)) {
+      throw new Error("Refusing insecure http:// plugin source. Use an https:// bundle URL.");
+    }
+    if (looksLikeUrl) {
+      throw new Error("Unsupported plugin source. Use an https:// bundle URL or a developer-catalog folder.");
+    }
+  }
   const root = pluginsDir(projectRoot);
   const target = path.join(root, normalized.id);
   await fs.mkdir(root, { recursive: true });
   const staging = `${target}.installing-${Date.now().toString(36)}`;
   try {
-    if (/^https:\/\//i.test(normalized.source)) await extractZip(normalized.source, staging);
+    if (isHttps) await extractZip(normalized.source, staging);
     else await copyBundle(normalized.source, staging);
     if (!existsSync(path.join(staging, "manifest.json"))) throw new Error("Plugin bundle is missing manifest.json.");
+    // The staged bundle must actually be the plugin that was requested —
+    // otherwise any local directory could be installed under an arbitrary id.
+    try {
+      const staged = JSON.parse(await fs.readFile(path.join(staging, "manifest.json"), "utf8")) as PluginManifest;
+      const stagedId = safeId(
+        typeof staged?.id === "string" && staged.id.trim()
+          ? staged.id
+          : typeof staged?.name === "string" && staged.name.trim()
+            ? staged.name
+            : ""
+      );
+      if (stagedId !== normalized.id) {
+        throw new Error(`Plugin bundle id "${stagedId}" does not match listing "${normalized.id}".`);
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Plugin bundle id")) throw error;
+      throw new Error("Plugin bundle has an invalid manifest.json.");
+    }
     await fs.rm(target, { recursive: true, force: true });
     try {
       await fs.rename(staging, target);

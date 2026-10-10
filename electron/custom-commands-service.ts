@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { pluginCommandDirsWithModes } from "./plugins-service.js";
 
 export interface CustomSlashCommand {
   command: string;          // e.g. "/review"
@@ -255,6 +256,56 @@ export async function discoverCustomCommands(projectRoot?: string, scope?: Exclu
     } catch {
       // directory doesn't exist
     }
+  }
+
+  // Discover plugin-contributed commands (.nexus/plugins/<name>/commands)
+  try {
+    const pluginDirs = await pluginCommandDirsWithModes(projectRoot).catch(() => []);
+    for (const { dir, modes } of pluginDirs) {
+      if (scope && modes.length > 0 && !modes.includes(scope as any)) continue;
+      const subScopes: Array<{ subDir: string; folderScope: CommandScope }> = [
+        { subDir: "", folderScope: modes.length === 1 ? (modes[0] as CommandScope) : "all" },
+        { subDir: "all", folderScope: "all" },
+        { subDir: "home", folderScope: "home" },
+        { subDir: "code", folderScope: "code" },
+        { subDir: "notebook", folderScope: "notebook" },
+      ];
+      for (const { subDir, folderScope } of subScopes) {
+        const target = subDir ? path.join(dir, subDir) : dir;
+        let entries;
+        try {
+          entries = await fs.readdir(target, { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        for (const entry of entries) {
+          if (!entry.isFile() || !(entry.name.endsWith(".md") || entry.name.endsWith(".txt"))) continue;
+          if (!subDir && (ALL_COMMAND_SCOPES as string[]).includes(entry.name.replace(/\.(md|txt)$/i, "").toLowerCase())) continue;
+          const filePath = path.join(target, entry.name);
+          try {
+            const stat = await fs.stat(filePath);
+            if (stat.size > MAX_COMMAND_FILE_BYTES) continue;
+            const raw = await fs.readFile(filePath, "utf8");
+            const cmd = parseCommandFile(entry.name, raw, filePath);
+            if (cmd) {
+              cmd.source = "project";
+              const parsed = parseCommandModes(raw);
+              cmd.scope = parsed.explicit ? parsed.scope : folderScope;
+              const existingIdx = commands.findIndex((c) => c.command === cmd.command);
+              if (existingIdx >= 0) {
+                commands[existingIdx] = cmd;
+              } else {
+                commands.push(cmd);
+              }
+            }
+          } catch {
+            // Ignore unreadable custom command file
+          }
+        }
+      }
+    }
+  } catch {
+    // Ignore error in plugin command discovery
   }
 
   return scope ? commands.filter((c) => commandAppliesToScope(c, scope)) : commands;

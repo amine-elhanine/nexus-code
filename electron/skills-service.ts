@@ -6,7 +6,7 @@ import electronPkg from "electron";
 const app = (electronPkg as any)?.app || (electronPkg as any)?.default?.app;
 const shell = (electronPkg as any)?.shell || (electronPkg as any)?.default?.shell;
 import { z } from "zod";
-import { pluginSkillDirs } from "./plugins-service.js";
+import { pluginSkillDirsWithModes } from "./plugins-service.js";
 
 // Skills are plain folders containing a SKILL.md (name + description frontmatter,
 // instructions below). Per-project skills live inside the repository; the global
@@ -184,16 +184,18 @@ export async function listSkills(projectRoot?: string | null): Promise<SkillInfo
   // vs project duplicates keep the old behavior: both are listed.
   const seenProject = new Set<string>();
   // Project scope reads the new location first, then the legacy one.
-  const roots: Array<{ root: string; scope: "global" | "project" }> = [{ root: globalSkillsDir(), scope: "global" }];
+  // Plugin roots carry the owning plugin's default modes: a skill's own
+  // `modes:` frontmatter wins, otherwise the plugin default applies.
+  const roots: Array<{ root: string; scope: "global" | "project"; defaultModes?: SkillMode[] }> = [{ root: globalSkillsDir(), scope: "global" }];
   if (projectRoot) {
     roots.push({ root: projectSkillsDir(projectRoot), scope: "project" });
     roots.push({ root: legacyProjectSkillsDir(projectRoot), scope: "project" });
     // Plugin-contributed skills (.nexus/plugins/<name>/skills/<skill>).
-    for (const dir of await pluginSkillDirs(projectRoot).catch(() => [])) {
-      roots.push({ root: dir, scope: "project" });
+    for (const entry of await pluginSkillDirsWithModes(projectRoot).catch(() => [] as Array<{ dir: string; modes: SkillMode[] }>)) {
+      roots.push({ root: entry.dir, scope: "project", defaultModes: entry.modes });
     }
   }
-  for (const { root, scope } of roots) {
+  for (const { root, scope, defaultModes } of roots) {
     let entries: string[] = [];
     try {
       entries = (await fs.readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
@@ -204,6 +206,10 @@ export async function listSkills(projectRoot?: string | null): Promise<SkillInfo
       try {
         const info = await readSkillInfo(path.join(root, entry), scope);
         if (!info) continue;
+        if (defaultModes?.length) {
+          const content = await fs.readFile(info.path, "utf8").catch(() => "");
+          if (!parseSkillModes(content).explicit) info.modes = [...defaultModes];
+        }
         if (scope === "project") {
           if (seenProject.has(info.name)) continue;
           seenProject.add(info.name);

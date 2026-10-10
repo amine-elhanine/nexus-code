@@ -1,12 +1,13 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { pluginRuleDirsWithModes } from "./plugins-service.js";
 
 export interface ProjectRuleFile {
   filename: string;
   relativePath: string;
   content: string;
-  source: "cursorrules" | "agent_md" | "claude_md" | "windsurf" | "nexus" | "forgepilot" | "system";
+  source: "cursorrules" | "agent_md" | "claude_md" | "windsurf" | "nexus" | "forgepilot" | "system" | "plugin";
 }
 
 export interface ProjectRulesResult {
@@ -202,6 +203,7 @@ const STACK_RULE_SOURCES: StackRuleSource[] = [
 /** Reads every .md rule file in one stack dir; missing dirs contribute nothing. */
 async function loadRuleDir(dir: string, prefix: string, rules: ProjectRuleFile[]): Promise<void> {
   const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+  const isPlugin = prefix.startsWith("plugin:");
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
     const content = await fs.readFile(path.join(dir, entry.name), "utf8").catch(() => "");
@@ -210,27 +212,83 @@ async function loadRuleDir(dir: string, prefix: string, rules: ProjectRuleFile[]
         filename: entry.name,
         relativePath: `${prefix}/${entry.name}`,
         content: content.trim(),
-        source: "system",
+        source: isPlugin ? "plugin" : "system",
       });
     }
   }
 }
 
+export async function discoverPluginRules(projectRoot: string): Promise<ProjectRuleFile[]> {
+  const rules: ProjectRuleFile[] = [];
+  if (!projectRoot) return rules;
+
+  try {
+    const pluginDirs = await pluginRuleDirsWithModes(projectRoot).catch(() => []);
+    const root = path.resolve(projectRoot);
+    const deps = await readPackageDeps(root);
+
+    for (const { dir } of pluginDirs) {
+      const pluginName = path.basename(path.dirname(dir));
+      const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+      for (const entry of entries) {
+        if (entry.isFile() && (entry.name.endsWith(".md") || entry.name.endsWith(".rule") || entry.name.endsWith(".txt"))) {
+          const filePath = path.join(dir, entry.name);
+          const content = await fs.readFile(filePath, "utf8").catch(() => "");
+          if (content.trim()) {
+            rules.push({
+              filename: entry.name,
+              relativePath: `plugin:${pluginName}/${entry.name}`,
+              content: content.trim(),
+              source: "plugin",
+            });
+          }
+        } else if (entry.isDirectory()) {
+          if (entry.name === "common") {
+            await loadRuleDir(path.join(dir, "common"), `plugin:${pluginName}/common`, rules);
+          } else {
+            const stackSource = STACK_RULE_SOURCES.find((s) => s.dir === entry.name);
+            let matches = false;
+            if (stackSource) {
+              try {
+                matches = await stackSource.detect(root, deps);
+              } catch {
+                matches = false;
+              }
+            } else {
+              matches = true;
+            }
+            if (matches) {
+              await loadRuleDir(path.join(dir, entry.name), `plugin:${pluginName}/${entry.name}`, rules);
+            }
+          }
+        }
+      }
+    }
+  } catch { /* ignore */ }
+
+  return rules;
+}
+
 export async function discoverAllRules(projectRoot: string): Promise<ProjectRulesResult> {
   const projectResult = await discoverProjectRules(projectRoot);
+  const pluginRules = await discoverPluginRules(projectRoot);
   const sysRules = await discoverSystemRules(projectRoot);
 
-  const combinedFiles = [...projectResult.ruleFiles, ...sysRules];
+  const combinedFiles = [...projectResult.ruleFiles, ...pluginRules, ...sysRules];
   if (combinedFiles.length === 0) {
     return { hasRules: false, ruleFiles: [], combinedPromptSection: "" };
   }
 
   const projectSections = projectResult.ruleFiles.map((rf) => `### [Project Rule: ${rf.relativePath}]\n${rf.content}`);
+  const pluginSections = pluginRules.map((rf) => `### [Plugin Rule: ${rf.relativePath}]\n${rf.content}`);
   const sysSections = sysRules.map((rf) => `### [Nexus Standard: ${rf.relativePath}]\n${rf.content}`);
 
   let combinedPromptSection = "";
   if (projectSections.length > 0) {
     combinedPromptSection += `\n\n## Project-Specific Rules & Guidelines\nThe following rules have been defined for this repository. You MUST adhere to all instructions and style guides below:\n\n${projectSections.join("\n\n")}\n`;
+  }
+  if (pluginSections.length > 0) {
+    combinedPromptSection += `\n\n## Plugin-Provided Rules & Standards\nThe following rules are contributed by installed plugins. You MUST adhere to all instructions below:\n\n${pluginSections.join("\n\n")}\n`;
   }
   if (sysSections.length > 0) {
     combinedPromptSection += `\n\n## Nexus Engineering Standards & Harness Rules\nThe following standards govern software development in this workspace:\n\n${sysSections.join("\n\n")}\n`;

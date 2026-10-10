@@ -991,7 +991,15 @@ app.whenReady().then(async () => {
     if (result.canceled || !result.filePaths[0]) return null;
     return publishLocalPlugin(result.filePaths[0]);
   });
-  ipcMain.handle("plugins:developer:remove", (_event, id: string) => removeMarketplacePlugin(id));
+  ipcMain.handle("plugins:developer:remove", async (_event, id: string) => {
+    await removeMarketplacePlugin(id);
+    // Removing a dev entry must not orphan its installed bundle: the bundle
+    // would stay active via discoverPlugins while vanishing from the
+    // Marketplace list with no way to uninstall it.
+    if (activeProjectRoot) {
+      await uninstallPlugin(activeProjectRoot, id).catch(() => undefined);
+    }
+  });
   ipcMain.handle("plugins:install", async (_event, entry) => installMarketplacePlugin(requireRoot(), entry));
   ipcMain.handle("plugins:uninstall", async (_event, id: string) => uninstallPlugin(requireRoot(), id));
 

@@ -59,6 +59,8 @@ export type PluginRegistryEntry = {
   source: string;
   capabilities?: string[];
   icon?: string;
+  /** Agent modes that may use this plugin ([] / omitted = all modes). */
+  modes?: string[];
 };
 export type PluginRegistryConfig = { registryUrl?: string; developerCatalog?: PluginRegistryEntry[] };
 /** The official catalog lives alongside Nexus source so maintainers can ship

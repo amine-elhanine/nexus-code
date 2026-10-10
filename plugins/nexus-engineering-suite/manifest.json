@@ -1,0 +1,16 @@
+{
+  "id": "nexus-engineering-suite",
+  "name": "Engineering Suite",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Full-spectrum engineering plugin featuring specialized subagents, custom slash commands, software architecture skills, and stack coding rules.",
+  "capabilities": [
+    "skills",
+    "agents",
+    "commands",
+    "rules"
+  ],
+  "modes": [
+    "code"
+  ]
+}
