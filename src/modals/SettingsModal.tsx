@@ -5,11 +5,12 @@ import { Toggle } from "../components/common/Toggle.js";
 import { ProviderManager } from "../components/settings/ProviderManager.js";
 import { McpManager } from "../components/settings/McpManager.js";
 import { SkillsManager } from "../components/settings/SkillsManager.js";
+import { PluginMarketplace } from "../components/settings/PluginMarketplace.js";
 import { MemoryRow } from "../views/MemoryView.js";
 import { APP_THEMES, applyTheme, getStoredThemeId } from "../state/theme.js";
 import type { EmbeddingEndpointKind, EmbeddingProviderConfig, ProviderConfig, ProviderDefinition, UpdaterState } from "../types.js";
 
-type SettingsSection = "appearance" | "browser" | "providers" | "notebook" | "mcp" | "skills" | "rules" | "services" | "updates" | "workspace";
+type SettingsSection = "appearance" | "browser" | "providers" | "notebook" | "mcp" | "skills" | "plugins" | "rules" | "services" | "updates" | "workspace";
 
 export function SettingsModal({
   area,
@@ -382,6 +383,7 @@ export function SettingsModal({
           badge: skillsEnabled ? "ON" : "OFF",
           badgeType: skillsEnabled ? "active" : "neutral",
         },
+        { id: "plugins", label: "Marketplace", icon: <Puzzle size={13} /> },
         {
           id: "rules",
           label: "Rules",
@@ -437,6 +439,11 @@ export function SettingsModal({
       kicker: "AI & Agents",
       title: "Agent Skills Middleware",
       subtitle: "Enable and inspect specialized SKILL.md instruction sets available to the agent across workspace modes.",
+    },
+    plugins: {
+      kicker: "Extensions",
+      title: "Plugin Marketplace",
+      subtitle: "Browse your curated registry, install extensions into the active project, and manage your developer catalog.",
     },
     rules: {
       kicker: "AI & Agents",
@@ -558,6 +565,8 @@ export function SettingsModal({
               {!!themeNote && <div className="settings-note" style={{ marginTop: 8 }}><Check size={12} /><span>{themeNote}</span></div>}
             </div>
           )}
+
+          {section === "plugins" && <PluginMarketplace hasProject={hasProject} />}
 
           {section === "browser" && (
             <div className="setting-card">

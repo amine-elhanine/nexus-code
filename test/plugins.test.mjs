@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { discoverPlugins, pluginSkillDirs, pluginHookFiles } from '../dist-electron/plugins-service.js';
+import { discoverPlugins, installMarketplacePlugin, pluginSkillDirs, pluginHookFiles, uninstallPlugin } from '../dist-electron/plugins-service.js';
 import { listSkills } from '../dist-electron/skills-service.js';
 import { discoverHooks } from '../dist-electron/hooks-service.js';
 
@@ -66,6 +66,30 @@ await test('plugin skills and hooks are picked up automatically', async () => {
     assert.equal(hooks.length, 1);
     assert.equal(hooks[0].event, 'run:end');
     assert.equal(hooks[0].command, 'node notify.js');
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+await test('Marketplace installs a local bundle transactionally and makes its skill available', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-market-install-'));
+  try {
+    const source = path.join(tempDir, 'release-notes');
+    await fs.mkdir(path.join(source, 'skills', 'release-notes'), { recursive: true });
+    await fs.writeFile(path.join(source, 'manifest.json'), JSON.stringify({ id: 'release-notes', name: 'Release Notes', version: '1.2.0' }), 'utf8');
+    await fs.writeFile(path.join(source, 'skills', 'release-notes', 'SKILL.md'), '---\nname: release-notes\ndescription: Draft release notes\n---\n\nCreate release notes.', 'utf8');
+
+    const project = path.join(tempDir, 'project');
+    await fs.mkdir(project, { recursive: true });
+    const installed = await installMarketplacePlugin(project, { id: 'release-notes', name: 'Release Notes', source });
+    assert.equal(installed.name, 'Release Notes');
+    assert.equal(installed.manifest.version, '1.2.0');
+    assert.equal(await fs.readFile(path.join(project, '.nexus', 'plugins', 'release-notes', 'manifest.json'), 'utf8').then(JSON.parse).then((manifest) => manifest.id), 'release-notes');
+    const skills = await listSkills(project);
+    assert.ok(skills.some((skill) => skill.name === 'release-notes'), 'installed plugin skill should be active immediately');
+
+    await uninstallPlugin(project, 'release-notes');
+    assert.equal((await discoverPlugins(project)).length, 0, 'uninstall removes the installed bundle');
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }

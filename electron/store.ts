@@ -49,6 +49,21 @@ export type AppSettings = {
   notebookVisionModel?: string;
   theme?: string;
 };
+export type PluginRegistryEntry = {
+  id: string;
+  name: string;
+  description?: string;
+  version?: string;
+  author?: string;
+  /** HTTPS URL to a .zip bundle, or a local folder for the developer catalog. */
+  source: string;
+  capabilities?: string[];
+  icon?: string;
+};
+export type PluginRegistryConfig = { registryUrl?: string; developerCatalog?: PluginRegistryEntry[] };
+/** The official catalog lives alongside Nexus source so maintainers can ship
+ * plugin bundles and their registry in one GitHub repository. */
+export const DEFAULT_PLUGIN_REGISTRY_URL = "https://raw.githubusercontent.com/amine-elhanine/nexus-code/main/registry.json";
 export type NotebookParserConfig = {
   provider: "local" | "llamaparse";
   enabled: boolean;
@@ -62,7 +77,7 @@ export type ProjectRecord = { id: string; name: string; root: string; createdAt:
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
 export type ChatAttachment = { url: string; name: string; mimeType: string; size: number };
 export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; checkpointIds?: string[]; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact" | "stream-reset"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; subagent?: SubagentItem; artifact?: unknown; detail?: string }>; model?: { providerId: string; model: string } };
-type PersistedState = { stateVersion?: number; projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; hooks?: HooksConfig; rules?: RulesConfig; appSettings?: AppSettings; notebookParser?: NotebookParserConfig; homeSessions?: SessionRecord[]; homeMemory?: string };
+type PersistedState = { stateVersion?: number; projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; hooks?: HooksConfig; rules?: RulesConfig; appSettings?: AppSettings; pluginRegistry?: PluginRegistryConfig; notebookParser?: NotebookParserConfig; homeSessions?: SessionRecord[]; homeMemory?: string };
 
 let cache: PersistedState | null = null;
 
@@ -890,6 +905,19 @@ export async function getRulesConfig(): Promise<RulesConfig> { return { enabled:
 export async function saveRulesConfig(input: RulesConfig) { const state = await ensureLoaded(); state.rules = { enabled: input.enabled !== false }; await persist(); return state.rules; }
 export async function getAppSettings(): Promise<AppSettings> { return { ...(await ensureLoaded()).appSettings }; }
 export async function saveAppSettings(input: AppSettings) { const state = await ensureLoaded(); state.appSettings = { ...state.appSettings, ...input }; await persist(); return state.appSettings; }
+export async function getPluginRegistryConfig(): Promise<PluginRegistryConfig> {
+  const value = (await ensureLoaded()).pluginRegistry;
+  return { registryUrl: value?.registryUrl || DEFAULT_PLUGIN_REGISTRY_URL, developerCatalog: [...(value?.developerCatalog || [])] };
+}
+export async function savePluginRegistryConfig(input: PluginRegistryConfig): Promise<PluginRegistryConfig> {
+  const state = await ensureLoaded();
+  state.pluginRegistry = {
+    registryUrl: typeof input.registryUrl === "string" && input.registryUrl.trim() ? input.registryUrl.trim() : DEFAULT_PLUGIN_REGISTRY_URL,
+    developerCatalog: Array.isArray(input.developerCatalog) ? input.developerCatalog : [],
+  };
+  await persist();
+  return state.pluginRegistry;
+}
 export async function getNotebookParserConfig(): Promise<NotebookParserConfig> {
   const configured = (await ensureLoaded()).notebookParser;
   return {

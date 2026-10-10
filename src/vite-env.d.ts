@@ -78,6 +78,14 @@ export interface NexusApi {
   deleteSkill: (skillPath: string) => Promise<void>;
   setSkillModes: (skillPath: string, modes: string[]) => Promise<SkillInfo>;
   openSkillsFolder: (scope: "global" | "project") => Promise<boolean>;
+  listMarketplacePlugins: () => Promise<Array<{ id: string; name: string; description?: string; version?: string; author?: string; source: string; capabilities?: string[]; installed?: boolean; installedVersion?: string }>>;
+  listInstalledPlugins: () => Promise<Array<{ name: string; dir: string; manifest: { id?: string; version?: string } }>>;
+  getPluginRegistry: () => Promise<{ registryUrl?: string; developerCatalog?: Array<{ id: string; name: string; description?: string; version?: string; author?: string; source: string; capabilities?: string[] }> }>;
+  savePluginRegistry: (config: unknown) => Promise<unknown>;
+  publishPlugin: () => Promise<unknown>;
+  removePublishedPlugin: (id: string) => Promise<void>;
+  installPlugin: (entry: unknown) => Promise<unknown>;
+  uninstallPlugin: (id: string) => Promise<void>;
   getSettings: () => Promise<Record<string, unknown>>;
   saveSettings: (settings: unknown) => Promise<unknown>;
   getAppSettings: () => Promise<{ browserHeadless?: boolean; notebookRerankEnabled?: boolean; notebookRerankProviderId?: string; notebookRerankModel?: string; notebookVisionEnabled?: boolean; notebookVisionProviderId?: string; notebookVisionModel?: string; theme?: string }>;

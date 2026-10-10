@@ -18,6 +18,8 @@ import {
   type McpServerConfig, type ProviderConfig, type ChatEndpointKind, type ChatAttachment, mutateHomeMemory, listMcpServersMasked,
   createProviderConnection, updateProviderConnection, updateProviderKey, setProviderEnabled, addProviderModels, updateProviderModel, removeProviderModel
 } from "./store.js";
+import { getPluginRegistryConfig, savePluginRegistryConfig } from "./store.js";
+import { discoverPlugins, installMarketplacePlugin, listMarketplace, publishLocalPlugin, removeMarketplacePlugin, uninstallPlugin } from "./plugins-service.js";
 import { HOME_PROJECT_ID, cleanupHomeGeneratorScripts, downloadHomeFile, ensureHomeDir, listHomeFiles, listHomeSessionFiles, listHomeSessionFilesForDeletion, openHomeFolder, readHomeFile, recordHomeRunFiles, removeSessionFromManifest } from "./home-service.js";
 import { homeTaskJournalPath } from "./home-task-service.js";
 import { removeMemoryFactWithCount } from "./home-memory-service.js";
@@ -977,6 +979,21 @@ app.whenReady().then(async () => {
     const root = scope === "project" ? requireRoot() : (activeProjectRoot || "");
     return openSkillsFolder(scope, root);
   });
+  // Plugin Marketplace. Bundles are installed into the active project's
+  // .nexus/plugins folder, where skills-service and hooks-service discover
+  // them on the next agent run without a restart.
+  ipcMain.handle("plugins:marketplace:list", () => listMarketplace(activeProjectRoot || undefined));
+  ipcMain.handle("plugins:installed:list", () => activeProjectRoot ? discoverPlugins(activeProjectRoot) : []);
+  ipcMain.handle("plugins:registry:get", () => getPluginRegistryConfig());
+  ipcMain.handle("plugins:registry:save", (_event, config) => savePluginRegistryConfig(config));
+  ipcMain.handle("plugins:developer:pick-and-publish", async () => {
+    const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+    if (result.canceled || !result.filePaths[0]) return null;
+    return publishLocalPlugin(result.filePaths[0]);
+  });
+  ipcMain.handle("plugins:developer:remove", (_event, id: string) => removeMarketplacePlugin(id));
+  ipcMain.handle("plugins:install", async (_event, entry) => installMarketplacePlugin(requireRoot(), entry));
+  ipcMain.handle("plugins:uninstall", async (_event, id: string) => uninstallPlugin(requireRoot(), id));
 
   ipcMain.handle("settings:get", () => ({ ...settings, apiKey: settings.apiKey ? "********" : "" }));
   ipcMain.handle("settings:save", (_event, next: AgentSettings) => {
