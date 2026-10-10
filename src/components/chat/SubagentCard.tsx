@@ -1,7 +1,8 @@
 import React, { useState } from "react";
-import { Search, Terminal, Code2, Loader2, Check, X, ChevronDown, ChevronRight, CheckCircle2, Shield, Compass, CheckCheck, Wrench, Sparkles, Database, TestTube2 } from "lucide-react";
+import { Search, Terminal, Code2, Loader2, Check, X, ChevronDown, ChevronRight, Shield, Compass, CheckCheck, Wrench, Sparkles, Database, TestTube2, Layers } from "lucide-react";
 import type { SubagentItem, SubagentRole } from "../../types.js";
 import { timeLabel } from "../../utils/format.js";
+import { parseEventText } from "./ChatMessageItem.js";
 
 const ROLE_META: Record<SubagentRole, { label: string; icon: React.ReactNode }> = {
   researcher: { label: "Researcher", icon: <Search size={11} /> },
@@ -64,19 +65,33 @@ export function SubagentCardView({ subagent, timestamp }: { subagent: SubagentIt
       {expanded && (
         <div className="subagent-body">
           {subagent.steps.length > 0 && (
-            <>
+            <div className="subagent-steps-timeline">
               <div className="subagent-steps-head">
-                <span>Tool Execution Steps ({subagent.steps.length})</span>
+                <Layers size={11} />
+                <span>Execution Steps ({subagent.steps.length})</span>
               </div>
-              <div className="subagent-steps-list">
-                {subagent.steps.map((step, idx) => (
-                  <div className="subagent-step-item" key={idx}>
-                    <CheckCircle2 size={10} />
-                    <span>{step.toolName}</span>
-                  </div>
-                ))}
+              <div className="subagent-timeline-list">
+                {subagent.steps.map((step, idx) => {
+                  const parsed = parseEventText(step.summary ? `${step.toolName} · ${step.summary}` : step.toolName, "tool");
+                  return (
+                    <div className="subagent-step-row" key={idx}>
+                      <span className="subagent-step-node">
+                        <Check size={8} />
+                      </span>
+                      <span className={`step-category-pill mini ${parsed.category}`}>
+                        {parsed.badgeLabel}
+                      </span>
+                      <span className="subagent-step-desc" title={step.summary || step.toolName}>
+                        {step.summary || step.toolName}
+                      </span>
+                      {step.timestamp && (
+                        <time className="subagent-step-time">{timeLabel(step.timestamp)}</time>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            </>
+            </div>
           )}
           {subagent.output && (
             <div className="subagent-output-block">

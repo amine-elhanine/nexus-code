@@ -3376,3 +3376,17 @@
   opacity: 0.55;
   border-style: dashed;
 }
+
+/* Plugin Marketplace */
+.plugin-marketplace .field { display: grid; gap: 5px; color: var(--muted); font-size: 10px; }
+.plugin-marketplace input { min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); padding: 8px 9px; font: inherit; }
+.plugin-market-list { display: grid; gap: 8px; margin-top: 13px; }
+.plugin-market-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: color-mix(in srgb, var(--panel) 82%, var(--accent-soft)); }
+.plugin-market-item > div:first-child { min-width: 0; display: grid; gap: 3px; }
+.plugin-market-item strong { font-size: 12px; color: var(--text); }
+.plugin-market-item small, .plugin-market-item em { color: var(--muted); font-size: 10px; font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plugin-actions { flex: none; }
+.plugin-marketplace .primary-btn, .plugin-marketplace .secondary-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border-radius: 6px; padding: 7px 9px; border: 1px solid var(--line); background: var(--panel-strong, var(--panel)); color: var(--text); cursor: pointer; font: 600 10px inherit; }
+.plugin-marketplace .primary-btn { background: var(--accent); color: var(--accent-contrast, #fff); border-color: var(--accent); }
+.plugin-marketplace button:disabled { cursor: wait; opacity: .62; }
+.plugin-marketplace .empty-state { color: var(--muted); font-size: 11px; margin: 4px 0; }

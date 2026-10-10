@@ -366,6 +366,10 @@ html[data-theme] .activity-group {
   background: var(--panel2);
 }
 
+html[data-theme] .activity-group.running {
+  border-color: rgba(129, 140, 248, 0.45);
+}
+
 html[data-theme] .activity-group-summary {
   background: var(--panel2);
   color: var(--text);
@@ -373,29 +377,48 @@ html[data-theme] .activity-group-summary {
 
 html[data-theme] .activity-group-body {
   background: var(--panel);
+  border-top-color: var(--line);
 }
 
-html[data-theme] .activity-step-detail {
-  background: var(--bg);
-  border-left-color: var(--line2);
+html[data-theme] .agent-stepper-timeline::before {
+  background: var(--line2);
 }
 
-html[data-theme] .activity-step {
-  border-bottom-color: var(--line);
-}
-
-html[data-theme] .activity-step-dot {
+html[data-theme] .step-timeline-node {
   background: var(--panel2);
+  border-color: var(--line2);
   color: var(--muted);
 }
 
-html[data-theme] .activity-step summary,
-html[data-theme] .activity-step .activity-step-row {
+html[data-theme] .step-card {
+  background: var(--panel2);
+  border-color: var(--line);
+}
+
+html[data-theme] .step-card-details {
+  background: var(--bg);
+  border-top-color: var(--line);
+}
+
+html[data-theme] .step-detail-container {
+  background: var(--bg);
+  border-color: var(--line);
+}
+
+html[data-theme] .step-detail-header {
+  border-bottom-color: var(--line);
   color: var(--muted);
 }
 
-html[data-theme] .activity-step summary:hover {
+html[data-theme] .step-code-target {
+  background: var(--bg);
+  border-color: var(--line);
   color: var(--text);
+}
+
+html[data-theme] .agent-working-bar {
+  background: var(--panel2);
+  border-color: var(--line2);
 }
 
 html[data-theme] .message-usage-footer {
