@@ -1,0 +1,14 @@
+{
+  "id": "nexus-research-studio",
+  "name": "Research & Document Studio",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Office file processing (Word, PDF, Excel, PowerPoint), Exa deep web search, documentation mining, and evaluation tools.",
+  "capabilities": [
+    "skills",
+    "agents"
+  ],
+  "modes": [
+    "all"
+  ]
+}

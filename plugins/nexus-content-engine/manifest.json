@@ -1,0 +1,13 @@
+{
+  "id": "nexus-content-engine",
+  "name": "Content & Brand Engine",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Brand discovery, article writing, audience positioning, and web scraping workflows.",
+  "capabilities": [
+    "skills"
+  ],
+  "modes": [
+    "home"
+  ]
+}

@@ -675,9 +675,9 @@ export async function runProjectAgent(options: {
 
   // Project hooks (.nexus/hooks.json) behind a global toggle: run:start/end,
   // tool:before (deny-capable) / tool:after, verify:fail. Hook failures are
-  // reported, never fatal.
+  // reported, never fatal. Plugin hooks honor their manifest `modes`.
   const hooks = (await getHooksConfig().catch(() => ({ enabled: true }))).enabled
-    ? await discoverHooks(projectRoot).catch(() => [])
+    ? await discoverHooks(projectRoot, skillsMode).catch(() => [])
     : [];
   const hooksMiddleware = hooks.length ? createHooksMiddleware({ projectRoot, hooks, runId: sessionId }) : null;
 
@@ -872,7 +872,7 @@ export async function runProjectAgent(options: {
       homeTaskContract,
       // Full role catalog only where delegate_task is actually bound — simple
       // runs drop the tool, Home runs never mention delegation.
-      assetsEnabled("agents") && !isGeneral && effectiveComplexity !== "simple" ? buildSubagentCatalog() : "",
+      assetsEnabled("agents") && !isGeneral && effectiveComplexity !== "simple" ? buildSubagentCatalog(projectRoot) : "",
       projectInstructions.section
     ),
   });

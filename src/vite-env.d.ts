@@ -78,9 +78,9 @@ export interface NexusApi {
   deleteSkill: (skillPath: string) => Promise<void>;
   setSkillModes: (skillPath: string, modes: string[]) => Promise<SkillInfo>;
   openSkillsFolder: (scope: "global" | "project") => Promise<boolean>;
-  listMarketplacePlugins: () => Promise<Array<{ id: string; name: string; description?: string; version?: string; author?: string; source: string; capabilities?: string[]; installed?: boolean; installedVersion?: string }>>;
-  listInstalledPlugins: () => Promise<Array<{ name: string; dir: string; manifest: { id?: string; version?: string } }>>;
-  getPluginRegistry: () => Promise<{ registryUrl?: string; developerCatalog?: Array<{ id: string; name: string; description?: string; version?: string; author?: string; source: string; capabilities?: string[] }> }>;
+  listMarketplacePlugins: () => Promise<Array<{ id: string; name: string; description?: string; version?: string; author?: string; source: string; capabilities?: string[]; modes?: string[]; installed?: boolean; installedVersion?: string }>>;
+  listInstalledPlugins: () => Promise<Array<{ name: string; dir: string; manifest: { id?: string; version?: string; modes?: unknown } }>>;
+  getPluginRegistry: () => Promise<{ registryUrl?: string; developerCatalog?: Array<{ id: string; name: string; description?: string; version?: string; author?: string; source: string; capabilities?: string[]; modes?: string[] }> }>;
   savePluginRegistry: (config: unknown) => Promise<unknown>;
   publishPlugin: () => Promise<unknown>;
   removePublishedPlugin: (id: string) => Promise<void>;

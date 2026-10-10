@@ -33,55 +33,118 @@ export function systemAgentsDir() {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), "system-agents");
 }
 
-let cachedSystemAgents: Map<string, {
+export interface SubagentDefinition {
   title: string;
   description: string;
   systemPrompt: (projectRoot: string) => string;
   readOnly: boolean;
   recursionLimit: number;
-}> | null = null;
+  source?: "builtin" | "plugin";
+  modes?: string[];
+}
 
-export function getSystemAgents() {
-  if (cachedSystemAgents) return cachedSystemAgents;
-  const map = new Map<string, {
-    title: string;
-    description: string;
-    systemPrompt: (projectRoot: string) => string;
-    readOnly: boolean;
-    recursionLimit: number;
-  }>();
-
+export function parseAgentFile(file: string, dir: string, source: "builtin" | "plugin" = "builtin", defaultModes: string[] = []): { roleName: string; config: SubagentDefinition } | null {
+  if (!file.endsWith(".md")) return null;
+  const roleName = file.replace(/\.md$/, "").toLowerCase();
   try {
-    const dir = systemAgentsDir();
-    if (existsSync(dir)) {
-      const files = readdirSync(dir);
-      for (const file of files) {
-        if (!file.endsWith(".md")) continue;
-        const roleName = file.replace(/\.md$/, "").toLowerCase();
-        const content = readFileSync(path.join(dir, file), "utf8");
-        const title = roleName.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
-        const descMatch = content.match(/description:\s*([^\r\n]+)/i);
-        const description = descMatch ? descMatch[1].trim() : `${title} specialist from Nexus`;
-        const isReadOnly = /\b(reviewer|analyzer|architect|explorer|evaluator|lookup|specialist|miner)\b/i.test(roleName);
-        map.set(roleName, {
-          title,
-          description,
-          readOnly: isReadOnly,
-          recursionLimit: isReadOnly ? 25 : 35,
-          systemPrompt: (projectRoot: string) =>
-            `You are the ${title} Subagent in Nexus working on the repository at ${projectRoot}.\n\n${content}`,
-        });
+    const content = readFileSync(path.join(dir, file), "utf8");
+    const title = roleName.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+    const descMatch = content.match(/description:\s*([^\r\n]+)/i);
+    const description = descMatch ? descMatch[1].trim() : `${title} specialist from Nexus`;
+    const isReadOnly = /\b(reviewer|analyzer|architect|explorer|evaluator|lookup|specialist|miner)\b/i.test(roleName);
+
+    const modesMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    let modes = defaultModes;
+    if (modesMatch) {
+      const modeLine = modesMatch[1].match(/modes\s*:\s*([^\r\n]+)/i);
+      if (modeLine) {
+        modes = modeLine[1].split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
       }
     }
-  } catch { /* ignore if dir not found */ }
 
-  cachedSystemAgents = map;
+    return {
+      roleName,
+      config: {
+        title,
+        description,
+        readOnly: isReadOnly,
+        recursionLimit: isReadOnly ? 25 : 35,
+        source,
+        modes,
+        systemPrompt: (projectRoot: string) =>
+          `You are the ${title} Subagent in Nexus working on the repository at ${projectRoot}.\n\n${content}`,
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function loadAgentsFromDirectory(dir: string, source: "builtin" | "plugin" = "builtin", defaultModes: string[] = []): Map<string, SubagentDefinition> {
+  const map = new Map<string, SubagentDefinition>();
+  if (!existsSync(dir)) return map;
+  try {
+    const files = readdirSync(dir);
+    for (const file of files) {
+      const parsed = parseAgentFile(file, dir, source, defaultModes);
+      if (parsed) map.set(parsed.roleName, parsed.config);
+    }
+  } catch { /* ignore */ }
   return map;
 }
 
-export function getAllSubagentRoles(): string[] {
-  const sys = getSystemAgents();
-  return [...new Set([...SUBAGENT_ROLES, ...Array.from(sys.keys())])];
+let cachedSystemAgents: Map<string, SubagentDefinition> | null = null;
+
+export function getSystemAgents(): Map<string, SubagentDefinition> {
+  if (cachedSystemAgents) return cachedSystemAgents;
+  cachedSystemAgents = loadAgentsFromDirectory(systemAgentsDir(), "builtin");
+  return cachedSystemAgents;
+}
+
+export function discoverPluginAgentsSync(projectRoot?: string, mode?: string): Map<string, SubagentDefinition> {
+  const map = new Map<string, SubagentDefinition>();
+  if (!projectRoot) return map;
+  try {
+    const root = path.join(path.resolve(projectRoot), ".nexus", "plugins");
+    if (!existsSync(root)) return map;
+    const entries = readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory());
+    for (const entry of entries) {
+      const pluginDir = path.join(root, entry.name);
+      let manifestModes: string[] = [];
+      try {
+        const manifest = JSON.parse(readFileSync(path.join(pluginDir, "manifest.json"), "utf8"));
+        if (Array.isArray(manifest.modes)) manifestModes = manifest.modes.map(String);
+      } catch { /* optional */ }
+
+      if (mode && manifestModes.length > 0 && !manifestModes.includes(mode)) continue;
+
+      const agentsDir = path.join(pluginDir, "agents");
+      if (existsSync(agentsDir)) {
+        const loaded = loadAgentsFromDirectory(agentsDir, "plugin", manifestModes);
+        for (const [key, config] of loaded) {
+          if (mode && config.modes && config.modes.length > 0 && !config.modes.includes(mode)) continue;
+          map.set(key, config);
+        }
+      }
+    }
+  } catch { /* ignore */ }
+  return map;
+}
+
+export function getAvailableAgents(projectRoot?: string, mode?: string): Map<string, SubagentDefinition> {
+  const map = new Map<string, SubagentDefinition>(getSystemAgents());
+  if (projectRoot) {
+    const pluginAgents = discoverPluginAgentsSync(projectRoot, mode);
+    for (const [key, config] of pluginAgents) {
+      map.set(key, config);
+    }
+  }
+  return map;
+}
+
+export function getAllSubagentRoles(projectRoot?: string, mode?: string): string[] {
+  const available = getAvailableAgents(projectRoot, mode);
+  return [...new Set([...SUBAGENT_ROLES, ...Array.from(available.keys())])];
 }
 
 /**
@@ -90,7 +153,7 @@ export function getAllSubagentRoles(): string[] {
  * model only uses roles it happens to guess from the tool description. Tuned
  * configs come first; bundled .md specialists fill in the rest.
  */
-export function buildSubagentCatalog(maxDescChars = 90): string {
+export function buildSubagentCatalog(projectRoot?: string, maxDescChars = 90, mode?: string): string {
   const lines: string[] = [];
   const seen = new Set<string>();
   const push = (role: string, description: string) => {
@@ -101,7 +164,7 @@ export function buildSubagentCatalog(maxDescChars = 90): string {
     lines.push(`- \`${role}\` — ${desc.length > maxDescChars ? `${desc.slice(0, maxDescChars - 1)}…` : desc}`);
   };
   for (const [role, config] of Object.entries(SUBAGENT_CONFIGS)) push(role, config.description);
-  for (const [role, agent] of getSystemAgents()) push(role, agent.description);
+  for (const [role, agent] of getAvailableAgents(projectRoot, mode)) push(role, agent.description);
   return lines.sort((a, b) => a.localeCompare(b)).join("\n");
 }
 
@@ -447,8 +510,8 @@ export async function executeSubagentTask(options: {
 }): Promise<string> {
   const { role, task, projectRoot, provider, modelName, projectRecord, mcpTools, skills, skillsBackend, onEvent, isCancelled, runId } = options;
   const signal = runId ? getRunAbortSignal(runId) : undefined;
-  const sysAgents = getSystemAgents();
-  const config = (SUBAGENT_CONFIGS as any)[role] || sysAgents.get(role) || SUBAGENT_CONFIGS.researcher;
+  const availableAgents = getAvailableAgents(projectRoot);
+  const config = (SUBAGENT_CONFIGS as any)[role] || availableAgents.get(role) || SUBAGENT_CONFIGS.researcher;
   const subagentId = `sub-${role}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
   if (!task.trim()) return `[Subagent: ${config.title} Failed]\nA subagent task is required.`;
@@ -636,7 +699,7 @@ export function createSubagentDelegationTool(options: {
     },
     {
       name: "delegate_task",
-      description: `Delegate a focused sub-task to a specialized engineering subagent. Read-only specialists may run concurrently, but only one write-capable subagent may modify the workspace at a time. ${getAllSubagentRoles().length} specialist roles are available — the full catalog with each role's purpose is in your system instructions under "SPECIALIST SUBAGENTS".`,
+      description: `Delegate a focused sub-task to a specialized engineering subagent. Read-only specialists may run concurrently, but only one write-capable subagent may modify the workspace at a time. ${getAllSubagentRoles(options.projectRoot).length} specialist roles are available — the full catalog with each role's purpose is in your system instructions under "SPECIALIST SUBAGENTS".`,
       schema: z.object({
         role: z.string().min(1).describe(`The specialized subagent role to execute the task. Pick from the SPECIALIST SUBAGENTS catalog in your instructions (e.g. 'architect', 'code-reviewer', 'security-reviewer', 'build-error-resolver', 'researcher').`),
         task: z.string().min(1).max(4_000).describe("Clear, focused instructions for the subagent describing what to find, design, test, review, or implement. Maximum 4,000 characters."),

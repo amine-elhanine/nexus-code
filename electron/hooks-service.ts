@@ -10,7 +10,7 @@ import path from "node:path";
 import { createMiddleware } from "langchain";
 import { ToolMessage } from "@langchain/core/messages";
 import { scrubSecretEnv } from "./child-env.js";
-import { pluginHookFiles } from "./plugins-service.js";
+import { pluginHookFilesWithModes, type PluginMode } from "./plugins-service.js";
 
 export type HookEventName = "run:start" | "run:end" | "tool:before" | "tool:after" | "verify:fail";
 
@@ -54,9 +54,15 @@ export function parseHooksConfig(content: string): HookConfig[] {
   return hooks.slice(0, 20);
 }
 
-/** Reads <projectRoot>/.nexus/hooks.json. Missing/malformed → no hooks. */
-export async function discoverHooks(projectRoot: string): Promise<HookConfig[]> {
-  const files = [path.join(path.resolve(projectRoot), HOOKS_FILE), ...(await pluginHookFiles(projectRoot).catch(() => []))];
+/** Reads <projectRoot>/.nexus/hooks.json plus plugin hooks. Missing/malformed → no hooks.
+ * When `mode` is given, plugin hooks whose manifest `modes` excludes it are
+ * skipped — project hooks.json always applies. */
+export async function discoverHooks(projectRoot: string, mode?: PluginMode): Promise<HookConfig[]> {
+  const files = [path.join(path.resolve(projectRoot), HOOKS_FILE)];
+  for (const entry of await pluginHookFilesWithModes(projectRoot).catch(() => [] as Array<{ file: string; modes: PluginMode[] }>)) {
+    if (mode && entry.modes.length && !entry.modes.includes(mode)) continue;
+    files.push(entry.file);
+  }
   const hooks: HookConfig[] = [];
   for (const file of files) {
     try {
