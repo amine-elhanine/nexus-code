@@ -4,25 +4,37 @@ import {
   Bot,
   Check,
   CheckCircle2,
+  ChevronRight,
+  Code2,
   Download,
+  ExternalLink,
   FolderCode,
   FolderPlus,
   Globe,
   Info,
+  LayoutGrid,
+  List,
   Loader2,
   Package,
+  PackageCheck,
   PackageSearch,
   Puzzle,
   RefreshCw,
   Search,
+  Settings,
   Shield,
+  ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Tag,
   Terminal,
   Trash2,
+  Wrench,
   X,
+  Zap,
 } from "lucide-react";
 import { ConfirmModal } from "../../modals/ConfirmModal.js";
+import { Modal } from "../common/Modal.js";
 
 type Plugin = {
   id: string;
@@ -49,20 +61,31 @@ type ConfirmTarget = {
 };
 
 type CapabilityFilter = "all" | "skills" | "agents" | "commands" | "rules" | "hooks";
-const CAPABILITY_TABS: Array<{ id: CapabilityFilter; label: string }> = [
-  { id: "all", label: "All types" },
-  { id: "skills", label: "Skills" },
-  { id: "agents", label: "Agents" },
-  { id: "commands", label: "Commands" },
-  { id: "rules", label: "Rules" },
-  { id: "hooks", label: "Hooks" },
+const CAPABILITY_TABS: Array<{ id: CapabilityFilter; label: string; icon: React.ReactNode }> = [
+  { id: "all", label: "All types", icon: <Puzzle size={12} /> },
+  { id: "skills", label: "Skills", icon: <Sparkles size={12} /> },
+  { id: "agents", label: "Agents", icon: <Bot size={12} /> },
+  { id: "commands", label: "Commands", icon: <Terminal size={12} /> },
+  { id: "rules", label: "Rules", icon: <Shield size={12} /> },
+  { id: "hooks", label: "Hooks", icon: <Zap size={12} /> },
 ];
 
-/** Redesigned Plugin Marketplace UI.
- * Shows the official registry by default while keeping custom registry URLs
- * available under Advanced — the backend still honors any JSON feed. */
 const DEFAULT_PLUGIN_REGISTRY_URL =
   "https://raw.githubusercontent.com/amine-elhanine/nexus-code/main/registry.json";
+
+function getPluginThemeClass(plugin: Plugin): string {
+  const id = plugin.id.toLowerCase();
+  if (id.includes("engineering") || plugin.capabilities?.includes("rules") || plugin.capabilities?.includes("commands")) {
+    return "theme-engineering";
+  }
+  if (id.includes("research") || id.includes("studio") || id.includes("doc")) {
+    return "theme-research";
+  }
+  if (id.includes("content") || id.includes("brand")) {
+    return "theme-creative";
+  }
+  return "theme-standard";
+}
 
 export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
   const api = window.nexus || window.forgepilot;
@@ -73,11 +96,14 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
   const [devCatalogIds, setDevCatalogIds] = useState<Set<string>>(new Set());
   const [registryUrl, setRegistryUrl] = useState("");
   const [devRoot, setDevRoot] = useState("");
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showConfigModal, setShowConfigModal] = useState(false);
   const [savingRegistry, setSavingRegistry] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterTab, setFilterTab] = useState<"all" | "installed" | "available" | "dev">("all");
   const [capFilter, setCapFilter] = useState<CapabilityFilter>("all");
+  const [sortBy, setSortBy] = useState<"featured" | "name" | "installed">("featured");
+  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
+  const [selectedPlugin, setSelectedPlugin] = useState<Plugin | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<ConfirmTarget | null>(null);
 
@@ -150,9 +176,14 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
     setFeedback(null);
     try {
       const config = await api.getPluginRegistry();
-      await api.savePluginRegistry({ registryUrl: url, developerCatalog: config?.developerCatalog || [], devRoot: devRoot.trim() || undefined });
+      await api.savePluginRegistry({
+        registryUrl: url,
+        developerCatalog: config?.developerCatalog || [],
+        devRoot: devRoot.trim() || undefined,
+      });
       setRegistryUrl(url);
       await refresh(true);
+      setShowConfigModal(false);
     } catch (error) {
       setFeedback({
         type: "error",
@@ -168,9 +199,14 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
     setFeedback(null);
     try {
       const config = await api.getPluginRegistry();
-      await api.savePluginRegistry({ registryUrl: DEFAULT_PLUGIN_REGISTRY_URL, developerCatalog: config?.developerCatalog || [], devRoot: config?.devRoot });
+      await api.savePluginRegistry({
+        registryUrl: DEFAULT_PLUGIN_REGISTRY_URL,
+        developerCatalog: config?.developerCatalog || [],
+        devRoot: config?.devRoot,
+      });
       setRegistryUrl(DEFAULT_PLUGIN_REGISTRY_URL);
       await refresh(true);
+      setShowConfigModal(false);
     } catch (error) {
       setFeedback({
         type: "error",
@@ -187,12 +223,16 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
       const picked = await api.pickDevRoot();
       if (!picked) return;
       const config = await api.getPluginRegistry();
-      await api.savePluginRegistry({ registryUrl: config?.registryUrl, developerCatalog: config?.developerCatalog || [], devRoot: picked });
+      await api.savePluginRegistry({
+        registryUrl: config?.registryUrl,
+        developerCatalog: config?.developerCatalog || [],
+        devRoot: picked,
+      });
       setDevRoot(picked);
       await refresh();
       setFeedback({
         type: "success",
-        message: "Dev folder linked — every plugin inside it now appears automatically.",
+        message: "Dev folder linked — plugins inside it appear automatically in your catalog.",
       });
     } catch (error) {
       setFeedback({
@@ -209,7 +249,10 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
     setFeedback(null);
     try {
       const config = await api.getPluginRegistry();
-      await api.savePluginRegistry({ registryUrl: config?.registryUrl, developerCatalog: config?.developerCatalog || [] });
+      await api.savePluginRegistry({
+        registryUrl: config?.registryUrl,
+        developerCatalog: config?.developerCatalog || [],
+      });
       setDevRoot("");
       await refresh(true);
     } catch (error) {
@@ -226,7 +269,6 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
     setBusy("publish");
     try {
       const entry = await api.publishPlugin();
-      // Dialog cancelled — keep previous feedback instead of clearing it.
       if (!entry) return;
       await refresh();
       const entryObj = entry as { name?: string };
@@ -257,6 +299,9 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
     try {
       await api.installPlugin(plugin);
       await refresh();
+      if (selectedPlugin?.id === plugin.id) {
+        setSelectedPlugin((prev) => (prev ? { ...prev, installed: true, installedVersion: plugin.version } : null));
+      }
       setFeedback({
         type: "success",
         message: `"${plugin.name}" installed. Its skills and hooks are immediately active.`,
@@ -277,9 +322,12 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
     try {
       await api.uninstallPlugin(plugin.id);
       await refresh();
+      if (selectedPlugin?.id === plugin.id) {
+        setSelectedPlugin((prev) => (prev ? { ...prev, installed: false, installedVersion: undefined } : null));
+      }
       setFeedback({
         type: "success",
-        message: `"${plugin.name}" was uninstalled from this project.`,
+        message: `"${plugin.name}" uninstalled from this project.`,
       });
     } catch (error) {
       setFeedback({
@@ -295,13 +343,12 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
     setBusy(plugin.id);
     setFeedback(null);
     try {
-      // Backend also uninstalls the active project's bundle (see
-      // plugins:developer:remove) so no orphaned install is left behind.
       if (plugin.installed && hasProject) {
         await api.uninstallPlugin(plugin.id).catch(() => undefined);
       }
       await api.removePublishedPlugin(plugin.id);
       await refresh();
+      if (selectedPlugin?.id === plugin.id) setSelectedPlugin(null);
       setFeedback({
         type: "success",
         message: plugin.installed
@@ -318,8 +365,6 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
     }
   }
 
-  // Only https:// counts as an official remote package. Anything else
-  // (local folder path, file://, insecure http://) is a dev entry.
   const isDevPlugin = (plugin: Plugin) =>
     devCatalogIds.has(plugin.id) || !plugin.source.toLowerCase().startsWith("https://");
 
@@ -328,7 +373,11 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
     const dev = plugins.filter(isDevPlugin).length;
     const available = plugins.filter((p) => !p.installed).length;
     const byCap: Record<Exclude<CapabilityFilter, "all">, number> = {
-      skills: 0, agents: 0, commands: 0, rules: 0, hooks: 0,
+      skills: 0,
+      agents: 0,
+      commands: 0,
+      rules: 0,
+      hooks: 0,
     };
     for (const p of plugins) {
       for (const cap of p.capabilities || []) {
@@ -341,7 +390,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
   }, [plugins, devCatalogIds]);
 
   const filteredPlugins = useMemo(() => {
-    return plugins.filter((plugin) => {
+    let result = plugins.filter((plugin) => {
       if (filterTab === "installed" && !plugin.installed) return false;
       if (filterTab === "available" && plugin.installed) return false;
       if (filterTab === "dev" && !isDevPlugin(plugin)) return false;
@@ -359,134 +408,124 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
       }
       return true;
     });
+
+    if (sortBy === "name") {
+      result = [...result].sort((a, b) => a.name.localeCompare(b.name));
+    } else if (sortBy === "installed") {
+      result = [...result].sort((a, b) => (b.installed ? 1 : 0) - (a.installed ? 1 : 0));
+    } else {
+      // "featured": prioritize official suites, then installed, then alphabetical
+      result = [...result].sort((a, b) => {
+        const aOfficial = (a.author || "").toLowerCase().includes("nexus") ? 1 : 0;
+        const bOfficial = (b.author || "").toLowerCase().includes("nexus") ? 1 : 0;
+        if (aOfficial !== bOfficial) return bOfficial - aOfficial;
+        if (Boolean(a.installed) !== Boolean(b.installed)) return a.installed ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+    }
+
+    return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plugins, filterTab, capFilter, searchQuery, devCatalogIds]);
+  }, [plugins, filterTab, capFilter, searchQuery, sortBy, devCatalogIds]);
+
+  // Spotlight suite (featured at the top when browsing All with no search)
+  const spotlightPlugin = useMemo(() => {
+    if (filterTab !== "all" || capFilter !== "all" || searchQuery.trim()) return null;
+    return plugins.find((p) => p.id === "nexus-engineering-suite") || plugins[0] || null;
+  }, [plugins, filterTab, capFilter, searchQuery]);
 
   return (
     <div className="marketplace-container">
-      {/* Top Banner: Status & Main Actions */}
-      <div className="market-top-banner">
-        <div className="market-registry-status">
-          <span className="market-status-pill" title={registryUrl}>
-            <span className="market-status-dot" />
-            <Globe size={12} />
-            {isCustomRegistry ? "Custom Registry" : "Nexus Official Registry"}
-          </span>
-          <span className="market-count-label">
-            {plugins.length} {plugins.length === 1 ? "extension" : "extensions"} available
-          </span>
-        </div>
-        <div className="market-top-actions">
-          <button
-            type="button"
-            className="market-btn secondary"
-            onClick={() => void handleRefresh()}
-            disabled={refreshing || loading}
-            title={isCustomRegistry ? `Check custom registry for updates` : "Check official registry for new or updated plugins"}
-          >
-            {refreshing ? <Loader2 size={12} className="spin" /> : <RefreshCw size={12} />}
-            <span>Check for updates</span>
-          </button>
-          <button
-            type="button"
-            className="market-btn secondary"
-            onClick={() => void handlePublish()}
-            disabled={busy === "publish"}
-            title="Add a local plugin directory for development and testing"
-          >
-            {busy === "publish" ? <Loader2 size={12} className="spin" /> : <FolderPlus size={12} />}
-            <span>Add dev plugin</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Advanced: custom registry feed (restores pre-redesign flexibility) */}
-      <div className="market-advanced">
-        <button
-          type="button"
-          className="market-advanced-toggle"
-          onClick={() => setShowAdvanced((v) => !v)}
-          title="Show registry feed settings"
-        >
-          {showAdvanced ? "Hide" : "Advanced"}: registry feed
-          {isCustomRegistry && <span className="market-badge dev" style={{ marginLeft: 6 }}>custom</span>}
-        </button>
-        {showAdvanced && (
-          <div className="market-advanced-panel">
-            <label className="market-advanced-label">
-              <span>Registry URL (JSON feed with {"{ plugins: [...] }"})</span>
-              <input
-                type="text"
-                className="market-search-input"
-                value={registryUrl}
-                onChange={(e) => setRegistryUrl(e.target.value)}
-                placeholder={DEFAULT_PLUGIN_REGISTRY_URL}
-                spellCheck={false}
-              />
-            </label>
-            <div className="market-advanced-actions">
-              <button
-                type="button"
-                className="market-btn secondary"
-                onClick={() => void handleSaveRegistry()}
-                disabled={savingRegistry}
-              >
-                {savingRegistry ? <Loader2 size={12} className="spin" /> : <Check size={12} />}
-                <span>Save & refresh</span>
-              </button>
-              {isCustomRegistry && (
-                <button
-                  type="button"
-                  className="market-btn secondary"
-                  onClick={() => void handleResetRegistry()}
-                  disabled={savingRegistry}
-                  title="Restore the official Nexus registry"
-                >
-                  <RefreshCw size={12} />
-                  <span>Reset to official</span>
-                </button>
-              )}
+      {/* Redesigned Hero Header Bar */}
+      <div className="market-hero-card">
+        <div className="market-hero-main">
+          <div className="market-hero-title-row">
+            <div className="market-hero-badge-icon">
+              <Package className="hero-icon-svg" size={22} />
+              <div className="hero-icon-glow" />
             </div>
-            <label className="market-advanced-label">
-              <span>Dev plugins folder (every subfolder with a manifest.json appears automatically)</span>
-              <span className="market-devroot-path" title={devRoot || "No folder linked"}>
-                {devRoot || "No folder linked"}
-              </span>
-            </label>
-            <div className="market-advanced-actions">
-              <button
-                type="button"
-                className="market-btn secondary"
-                onClick={() => void handlePickDevRoot()}
-                disabled={busy === "devroot"}
-                title="Link a local folder whose subfolders are plugin bundles"
-              >
-                {busy === "devroot" ? <Loader2 size={12} className="spin" /> : <FolderPlus size={12} />}
-                <span>{devRoot ? "Change folder" : "Link folder"}</span>
-              </button>
-              {devRoot && (
-                <button
-                  type="button"
-                  className="market-btn secondary"
-                  onClick={() => void handleClearDevRoot()}
-                  disabled={busy === "devroot"}
-                  title="Stop auto-listing this folder"
-                >
-                  <X size={12} />
-                  <span>Unlink</span>
-                </button>
-              )}
+            <div>
+              <div className="market-hero-kicker">EXTENSIONS & WORKSPACE BUNDLES</div>
+              <h3 className="market-hero-title">Plugin Marketplace</h3>
             </div>
           </div>
-        )}
+          <p className="market-hero-subtitle">
+            Equip your Nexus agents with specialized subagents, custom slash commands, software architecture skills, coding rule sets, and execution hooks.
+          </p>
+        </div>
+
+        {/* Live Metrics & Quick Actions */}
+        <div className="market-hero-meta">
+          <div className="market-metrics-row">
+            <div className="market-metric-pill" title="Total plugins in current catalog">
+              <span className="metric-num">{counts.all}</span>
+              <span className="metric-lbl">Available</span>
+            </div>
+            <div className="market-metric-pill active" title="Installed in this project workspace">
+              <CheckCircle2 size={13} className="text-nexus-green" />
+              <span className="metric-num">{counts.installed}</span>
+              <span className="metric-lbl">Installed</span>
+            </div>
+            {counts.dev > 0 && (
+              <div className="market-metric-pill dev" title="Local developer plugins">
+                <FolderCode size={13} className="text-orange" />
+                <span className="metric-num">{counts.dev}</span>
+                <span className="metric-lbl">Local Dev</span>
+              </div>
+            )}
+          </div>
+
+          <div className="market-hero-actions">
+            <span
+              className={`market-registry-pill ${isCustomRegistry ? "custom" : "official"}`}
+              onClick={() => setShowConfigModal(true)}
+              title={registryUrl}
+            >
+              <span className="status-pulse-dot" />
+              <Globe size={11} />
+              <span>{isCustomRegistry ? "Custom Feed" : "Official Registry"}</span>
+            </span>
+
+            <button
+              type="button"
+              className="market-hero-btn"
+              onClick={() => void handleRefresh()}
+              disabled={refreshing || loading}
+              title="Check registry for updates"
+            >
+              <RefreshCw size={12} className={refreshing ? "spin" : ""} />
+              <span>{refreshing ? "Syncing…" : "Sync"}</span>
+            </button>
+
+            <button
+              type="button"
+              className="market-hero-btn primary"
+              onClick={() => void handlePublish()}
+              disabled={busy === "publish"}
+              title="Add a local plugin directory for development and testing"
+            >
+              {busy === "publish" ? <Loader2 size={12} className="spin" /> : <FolderPlus size={12} />}
+              <span>Import Local</span>
+            </button>
+
+            <button
+              type="button"
+              className="market-hero-btn icon-only"
+              onClick={() => setShowConfigModal(true)}
+              title="Registry & Developer settings"
+            >
+              <Settings size={13} />
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Global mode notification when no project is open */}
       {!hasProject && (
         <div className="market-notice-banner warning">
-          <Info size={14} style={{ flex: "none" }} />
+          <Info size={15} style={{ flex: "none" }} />
           <div style={{ flex: 1 }}>
-            <strong>Browsing in Global mode</strong> — Open a project workspace to install and activate plugins for coding agents.
+            <strong>Browsing in Global Mode</strong> — Plugins are installed per workspace repository. Open a project workspace to install and activate extensions.
           </div>
         </div>
       )}
@@ -494,9 +533,9 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
       {/* Interactive feedback alert */}
       {feedback && (
         <div className={`market-notice-banner ${feedback.type}`}>
-          {feedback.type === "success" && <CheckCircle2 size={14} style={{ flex: "none" }} />}
-          {feedback.type === "error" && <AlertCircle size={14} style={{ flex: "none" }} />}
-          {feedback.type === "info" && <Info size={14} style={{ flex: "none" }} />}
+          {feedback.type === "success" && <CheckCircle2 size={15} style={{ flex: "none" }} />}
+          {feedback.type === "error" && <AlertCircle size={15} style={{ flex: "none" }} />}
+          {feedback.type === "info" && <Info size={15} style={{ flex: "none" }} />}
           <div style={{ flex: 1 }}>{feedback.message}</div>
           <button
             type="button"
@@ -504,101 +543,205 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
             onClick={() => setFeedback(null)}
             title="Dismiss notification"
           >
-            <X size={12} />
+            <X size={13} />
           </button>
         </div>
       )}
 
-      {/* Search and Filters toolbar */}
-      <div className="market-controls">
-        <div className="market-search-box">
-          <Search size={13} className="market-search-icon" />
-          <input
-            type="text"
-            className="market-search-input"
-            placeholder="Search plugins by name, id, version, capability, or author…"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-          {searchQuery && (
+      {/* Spotlight Card (Hero Showcase) */}
+      {spotlightPlugin && (
+        <div className={`market-spotlight-card ${getPluginThemeClass(spotlightPlugin)}`}>
+          <div className="market-spotlight-glow" />
+          <div className="market-spotlight-content">
+            <div className="market-spotlight-left">
+              <div className="market-spotlight-badge">
+                <Sparkles size={11} /> FEATURED BUNDLE
+              </div>
+              <div className="market-spotlight-title-row">
+                <h4>{spotlightPlugin.name}</h4>
+                {spotlightPlugin.version && <span className="market-version-pill">v{spotlightPlugin.version}</span>}
+                {spotlightPlugin.installed && (
+                  <span className="market-badge installed">
+                    <Check size={10} /> Active
+                  </span>
+                )}
+              </div>
+              <p className="market-spotlight-desc">
+                {spotlightPlugin.description || "Comprehensive plugin suite designed for autonomous desktop workflows."}
+              </p>
+              <div className="market-spotlight-tags">
+                {(spotlightPlugin.capabilities || []).map((cap) => (
+                  <span key={cap} className="market-spotlight-cap-pill">
+                    {cap === "skills" ? <Sparkles size={10} /> : cap === "agents" ? <Bot size={10} /> : cap === "commands" ? <Terminal size={10} /> : cap === "rules" ? <Shield size={10} /> : <Zap size={10} />}
+                    {cap}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="market-spotlight-actions">
+              <button
+                type="button"
+                className="market-btn secondary"
+                onClick={() => setSelectedPlugin(spotlightPlugin)}
+              >
+                Inspect Details
+              </button>
+              {spotlightPlugin.installed ? (
+                <button
+                  type="button"
+                  className="market-btn danger-subtle"
+                  onClick={() => setConfirmTarget({ type: "uninstall", plugin: spotlightPlugin })}
+                  disabled={busy === spotlightPlugin.id}
+                >
+                  {busy === spotlightPlugin.id ? <Loader2 size={12} className="spin" /> : <Trash2 size={12} />}
+                  <span>Uninstall</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="market-btn primary"
+                  onClick={() => void handleInstall(spotlightPlugin)}
+                  disabled={busy === spotlightPlugin.id || !hasProject}
+                >
+                  {busy === spotlightPlugin.id ? <Loader2 size={12} className="spin" /> : <Download size={12} />}
+                  <span>Install Suite</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Unified Toolbar: Search, Filters & View Mode */}
+      <div className="market-toolbar-wrap">
+        <div className="market-toolbar-primary">
+          {/* Omni Search Box */}
+          <div className="market-omni-search">
+            <Search size={14} className="market-search-icon" />
+            <input
+              type="text"
+              className="market-omni-input"
+              placeholder="Search extensions by title, tags, commands, author, or capabilities…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                className="market-search-clear-btn"
+                onClick={() => setSearchQuery("")}
+                title="Clear search query"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+
+          {/* Status Tabs */}
+          <div className="market-segmented-control">
             <button
               type="button"
-              className="market-search-clear"
-              onClick={() => setSearchQuery("")}
-              title="Clear search"
+              className={`market-segment-tab ${filterTab === "all" ? "active" : ""}`}
+              onClick={() => setFilterTab("all")}
             >
-              <X size={12} />
+              All <span className="tab-count">{counts.all}</span>
             </button>
-          )}
+            <button
+              type="button"
+              className={`market-segment-tab ${filterTab === "installed" ? "active" : ""}`}
+              onClick={() => setFilterTab("installed")}
+            >
+              Installed <span className="tab-count green">{counts.installed}</span>
+            </button>
+            <button
+              type="button"
+              className={`market-segment-tab ${filterTab === "available" ? "active" : ""}`}
+              onClick={() => setFilterTab("available")}
+            >
+              Available <span className="tab-count">{counts.available}</span>
+            </button>
+            {counts.dev > 0 && (
+              <button
+                type="button"
+                className={`market-segment-tab ${filterTab === "dev" ? "active" : ""}`}
+                onClick={() => setFilterTab("dev")}
+              >
+                Dev <span className="tab-count orange">{counts.dev}</span>
+              </button>
+            )}
+          </div>
+
+          {/* Sort & View Mode Switcher */}
+          <div className="market-view-controls">
+            <div className="market-sort-select-wrap">
+              <SlidersHorizontal size={12} className="sort-icon" />
+              <select
+                className="market-sort-select"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as any)}
+              >
+                <option value="featured">Featured</option>
+                <option value="name">Name (A-Z)</option>
+                <option value="installed">Installed first</option>
+              </select>
+            </div>
+
+            <div className="market-view-toggle">
+              <button
+                type="button"
+                className={`view-toggle-btn ${viewMode === "grid" ? "active" : ""}`}
+                onClick={() => setViewMode("grid")}
+                title="Grid view"
+              >
+                <LayoutGrid size={13} />
+              </button>
+              <button
+                type="button"
+                className={`view-toggle-btn ${viewMode === "list" ? "active" : ""}`}
+                onClick={() => setViewMode("list")}
+                title="List view"
+              >
+                <List size={13} />
+              </button>
+            </div>
+          </div>
         </div>
 
-        <div className="market-filter-tabs">
-          <button
-            type="button"
-            className={`market-filter-tab ${filterTab === "all" ? "active" : ""}`}
-            onClick={() => setFilterTab("all")}
-          >
-            All <span className="market-tab-count">{counts.all}</span>
-          </button>
-          <button
-            type="button"
-            className={`market-filter-tab ${filterTab === "installed" ? "active" : ""}`}
-            onClick={() => setFilterTab("installed")}
-          >
-            Installed <span className="market-tab-count">{counts.installed}</span>
-          </button>
-          <button
-            type="button"
-            className={`market-filter-tab ${filterTab === "available" ? "active" : ""}`}
-            onClick={() => setFilterTab("available")}
-          >
-            Available <span className="market-tab-count">{counts.available}</span>
-          </button>
-          {counts.dev > 0 && (
-            <button
-              type="button"
-              className={`market-filter-tab ${filterTab === "dev" ? "active" : ""}`}
-              onClick={() => setFilterTab("dev")}
-            >
-              Dev <span className="market-tab-count">{counts.dev}</span>
-            </button>
-          )}
+        {/* Capability Filter Chips */}
+        <div className="market-cap-chips-row">
+          <span className="cap-label">Filter by:</span>
+          {CAPABILITY_TABS.map((tab) => {
+            const count = tab.id === "all" ? counts.all : counts.byCap[tab.id];
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                className={`market-cap-chip ${capFilter === tab.id ? "active" : ""}`}
+                onClick={() => setCapFilter(tab.id)}
+              >
+                {tab.icon}
+                <span>{tab.label}</span>
+                <span className="chip-count">{count}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      {/* Capability sections: Skills / Agents / Commands / Rules / Hooks.
-          A plugin carrying several capabilities appears under each one. */}
-      <div className="market-controls">
-        <div className="market-filter-tabs">
-          {CAPABILITY_TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              className={`market-filter-tab ${capFilter === tab.id ? "active" : ""}`}
-              onClick={() => setCapFilter(tab.id)}
-            >
-              {tab.label}{" "}
-              <span className="market-tab-count">
-                {tab.id === "all" ? counts.all : counts.byCap[tab.id]}
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Plugin Grid */}
+      {/* Main Grid / List of Plugins */}
       {loading ? (
         <div className="market-empty-state">
-          <Loader2 size={24} className="spin" style={{ color: "var(--nexus-green)" }} />
-          <p>Loading marketplace plugins…</p>
+          <Loader2 size={28} className="spin text-nexus-green" />
+          <h4>Loading plugin catalog…</h4>
+          <p>Syncing extensions from registry.</p>
         </div>
       ) : filteredPlugins.length === 0 ? (
         <div className="market-empty-state">
           {searchQuery ? (
             <>
-              <PackageSearch size={30} style={{ color: "var(--faint)" }} />
-              <h4>No plugins match &ldquo;{searchQuery}&rdquo;</h4>
-              <p>Check the spelling or try searching for another keyword.</p>
+              <PackageSearch size={36} className="text-faint" />
+              <h4>No extensions matching &ldquo;{searchQuery}&rdquo;</h4>
+              <p>Try searching for a different keyword or clear your filter.</p>
               <button
                 type="button"
                 className="market-btn secondary"
@@ -609,24 +752,24 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
             </>
           ) : filterTab === "installed" ? (
             <>
-              <Puzzle size={30} style={{ color: "var(--faint)" }} />
+              <Puzzle size={36} className="text-faint" />
               <h4>No plugins installed in this project</h4>
               <p>
                 {hasProject
-                  ? "Explore available plugins above to install skills and hooks into your workspace."
+                  ? "Explore available plugins above to empower your agent with skills, rules, and subagents."
                   : "Open a project workspace to install and use plugins."}
               </p>
               <button
                 type="button"
-                className="market-btn secondary"
+                className="market-btn primary"
                 onClick={() => setFilterTab("available")}
               >
-                Browse available plugins
+                Explore available plugins
               </button>
             </>
           ) : filterTab === "dev" ? (
             <>
-              <FolderCode size={30} style={{ color: "var(--faint)" }} />
+              <FolderCode size={36} className="text-faint" />
               <h4>No developer plugins registered</h4>
               <p>Add a local folder containing manifest.json to test custom plugins.</p>
               <button
@@ -634,13 +777,13 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
                 className="market-btn secondary"
                 onClick={() => void handlePublish()}
               >
-                <FolderPlus size={12} /> Add local plugin
+                <FolderPlus size={13} /> Add local plugin
               </button>
             </>
           ) : capFilter !== "all" ? (
             <>
-              <Puzzle size={30} style={{ color: "var(--faint)" }} />
-              <h4>No {CAPABILITY_TABS.find((t) => t.id === capFilter)?.label.toLowerCase()} plugins</h4>
+              <Puzzle size={36} className="text-faint" />
+              <h4>No {CAPABILITY_TABS.find((t) => t.id === capFilter)?.label} plugins</h4>
               <p>No plugin in the catalog provides this capability yet.</p>
               <button
                 type="button"
@@ -652,7 +795,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
             </>
           ) : (
             <>
-              <Package size={30} style={{ color: "var(--faint)" }} />
+              <Package size={36} className="text-faint" />
               <h4>No plugins in catalog</h4>
               <p>Check for updates from the {isCustomRegistry ? "custom" : "official"} registry or import a local plugin.</p>
               <button
@@ -660,69 +803,61 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
                 className="market-btn primary"
                 onClick={() => void handleRefresh()}
               >
-                <RefreshCw size={12} /> Sync registry
+                <RefreshCw size={13} /> Sync registry
               </button>
             </>
           )}
         </div>
-      ) : (
-        <div className="market-grid">
+      ) : viewMode === "grid" ? (
+        /* Grid View */
+        <div className="market-card-grid">
           {filteredPlugins.map((plugin) => {
             const isDev = isDevPlugin(plugin);
             const isBusy = busy === plugin.id;
-            // A missing installedVersion (legacy manual install) still counts
-            // as needing an update when the catalog advertises a version.
             const hasUpdate = Boolean(
               plugin.installed &&
                 plugin.version &&
                 (plugin.installedVersion || "") !== plugin.version
             );
+            const themeClass = getPluginThemeClass(plugin);
+            const isOfficial = (plugin.author || "").toLowerCase().includes("nexus");
 
             return (
               <div
                 key={plugin.id}
-                className={`market-card ${plugin.installed ? "installed" : ""}`}
+                className={`market-redesigned-card ${plugin.installed ? "installed" : ""} ${themeClass}`}
+                onClick={() => setSelectedPlugin(plugin)}
               >
-                <div className="market-card-top">
-                  <div className="market-card-identity">
-                    <div className="market-card-icon">
-                      {isDev ? (
-                        <FolderCode size={18} />
-                      ) : plugin.capabilities?.includes("hooks") ? (
-                        <Terminal size={18} />
-                      ) : plugin.capabilities?.includes("skills") ? (
-                        <Sparkles size={18} />
-                      ) : (
-                        <Puzzle size={18} />
-                      )}
-                    </div>
-                    <div className="market-card-titles">
-                      <div className="market-card-name-row">
-                        <span className="market-card-name" title={plugin.name}>
-                          {plugin.name}
-                        </span>
-                        {plugin.version && (
-                          <span className="market-version-pill">v{plugin.version}</span>
-                        )}
-                        {plugin.installed && (
-                          <span className="market-badge installed">
-                            <Check size={9} /> Installed
-                          </span>
-                        )}
-                        {isDev && (
-                          <span className="market-badge dev">
-                            <FolderCode size={9} /> Dev
-                          </span>
-                        )}
-                        {hasUpdate && (
-                          <span className="market-badge update">
-                            <Sparkles size={9} /> Update
-                          </span>
-                        )}
-                      </div>
-                      <span className="market-author">
-                        by {plugin.author || "Nexus Community"}
+                <div className="card-top-header">
+                  <div className="card-icon-avatar">
+                    {isDev ? (
+                      <FolderCode size={20} />
+                    ) : plugin.capabilities?.includes("hooks") ? (
+                      <Zap size={20} />
+                    ) : plugin.capabilities?.includes("agents") ? (
+                      <Bot size={20} />
+                    ) : plugin.capabilities?.includes("skills") ? (
+                      <Sparkles size={20} />
+                    ) : (
+                      <Puzzle size={20} />
+                    )}
+                  </div>
+
+                  <div className="card-heading-group">
+                    <div className="card-title-row">
+                      <span className="card-title" title={plugin.name}>
+                        {plugin.name}
                       </span>
+                      {plugin.version && <span className="market-version-pill">v{plugin.version}</span>}
+                    </div>
+                    <div className="card-sub-row">
+                      <span className="card-author">by {plugin.author || "Community"}</span>
+                      {isOfficial && (
+                        <span className="market-official-badge" title="Official Nexus extension">
+                          <ShieldCheck size={11} />
+                          <span>Official</span>
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -730,81 +865,87 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
                   {isDev && (
                     <button
                       type="button"
-                      className="market-icon-btn"
-                      onClick={() => setConfirmTarget({ type: "removeDev", plugin })}
+                      className="card-quick-remove-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmTarget({ type: "removeDev", plugin });
+                      }}
                       disabled={isBusy}
                       title="Remove from developer catalog"
                     >
-                      <X size={12} />
+                      <X size={13} />
                     </button>
                   )}
                 </div>
 
-                <p className="market-card-desc">
+                <p className="card-description">
                   {plugin.description || "No description provided."}
                 </p>
 
-                {/* Capabilities + modes Tags */}
-                {((plugin.capabilities && plugin.capabilities.length > 0) || (plugin.modes && plugin.modes.length > 0)) && (
-                  <div className="market-card-tags">
-                    {(plugin.capabilities || []).map((cap) => (
-                      <span key={cap} className="market-cap-tag">
-                        {cap === "skills" ? (
-                          <Sparkles size={9} />
-                        ) : cap === "hooks" ? (
-                          <Terminal size={9} />
-                        ) : cap === "agents" ? (
-                          <Bot size={9} />
-                        ) : cap === "commands" ? (
-                          <FolderCode size={9} />
-                        ) : cap === "rules" ? (
-                          <Shield size={9} />
-                        ) : (
-                          <Tag size={9} />
-                        )}
-                        {cap}
-                      </span>
-                    ))}
-                    {(plugin.modes || []).map((mode) => (
-                      <span key={mode} className="market-cap-tag" title={`Available in ${mode} mode`}>
-                        {mode}
-                      </span>
-                    ))}
-                  </div>
-                )}
+                {/* Capabilities and modes */}
+                <div className="card-pills-row">
+                  {(plugin.capabilities || []).map((cap) => (
+                    <span key={cap} className="market-cap-pill">
+                      {cap === "skills" ? (
+                        <Sparkles size={9} />
+                      ) : cap === "hooks" ? (
+                        <Zap size={9} />
+                      ) : cap === "agents" ? (
+                        <Bot size={9} />
+                      ) : cap === "commands" ? (
+                        <Terminal size={9} />
+                      ) : cap === "rules" ? (
+                        <Shield size={9} />
+                      ) : (
+                        <Tag size={9} />
+                      )}
+                      <span>{cap}</span>
+                    </span>
+                  ))}
+                  {(plugin.modes || []).map((mode) => (
+                    <span key={mode} className="market-mode-pill" title={`Available in ${mode} mode`}>
+                      {mode}
+                    </span>
+                  ))}
+                </div>
 
-                {/* Card Footer: Source hint & Action buttons */}
-                <div className="market-card-footer">
-                  <span className="market-source-hint" title={plugin.source}>
-                    {isDev ? (
-                      <>
-                        <FolderCode size={10} /> Local folder
-                      </>
-                    ) : isCustomRegistry ? (
-                      <>
-                        <Globe size={10} /> Custom registry
-                      </>
+                {/* Card Footer */}
+                <div className="card-bottom-footer" onClick={(e) => e.stopPropagation()}>
+                  <div className="card-status-indicator">
+                    {plugin.installed ? (
+                      <span className="status-label installed">
+                        <Check size={11} /> Installed
+                      </span>
+                    ) : isDev ? (
+                      <span className="status-label dev">
+                        <FolderCode size={11} /> Local Dev
+                      </span>
                     ) : (
-                      <>
-                        <Globe size={10} /> Official package
-                      </>
+                      <span className="status-label ready">
+                        <Globe size={11} /> Ready
+                      </span>
                     )}
-                  </span>
+                  </div>
 
-                  <div className="market-action-buttons">
+                  <div className="card-actions-cluster">
+                    <button
+                      type="button"
+                      className="card-details-btn"
+                      onClick={() => setSelectedPlugin(plugin)}
+                      title="View plugin details and manifest"
+                    >
+                      Details
+                    </button>
+
                     {hasUpdate && (
                       <button
                         type="button"
-                        className="market-action-btn update"
+                        className="market-btn-action update"
                         onClick={() => void handleInstall(plugin)}
                         disabled={isBusy || !hasProject}
                         title={`Update to v${plugin.version}`}
                       >
-                        {isBusy ? (
-                          <Loader2 size={11} className="spin" />
-                        ) : (
-                          <RefreshCw size={11} />
-                        )}
+                        {isBusy ? <Loader2 size={12} className="spin" /> : <RefreshCw size={12} />}
                         <span>Update</span>
                       </button>
                     )}
@@ -812,35 +953,23 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
                     {plugin.installed ? (
                       <button
                         type="button"
-                        className="market-action-btn danger"
+                        className="market-btn-action danger"
                         onClick={() => setConfirmTarget({ type: "uninstall", plugin })}
                         disabled={isBusy}
-                        title="Uninstall plugin from this project"
+                        title="Uninstall from workspace"
                       >
-                        {isBusy ? (
-                          <Loader2 size={11} className="spin" />
-                        ) : (
-                          <Trash2 size={11} />
-                        )}
+                        {isBusy ? <Loader2 size={12} className="spin" /> : <Trash2 size={12} />}
                         <span>Uninstall</span>
                       </button>
                     ) : (
                       <button
                         type="button"
-                        className="market-action-btn primary"
+                        className="market-btn-action primary"
                         onClick={() => void handleInstall(plugin)}
                         disabled={isBusy || !hasProject}
-                        title={
-                          hasProject
-                            ? "Install into project"
-                            : "Open a project workspace to install"
-                        }
+                        title={hasProject ? "Install into workspace" : "Open a project to install"}
                       >
-                        {isBusy ? (
-                          <Loader2 size={11} className="spin" />
-                        ) : (
-                          <Download size={11} />
-                        )}
+                        {isBusy ? <Loader2 size={12} className="spin" /> : <Download size={12} />}
                         <span>Install</span>
                       </button>
                     )}
@@ -850,29 +979,345 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
             );
           })}
         </div>
+      ) : (
+        /* List View */
+        <div className="market-list-view">
+          {filteredPlugins.map((plugin) => {
+            const isDev = isDevPlugin(plugin);
+            const isBusy = busy === plugin.id;
+            const hasUpdate = Boolean(
+              plugin.installed &&
+                plugin.version &&
+                (plugin.installedVersion || "") !== plugin.version
+            );
+            const isOfficial = (plugin.author || "").toLowerCase().includes("nexus");
+
+            return (
+              <div
+                key={plugin.id}
+                className={`market-list-row ${plugin.installed ? "installed" : ""}`}
+                onClick={() => setSelectedPlugin(plugin)}
+              >
+                <div className="list-icon-avatar">
+                  {isDev ? (
+                    <FolderCode size={18} />
+                  ) : plugin.capabilities?.includes("hooks") ? (
+                    <Zap size={18} />
+                  ) : plugin.capabilities?.includes("agents") ? (
+                    <Bot size={18} />
+                  ) : (
+                    <Sparkles size={18} />
+                  )}
+                </div>
+
+                <div className="list-info-cluster">
+                  <div className="list-title-row">
+                    <span className="list-title">{plugin.name}</span>
+                    {plugin.version && <span className="market-version-pill">v{plugin.version}</span>}
+                    {isOfficial && (
+                      <span className="market-official-badge compact">
+                        <ShieldCheck size={10} />
+                      </span>
+                    )}
+                    {plugin.installed && (
+                      <span className="market-badge installed">
+                        <Check size={9} /> Installed
+                      </span>
+                    )}
+                    {isDev && <span className="market-badge dev">Dev</span>}
+                  </div>
+                  <p className="list-desc">{plugin.description || "No description."}</p>
+                </div>
+
+                <div className="list-tags-cluster">
+                  {(plugin.capabilities || []).map((cap) => (
+                    <span key={cap} className="market-cap-pill compact">
+                      {cap}
+                    </span>
+                  ))}
+                </div>
+
+                <div className="list-actions-cluster" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    type="button"
+                    className="card-details-btn"
+                    onClick={() => setSelectedPlugin(plugin)}
+                  >
+                    Details
+                  </button>
+                  {hasUpdate && (
+                    <button
+                      type="button"
+                      className="market-btn-action update"
+                      onClick={() => void handleInstall(plugin)}
+                      disabled={isBusy || !hasProject}
+                    >
+                      {isBusy ? <Loader2 size={12} className="spin" /> : <RefreshCw size={12} />}
+                      <span>Update</span>
+                    </button>
+                  )}
+                  {plugin.installed ? (
+                    <button
+                      type="button"
+                      className="market-btn-action danger"
+                      onClick={() => setConfirmTarget({ type: "uninstall", plugin })}
+                      disabled={isBusy}
+                    >
+                      {isBusy ? <Loader2 size={12} className="spin" /> : <Trash2 size={12} />}
+                      <span>Uninstall</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="market-btn-action primary"
+                      onClick={() => void handleInstall(plugin)}
+                      disabled={isBusy || !hasProject}
+                    >
+                      {isBusy ? <Loader2 size={12} className="spin" /> : <Download size={12} />}
+                      <span>Install</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       )}
 
-      {/* Developer Catalog Helper Card */}
-      <div className="market-dev-card">
-        <div className="market-dev-card-info">
-          <FolderCode size={18} style={{ color: "var(--nexus-green)", flex: "none" }} />
-          <div className="market-dev-card-text">
-            <strong>Plugin Development</strong>
-            <small>
-              Build custom bundles with <code>manifest.json</code>, <code>skills/</code>, and optional <code>hooks.json</code>. Set <code>modes</code> in the manifest (e.g. <code>["code"]</code>) to scope the whole plugin; a skill's own <code>modes:</code> frontmatter still overrides it.
-            </small>
-          </div>
-        </div>
-        <button
-          type="button"
-          className="market-btn secondary"
-          onClick={() => void handlePublish()}
-          disabled={busy === "publish"}
+      {/* Plugin Details Modal */}
+      {selectedPlugin && (
+        <Modal
+          title={selectedPlugin.name}
+          subtitle={`Extension details, capabilities, and workspace status`}
+          onClose={() => setSelectedPlugin(null)}
+          wide
         >
-          {busy === "publish" ? <Loader2 size={12} className="spin" /> : <FolderPlus size={12} />}
-          <span>Import local bundle</span>
-        </button>
-      </div>
+          <div className="market-modal-body">
+            <div className="modal-hero-split">
+              <div className="modal-plugin-identity">
+                <div className="modal-avatar-large">
+                  {isDevPlugin(selectedPlugin) ? (
+                    <FolderCode size={26} />
+                  ) : selectedPlugin.capabilities?.includes("hooks") ? (
+                    <Zap size={26} />
+                  ) : selectedPlugin.capabilities?.includes("agents") ? (
+                    <Bot size={26} />
+                  ) : (
+                    <Sparkles size={26} />
+                  )}
+                </div>
+                <div>
+                  <div className="modal-name-row">
+                    <h3>{selectedPlugin.name}</h3>
+                    {selectedPlugin.version && <span className="market-version-pill large">v{selectedPlugin.version}</span>}
+                    {selectedPlugin.installed && (
+                      <span className="market-badge installed">
+                        <Check size={11} /> Installed in current project
+                      </span>
+                    )}
+                  </div>
+                  <span className="modal-author-lbl">
+                    Created by <strong>{selectedPlugin.author || "Nexus Contributor"}</strong>
+                  </span>
+                </div>
+              </div>
+
+              <div className="modal-top-actions">
+                {selectedPlugin.installed ? (
+                  <button
+                    type="button"
+                    className="market-btn danger"
+                    onClick={() => setConfirmTarget({ type: "uninstall", plugin: selectedPlugin })}
+                    disabled={busy === selectedPlugin.id}
+                  >
+                    {busy === selectedPlugin.id ? <Loader2 size={13} className="spin" /> : <Trash2 size={13} />}
+                    <span>Uninstall Extension</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="market-btn primary"
+                    onClick={() => void handleInstall(selectedPlugin)}
+                    disabled={busy === selectedPlugin.id || !hasProject}
+                  >
+                    {busy === selectedPlugin.id ? <Loader2 size={13} className="spin" /> : <Download size={13} />}
+                    <span>{hasProject ? "Install into Project" : "Open Project to Install"}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="modal-section">
+              <h5 className="modal-section-title">Overview</h5>
+              <p className="modal-desc-full">
+                {selectedPlugin.description || "No detailed description provided for this extension."}
+              </p>
+            </div>
+
+            <div className="modal-section">
+              <h5 className="modal-section-title">Bundled Capabilities</h5>
+              <div className="modal-caps-grid">
+                {(selectedPlugin.capabilities || []).map((cap) => (
+                  <div key={cap} className="modal-cap-card">
+                    <div className="cap-icon-wrap">
+                      {cap === "skills" ? (
+                        <Sparkles size={16} />
+                      ) : cap === "agents" ? (
+                        <Bot size={16} />
+                      ) : cap === "commands" ? (
+                        <Terminal size={16} />
+                      ) : cap === "rules" ? (
+                        <Shield size={16} />
+                      ) : (
+                        <Zap size={16} />
+                      )}
+                    </div>
+                    <div>
+                      <strong className="cap-card-title">{cap.toUpperCase()}</strong>
+                      <p className="cap-card-sub">
+                        {cap === "skills"
+                          ? "Injects procedural skill knowledge and guidelines for agent execution."
+                          : cap === "agents"
+                          ? "Equips specialist subagents accessible via agent delegation."
+                          : cap === "commands"
+                          ? "Registers custom slash commands in chat."
+                          : cap === "rules"
+                          ? "Provides framework standards and coding best practices."
+                          : "Executes lifecycle hooks on agent steps and events."}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="modal-section">
+              <h5 className="modal-section-title">Technical Details</h5>
+              <div className="modal-specs-table">
+                <div className="spec-row">
+                  <span className="spec-key">Extension ID</span>
+                  <span className="spec-val"><code>{selectedPlugin.id}</code></span>
+                </div>
+                <div className="spec-row">
+                  <span className="spec-key">Supported Modes</span>
+                  <span className="spec-val">
+                    {(selectedPlugin.modes && selectedPlugin.modes.length > 0)
+                      ? selectedPlugin.modes.join(", ")
+                      : "All Modes (Code, Home, Notebook)"}
+                  </span>
+                </div>
+                <div className="spec-row">
+                  <span className="spec-key">Distribution Source</span>
+                  <span className="spec-val font-mono">{selectedPlugin.source}</span>
+                </div>
+                {selectedPlugin.installedVersion && (
+                  <div className="spec-row">
+                    <span className="spec-key">Installed Version</span>
+                    <span className="spec-val font-mono">v{selectedPlugin.installedVersion}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Developer & Registry Settings Modal */}
+      {showConfigModal && (
+        <Modal
+          title="Marketplace Feeds & Developer Settings"
+          subtitle="Configure external registry feeds and auto-discovery directories for custom extensions."
+          onClose={() => setShowConfigModal(false)}
+        >
+          <div className="market-config-modal-body">
+            {/* Custom Registry Section */}
+            <div className="config-section-card">
+              <div className="config-card-header">
+                <Globe size={16} className="text-nexus-green" />
+                <div>
+                  <h4>Registry Feed URL</h4>
+                  <p>Point to a public JSON registry index or GitHub raw document.</p>
+                </div>
+              </div>
+
+              <div className="config-field-group">
+                <input
+                  type="text"
+                  className="market-config-input"
+                  value={registryUrl}
+                  onChange={(e) => setRegistryUrl(e.target.value)}
+                  placeholder={DEFAULT_PLUGIN_REGISTRY_URL}
+                  spellCheck={false}
+                />
+                <div className="config-btn-row">
+                  <button
+                    type="button"
+                    className="market-btn primary"
+                    onClick={() => void handleSaveRegistry()}
+                    disabled={savingRegistry}
+                  >
+                    {savingRegistry ? <Loader2 size={13} className="spin" /> : <Check size={13} />}
+                    <span>Save & Sync</span>
+                  </button>
+
+                  {isCustomRegistry && (
+                    <button
+                      type="button"
+                      className="market-btn secondary"
+                      onClick={() => void handleResetRegistry()}
+                      disabled={savingRegistry}
+                      title="Reset to official Nexus registry feed"
+                    >
+                      <RefreshCw size={13} />
+                      <span>Reset to Official</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Dev Root Directory */}
+            <div className="config-section-card">
+              <div className="config-card-header">
+                <FolderCode size={16} className="text-orange" />
+                <div>
+                  <h4>Local Dev Auto-Discovery Folder</h4>
+                  <p>Every subfolder containing a <code>manifest.json</code> is automatically listed in your catalog.</p>
+                </div>
+              </div>
+
+              <div className="config-field-group">
+                <div className="devroot-display-box" title={devRoot || "No directory linked"}>
+                  {devRoot || "No folder currently linked"}
+                </div>
+                <div className="config-btn-row">
+                  <button
+                    type="button"
+                    className="market-btn secondary"
+                    onClick={() => void handlePickDevRoot()}
+                    disabled={busy === "devroot"}
+                  >
+                    {busy === "devroot" ? <Loader2 size={13} className="spin" /> : <FolderPlus size={13} />}
+                    <span>{devRoot ? "Change Dev Folder" : "Link Dev Folder"}</span>
+                  </button>
+
+                  {devRoot && (
+                    <button
+                      type="button"
+                      className="market-btn danger-subtle"
+                      onClick={() => void handleClearDevRoot()}
+                      disabled={busy === "devroot"}
+                    >
+                      <X size={13} />
+                      <span>Unlink</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {/* Confirmation Modal */}
       {confirmTarget && (
@@ -884,10 +1329,10 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
           }
           message={
             confirmTarget.type === "uninstall"
-              ? `This will remove the plugin bundle from this project's .nexus/plugins folder. Its skills and hooks will no longer be available during agent runs.`
+              ? `This will remove the plugin bundle from this project's .nexus/plugins folder. Its skills, subagents, rules, and hooks will no longer be available during agent runs.`
               : confirmTarget.plugin.installed
-                ? `This will remove the plugin from your developer catalog AND uninstall its bundle from this project (so no orphaned install is left behind). The source folder on your computer will remain intact.`
-                : `This will remove the plugin from your developer catalog. The source folder on your computer will remain intact.`
+              ? `This will remove the plugin from your developer catalog AND uninstall its bundle from this project. The source folder on your computer will remain intact.`
+              : `This will remove the plugin from your developer catalog. The source folder on your computer will remain intact.`
           }
           confirmLabel={confirmTarget.type === "uninstall" ? "Uninstall" : "Remove"}
           danger

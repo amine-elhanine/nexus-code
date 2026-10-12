@@ -15,10 +15,12 @@ Windows 10 / 11 (NSIS + Portable) · macOS & Linux configurable
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)
 ![LangGraph](https://img.shields.io/badge/LangGraph-1.x-1C3C3C)
 ![DeepAgents](https://img.shields.io/badge/DeepAgents-1.x-34d399)
+![Version](https://img.shields.io/badge/version-v0.4.5-blue)
 ![License](https://img.shields.io/badge/license-All_Rights_Reserved-lightgrey)
 
 **[Download the latest release](https://github.com/amine-elhanine/nexus/releases/latest)** ·
-**[Landing page](landing_page/index.html)**
+**[Landing page](landing_page/index.html)** ·
+**[Changelog](CHANGELOG.md)**
 
 </div>
 
@@ -67,7 +69,14 @@ Nexus features three dedicated operational surfaces accessible from the persiste
 ### 2. Home Mode — Desktop Assistant & Document Generation
 
 - **Real Document Deliverables**: Generates complete, fully formatted files — `.docx` Word documents, `.pptx` presentations, `.xlsx` workbooks, `.pdf`, `.md`, and LaTeX — not raw code snippets.
-- **Magic-Byte & OpenXML Validation**: Every generated document is validated against binary magic bytes and inspected via zip/XML structure parsers to ensure corruption-free files compatible with Microsoft Office.
+- **Native Interactive Charts & Visual Graphs**:
+  - Renders inline interactive data visualizations in chat deliverables supporting 8+ chart formats: ````bar`, ````hbar`, ````line`, ````area`, ````pie`, ````donut`, ````scatter`, ````radar`, and ````mermaid` flowcharts/diagrams.
+  - Dynamically adopts active palette colors across all 10 application themes with interactive tooltips, data point inspection, and responsive scaling.
+- **Supervisor Visual Auto-Embedding**:
+  - Automatically rescues chart blocks placed in unrequested `.md` files and renders them directly in the chat stream.
+  - Auto-detects generated chart plots (e.g. Python matplotlib `chart_*.png`, `.svg`) and embeds them into the final response under a formatted **Visual Evidence & Charts** section.
+- **Strict Deliverable Contracts**: Enforces tangible output verification so the model cannot substitute conversational promises (*"I will now create..."*) for actual deliverables when files or charts are requested.
+- **Magic-Byte & OpenXML Validation**: Every generated document is validated against binary magic bytes and inspected via zip/XML structure parsers to ensure corruption-free files compatible with Microsoft Office and Google Docs.
 - **Structured Long-Term Memory**:
   - Four distinct memory tiers: **User Profile**, **Preferences**, **Factual Knowledge**, and **Project Context**.
   - Dynamically injected into context based on conversational relevance.
@@ -81,17 +90,18 @@ Nexus features three dedicated operational surfaces accessible from the persiste
 - **Multi-Source Ingestion Pipeline**:
   - Ingests PDF, DOCX, PPTX, TXT, Markdown, CSV, TeX, YouTube video transcripts, and public web pages.
   - Resilient asynchronous processing pipeline (`queued → parsing → chunking → indexing → ready`) with crash recovery.
+- **Net-Guard SSRF Protection**: Ingestion and web fetch pipeline enforces strict network security boundaries (`net-guard.ts`), blocking private intranet ranges, localhost, and non-HTTP protocols.
 - **Grounded Chat with Verified Citations**:
   - Hybrid retrieval combining dense vector similarity (SQLite vectors), BM25 lexical token matching, and structural heading boosts.
-  - Clickable `[S1]`, `[S2]` citation badges that instantly open the exact passage and highlight the evidence source.
+  - Clickable `[S1]`, `[S2]` citation badges that instantly open the exact passage and highlight the evidence source in the side panel.
   - Transparent retrieval traces displaying passage scores and candidate ranking.
 - **Strict Groundedness Gate**: Evaluates answer fidelity on a 0–10 scale. When ingested sources do not contain sufficient evidence, the model **refuses to hallucinate** rather than guessing.
 - **Studio Generative Artifacts**: One-click generation of:
   - **Reports** (DOCX / PDF)
   - **Presentations** (PPTX)
-  - **Quizzes** (Graded multi-choice and boolean questions with passage citations)
+  - **Quizzes** (Graded multi-choice and boolean questions with passage citations and interactive player)
   - **Flashcards** (Study flashcard sets with interactive review player)
-  - **Mind Maps** (Interactive hierarchical graph rendered on visual canvas)
+  - **Mind Maps** (Interactive hierarchical graph rendered on visual canvas with zoom & pan)
   - **Summaries** (Executive overviews, section analyses, and key takeaways)
 
 ---
@@ -126,38 +136,63 @@ Nexus features a redesigned, interactive step execution feed inspired by **OpenC
 |---|---|
 | **15 LLM Providers** | OpenAI, Anthropic Claude, Google Gemini, Mistral, Groq, xAI Grok, OpenRouter, DeepSeek, OpenCode Zen, Together AI, Fireworks, Azure OpenAI, AWS Bedrock, local **Ollama**, and custom OpenAI-compatible endpoints with dynamic model discovery. |
 | **Model Context Protocol (MCP)** | Native MCP client supporting `stdio`, `HTTP`, and `SSE` transports. Features connection health testing, isolated fault boundaries, and encrypted configurations. |
-| **Extensible Skills** | **53 bundled system skills** (12 common, 31 code, 10 home), plus project-level (`.nexus/skills/`) and global skills formatted as `SKILL.md`. Includes ZIP bundle import/export. |
+| **Plugin Marketplace** | Redesigned desktop store in Settings. Features Omni-search, status filters, capability chips (Skills, Subagents, Commands, Rules, Hooks), Grid/List views, slide-over details modal, custom registry feeds, and local auto-discovery dev roots. |
+| **Modular Bundled Suites** | Includes **Nexus Engineering Suite** (curated rules & workflows across TypeScript, Python, React, Rust, Go, Vue, Swift, Docker, PostgreSQL) and **Nexus Research Studio** (deep research, agent evaluation, docx/pptx/xlsx/pdf tooling). |
+| **Interactive Visualizations** | Native in-chat rendering of 8+ interactive chart types (bar, hbar, line, area, pie, donut, scatter, radar, and Mermaid diagrams) with multi-theme styling, interactive tooltips, and automatic image plot embedding. |
 | **Specialist Subagents** | **68 specialized agents** (architect, code reviewer, security reviewer, TDD guide, language-specific build error resolvers) dispatched as scoped subagents (max 3 concurrent per run, 1 mutating). |
 | **Coding Rule Packs** | **122 rule sets** across 22 languages and frameworks, dynamically merged with workspace rules. |
 | **Slash Commands** | **38 built-in slash commands** (`/plan`, `/auto`, `/review`, `/test`, `/security`, `/pr`, `/build-fix`, etc.) plus custom user-defined commands supporting variable replacement (`{{input}}`, `$ARGUMENTS`). |
+| **Adaptive Loop Supervisor** | Smart per-target repeat detection with steer-forward notices, quota-governed research limits, doom-loop circuit breakers, and Windows path normalization. |
+| **Fail-Safe Token Accounting** | Comprehensive token and cost persistence across successful, cancelled, and failed runs. |
 | **Lifecycle Hooks** | Shell lifecycle hooks configured via `.nexus/hooks.json` (`run:start`, `run:end`, `tool:before`, `tool:after`, `verify:fail`) with stdin JSON payloads and tool veto capabilities. |
-| **Plugin Marketplace** | Directory-based bundles (`.nexus/plugins/<name>/`) packaging manifests, skills, and lifecycle hooks. Developers curate local bundles or publish a simple JSON registry; users install a plugin into their project with one click. |
 | **Agent Browser** | Embedded hidden webview profiles per mode with rendered DOM inspection, interactive element actions, and SSRF-safe API fetch utilities. |
-| **Transparent Cost Metering** | Per-message token accounting, input/output breakdown, and estimated cost tracking. |
 | **10 Themes** | Nexus Emerald, Dark-White, Midnight, Grape, Ember, Crimson, Lagoon, Moss, Alabaster, and Daylight. |
 | **Auto-Updates** | Integrated updater via GitHub Releases (`electron-updater`) with live background progress pill. |
 
 ---
 
-## Publishing Plugins
+## Plugin Marketplace & Modular Extensibility
 
-Open **Settings → Marketplace → Add plugin** to add a local bundle to the developer catalog. A bundle must contain `manifest.json`; its `skills/` and `hooks.json` are activated as soon as a user installs it into a project.
+Nexus features a modular extension system packaged as self-contained plugin bundles (`.nexus/plugins/<name>/`). Each plugin can bundle skills, specialist subagents, custom slash commands, coding rule packs, and lifecycle hooks into a single distributable unit.
 
-The official Marketplace automatically loads [this repository's registry](https://raw.githubusercontent.com/amine-elhanine/nexus-code/main/registry.json). Add plugin folders under `plugins/`, upload their ZIP packages to a GitHub Release in this same repository, then add a listing to the root `registry.json`. The registry may be either an array or `{ "plugins": [...] }`; each listing needs `id`, `name`, and an HTTPS `.zip` `source`:
+### Store Interface (Settings → Marketplace)
+
+The in-app Marketplace provides an experience tailored for discovering and managing plugins:
+- **Hero Banner & Live Metrics**: Ambient gradient header displaying live connectivity status (Official Registry vs. Custom Feed) alongside real-time counts for Total Packages, Installed, and Local Dev items.
+- **Flagship Spotlight**: Highlights recommended suites (`nexus-engineering-suite`) with capability breakdowns and instant 1-click install/manage actions.
+- **Omni-Search & Multi-Filter Toolbar**: Text search by name or author, segmented status tabs (*All*, *Installed*, *Available*, *Local Dev*), sorting (Featured, Name, Installed), and responsive **Grid vs. List** layout switching.
+- **Capability Filter Chips**: Filter plugins by injected capabilities:
+  - ✨ **Skills**: Workflow guides and tool expansions.
+  - 🤖 **Subagents**: Domain-specific specialist agents.
+  - 💻 **Slash Commands**: Workspace shortcuts with argument substitution.
+  - 🛡️ **Rules**: Granular coding standards and framework best practices.
+  - ⚡ **Hooks**: Event triggers for lifecycle automation.
+- **Plugin Details Inspector**: Slide-over modal inspects long descriptions, capability explanations, supported workspace modes, local source paths, technical IDs, and direct action triggers.
+- **Custom Feeds & Dev Roots Modal**: Manage custom JSON registry URLs and configure local auto-discovery directories (`pickDevRoot`) to automatically hot-load unpacked plugins during development.
+
+### Bundled Flagship Suites
+
+- **Nexus Engineering Suite (`nexus-engineering-suite`)**: Comprehensive engineering standards, architecture decision records, testing pipelines, and Docker/DB patterns for TypeScript, React, Python, Rust, Go, Vue, and Swift.
+- **Nexus Research Studio (`nexus-research-studio`)**: Autonomous research tools, `agent-evaluator`, `spec-miner`, `docs-lookup`, and document export engines (`docx`, `pptx`, `xlsx`, `pdf`).
+
+### Creating & Publishing Plugins
+
+A plugin bundle requires a `manifest.json` at its root. Folders for `skills/`, `agents/`, `rules/`, `commands/`, and a `hooks.json` file are automatically detected:
 
 ```json
 {
-  "plugins": [{
-    "id": "release-notes",
-    "name": "Release Notes",
-    "version": "1.0.0",
-    "author": "Nexus Team",
-    "description": "Creates release notes from Git history.",
-    "capabilities": ["skills", "hooks"],
-    "source": "https://example.com/plugins/release-notes.zip"
-  }]
+  "id": "release-notes",
+  "name": "Release Notes",
+  "version": "1.0.0",
+  "author": "Nexus Team",
+  "description": "Creates formatted release notes and changelogs from Git commit history.",
+  "modes": ["code", "home"],
+  "capabilities": ["skills", "hooks"],
+  "source": "https://example.com/plugins/release-notes.zip"
 }
 ```
+
+To publish to the official registry, add the plugin to `plugins/` and add a listing to `registry.json`. Community registries can be loaded in Settings by adding the registry URL.
 
 ## Architecture & Loop Design
 
@@ -210,6 +245,17 @@ The official Marketplace automatically loads [this repository's registry](https:
 | **Plan** | 40 | 0 (None) | Read-only strictly enforced |
 | **Ask** | 100 | Up to 3 | Interactive confirmation for mutations |
 | **Auto** | 150 | Up to 5 | Fully autonomous with self-repair |
+
+### Loop Resilience & Supervision
+
+- **Per-Target Loop Prevention**: Instead of aborting an entire multi-step run when an external URL or web query returns unhelpful content, the loop supervisor tracks per-target query signatures:
+  - **1st repeat**: Executes normally.
+  - **2nd repeat**: Continues with an advisory note encouraging the model to explore alternate sources or move forward.
+  - **3rd repeat**: Restricts only that specific target URL/query for the duration of the run with steer-forward guidance, enabling the model to proceed with remaining plan objectives.
+  - **Doom-Loop Circuit Breaker**: Retained as a terminal fallback if a model repeatedly loops without emitting productive tool calls or progress.
+- **Adaptive Research Budgeting**: Imposes quota-governed research limits (`needsResearch` contract) to prevent uncontrolled web search and browser loops.
+- **Fail-Safe Token Accounting**: Persists and finalizes token consumption across successful, cancelled, interrupted, or failed runs so session analytics accurately track all API costs.
+- **Cross-Platform Path Normalization**: Resolves Windows backslash differences, drive letters, and case discrepancies (`electron/path-utils.ts`) across diffing, search, and sandboxing.
 
 ---
 
@@ -275,10 +321,10 @@ npm run check
 Nexus maintains a comprehensive testing harness:
 
 ```bash
-# Run unit test suite (34 suites covering rate-limits, checkpoints, LSP, hooks, plugins, memory)
+# Run unit test suite (35 suites covering rate-limits, checkpoints, LSP, hooks, plugins, memory, charts, paths)
 npm run test:unit
 
-# Run notebook test suite (11 suites covering ingestion, RAG, SQLite vectors, groundedness)
+# Run notebook test suite (11 suites covering ingestion, RAG, SQLite vectors, net-guard, studio artifacts)
 npm run test:notebook
 
 # Run permissions and security policy test suite
@@ -286,6 +332,12 @@ npm run test:permissions
 
 # Run full integration test suite (sandbox + agent execution)
 npm test
+
+# Run headless agent evaluation benchmark
+npm run eval:agent
+
+# Run offline deterministic notebook RAG evaluation
+npm run eval:notebook
 ```
 
 ### Production Build & Packaging
