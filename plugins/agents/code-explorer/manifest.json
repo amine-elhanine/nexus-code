@@ -1,0 +1,13 @@
+{
+  "id": "code-explorer",
+  "name": "Code Explorer",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Deeply analyzes existing codebase features by tracing execution paths, mapping architecture layers, and documenting dependencies to inform new development.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

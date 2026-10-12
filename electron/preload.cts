@@ -58,6 +58,7 @@ const nexusApi = {
   getPluginRegistry: () => invoke("plugins:registry:get"),
   savePluginRegistry: (config: unknown) => invoke("plugins:registry:save", config),
   publishPlugin: () => invoke("plugins:developer:pick-and-publish"),
+  pickDevRoot: () => invoke("plugins:devroot:pick"),
   removePublishedPlugin: (id: string) => invoke("plugins:developer:remove", id),
   installPlugin: (entry: unknown) => invoke("plugins:install", entry),
   uninstallPlugin: (id: string) => invoke("plugins:uninstall", id),

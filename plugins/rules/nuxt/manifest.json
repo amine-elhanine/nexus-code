@@ -1,0 +1,13 @@
+{
+  "id": "rules-nuxt",
+  "name": "Nuxt Rules",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Nuxt coding rules and conventions.",
+  "capabilities": [
+    "rules"
+  ],
+  "modes": [
+    "code"
+  ]
+}

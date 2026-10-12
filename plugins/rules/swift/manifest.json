@@ -1,0 +1,13 @@
+{
+  "id": "rules-swift",
+  "name": "Swift Rules",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Swift coding rules and conventions.",
+  "capabilities": [
+    "rules"
+  ],
+  "modes": [
+    "code"
+  ]
+}

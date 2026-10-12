@@ -1,0 +1,13 @@
+{
+  "id": "java-build-resolver",
+  "name": "Java Build Resolver",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Java/Maven/Gradle build, compilation, and dependency error resolution specialist. Automatically detects Spring Boot or Quarkus and applies framework-specific fixes. Fixes build errors, Java compiler errors, and Maven/Gradle issues with minimal changes. Use when Java builds fail.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

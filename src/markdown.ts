@@ -97,6 +97,11 @@ function inline(escaped: string) {
   text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   text = text.replace(/(^|[\s(>])\*([^*\n]+)\*/g, "$1<em>$2</em>");
   text = text.replace(/(^|[\s(>])_([^_\n]+)_/g, "$1<em>$2</em>");
+  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, alt: string, src: string) => {
+    const cleanSrc = src.trim();
+    if (/^javascript:/i.test(cleanSrc)) return "";
+    return `<img src="${cleanSrc}" alt="${alt}" class="md-image" loading="lazy" />`;
+  });
   text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
   text = text.replace(/\u0000C(\d+)\u0000/g, (_match, index: string) => codeSpans[Number(index)] ?? "");
   return text;

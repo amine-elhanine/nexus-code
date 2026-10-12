@@ -1,0 +1,10 @@
+{
+  "id": "search-first",
+  "name": "Search First",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Research-before-coding workflow. Search for existing tools, libraries, and patterns before writing custom code. Invokes the researcher agent.",
+  "capabilities": [
+    "skills"
+  ]
+}

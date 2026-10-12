@@ -1,0 +1,13 @@
+{
+  "id": "loop-operator",
+  "name": "Loop Operator",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Operate autonomous agent loops, monitor progress, and intervene safely when loops stall.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "id": "python-reviewer",
+  "name": "Python Reviewer",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Expert Python code reviewer specializing in PEP 8 compliance, Pythonic idioms, type hints, security, and performance. Use for all Python code changes. MUST BE USED for Python projects.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

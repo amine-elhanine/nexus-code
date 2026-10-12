@@ -1,0 +1,13 @@
+{
+  "id": "test-coverage",
+  "name": "Test Coverage",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Analyze coverage, identify gaps, and generate missing tests toward the target threshold.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

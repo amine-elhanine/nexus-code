@@ -179,7 +179,9 @@ function normalizeEntry(raw: unknown): PluginRegistryEntry | null {
 }
 
 /** Reads the developer catalog and, optionally, a public registry JSON document.
- * The public document is intentionally plain JSON: { plugins: PluginRegistryEntry[] }. */
+ * The public document is intentionally plain JSON: { plugins: PluginRegistryEntry[] }.
+ * When a dev root folder is configured, every subfolder containing a valid
+ * manifest.json is listed automatically — no per-plugin registration. */
 export async function listMarketplace(projectRoot?: string): Promise<MarketplacePlugin[]> {
   const config = await getPluginRegistryConfig();
   let remote: PluginRegistryEntry[] = [];
@@ -192,8 +194,11 @@ export async function listMarketplace(projectRoot?: string): Promise<Marketplace
       remote = entries.map(normalizeEntry).filter((entry): entry is PluginRegistryEntry => Boolean(entry));
     } catch { /* The local catalog still makes Marketplace useful offline. */ }
   }
+  const scanned = config.devRoot ? await scanPluginRoot(config.devRoot).catch(() => []) : [];
   const combined = new Map<string, PluginRegistryEntry>();
-  for (const entry of [...remote, ...(config.developerCatalog || [])]) {
+  // Later sources win on id clashes: explicit developer-catalog picks beat
+  // auto-scanned folders, which beat the remote registry.
+  for (const entry of [...remote, ...scanned, ...(config.developerCatalog || [])]) {
     const valid = normalizeEntry(entry);
     if (valid) combined.set(valid.id, valid);
   }
@@ -207,21 +212,75 @@ export async function listMarketplace(projectRoot?: string): Promise<Marketplace
   }).sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** Builds a registry entry from a plugin folder on disk. Returns null when
+ * the folder has no valid manifest.json — callers skip such folders. */
+export async function entryFromFolder(dir: string): Promise<PluginRegistryEntry | null> {
+  let manifest: PluginManifest;
+  try {
+    manifest = JSON.parse(await fs.readFile(path.join(dir, "manifest.json"), "utf8"));
+    if (typeof manifest !== "object" || manifest === null) return null;
+  } catch { return null; }
+  const detectedCaps = detectPluginCapabilities(dir);
+  const capabilities = Array.isArray(manifest.capabilities) && manifest.capabilities.length > 0
+    ? manifest.capabilities
+    : detectedCaps;
+  return normalizeEntry({
+    id: manifest.id || manifest.name || path.basename(dir),
+    name: manifest.name || path.basename(dir),
+    description: manifest.description,
+    version: manifest.version || "0.1.0",
+    author: manifest.author,
+    capabilities,
+    modes: manifest.modes,
+    source: path.resolve(dir),
+  });
+}
+
+/** Capability section folders of the shared/local plugin library layout:
+ * plugins/skills/<skill>/, plugins/agents/<agent>/, … */
+export const PLUGIN_SECTION_FOLDERS = ["skills", "agents", "commands", "rules", "hooks"];
+
+/** Lists every plugin bundle found under a root folder.
+ * Supports both layouts: classic bundles (plugins/<id>/ with a manifest) and
+ * the sectioned library (plugins/<capability>/<item>/ with a manifest per
+ * item). Folders without a valid manifest.json are skipped silently. Pure
+ * function of the filesystem — no global state, so tests stay isolated. */
+export async function scanPluginRoot(root: string): Promise<PluginRegistryEntry[]> {
+  let dirents: import("node:fs").Dirent[];
+  try {
+    dirents = (await fs.readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory());
+  } catch { return []; }
+  const entries: PluginRegistryEntry[] = [];
+  for (const dirent of dirents) {
+    const dir = path.join(root, dirent.name);
+    const direct = await entryFromFolder(dir).catch(() => null);
+    if (direct) {
+      entries.push(direct);
+      continue;
+    }
+    // Section folder (skills/, agents/, …): each subfolder is one plugin.
+    if (PLUGIN_SECTION_FOLDERS.includes(dirent.name.toLowerCase())) {
+      let items: import("node:fs").Dirent[];
+      try {
+        items = (await fs.readdir(dir, { withFileTypes: true })).filter((entry) => entry.isDirectory());
+      } catch { continue; }
+      for (const item of items) {
+        const entry = await entryFromFolder(path.join(dir, item.name)).catch(() => null);
+        if (entry) entries.push(entry);
+      }
+    }
+  }
+  return entries.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /** Adds a local bundle to the developer catalog. Publish the generated registry
  * JSON from any static host later; no app server or account is required.
  * The manifest's `modes` (if any) is carried into the catalog entry. */
 export async function publishLocalPlugin(source: string): Promise<PluginRegistryEntry> {
   const stat = await fs.stat(source).catch(() => null);
   if (!stat?.isDirectory()) throw new Error("Choose a plugin folder containing manifest.json.");
-  let manifest: PluginManifest;
-  try { manifest = JSON.parse(await fs.readFile(path.join(source, "manifest.json"), "utf8")); }
-  catch { throw new Error("The plugin folder must include a valid manifest.json."); }
-  const detectedCaps = detectPluginCapabilities(source);
-  const capabilities = Array.isArray(manifest.capabilities) && manifest.capabilities.length > 0
-    ? manifest.capabilities
-    : detectedCaps;
-  const entry = normalizeEntry({ id: manifest.id || manifest.name || path.basename(source), name: manifest.name || path.basename(source), description: manifest.description, version: manifest.version || "0.1.0", author: manifest.author, capabilities, modes: manifest.modes, source: path.resolve(source) });
-  if (!entry) throw new Error("The plugin manifest needs a name.");
+  const entry = await entryFromFolder(source);
+  if (!entry) throw new Error("The plugin folder must include a valid manifest.json with a name.");
   const config = await getPluginRegistryConfig();
   const catalog = (config.developerCatalog || []).filter((item) => item.id !== entry.id);
   catalog.push(entry);

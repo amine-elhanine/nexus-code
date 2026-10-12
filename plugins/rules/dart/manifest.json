@@ -1,0 +1,13 @@
+{
+  "id": "rules-dart",
+  "name": "Dart Rules",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Dart coding rules and conventions.",
+  "capabilities": [
+    "rules"
+  ],
+  "modes": [
+    "code"
+  ]
+}

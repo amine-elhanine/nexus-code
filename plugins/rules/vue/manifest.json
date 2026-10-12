@@ -1,0 +1,13 @@
+{
+  "id": "rules-vue",
+  "name": "Vue Rules",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Vue coding rules and conventions.",
+  "capabilities": [
+    "rules"
+  ],
+  "modes": [
+    "code"
+  ]
+}

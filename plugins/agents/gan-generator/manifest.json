@@ -1,0 +1,13 @@
+{
+  "id": "gan-generator",
+  "name": "Gan Generator",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "GAN Harness — Generator agent. Implements features according to the spec, reads evaluator feedback, and iterates until quality threshold is met.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

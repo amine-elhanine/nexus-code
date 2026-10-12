@@ -1,0 +1,13 @@
+{
+  "id": "rust-review",
+  "name": "Rust Review",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Comprehensive Rust code review for ownership, lifetimes, error handling, unsafe usage, and idiomatic patterns. Invokes the rust-reviewer agent.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

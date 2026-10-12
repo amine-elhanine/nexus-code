@@ -1,0 +1,13 @@
+{
+  "id": "python-patterns",
+  "name": "Python Patterns",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Pythonic idioms, PEP 8 standards, type hints, and best practices for building robust, efficient, and maintainable Python applications. Use when writing or reviewing Python code and idiomatic structure, typing, or PEP 8 is in question.",
+  "capabilities": [
+    "skills"
+  ],
+  "modes": [
+    "code"
+  ]
+}

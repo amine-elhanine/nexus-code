@@ -1,0 +1,10 @@
+{
+  "id": "prompt-optimizer",
+  "name": "Prompt Optimizer",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": ">-",
+  "capabilities": [
+    "skills"
+  ]
+}

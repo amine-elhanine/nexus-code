@@ -1,0 +1,13 @@
+{
+  "id": "react-build-resolver",
+  "name": "React Build Resolver",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Diagnose and fix React build failures across Vite, webpack, Next.js, CRA, Parcel, esbuild, and Bun. Handles JSX/TSX compile errors, hydration mismatches, server/client component boundary failures, missing types, and bundler-specific configuration issues with minimal, surgical changes. MUST BE USED when a React build fails.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

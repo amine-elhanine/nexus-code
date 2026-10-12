@@ -1,0 +1,13 @@
+{
+  "id": "rules-java",
+  "name": "Java Rules",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Java coding rules and conventions.",
+  "capabilities": [
+    "rules"
+  ],
+  "modes": [
+    "code"
+  ]
+}

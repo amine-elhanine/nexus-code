@@ -1,0 +1,13 @@
+{
+  "id": "update-codemaps",
+  "name": "Update Codemaps",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Scan project structure and generate token-lean architecture codemaps.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

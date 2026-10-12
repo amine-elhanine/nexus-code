@@ -1,0 +1,13 @@
+{
+  "id": "gradle-build",
+  "name": "Gradle Build",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Fix Gradle build errors for Android and KMP projects",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

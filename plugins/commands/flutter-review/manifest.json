@@ -1,0 +1,13 @@
+{
+  "id": "flutter-review",
+  "name": "Flutter Review",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Review Flutter/Dart code for idiomatic patterns, widget best practices, state management, performance, accessibility, and security. Invokes the flutter-reviewer agent.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "id": "swift-build-resolver",
+  "name": "Swift Build Resolver",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Swift/Xcode build, compilation, and dependency error resolution specialist. Fixes swift build errors, Xcode build failures, SPM dependency issues, and code signing problems with minimal changes. Use when Swift builds fail.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

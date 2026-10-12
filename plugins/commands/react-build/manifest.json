@@ -1,0 +1,13 @@
+{
+  "id": "react-build",
+  "name": "React Build",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Fix React build failures (Vite, webpack, Next.js, CRA, Parcel, esbuild, Bun) incrementally — JSX/TSX compile errors, hydration mismatches, server/client component boundary failures, missing types. Invokes the react-build-resolver agent for minimal, surgical fixes.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "id": "rules-kotlin",
+  "name": "Kotlin Rules",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Kotlin coding rules and conventions.",
+  "capabilities": [
+    "rules"
+  ],
+  "modes": [
+    "code"
+  ]
+}

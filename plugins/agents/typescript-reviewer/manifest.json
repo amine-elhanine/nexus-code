@@ -1,0 +1,13 @@
+{
+  "id": "typescript-reviewer",
+  "name": "Typescript Reviewer",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Expert TypeScript/JavaScript code reviewer specializing in type safety, async correctness, Node/web security, and idiomatic patterns. Use for all TypeScript and JavaScript code changes. MUST BE USED for TypeScript/JavaScript projects.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

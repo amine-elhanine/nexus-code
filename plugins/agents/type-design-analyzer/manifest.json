@@ -1,0 +1,13 @@
+{
+  "id": "type-design-analyzer",
+  "name": "Type Design Analyzer",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Analyze type design for encapsulation, invariant expression, usefulness, and enforcement.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

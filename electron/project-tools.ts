@@ -31,6 +31,14 @@ export function safePath(projectRoot: string, requested: string) {
 async function walk(root: string, current = root, depth = 0): Promise<string[]> {
   if (depth > 6) return [];
   const entries = await fs.readdir(current, { withFileTypes: true });
+  // Explorer order (VS Code style): folders first, then files, each group
+  // sorted by name. Applied at every level since walk recurses per folder.
+  entries.sort((a, b) => {
+    const aDir = a.isDirectory() ? 0 : 1;
+    const bDir = b.isDirectory() ? 0 : 1;
+    if (aDir !== bDir) return aDir - bDir;
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  });
   const output: string[] = [];
   for (const entry of entries) {
     if (IGNORED.has(entry.name)) continue;

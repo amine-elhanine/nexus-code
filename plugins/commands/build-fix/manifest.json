@@ -1,0 +1,13 @@
+{
+  "id": "build-fix",
+  "name": "Build Fix",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Detect the project build system and incrementally fix build/type errors with minimal safe changes.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

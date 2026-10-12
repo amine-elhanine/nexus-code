@@ -1,0 +1,13 @@
+{
+  "id": "pytorch-build-resolver",
+  "name": "Pytorch Build Resolver",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "PyTorch runtime, CUDA, and training error resolution specialist. Fixes tensor shape mismatches, device errors, gradient issues, DataLoader problems, and mixed precision failures with minimal changes. Use when PyTorch training or inference crashes.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

@@ -62,7 +62,13 @@ export type PluginRegistryEntry = {
   /** Agent modes that may use this plugin ([] / omitted = all modes). */
   modes?: string[];
 };
-export type PluginRegistryConfig = { registryUrl?: string; developerCatalog?: PluginRegistryEntry[] };
+export type PluginRegistryConfig = {
+  registryUrl?: string;
+  developerCatalog?: PluginRegistryEntry[];
+  /** Optional local folder: every subfolder with a manifest.json is listed
+   * automatically without per-plugin registration. */
+  devRoot?: string;
+};
 /** The official catalog lives alongside Nexus source so maintainers can ship
  * plugin bundles and their registry in one GitHub repository. */
 export const DEFAULT_PLUGIN_REGISTRY_URL = "https://raw.githubusercontent.com/amine-elhanine/nexus-code/main/registry.json";
@@ -167,7 +173,13 @@ export function calculateSessionUsage(messages: SessionRecord["messages"]): Agen
   let costKnown = true;
   let estimatedCost = 0;
   for (const message of messages || []) {
-    if (message.usage && message.role === "assistant") {
+    // Assistant turns carry per-turn usage. Failed/cancelled runs persist
+    // their burned tokens on the terminal error event (see main.ts failure
+    // paths) so totals reflect real provider spend, not just successes.
+    const countable =
+      message.usage &&
+      (message.role === "assistant" || (message.role === "event" && (message as { kind?: string }).kind === "error"));
+    if (countable && message.usage) {
       inputTokens += message.usage.inputTokens || 0;
       outputTokens += message.usage.outputTokens || 0;
       totalTokens += message.usage.totalTokens || 0;
@@ -909,13 +921,18 @@ export async function getAppSettings(): Promise<AppSettings> { return { ...(awai
 export async function saveAppSettings(input: AppSettings) { const state = await ensureLoaded(); state.appSettings = { ...state.appSettings, ...input }; await persist(); return state.appSettings; }
 export async function getPluginRegistryConfig(): Promise<PluginRegistryConfig> {
   const value = (await ensureLoaded()).pluginRegistry;
-  return { registryUrl: value?.registryUrl || DEFAULT_PLUGIN_REGISTRY_URL, developerCatalog: [...(value?.developerCatalog || [])] };
+  return {
+    registryUrl: value?.registryUrl || DEFAULT_PLUGIN_REGISTRY_URL,
+    developerCatalog: [...(value?.developerCatalog || [])],
+    ...(typeof value?.devRoot === "string" && value.devRoot.trim() ? { devRoot: value.devRoot.trim() } : {}),
+  };
 }
 export async function savePluginRegistryConfig(input: PluginRegistryConfig): Promise<PluginRegistryConfig> {
   const state = await ensureLoaded();
   state.pluginRegistry = {
     registryUrl: typeof input.registryUrl === "string" && input.registryUrl.trim() ? input.registryUrl.trim() : DEFAULT_PLUGIN_REGISTRY_URL,
     developerCatalog: Array.isArray(input.developerCatalog) ? input.developerCatalog : [],
+    ...(typeof input.devRoot === "string" && input.devRoot.trim() ? { devRoot: input.devRoot.trim() } : {}),
   };
   await persist();
   return state.pluginRegistry;

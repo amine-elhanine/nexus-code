@@ -1,0 +1,13 @@
+{
+  "id": "kotlin-review",
+  "name": "Kotlin Review",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Comprehensive Kotlin code review for idiomatic patterns, null safety, coroutine safety, and security. Invokes the kotlin-reviewer agent.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-import { runProjectAgent, RunCancelledError, clearLastRunCheckpoint, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint, summarizeCompletedSteps, appendEntryLog, PROJECT_MEMORY_RUN_LOG_CAP, SESSION_MEMORY_ENTRY_CAP, SESSION_MEMORY_CHAR_CAP, type AgentMode, type AgentSettings, type AgentEvent, type HistoryInput } from "./agent-service.js";
+import { runProjectAgent, RunCancelledError, clearLastRunCheckpoint, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint, summarizeCompletedSteps, appendEntryLog, PROJECT_MEMORY_RUN_LOG_CAP, SESSION_MEMORY_ENTRY_CAP, SESSION_MEMORY_CHAR_CAP, type AgentMode, type AgentSettings, type AgentEvent, type AgentUsage, type HistoryInput } from "./agent-service.js";
 import { PROVIDERS, fetchRemoteModels } from "./providers.js";
 import {
   appendHomeSessionMessages, appendSessionMessages, createHomeSession, createSession, deleteHomeSession, deleteProject, deleteSession, getHomeMemory, getHomeSession, getProject, getSession,
@@ -991,6 +991,13 @@ app.whenReady().then(async () => {
     if (result.canceled || !result.filePaths[0]) return null;
     return publishLocalPlugin(result.filePaths[0]);
   });
+  // Dev root folder: every subfolder with a manifest.json is listed
+  // automatically (no per-plugin pick). Returns the folder or null.
+  ipcMain.handle("plugins:devroot:pick", async () => {
+    const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+    if (result.canceled || !result.filePaths[0]) return null;
+    return result.filePaths[0];
+  });
   ipcMain.handle("plugins:developer:remove", async (_event, id: string) => {
     await removeMarketplacePlugin(id);
     // Removing a dev entry must not orphan its installed bundle: the bundle
@@ -1538,13 +1545,20 @@ app.whenReady().then(async () => {
         });
       } catch (error) {
         const isCancel = error instanceof RunCancelledError || isCommandRunCancelled(sessionId) || (error as any)?.name === "AbortError";
+        // Tokens burned before a cancel/failure still count: the run helper
+        // stashes finalized usage on the thrown error (see agent-service).
+        const failedUsage = (error as { usage?: AgentUsage })?.usage;
+        const usageText = failedUsage
+          ? `Token usage · ${failedUsage.totalTokens} tokens${failedUsage.estimatedCost == null ? "" : ` (~$${failedUsage.estimatedCost})`}`
+          : null;
         if (isCancel) {
           const stopText = "⏹️ Run stopped by user. Progress has been saved.\n\nSay **continue** to pick up from where I stopped.";
           await appendSessionMessages(projectId, sessionId, [
             ...transcript.items,
-            { role: "assistant", text: stopText, createdAt: new Date().toISOString() },
+            { role: "assistant", text: stopText, createdAt: new Date().toISOString(), ...(failedUsage ? { usage: failedUsage } : {}) },
           ]);
-          emitFor(sessionId, { type: "assistant", text: stopText });
+          emitFor(sessionId, { type: "assistant", text: stopText, ...(failedUsage ? { usage: failedUsage } : {}) });
+          if (failedUsage && usageText) emitFor(sessionId, { type: "usage", text: usageText, usage: failedUsage });
           emitFor(sessionId, { type: "status", text: "Stopped by user. Ready to continue." });
           return stopText;
         }
@@ -1553,9 +1567,10 @@ app.whenReady().then(async () => {
         // the truth after a reload, not just in the live view.
         await appendSessionMessages(projectId, sessionId, [
           ...transcript.items,
-          { role: "event", kind: "error", text: `Agent run failed: ${errorText}`, createdAt: new Date().toISOString() },
+          { role: "event", kind: "error", text: `Agent run failed: ${errorText}`, createdAt: new Date().toISOString(), ...(failedUsage ? { usage: failedUsage } : {}) },
         ]);
         emitFor(sessionId, { type: "error", text: `Agent run failed: ${errorText}` });
+        if (failedUsage && usageText) emitFor(sessionId, { type: "usage", text: usageText, usage: failedUsage });
         throw error;
       }
 
@@ -1660,6 +1675,12 @@ app.whenReady().then(async () => {
       }
 
       await updateHomeSession(sessionId, { model: { providerId: provider.id, model: modelName } });
+
+      // Code parity (agent:run): name the chat after the first sent message
+      // while it still has the default title — later user renames stick.
+      if (session.title === "New chat" && payload.request?.trim()) {
+        await updateHomeSession(sessionId, { title: payload.request.trim().slice(0, 60) });
+      }
 
       const history: HistoryInput[] = (session.messages || []).map((message) => {
         if (message.role === "event") {
@@ -1805,13 +1826,18 @@ app.whenReady().then(async () => {
         });
       } catch (error) {
         const isCancel = error instanceof RunCancelledError || isCommandRunCancelled(sessionId) || (error as any)?.name === "AbortError";
+        const failedUsage = (error as { usage?: AgentUsage })?.usage;
+        const usageText = failedUsage
+          ? `Token usage · ${failedUsage.totalTokens} tokens${failedUsage.estimatedCost == null ? "" : ` (~$${failedUsage.estimatedCost})`}`
+          : null;
         if (isCancel) {
           const stopText = "⏹️ Run stopped by user. Progress has been saved.\n\nSay **continue** to pick up from where I stopped.";
           await appendHomeSessionMessages(sessionId, [
             ...transcript.items,
-            { role: "assistant", text: stopText, createdAt: new Date().toISOString() },
+            { role: "assistant", text: stopText, createdAt: new Date().toISOString(), ...(failedUsage ? { usage: failedUsage } : {}) },
           ]);
-          emitFor(sessionId, { type: "assistant", text: stopText });
+          emitFor(sessionId, { type: "assistant", text: stopText, ...(failedUsage ? { usage: failedUsage } : {}) });
+          if (failedUsage && usageText) emitFor(sessionId, { type: "usage", text: usageText, usage: failedUsage });
           emitFor(sessionId, { type: "status", text: "Stopped by user. Ready to continue." });
           return stopText;
         }
@@ -1822,9 +1848,10 @@ app.whenReady().then(async () => {
           : errorText;
         await appendHomeSessionMessages(sessionId, [
           ...transcript.items,
-          { role: "event", kind: "error", text: `Home run failed: ${userError}`, createdAt: new Date().toISOString() },
+          { role: "event", kind: "error", text: `Home run failed: ${userError}`, createdAt: new Date().toISOString(), ...(failedUsage ? { usage: failedUsage } : {}) },
         ]);
         emitFor(sessionId, { type: "error", text: `Home run failed: ${userError}` });
+        if (failedUsage && usageText) emitFor(sessionId, { type: "usage", text: usageText, usage: failedUsage });
         throw error;
       }
 

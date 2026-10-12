@@ -1,0 +1,10 @@
+{
+  "id": "agent-self-evaluation",
+  "name": "Agent Self Evaluation",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Use after completing any non-trivial task. The agent self-rates its output on 5 axes — accuracy, completeness, clarity, actionability, conciseness — with concrete evidence per criterion. Produces a structured 1-5 scorecard with specific improvement suggestions.",
+  "capabilities": [
+    "skills"
+  ]
+}

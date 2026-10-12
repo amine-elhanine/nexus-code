@@ -1,0 +1,13 @@
+{
+  "id": "pr-test-analyzer",
+  "name": "Pr Test Analyzer",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Review pull request test coverage quality and completeness, with emphasis on behavioral coverage and real bug prevention.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

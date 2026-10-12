@@ -1,0 +1,13 @@
+{
+  "id": "rules-fsharp",
+  "name": "Fsharp Rules",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Fsharp coding rules and conventions.",
+  "capabilities": [
+    "rules"
+  ],
+  "modes": [
+    "code"
+  ]
+}

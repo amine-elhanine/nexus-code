@@ -1,7 +1,7 @@
 // Unit tests for loopPreventionMiddleware in agent-service
 import assert from "node:assert/strict";
 import { ToolMessage } from "@langchain/core/messages";
-import { loopPreventionMiddleware, loadedSkillNamesFromMessages, shouldSkipMcpForTask } from "../dist-electron/agent-service.js";
+import { loopPreventionMiddleware, resolveResearchBudget, RESEARCH_BUDGET_BASE, RESEARCH_BUDGET_WITH_RESEARCH, loadedSkillNamesFromMessages, shouldSkipMcpForTask } from "../dist-electron/agent-service.js";
 
 let passed = 0;
 let failed = 0;
@@ -168,6 +168,94 @@ await test("shouldSkipMcpForTask drops MCP only for pure doc builds", () => {
   assert.equal(shouldSkipMcpForTask("Research the web for transformer papers and write a report"), false);
   assert.equal(shouldSkipMcpForTask("list me my github repos"), false);
   assert.equal(shouldSkipMcpForTask("Fix the login bug in src/auth.ts"), false);
+});
+
+await test("research budget adapts to needsResearch; non-deliverables unbudgeted", async () => {
+  assert.equal(RESEARCH_BUDGET_BASE, 8);
+  assert.equal(RESEARCH_BUDGET_WITH_RESEARCH, 20);
+  assert.equal(resolveResearchBudget({ outputRequired: true }), 8);
+  assert.equal(resolveResearchBudget({ outputRequired: true, needsResearch: true }), 20);
+  assert.equal(resolveResearchBudget({ outputRequired: false, needsResearch: true }), null);
+
+  const runToBlock = async (opts, max = 25) => {
+    const middleware = loopPreventionMiddleware({ general: true, outputRequired: true, ...opts });
+    const handler = async () => new ToolMessage({ content: "ok", tool_call_id: "x", name: "web_search" });
+    for (let i = 1; i <= max; i++) {
+      const res = await middleware.wrapToolCall(
+        { toolCall: { name: "web_search", args: { query: `q${i}` }, id: `c${i}` }, tool: { name: "web_search" } },
+        handler
+      );
+      if (String(res.content).includes("SUPERVISOR INTERVENTION")) return i;
+    }
+    return 0;
+  };
+  assert.equal(await runToBlock({}), 9, "base budget blocks on 9th lookup");
+  assert.equal(await runToBlock({ needsResearch: true }), 21, "research tasks get a larger budget");
+});
+
+await test("browser_act clicks don't consume research budget; navigate does", async () => {
+  const middleware = loopPreventionMiddleware({ general: true, outputRequired: true });
+  const handler = async () => new ToolMessage({ content: "ok", tool_call_id: "x", name: "browser_act" });
+  for (let i = 1; i <= 3; i++) {
+    const res = await middleware.wrapToolCall(
+      { toolCall: { name: "browser_act", args: { action: "click", target: "e3" }, id: `k${i}` }, tool: { name: "browser_act" } },
+      handler
+    );
+    assert.ok(!String(res.content).includes("SUPERVISOR INTERVENTION"), "interaction is not research");
+  }
+  const nav = await middleware.wrapToolCall(
+    { toolCall: { name: "browser_act", args: { action: "navigate", url: "https://example.com" }, id: "n1" }, tool: { name: "browser_act" } },
+    handler
+  );
+  assert.ok(!String(nav.content).includes("SUPERVISOR INTERVENTION"), "first navigate still allowed");
+});
+
+await test("repeated research target is steered then banned per-link; run continues on other sources", async () => {
+  const middleware = loopPreventionMiddleware({});
+  let execs = 0;
+  const handler = async () => {
+    execs++;
+    return new ToolMessage({ content: "page body", tool_call_id: "x", name: "browser_fetch_api" });
+  };
+  const call = (url, id) => middleware.wrapToolCall(
+    { toolCall: { name: "browser_fetch_api", args: { url }, id }, tool: { name: "browser_fetch_api" } },
+    handler
+  );
+  const first = await call("https://docs.langchain.com/guide", "a1");
+  assert.equal(execs, 1);
+  assert.ok(!String(first.content).includes("already fetched"));
+  // Same link, different spelling (case/trailing slash) still detected.
+  const second = await call("https://docs.langchain.com/guide/", "a2");
+  assert.equal(execs, 2);
+  assert.ok(String(second.content).includes("already fetched"));
+  const third = await call("https://DOCS.langchain.com/guide#frag", "a3");
+  assert.equal(execs, 2, "banned target never executes");
+  assert.ok(String(third.content).includes("BANNED"));
+  assert.ok(String(third.content).includes("different source"));
+  // Other plan items are unaffected.
+  const other = await call("https://docs.langgraph.com/guide", "a4");
+  assert.equal(execs, 3);
+  assert.ok(!String(other.content).includes("BANNED"));
+});
+
+await test("repeated web_search query is steered; banned calls don't consume budget", async () => {
+  const middleware = loopPreventionMiddleware({ general: true, outputRequired: true });
+  let execs = 0;
+  const handler = async () => {
+    execs++;
+    return new ToolMessage({ content: "results", tool_call_id: "x", name: "web_search" });
+  };
+  const query = (q, id) => middleware.wrapToolCall(
+    { toolCall: { name: "web_search", args: { query: q }, id }, tool: { name: "web_search" } },
+    handler
+  );
+  await query("langchain docs", "q1");
+  const second = await query("  LANGCHAIN docs ", "q2");
+  assert.equal(execs, 2);
+  assert.ok(String(second.content).includes("already fetched"));
+  const third = await query("langchain docs", "q3");
+  assert.equal(execs, 2, "banned query never executes");
+  assert.ok(String(third.content).includes("BANNED"));
 });
 
 console.log(`\nSummary: ${passed} passed, ${failed} failed.`);

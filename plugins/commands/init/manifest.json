@@ -1,0 +1,13 @@
+{
+  "id": "init",
+  "name": "Init",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Initialize project memory — analyze the repo and write/update AGENTS.md",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}
