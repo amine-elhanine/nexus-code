@@ -19,7 +19,7 @@ Windows 10 / 11 (NSIS + Portable) · macOS & Linux configurable
 ![License](https://img.shields.io/badge/license-All_Rights_Reserved-lightgrey)
 
 **[Download the latest release](https://github.com/amine-elhanine/nexus/releases/latest)** ·
-**[Landing page](landing_page/index.html)** ·
+**[Landing page](https://amine-elhanine.github.io/nexus/)** ·
 **[Changelog](CHANGELOG.md)**
 
 </div>

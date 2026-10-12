@@ -11,6 +11,8 @@ import { createMiddleware } from "langchain";
 import { ToolMessage } from "@langchain/core/messages";
 import { scrubSecretEnv } from "./child-env.js";
 import { pluginHookFilesWithModes, type PluginMode } from "./plugins-service.js";
+import { evaluatePolicyHooks, emitPluginEvent, listenerCount } from "./plugin-events.js";
+import { listCapabilities } from "./capability-registry.js";
 
 export type HookEventName = "run:start" | "run:end" | "tool:before" | "tool:after" | "verify:fail";
 
@@ -137,33 +139,46 @@ export async function dispatchHook(projectRoot: string, hook: HookConfig, payloa
 }
 
 /** Fans an event out to every hook registered for it, in order. Denials are
- *  only meaningful for tool:before; every other event ignores outcomes. */
+ *  only meaningful for tool:before; every other event ignores outcomes.
+ *
+ *  SECURITY: denials are monotonic — if ANY matching hook fails (non-zero
+ *  exit, timeout, or spawn error), the aggregated outcome is a denial and a
+ *  later successful hook can NEVER override it. Returns the FIRST denial
+ *  (owner of the decision) so audit records point at the right hook. */
 export async function dispatchHooks(projectRoot: string, hooks: HookConfig[], event: HookEventName, payload: Record<string, unknown>): Promise<HookOutcome | null> {
   const matching = hooks.filter((hook) => hook.event === event);
   let last: HookOutcome | null = null;
+  let firstDenial: HookOutcome | null = null;
   for (const hook of matching) {
-    last = await dispatchHook(projectRoot, hook, payload).catch((error) => ({
+    const outcome = await dispatchHook(projectRoot, hook, payload).catch((error) => ({
       ok: false,
       exitCode: null,
       output: error instanceof Error ? error.message : String(error),
       timedOut: false,
     }));
+    last = outcome;
+    if (!outcome.ok && !firstDenial) firstDenial = outcome;
   }
+  if ((event === "run:start" || event === "run:end" || event === "tool:after") && listenerCount(event) > 0) {
+    await emitPluginEvent(event, { ...payload, projectRoot }).catch(() => undefined);
+  }
+  // Monotonic denial wins over later success.
+  if (firstDenial) return firstDenial;
   return last;
 }
 
 /**
  * LangChain middleware running tool:before (deny-capable) and tool:after
- * hooks around every tool call. Returns null when there are no hooks so the
- * run pays nothing. The deny path mirrors loopPreventionMiddleware: a
- * synthetic error ToolMessage replaces the call, with the hook's output as
- * the reason the model can act on.
+ * hooks around every tool call (both declarative hooks.json shell hooks and
+ * executable SDK plugin listeners). Returns null when there are no hooks or
+ * plugin tool listeners so the run pays nothing.
  */
 export function createHooksMiddleware(options: { projectRoot: string; hooks: HookConfig[]; runId?: string }) {
   const { projectRoot, hooks, runId } = options;
   const before = hooks.filter((hook) => hook.event === "tool:before");
   const after = hooks.filter((hook) => hook.event === "tool:after");
-  if (!before.length && !after.length) return null;
+  const hasPluginToolListeners = listenerCount("tool:before") > 0 || listenerCount("tool:after") > 0;
+  if (!before.length && !after.length && !hasPluginToolListeners) return null;
 
   return createMiddleware({
     name: "hooksMiddleware",
@@ -171,6 +186,7 @@ export function createHooksMiddleware(options: { projectRoot: string; hooks: Hoo
       const toolName = String(request?.tool?.name ?? request?.toolCall?.name ?? "");
       const args = request?.toolCall?.args ?? {};
       const toolCallId = String(request?.toolCall?.id ?? "");
+      const isPluginOwnedTool = toolName.startsWith("plugin_") || listCapabilities({ kind: "tool" }).some((c) => c.id === toolName || c.name === toolName);
 
       if (before.length) {
         const outcome = await dispatchHooks(projectRoot, before, "tool:before", { tool: toolName, args, runId });
@@ -184,10 +200,26 @@ export function createHooksMiddleware(options: { projectRoot: string; hooks: Hoo
         }
       }
 
+      // Executable SDK plugin policy hooks for built-in/MCP tools (plugin-owned
+      // tools already evaluate policy hooks inside executePluginTool).
+      if (!isPluginOwnedTool && listenerCount("tool:before") > 0) {
+        const policy = await evaluatePolicyHooks("tool:before", { tool: toolName, args, runId, projectRoot });
+        if (!policy.allowed) {
+          return new ToolMessage({
+            tool_call_id: toolCallId,
+            name: toolName,
+            status: "error",
+            content: `[HOOK DENIED] The tool call '${toolName}' was blocked by plugin '${policy.deniedBy ?? "unknown"}': ${policy.reason || "denied by policy hook"}.`,
+          });
+        }
+      }
+
       const result = await handler(request);
 
       if (after.length) {
         await dispatchHooks(projectRoot, after, "tool:after", { tool: toolName, args, runId }).catch(() => undefined);
+      } else if (!isPluginOwnedTool && listenerCount("tool:after") > 0) {
+        await emitPluginEvent("tool:after", { tool: toolName, args, runId, projectRoot, ok: true }).catch(() => undefined);
       }
       return result;
     },

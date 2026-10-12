@@ -1,0 +1,13 @@
+{
+  "id": "calendar",
+  "name": "Calendar",
+  "version": "1.0.0",
+  "apiVersion": "1",
+  "description": "Sample calendar: month-view popup backed by its own tools (list_events, add_event).",
+  "capabilities": ["tools", "ui"],
+  "modes": ["home", "code"],
+  "permissions": [],
+  "entry": "./dist/index.js",
+  "dependencies": {},
+  "ui": [{ "slot": "modal", "title": "Calendar", "entry": "./ui/calendar.html" }]
+}

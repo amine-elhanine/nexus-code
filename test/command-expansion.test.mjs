@@ -17,11 +17,21 @@ test("placeholders: {{input}} and $ARGUMENTS both expand", () => {
   assert.equal(substituteCommandPlaceholders("Review {{activeFile}}", { activeFile: "src/app.ts" }), "Review src/app.ts");
 });
 
-test("expandSlashCommand: bundled command expands with its input", async () => {
-  const expanded = await expandSlashCommand("/code-review PR 42");
-  assert.ok(expanded.includes("Code Review"), "should expand to the code-review template");
-  assert.ok(expanded.includes("PR 42"), "the text after the command becomes $ARGUMENTS/{{input}}");
-  assert.ok(!expanded.includes("$ARGUMENTS"), "placeholder must not survive expansion");
+test("expandSlashCommand: installed plugin command expands with input", async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-cmd-"));
+  try {
+    const cmdDir = path.join(tmp, ".nexus", "plugins", "code-review", "commands");
+    await fs.mkdir(cmdDir, { recursive: true });
+    await fs.writeFile(
+      path.join(cmdDir, "code-review.md"),
+      "---\nname: Code Review\n---\nRun code review on: {{input}}"
+    );
+    const expanded = await expandSlashCommand("/code-review PR 42", tmp);
+    assert.ok(expanded.includes("Run code review on: PR 42"), "should expand to the plugin command template");
+    assert.ok(!expanded.includes("{{input}}"), "placeholder must not survive expansion");
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
 });
 
 test("expandSlashCommand: builtin command with {{input}}", async () => {

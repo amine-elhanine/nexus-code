@@ -3,7 +3,7 @@
 // hooks.json. Nothing else is required — every subsystem (skills, hooks)
 // picks plugins up automatically. Marketplace installs stage a complete
 // bundle before atomically replacing a previous version.
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import JSZip from "jszip";
@@ -159,6 +159,24 @@ export function detectPluginCapabilities(pluginDir: string): string[] {
     if (existsSync(path.join(pluginDir, "commands"))) caps.push("commands");
     if (existsSync(path.join(pluginDir, "rules"))) caps.push("rules");
     if (existsSync(path.join(pluginDir, "hooks.json"))) caps.push("hooks");
+    const manifestPath = path.join(pluginDir, "manifest.json");
+    if (existsSync(manifestPath)) {
+      const raw = JSON.parse(readFileSync(manifestPath, "utf8"));
+      const contrib = raw && typeof raw === "object" && raw.contributes && typeof raw.contributes === "object" ? raw.contributes : null;
+      if (contrib) {
+        if (Array.isArray(contrib.tools) && contrib.tools.length > 0 && !caps.includes("tools")) caps.push("tools");
+        if (Array.isArray(contrib.providers) && contrib.providers.length > 0 && !caps.includes("providers")) caps.push("providers");
+        if (Array.isArray(contrib.commands) && contrib.commands.length > 0 && !caps.includes("commands")) caps.push("commands");
+        if (Array.isArray(contrib.hooks) && contrib.hooks.length > 0 && !caps.includes("hooks")) caps.push("hooks");
+        if (
+          (Array.isArray(contrib.panels) && contrib.panels.length > 0) ||
+          (Array.isArray(contrib.statusBar) && contrib.statusBar.length > 0) ||
+          (Array.isArray(contrib.composerActions) && contrib.composerActions.length > 0)
+        ) {
+          if (!caps.includes("ui")) caps.push("ui");
+        }
+      }
+    }
   } catch { /* ignore */ }
   return caps;
 }
@@ -237,8 +255,8 @@ export async function entryFromFolder(dir: string): Promise<PluginRegistryEntry 
 }
 
 /** Capability section folders of the shared/local plugin library layout:
- * plugins/skills/<skill>/, plugins/agents/<agent>/, … */
-export const PLUGIN_SECTION_FOLDERS = ["skills", "agents", "commands", "rules", "hooks"];
+ * plugins/skills/<skill>/, plugins/agents/<agent>/, plugins/examples/<example>/, … */
+export const PLUGIN_SECTION_FOLDERS = ["skills", "agents", "commands", "rules", "hooks", "examples"];
 
 /** Lists every plugin bundle found under a root folder.
  * Supports both layouts: classic bundles (plugins/<id>/ with a manifest) and
@@ -299,24 +317,49 @@ async function copyBundle(source: string, target: string) {
   await fs.cp(source, target, { recursive: true, force: true, filter: (file) => !path.basename(file).startsWith(".") || path.basename(file) === ".nexusignore" });
 }
 
+export const MAX_PLUGIN_ARCHIVE_FILES = 500;
+export const MAX_PLUGIN_ARCHIVE_BYTES = 50 * 1024 * 1024; // 50MB expanded
+export const MAX_PLUGIN_ARCHIVE_DOWNLOAD_BYTES = 25 * 1024 * 1024; // 25MB download
+
 async function extractZip(source: string, target: string) {
   const response = await fetch(source, { signal: AbortSignal.timeout(30_000) });
   if (!response.ok) throw new Error(`Plugin download failed (${response.status}).`);
-  const zip = await JSZip.loadAsync(await response.arrayBuffer());
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (Number.isFinite(contentLength) && contentLength > MAX_PLUGIN_ARCHIVE_DOWNLOAD_BYTES) {
+    throw new Error(`Plugin archive too large (${contentLength} bytes, max ${MAX_PLUGIN_ARCHIVE_DOWNLOAD_BYTES}).`);
+  }
+  const buffer = await response.arrayBuffer();
+  if (buffer.byteLength > MAX_PLUGIN_ARCHIVE_DOWNLOAD_BYTES) {
+    throw new Error(`Plugin archive too large (${buffer.byteLength} bytes, max ${MAX_PLUGIN_ARCHIVE_DOWNLOAD_BYTES}).`);
+  }
+  const zip = await JSZip.loadAsync(buffer);
   const names = Object.keys(zip.files).filter((name) => !zip.files[name]?.dir);
+  if (names.length > MAX_PLUGIN_ARCHIVE_FILES) {
+    throw new Error(`Plugin archive has too many files (${names.length}, max ${MAX_PLUGIN_ARCHIVE_FILES}).`);
+  }
   // A bundle may be rooted at manifest.json or wrapped in one folder.
   const wrapper = names.find((name) => /^([^/]+)\/manifest\.json$/i.test(name))?.split("/")[0];
   const hasRootManifest = names.some((name) => name === "manifest.json");
+  let expandedBytes = 0;
   for (const [name, file] of Object.entries(zip.files)) {
     if (file.dir) continue;
     const normalized = path.posix.normalize(name).replace(/^\/+/, "");
     if (!normalized || normalized.startsWith("..") || path.isAbsolute(normalized)) throw new Error("Plugin archive contains an unsafe path.");
+    // Reject absolute Windows paths and drive letters smuggled into zip names.
+    if (/^[a-zA-Z]:[\\/]/.test(name) || name.includes("\\\\")) throw new Error("Plugin archive contains an unsafe path.");
     const parts = normalized.split("/");
+    if (parts.some((part) => part === "..")) throw new Error("Plugin archive contains an unsafe path.");
     const relative = !hasRootManifest && wrapper && parts[0] === wrapper ? parts.slice(1) : parts;
+    if (relative.length === 0) throw new Error("Plugin archive contains an unsafe path.");
     const output = path.join(target, ...relative);
     if (!path.resolve(output).startsWith(path.resolve(target) + path.sep)) throw new Error("Plugin archive escapes its destination.");
+    const data = await file.async("nodebuffer");
+    expandedBytes += data.byteLength;
+    if (expandedBytes > MAX_PLUGIN_ARCHIVE_BYTES) {
+      throw new Error(`Plugin archive expands beyond ${MAX_PLUGIN_ARCHIVE_BYTES} bytes (zip bomb protection).`);
+    }
     await fs.mkdir(path.dirname(output), { recursive: true });
-    await fs.writeFile(output, await file.async("nodebuffer"));
+    await fs.writeFile(output, data);
   }
 }
 
@@ -341,6 +384,11 @@ export async function installMarketplacePlugin(projectRoot: string, entry: Plugi
   const target = path.join(root, normalized.id);
   await fs.mkdir(root, { recursive: true });
   const staging = `${target}.installing-${Date.now().toString(36)}`;
+  // Rollback-safe update: keep the last working install aside until the new
+  // bundle is fully validated + swapped in. An interrupted update must never
+  // destroy the previous version.
+  const backup = `${target}.backup-${Date.now().toString(36)}`;
+  const hadPrevious = existsSync(target);
   try {
     if (isHttps) await extractZip(normalized.source, staging);
     else await copyBundle(normalized.source, staging);
@@ -359,24 +407,61 @@ export async function installMarketplacePlugin(projectRoot: string, entry: Plugi
       if (stagedId !== normalized.id) {
         throw new Error(`Plugin bundle id "${stagedId}" does not match listing "${normalized.id}".`);
       }
+      // Strict v2 check for executable plugins: entry/permissions/modes must
+      // validate BEFORE the old install is touched. v1 declarative bundles
+      // (no entry/apiVersion) keep the legacy tolerant path.
+      const needsStrict = typeof (staged as { entry?: unknown }).entry === "string" || typeof (staged as { apiVersion?: unknown }).apiVersion === "string";
+      if (needsStrict) {
+        const { validatePluginManifest } = await import("./plugin-manifest.js");
+        const validated = validatePluginManifest(staged);
+        if (!validated.ok) {
+          throw new Error(`Plugin manifest invalid: ${validated.errors.map((e) => `${e.field || "manifest"}: ${e.message}`).join("; ")}`);
+        }
+      }
     } catch (error) {
-      if (error instanceof Error && error.message.startsWith("Plugin bundle id")) throw error;
+      if (error instanceof Error && (error.message.startsWith("Plugin bundle id") || error.message.startsWith("Plugin manifest invalid"))) throw error;
       throw new Error("Plugin bundle has an invalid manifest.json.");
     }
-    await fs.rm(target, { recursive: true, force: true });
-    try {
-      await fs.rename(staging, target);
-    } catch (error: unknown) {
-      // Windows can reject a directory rename in protected/synced locations
-      // even after the destination is removed. The staged bundle has already
-      // passed validation, so copying it is a safe compatibility fallback.
-      const code = error && typeof error === "object" && "code" in error ? (error as { code?: string }).code : "";
-      if (code !== "EPERM" && code !== "EXDEV") throw error;
-      await fs.cp(staging, target, { recursive: true, force: true });
-      await fs.rm(staging, { recursive: true, force: true });
+    if (hadPrevious) {
+      try {
+        await fs.rename(target, backup);
+      } catch {
+        // If the backup move fails, abort before touching the live install.
+        throw new Error("Could not stage the previous installation for rollback; update aborted safely.");
+      }
     }
+    try {
+      try {
+        await fs.rename(staging, target);
+      } catch (error: unknown) {
+        // Windows can reject a directory rename in protected/synced locations
+        // even after the destination is removed. The staged bundle has already
+        // passed validation, so copying it is a safe compatibility fallback.
+        const code = error && typeof error === "object" && "code" in error ? (error as { code?: string }).code : "";
+        if (code !== "EPERM" && code !== "EXDEV") throw error;
+        await fs.cp(staging, target, { recursive: true, force: true });
+        await fs.rm(staging, { recursive: true, force: true });
+      }
+    } catch (error) {
+      // Restore the last working install on swap failure.
+      if (hadPrevious && existsSync(backup)) {
+        await fs.rm(target, { recursive: true, force: true }).catch(() => undefined);
+        await fs.rename(backup, target).catch(() => undefined);
+      }
+      throw error;
+    }
+    // Swap succeeded: drop the backup + any staging residue.
+    if (hadPrevious) await fs.rm(backup, { recursive: true, force: true }).catch(() => undefined);
+    await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
   } catch (error) {
     await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
+    // If we never swapped, a leftover backup means the move-aside succeeded
+    // but validation failed — restore it so the old version survives.
+    if (hadPrevious && existsSync(backup) && !existsSync(target)) {
+      await fs.rename(backup, target).catch(() => undefined);
+    } else if (hadPrevious && existsSync(backup) && existsSync(target)) {
+      await fs.rm(backup, { recursive: true, force: true }).catch(() => undefined);
+    }
     throw error;
   }
   const installed = (await discoverPlugins(projectRoot)).find((plugin) => plugin.dir === target);

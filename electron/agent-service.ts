@@ -21,6 +21,9 @@ import { getMcpTools } from "./mcp-service.js";
 import { getHooksConfig, getRulesConfig, getSkillsConfig } from "./store.js";
 import { createHooksMiddleware, dispatchHooks, discoverHooks } from "./hooks-service.js";
 import { GLOBAL_SKILLS_ROUTE, PROJECT_SKILLS_DIR, SKILL_SOURCE_PRIORITY, SYSTEM_SKILLS_ROUTE, buildSkillMounts, createSkillFilesTool, filterSkillsByMcp, globalSkillsDir, listSkills, listSystemSkills, recommendSkills, skillAppliesToMode, skillDirVirtualPath, skillVirtualPath, systemSkillsDir, type SkillInfo, type SkillMode } from "./skills-service.js";
+import { createPluginAgentTools } from "./tool-executor.js";
+import { collectDynamicPluginContext } from "./plugin-lifecycle.js";
+import type { PluginMode } from "./plugin-manifest.js";
 import { compactHistory, compactHistoryWithModel, estimateTokens, StreamUsageTracker } from "./context-service.js";
 import { saveArtifact, type ArtifactItem } from "./artifacts-service.js";
 import { TrajectoryLogger } from "./trajectory-service.js";
@@ -679,7 +682,7 @@ export async function runProjectAgent(options: {
   const hooks = (await getHooksConfig().catch(() => ({ enabled: true }))).enabled
     ? await discoverHooks(projectRoot, skillsMode).catch(() => [])
     : [];
-  const hooksMiddleware = hooks.length ? createHooksMiddleware({ projectRoot, hooks, runId: sessionId }) : null;
+  const hooksMiddleware = createHooksMiddleware({ projectRoot, hooks, runId: sessionId });
 
   const allCodeTools = createCodeIntelligenceTools(projectRoot);
   const wantsBrowser = isWebTask(request);
@@ -845,6 +848,36 @@ export async function runProjectAgent(options: {
         ]
       : [];
 
+  const activePluginMode: PluginMode = (skillsMode as PluginMode) || (isGeneral ? "home" : "code");
+  const pluginTools = createPluginAgentTools({
+    mode: activePluginMode,
+    runId: sessionId,
+    projectRoot,
+    signal,
+    requestApproval: async (summary: string) => {
+      const decision = await requestCommandApproval({
+        runId: sessionId,
+        approvalKey: `plugin-tool:${summary}`,
+        command: summary,
+        cwd: projectRoot,
+        reason: `A plugin requested execution of sensitive tool: ${summary}`,
+      });
+      return decision !== "deny";
+    },
+  });
+
+  if (pluginTools.length > 0) {
+    const names = pluginTools.map((t: any) => t?.name).filter(Boolean);
+    const shown = names.slice(0, 10).join(", ");
+    const extra = names.length > 10 ? ` (+${names.length - 10} more)` : "";
+    emit("status", `Loaded ${pluginTools.length} plugin tool${pluginTools.length === 1 ? "" : "s"}: ${shown}${extra}`);
+  }
+
+  const dynamicPluginContext = await collectDynamicPluginContext({
+    mode: activePluginMode,
+    projectRoot,
+  }).catch(() => "");
+
   const deepAgent = await createDeepAgent({
     model: llm,
     backend: compositeBackend as any,
@@ -855,8 +888,8 @@ export async function runProjectAgent(options: {
       ...(hooksMiddleware ? [hooksMiddleware] : []),
     ],
     tools: isSimple
-      ? [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...homeMemoryTool, ...projectMemoryTool, ...mcpTools]
-      : [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...homeMemoryTool, ...projectMemoryTool, ...(assetsEnabled("agents") ? [subagentTool] : []), ...mcpTools],
+      ? [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...homeMemoryTool, ...projectMemoryTool, ...mcpTools, ...pluginTools]
+      : [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...homeMemoryTool, ...projectMemoryTool, ...(assetsEnabled("agents") ? [subagentTool] : []), ...mcpTools, ...pluginTools],
     skills: skillDirs,
     // Relevance-ranked memory for the prompt: profile/preferences always in,
     // facts and recent activity filtered to the current request so unrelated
@@ -879,7 +912,8 @@ export async function runProjectAgent(options: {
       // Full role catalog only where delegate_task is actually bound — simple
       // runs drop the tool, Home runs never mention delegation.
       assetsEnabled("agents") && !isGeneral && effectiveComplexity !== "simple" ? buildSubagentCatalog(projectRoot) : "",
-      projectInstructions.section
+      projectInstructions.section,
+      dynamicPluginContext
     ),
   });
 
@@ -1294,11 +1328,9 @@ export async function runProjectAgent(options: {
   emit("status", briefMsg);
   if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: briefMsg });
 
-  if (hooks.length) {
-    const startOutcome = await dispatchHooks(projectRoot, hooks, "run:start", { request, mode, projectRoot, runId: sessionId }).catch(() => null);
-    if (startOutcome && !startOutcome.ok) {
-      emit("status", `run:start hook failed (exit ${startOutcome.exitCode ?? "timeout"}): ${startOutcome.output.slice(0, 200)}`);
-    }
+  const startOutcome = await dispatchHooks(projectRoot, hooks, "run:start", { request, mode, projectRoot, runId: sessionId }).catch(() => null);
+  if (startOutcome && !startOutcome.ok) {
+    emit("status", `run:start hook failed (exit ${startOutcome.exitCode ?? "timeout"}): ${startOutcome.output.slice(0, 200)}`);
   }
 
   const graph = new StateGraph(AgentState as any)
@@ -1823,7 +1855,7 @@ export async function runProjectAgent(options: {
       emit("error", retryIsDoom ? `Stuck repeating ${doomTool} — stopped to avoid an infinite loop after ${toolCallCount} tool calls. Say "continue" to resume differently.` : `Step budget exhausted after ${budgetExtensions} automatic extension${budgetExtensions === 1 ? "" : "s"} (${outerLimit} graph steps; ${toolCallCount} tool calls). Progress saved — say "continue" to resume.`);
       if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: retryIsDoom ? `Doom-loop breaker fired on ${doomTool}; checkpoint saved for resume.` : `Recursion limit hit at ${outerLimit} after ${budgetExtensions} extensions; checkpoint saved for resume.` });
       const partialUsage = usage.finalize(modelName, estimatedFallbackInputTokens, 0);
-      if (hooks.length) void dispatchHooks(projectRoot, hooks, "run:end", { request, mode, projectRoot, runId: sessionId, verification: "interrupted" }).catch(() => undefined);
+      void dispatchHooks(projectRoot, hooks, "run:end", { request, mode, projectRoot, runId: sessionId, verification: "interrupted" }).catch(() => undefined);
       return {
         response: partial,
         verification: "interrupted",
@@ -1976,14 +2008,12 @@ export async function runProjectAgent(options: {
   emit("assistant", result.response, undefined, finalUsage);
   emit("usage", `Token usage · ${finalUsage.totalTokens} tokens${finalUsage.estimatedCost == null ? "" : ` (~$${finalUsage.estimatedCost})`}`, undefined, finalUsage);
 
-  if (hooks.length) {
-    const hookEvent = result?.verification === "failed" ? "verify:fail" : "run:end";
-    void dispatchHooks(projectRoot, hooks, hookEvent, {
-      request, mode, projectRoot, runId: sessionId,
-      verification: result?.verification ?? "none",
-      response: tail(String(result?.response ?? ""), 2000),
-    }).catch(() => undefined);
-  }
+  const hookEvent = result?.verification === "failed" ? "verify:fail" : "run:end";
+  void dispatchHooks(projectRoot, hooks, hookEvent, {
+    request, mode, projectRoot, runId: sessionId,
+    verification: result?.verification ?? "none",
+    response: tail(String(result?.response ?? ""), 2000),
+  }).catch(() => undefined);
 
   if (trajectory) {
     await trajectory.log({ source: "MODEL", type: "PLANNER_RESPONSE", content: result.response, usage: finalUsage });

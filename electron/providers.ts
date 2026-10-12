@@ -112,6 +112,23 @@ export async function createChatModel(config: ProviderConfig, modelName: string)
       ...(zenHeaders ? { clientOptions: { defaultHeaders: zenHeaders } } : {}),
     });
   }
+  try {
+    const { getRegisteredProvider } = await import("./provider-registry.js");
+    const registered = getRegisteredProvider(provider);
+    if (registered && registered.owner !== "builtin") {
+      const baseUrl = (config.baseUrl || (registered.definition as { defaultBaseUrl?: string }).defaultBaseUrl || "").trim();
+      if (!baseUrl) throw new Error(`Provider "${registered.id}" needs a base URL.`);
+      return new ChatOpenAI({
+        apiKey: key || "not-needed",
+        model: modelName,
+        temperature: 0.1,
+        configuration: { baseURL: baseUrl },
+      });
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("needs a base URL")) throw err;
+  }
+
   if (provider === "custom") {
     if (!config.baseUrl) throw new Error("Custom providers need a base URL (for example http://127.0.0.1:1234/v1). Edit the provider to add one.");
     return new ChatOpenAI({ apiKey: key || "not-needed", model: modelName, temperature: 0.1, configuration: { baseURL: config.baseUrl, ...(zenHeaders ? { defaultHeaders: zenHeaders } : {}) } });

@@ -87,6 +87,13 @@ export interface NexusApi {
   removePublishedPlugin: (id: string) => Promise<void>;
   installPlugin: (entry: unknown) => Promise<unknown>;
   uninstallPlugin: (id: string) => Promise<void>;
+  validatePluginManifest: (manifest: unknown) => Promise<{ ok: boolean; manifest?: Record<string, unknown>; errors?: Array<{ field: string; message: string }> }>;
+  listExecutablePlugins: () => Promise<Array<{ id: string; dir: string; status: string; error?: string; capabilities: string[]; grantedPermissions: string[]; manifest?: { id: string; name: string; version: string; apiVersion: string; description: string; capabilities: string[]; modes?: string[]; modesImplicit: boolean; permissions: string[]; ui: Array<{ slot: string; title: string; entry?: string }> } }>>;
+  enablePlugin: (id: string, approvedPermissions: string[]) => Promise<{ id: string; status: string; capabilities: string[] }>;
+  disablePlugin: (id: string) => Promise<{ ok: boolean; removed: string[] }>;
+  listCapabilities: (filter?: { kind?: string; mode?: string }) => Promise<Array<{ id: string; kind: string; owner: string; name: string; description: string; modes: string[]; permissions: string[]; registeredAt: string }>>;
+  readPluginUi: (input: { pluginId: string; entry: string }) => Promise<{ title: string; slot: string; html: string }>;
+  callPluginTool: (input: { pluginId: string; tool: string; args?: Record<string, unknown>; mode: string }) => Promise<{ ok: boolean; result?: unknown; error?: string; code?: string }>;
   getSettings: () => Promise<Record<string, unknown>>;
   saveSettings: (settings: unknown) => Promise<unknown>;
   getAppSettings: () => Promise<{ browserHeadless?: boolean; notebookRerankEnabled?: boolean; notebookRerankProviderId?: string; notebookRerankModel?: string; notebookVisionEnabled?: boolean; notebookVisionProviderId?: string; notebookVisionModel?: string; theme?: string }>;

@@ -1,0 +1,9 @@
+{
+  "hooks": [
+    {
+      "event": "tool:before",
+      "command": "node ./guard.js",
+      "timeoutSeconds": 5
+    }
+  ]
+}

@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { pluginCommandDirsWithModes } from "./plugins-service.js";
+import { listCapabilities } from "./capability-registry.js";
 
 export interface CustomSlashCommand {
   command: string;          // e.g. "/review"
@@ -306,6 +307,31 @@ export async function discoverCustomCommands(projectRoot?: string, scope?: Exclu
     }
   } catch {
     // Ignore error in plugin command discovery
+  }
+
+  // Merge dynamically registered plugin commands from capability registry
+  try {
+    const regCommands = listCapabilities({ kind: "command" });
+    for (const record of regCommands) {
+      const slash = record.name.startsWith("/") ? record.name : `/${record.name}`;
+      const existingIdx = commands.findIndex((c) => c.command === slash);
+      const cmdScope: CommandScope = record.modes && record.modes.length === 1 ? (record.modes[0] as CommandScope) : "all";
+      const customCmd: CustomSlashCommand = {
+        command: slash,
+        name: record.name,
+        description: `[Plugin: ${record.owner}] ${record.description || record.name}`,
+        promptTemplate: `{{input}}`,
+        source: "project",
+        scope: cmdScope,
+      };
+      if (existingIdx >= 0) {
+        commands[existingIdx] = customCmd;
+      } else {
+        commands.push(customCmd);
+      }
+    }
+  } catch {
+    // Ignore error in capability registry lookup
   }
 
   return scope ? commands.filter((c) => commandAppliesToScope(c, scope)) : commands;
