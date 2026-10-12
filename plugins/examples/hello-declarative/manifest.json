@@ -1,0 +1,8 @@
+{
+  "id": "hello-declarative",
+  "name": "Hello Declarative",
+  "version": "1.0.0",
+  "description": "Sample declarative skill plugin (no code). Shows the data-only path.",
+  "capabilities": ["skills"],
+  "modes": ["home", "code"]
+}

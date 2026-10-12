@@ -6,7 +6,7 @@ import electronPkg from "electron";
 const app = (electronPkg as any)?.app || (electronPkg as any)?.default?.app;
 const shell = (electronPkg as any)?.shell || (electronPkg as any)?.default?.shell;
 import { z } from "zod";
-import { pluginSkillDirsWithModes } from "./plugins-service.js";
+import { pluginsDir, pluginSkillDirsWithModes } from "./plugins-service.js";
 
 // Skills are plain folders containing a SKILL.md (name + description frontmatter,
 // instructions below). Per-project skills live inside the repository; the global
@@ -446,6 +446,7 @@ function validateSkillPathAllowed(skillPath: string, projectRoot?: string | null
   const globalRoot = canonicalPathExisting(globalSkillsDir());
   const projectRootResolved = projectRoot ? canonicalPathExisting(projectSkillsDir(projectRoot)) : null;
   const legacyRootResolved = projectRoot ? canonicalPathExisting(legacyProjectSkillsDir(projectRoot)) : null;
+  const pluginsRootResolved = projectRoot ? canonicalPathExisting(pluginsDir(projectRoot)) : null;
   const sysRoot = canonicalPathExisting(systemSkillsDir());
 
   const isInsideGlobal = resolved === globalRoot || resolved.startsWith(`${globalRoot}${path.sep}`);
@@ -459,9 +460,12 @@ function validateSkillPathAllowed(skillPath: string, projectRoot?: string | null
   const isInsideLegacy = legacyRootResolved
     ? (resolved === legacyRootResolved || resolved.startsWith(`${legacyRootResolved}${path.sep}`))
     : false;
+  const isInsidePlugins = pluginsRootResolved
+    ? (resolved === pluginsRootResolved || resolved.startsWith(`${pluginsRootResolved}${path.sep}`))
+    : false;
   const isInsideSystem = allowSystem && (resolved === sysRoot || resolved.startsWith(`${sysRoot}${path.sep}`));
 
-  if (!isInsideGlobal && !isInsideProject && !isInsideLegacy && !isInsideSystem) {
+  if (!isInsideGlobal && !isInsideProject && !isInsideLegacy && !isInsidePlugins && !isInsideSystem) {
     throw new Error(`Security violation: skill path '${skillPath}' is outside the authorized skills directories.`);
   }
   return resolved;
@@ -506,6 +510,8 @@ export function skillVirtualPath(skill: SkillInfo): string {
   const normalized = skill.path.replace(/\\/g, "/");
   const legacy = normalized.match(/\.deepagents\/skills\/([^/]+)\/SKILL\.md$/);
   if (legacy) return `${LEGACY_PROJECT_SKILLS_DIR}/${legacy[1]}/SKILL.md`;
+  const pluginMatch = normalized.match(/\.nexus\/plugins\/([^/]+)\/skills\/([^/]+)\/SKILL\.md$/);
+  if (pluginMatch) return `.nexus/plugins/${pluginMatch[1]}/skills/${pluginMatch[2]}/SKILL.md`;
   return `${PROJECT_SKILLS_DIR}/${folder}/SKILL.md`;
 }
 

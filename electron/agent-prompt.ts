@@ -84,7 +84,7 @@ function todayLine(): string {
   return `Today is ${long} (${now.toISOString().slice(0, 10)}).`;
 }
 
-export function buildSystemPrompt(mode: AgentMode, projectRoot: string, providerLabel: string, modelName: string, memory: AgentMemoryContext, projectRulesSection: string = "", complexity: TaskComplexity = "complex", isNewProject = false, taskKind: AgentTaskKind = "code", repoMapSection: string = "", homeTaskContract: HomeTaskContract | null = null, subagentCatalog: string = "", projectInstructionsSection: string = "") {
+export function buildSystemPrompt(mode: AgentMode, projectRoot: string, providerLabel: string, modelName: string, memory: AgentMemoryContext, projectRulesSection: string = "", complexity: TaskComplexity = "complex", isNewProject = false, taskKind: AgentTaskKind = "code", repoMapSection: string = "", homeTaskContract: HomeTaskContract | null = null, subagentCatalog: string = "", projectInstructionsSection: string = "", pluginContextSection: string = "") {
   const today = todayLine();
   if (taskKind === "general") {
     let general = `You are Nexus Home, a helpful general-purpose assistant. Your workspace folder is exposed at the virtual root / — use paths relative to it (for example report.docx). Files you create land in the user's Nexus folder, where they can download them.
@@ -197,6 +197,9 @@ Working rules:
     if (projectRulesSection) {
       general += `\n\n${projectRulesSection}`;
     }
+    if (pluginContextSection) {
+      general += `\n\n${pluginContextSection}`;
+    }
     if (homeTaskContract?.expectsOutput) {
       general += `\n\nTASK CONTRACT: This request asks for an observable result. If a standalone document format (such as .docx, .pptx, .xlsx, .pdf, or .csv) was requested, create it in the workspace, inspect it, and do not finish with a promise or research summary alone.${homeTaskContract.needsResearch ? " Research is allowed, but switch to producing the result once the evidence is sufficient." : ""} CHAT & VISUAL DELIVERABLE: When the request is chat-shaped OR asks for charts, graphs, diagrams, visual comparisons, explanations, or analyses and does NOT explicitly name a file format, deliver the complete answer—including all graphs and charts (using \`\`\`bar, \`\`\`hbar, \`\`\`line, \`\`\`area, \`\`\`pie, \`\`\`donut, \`\`\`scatter, \`\`\`radar, \`\`\`mermaid, or markdown image embeds \`![Caption](filename.png)\` for generated image charts)—directly in chat. Do NOT create a .md file. End your reply with [[answer-in-chat]].`;
     }
@@ -266,6 +269,10 @@ ${repoMapSection ? `\n${repoMapSection}` : ""}${subagentCatalog ? `\n\nSPECIALIS
 
   if (projectRulesSection) {
     common += `\n\n${projectRulesSection}`;
+  }
+
+  if (pluginContextSection) {
+    common += `\n\n${pluginContextSection}`;
   }
 
   if (mode === "plan") return `${common}\n\nMODE: PLAN. Investigate the repository and return a structured markdown implementation plan with sections: # Objective, ## Proposed Changes, ## Risks, ## Verification Plan. Writing, editing, deleting and command execution are disabled — gather information with read, search, and symbol tools only, and do not attempt to change anything.`;

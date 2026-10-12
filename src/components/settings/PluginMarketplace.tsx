@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import { ConfirmModal } from "../../modals/ConfirmModal.js";
 import { Modal } from "../common/Modal.js";
+import { ExecutablePlugins } from "./ExecutablePlugins.js";
 
 type Plugin = {
   id: string;
@@ -519,6 +520,8 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
           </div>
         </div>
       </div>
+
+      <ExecutablePlugins hasProject={hasProject} />
 
       {/* Global mode notification when no project is open */}
       {!hasProject && (
