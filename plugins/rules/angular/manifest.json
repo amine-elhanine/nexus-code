@@ -1,0 +1,13 @@
+{
+  "id": "rules-angular",
+  "name": "Angular Rules",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Angular coding rules and conventions.",
+  "capabilities": [
+    "rules"
+  ],
+  "modes": [
+    "code"
+  ]
+}

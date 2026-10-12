@@ -1,0 +1,13 @@
+{
+  "id": "frontend-a11y",
+  "name": "Frontend A11y",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": ">",
+  "capabilities": [
+    "skills"
+  ],
+  "modes": [
+    "code"
+  ]
+}

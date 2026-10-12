@@ -1,0 +1,13 @@
+{
+  "id": "rules-web",
+  "name": "Web Rules",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Web coding rules and conventions.",
+  "capabilities": [
+    "rules"
+  ],
+  "modes": [
+    "code"
+  ]
+}

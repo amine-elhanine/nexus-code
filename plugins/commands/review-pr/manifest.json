@@ -1,0 +1,13 @@
+{
+  "id": "review-pr",
+  "name": "Review Pr",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Comprehensive PR review using specialized agents",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

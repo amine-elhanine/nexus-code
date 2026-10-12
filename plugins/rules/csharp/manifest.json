@@ -1,0 +1,13 @@
+{
+  "id": "rules-csharp",
+  "name": "Csharp Rules",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Csharp coding rules and conventions.",
+  "capabilities": [
+    "rules"
+  ],
+  "modes": [
+    "code"
+  ]
+}

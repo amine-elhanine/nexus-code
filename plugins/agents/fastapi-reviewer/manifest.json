@@ -1,0 +1,13 @@
+{
+  "id": "fastapi-reviewer",
+  "name": "Fastapi Reviewer",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Reviews FastAPI applications for async correctness, dependency injection, Pydantic schemas, security, OpenAPI quality, testing, and production readiness.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

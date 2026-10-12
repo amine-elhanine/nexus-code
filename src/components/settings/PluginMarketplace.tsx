@@ -48,6 +48,16 @@ type ConfirmTarget = {
   plugin: Plugin;
 };
 
+type CapabilityFilter = "all" | "skills" | "agents" | "commands" | "rules" | "hooks";
+const CAPABILITY_TABS: Array<{ id: CapabilityFilter; label: string }> = [
+  { id: "all", label: "All types" },
+  { id: "skills", label: "Skills" },
+  { id: "agents", label: "Agents" },
+  { id: "commands", label: "Commands" },
+  { id: "rules", label: "Rules" },
+  { id: "hooks", label: "Hooks" },
+];
+
 /** Redesigned Plugin Marketplace UI.
  * Shows the official registry by default while keeping custom registry URLs
  * available under Advanced — the backend still honors any JSON feed. */
@@ -62,10 +72,12 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [devCatalogIds, setDevCatalogIds] = useState<Set<string>>(new Set());
   const [registryUrl, setRegistryUrl] = useState("");
+  const [devRoot, setDevRoot] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [savingRegistry, setSavingRegistry] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterTab, setFilterTab] = useState<"all" | "installed" | "available" | "dev">("all");
+  const [capFilter, setCapFilter] = useState<CapabilityFilter>("all");
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<ConfirmTarget | null>(null);
 
@@ -83,6 +95,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
       const devIds = new Set<string>((config?.developerCatalog || []).map((p: { id: string }) => p.id));
       setDevCatalogIds(devIds);
       setRegistryUrl(config?.registryUrl || DEFAULT_PLUGIN_REGISTRY_URL);
+      setDevRoot(config?.devRoot || "");
       if (showFeedback) {
         setFeedback({ type: "success", message: "Marketplace catalog is up to date." });
       }
@@ -109,6 +122,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
         setPlugins(items || []);
         setDevCatalogIds(new Set<string>((config?.developerCatalog || []).map((p: { id: string }) => p.id)));
         setRegistryUrl(config?.registryUrl || DEFAULT_PLUGIN_REGISTRY_URL);
+        setDevRoot(config?.devRoot || "");
       } catch (error) {
         if (cancelled) return;
         setFeedback({
@@ -136,7 +150,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
     setFeedback(null);
     try {
       const config = await api.getPluginRegistry();
-      await api.savePluginRegistry({ registryUrl: url, developerCatalog: config?.developerCatalog || [] });
+      await api.savePluginRegistry({ registryUrl: url, developerCatalog: config?.developerCatalog || [], devRoot: devRoot.trim() || undefined });
       setRegistryUrl(url);
       await refresh(true);
     } catch (error) {
@@ -154,7 +168,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
     setFeedback(null);
     try {
       const config = await api.getPluginRegistry();
-      await api.savePluginRegistry({ registryUrl: DEFAULT_PLUGIN_REGISTRY_URL, developerCatalog: config?.developerCatalog || [] });
+      await api.savePluginRegistry({ registryUrl: DEFAULT_PLUGIN_REGISTRY_URL, developerCatalog: config?.developerCatalog || [], devRoot: config?.devRoot });
       setRegistryUrl(DEFAULT_PLUGIN_REGISTRY_URL);
       await refresh(true);
     } catch (error) {
@@ -164,6 +178,47 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
       });
     } finally {
       setSavingRegistry(false);
+    }
+  }
+
+  async function handlePickDevRoot() {
+    setBusy("devroot");
+    try {
+      const picked = await api.pickDevRoot();
+      if (!picked) return;
+      const config = await api.getPluginRegistry();
+      await api.savePluginRegistry({ registryUrl: config?.registryUrl, developerCatalog: config?.developerCatalog || [], devRoot: picked });
+      setDevRoot(picked);
+      await refresh();
+      setFeedback({
+        type: "success",
+        message: "Dev folder linked — every plugin inside it now appears automatically.",
+      });
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message: error instanceof Error ? error.message : "Could not link dev folder.",
+      });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleClearDevRoot() {
+    setBusy("devroot");
+    setFeedback(null);
+    try {
+      const config = await api.getPluginRegistry();
+      await api.savePluginRegistry({ registryUrl: config?.registryUrl, developerCatalog: config?.developerCatalog || [] });
+      setDevRoot("");
+      await refresh(true);
+    } catch (error) {
+      setFeedback({
+        type: "error",
+        message: error instanceof Error ? error.message : "Could not unlink dev folder.",
+      });
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -272,7 +327,16 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
     const installed = plugins.filter((p) => p.installed).length;
     const dev = plugins.filter(isDevPlugin).length;
     const available = plugins.filter((p) => !p.installed).length;
-    return { all: plugins.length, installed, available, dev };
+    const byCap: Record<Exclude<CapabilityFilter, "all">, number> = {
+      skills: 0, agents: 0, commands: 0, rules: 0, hooks: 0,
+    };
+    for (const p of plugins) {
+      for (const cap of p.capabilities || []) {
+        const key = cap.toLowerCase() as Exclude<CapabilityFilter, "all">;
+        if (key in byCap) byCap[key]++;
+      }
+    }
+    return { all: plugins.length, installed, available, dev, byCap };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plugins, devCatalogIds]);
 
@@ -281,6 +345,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
       if (filterTab === "installed" && !plugin.installed) return false;
       if (filterTab === "available" && plugin.installed) return false;
       if (filterTab === "dev" && !isDevPlugin(plugin)) return false;
+      if (capFilter !== "all" && !(plugin.capabilities || []).some((c) => c.toLowerCase() === capFilter)) return false;
 
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
@@ -295,7 +360,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
       return true;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plugins, filterTab, searchQuery, devCatalogIds]);
+  }, [plugins, filterTab, capFilter, searchQuery, devCatalogIds]);
 
   return (
     <div className="marketplace-container">
@@ -379,6 +444,36 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
                 >
                   <RefreshCw size={12} />
                   <span>Reset to official</span>
+                </button>
+              )}
+            </div>
+            <label className="market-advanced-label">
+              <span>Dev plugins folder (every subfolder with a manifest.json appears automatically)</span>
+              <span className="market-devroot-path" title={devRoot || "No folder linked"}>
+                {devRoot || "No folder linked"}
+              </span>
+            </label>
+            <div className="market-advanced-actions">
+              <button
+                type="button"
+                className="market-btn secondary"
+                onClick={() => void handlePickDevRoot()}
+                disabled={busy === "devroot"}
+                title="Link a local folder whose subfolders are plugin bundles"
+              >
+                {busy === "devroot" ? <Loader2 size={12} className="spin" /> : <FolderPlus size={12} />}
+                <span>{devRoot ? "Change folder" : "Link folder"}</span>
+              </button>
+              {devRoot && (
+                <button
+                  type="button"
+                  className="market-btn secondary"
+                  onClick={() => void handleClearDevRoot()}
+                  disabled={busy === "devroot"}
+                  title="Stop auto-listing this folder"
+                >
+                  <X size={12} />
+                  <span>Unlink</span>
                 </button>
               )}
             </div>
@@ -471,6 +566,26 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
         </div>
       </div>
 
+      {/* Capability sections: Skills / Agents / Commands / Rules / Hooks.
+          A plugin carrying several capabilities appears under each one. */}
+      <div className="market-controls">
+        <div className="market-filter-tabs">
+          {CAPABILITY_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              className={`market-filter-tab ${capFilter === tab.id ? "active" : ""}`}
+              onClick={() => setCapFilter(tab.id)}
+            >
+              {tab.label}{" "}
+              <span className="market-tab-count">
+                {tab.id === "all" ? counts.all : counts.byCap[tab.id]}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* Plugin Grid */}
       {loading ? (
         <div className="market-empty-state">
@@ -520,6 +635,19 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
                 onClick={() => void handlePublish()}
               >
                 <FolderPlus size={12} /> Add local plugin
+              </button>
+            </>
+          ) : capFilter !== "all" ? (
+            <>
+              <Puzzle size={30} style={{ color: "var(--faint)" }} />
+              <h4>No {CAPABILITY_TABS.find((t) => t.id === capFilter)?.label.toLowerCase()} plugins</h4>
+              <p>No plugin in the catalog provides this capability yet.</p>
+              <button
+                type="button"
+                className="market-btn secondary"
+                onClick={() => setCapFilter("all")}
+              >
+                Show all types
               </button>
             </>
           ) : (

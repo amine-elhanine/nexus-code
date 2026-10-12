@@ -1,0 +1,13 @@
+{
+  "id": "cpp-test",
+  "name": "Cpp Test",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Enforce TDD workflow for C++. Write GoogleTest tests first, then implement. Verify coverage with gcov/lcov.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

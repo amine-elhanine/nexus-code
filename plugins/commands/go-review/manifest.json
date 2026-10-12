@@ -1,0 +1,13 @@
+{
+  "id": "go-review",
+  "name": "Go Review",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Comprehensive Go code review for idiomatic patterns, concurrency safety, error handling, and security. Invokes the go-reviewer agent.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

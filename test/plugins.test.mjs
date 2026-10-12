@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { discoverPlugins, installMarketplacePlugin, normalizePluginModes, pluginSkillDirs, pluginHookFiles, pluginAgentDirs, pluginCommandDirs, pluginRuleDirs, uninstallPlugin, detectPluginCapabilities } from '../dist-electron/plugins-service.js';
+import { discoverPlugins, installMarketplacePlugin, normalizePluginModes, entryFromFolder, scanPluginRoot, pluginSkillDirs, pluginHookFiles, pluginAgentDirs, pluginCommandDirs, pluginRuleDirs, uninstallPlugin, detectPluginCapabilities } from '../dist-electron/plugins-service.js';
 import { listSkills, skillAppliesToMode } from '../dist-electron/skills-service.js';
 import { discoverHooks } from '../dist-electron/hooks-service.js';
 import { getAvailableAgents, getAllSubagentRoles, buildSubagentCatalog } from '../dist-electron/subagent-service.js';
@@ -228,6 +228,55 @@ await test('detectPluginCapabilities auto-detects skills, agents, commands, rule
     const full = plugins.find((p) => p.name === 'full-bundle');
     assert.ok(full);
     assert.deepEqual(full.manifest.capabilities.sort(), ['agents', 'commands', 'hooks', 'rules', 'skills']);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+await test('scanPluginRoot auto-lists folders with a manifest; others skipped', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-plugin-scan-'));
+  try {
+    const good = path.join(tempDir, 'my-plugin');
+    await fs.mkdir(path.join(good, 'skills'), { recursive: true });
+    await fs.writeFile(path.join(good, 'manifest.json'), JSON.stringify({ id: 'my-plugin', name: 'My Plugin', version: '2.0.0', modes: ['code'] }), 'utf8');
+    await fs.mkdir(path.join(tempDir, 'empty-folder'), { recursive: true });
+    await fs.mkdir(path.join(tempDir, 'broken'), { recursive: true });
+    await fs.writeFile(path.join(tempDir, 'broken', 'manifest.json'), '{not json', 'utf8');
+
+    assert.deepEqual(await scanPluginRoot(path.join(tempDir, 'missing')), [], 'missing root → empty');
+    const entries = await scanPluginRoot(tempDir);
+    assert.equal(entries.length, 1, `only the valid bundle is listed, got ${entries.length}`);
+    assert.equal(entries[0].id, 'my-plugin');
+    assert.equal(entries[0].version, '2.0.0');
+    assert.deepEqual(entries[0].modes, ['code']);
+    assert.ok(entries[0].capabilities.includes('skills'), 'capabilities auto-detected');
+    assert.ok(entries[0].source.endsWith('my-plugin'), 'source points at the folder');
+
+    assert.equal(await entryFromFolder(path.join(tempDir, 'empty-folder')), null, 'no manifest → null');
+    assert.equal(await entryFromFolder(path.join(tempDir, 'broken')), null, 'invalid manifest → null');
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+await test('scanPluginRoot supports the sectioned library layout (skills/<item>/)', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-plugin-sections-'));
+  try {
+    const skill = path.join(tempDir, 'skills', 'my-skill');
+    await fs.mkdir(path.join(skill, 'skills', 'my-skill'), { recursive: true });
+    await fs.writeFile(path.join(skill, 'manifest.json'), JSON.stringify({ id: 'my-skill', name: 'My Skill' }), 'utf8');
+    await fs.writeFile(path.join(skill, 'skills', 'my-skill', 'SKILL.md'), '---\nname: my-skill\ndescription: Test\n---\n\nHi.', 'utf8');
+    // Classic single-level bundles keep working alongside sections.
+    const classic = path.join(tempDir, 'classic-bundle');
+    await fs.mkdir(classic, { recursive: true });
+    await fs.writeFile(path.join(classic, 'manifest.json'), JSON.stringify({ id: 'classic-bundle', name: 'Classic' }), 'utf8');
+
+    const entries = await scanPluginRoot(tempDir);
+    assert.equal(entries.length, 2, `section item + classic bundle, got ${entries.length}`);
+    const found = entries.find((e) => e.id === 'my-skill');
+    assert.ok(found, 'sectioned skill listed');
+    assert.ok(found.capabilities.includes('skills'), 'capability auto-detected');
+    assert.ok(entries.some((e) => e.id === 'classic-bundle'), 'classic layout still listed');
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }

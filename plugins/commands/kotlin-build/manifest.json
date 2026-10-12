@@ -1,0 +1,13 @@
+{
+  "id": "kotlin-build",
+  "name": "Kotlin Build",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Fix Kotlin/Gradle build errors, compiler warnings, and dependency issues incrementally. Invokes the kotlin-build-resolver agent for minimal, surgical fixes.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

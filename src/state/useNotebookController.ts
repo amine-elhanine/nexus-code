@@ -274,7 +274,18 @@ export function useNotebookController(enabled: boolean) {
   }
 
   function toggleScope(sourceId: string) {
-    setExcludedIds((prev) => (prev.includes(sourceId) ? prev.filter((id) => id !== sourceId) : [...prev, sourceId]));
+    // At least one source must stay in scope: with zero selected the backend
+    // treats an empty fileIds list as "all files", which would silently
+    // answer from sources the user believes are excluded.
+    if (excludedIds.includes(sourceId)) {
+      setExcludedIds(excludedIds.filter((id) => id !== sourceId));
+      return;
+    }
+    if (sources.length - excludedIds.length <= 1) {
+      setNotice("At least one source must stay selected.");
+      return;
+    }
+    setExcludedIds([...excludedIds, sourceId]);
   }
 
   function resetScope() {

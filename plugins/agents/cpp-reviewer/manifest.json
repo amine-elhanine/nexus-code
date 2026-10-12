@@ -1,0 +1,13 @@
+{
+  "id": "cpp-reviewer",
+  "name": "Cpp Reviewer",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Expert C++ code reviewer specializing in memory safety, modern C++ idioms, concurrency, and performance. Use for all C++ code changes. MUST BE USED for C++ projects.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

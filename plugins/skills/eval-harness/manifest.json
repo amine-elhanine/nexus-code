@@ -1,0 +1,13 @@
+{
+  "id": "eval-harness",
+  "name": "Eval Harness",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Formal evaluation framework for Nexus sessions implementing eval-driven development (EDD) principles. Use when a Nexus workflow needs a formal eval before it is trusted or changed.",
+  "capabilities": [
+    "skills"
+  ],
+  "modes": [
+    "code"
+  ]
+}

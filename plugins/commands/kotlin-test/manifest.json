@@ -1,0 +1,13 @@
+{
+  "id": "kotlin-test",
+  "name": "Kotlin Test",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Enforce TDD workflow for Kotlin. Write Kotest tests first, then implement. Verify 80%+ coverage with Kover.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

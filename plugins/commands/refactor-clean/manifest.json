@@ -1,0 +1,13 @@
+{
+  "id": "refactor-clean",
+  "name": "Refactor Clean",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Safely identify and remove dead code with verification after each change.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

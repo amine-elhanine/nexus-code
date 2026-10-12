@@ -1,0 +1,13 @@
+{
+  "id": "database-migrations",
+  "name": "Database Migrations",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Database migration best practices for schema changes, data migrations, rollbacks, and zero-downtime deployments across PostgreSQL, MySQL, and common ORMs (Prisma, Drizzle, Kysely, Django, TypeORM, golang-migrate). Use when writing a schema or data migration, planning a rollback, or aiming for zero-downtime deployment.",
+  "capabilities": [
+    "skills"
+  ],
+  "modes": [
+    "code"
+  ]
+}

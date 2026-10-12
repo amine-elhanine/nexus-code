@@ -1,0 +1,13 @@
+{
+  "id": "silent-failure-hunter",
+  "name": "Silent Failure Hunter",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Review code for silent failures, swallowed errors, bad fallbacks, and missing error propagation.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

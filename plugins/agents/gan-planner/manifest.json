@@ -1,0 +1,13 @@
+{
+  "id": "gan-planner",
+  "name": "Gan Planner",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "GAN Harness — Planner agent. Expands a one-line prompt into a full product specification with features, sprints, evaluation criteria, and design direction.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

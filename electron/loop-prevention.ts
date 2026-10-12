@@ -84,6 +84,20 @@ export function toolParameterNormalizationMiddleware(projectRoot?: string) {
 }
 
 /**
+ * Research budgets for Home deliverable tasks. Research-heavy requests
+ * (latest docs, comparisons, current facts) need room to browse; tasks that
+ * just need to produce from local context get a tight budget so the agent
+ * switches to creating instead of endlessly searching.
+ */
+export const RESEARCH_BUDGET_BASE = 8;
+export const RESEARCH_BUDGET_WITH_RESEARCH = 20;
+
+export function resolveResearchBudget(options: { outputRequired?: boolean; needsResearch?: boolean }): number | null {
+  if (!options.outputRequired) return null;
+  return options.needsResearch ? RESEARCH_BUDGET_WITH_RESEARCH : RESEARCH_BUDGET_BASE;
+}
+
+/**
  * Loop Prevention Middleware:
  * Detects and breaks repetitive read/inspection tool loops (e.g., repeatedly calling
  * read_file, grep_search, or glob on the same file/target without any edits or modifying commands).
@@ -94,11 +108,19 @@ export function toolParameterNormalizationMiddleware(projectRoot?: string) {
  *               that the file has not changed, build/tests already passed, and to mark todos completed.
  * Repetition 3+: Blocks execution of the tool, returning an intervention ToolMessage directing the model
  *                to update its todo list and provide its final answer immediately.
+ *
+ * Research tools (web_search, browser_inspect/fetch, browser_act navigate/text)
+ * get per-target handling instead of a run abort: 2nd fetch of the same
+ * URL/query executes with a steer-forward nudge, 3rd+ is banned for that
+ * target only with guidance to try a different source — the run continues
+ * on other plan items. The doom-loop breaker stays as the final circuit
+ * breaker for models that ignore the bans entirely.
  */
-export function loopPreventionMiddleware(options: { general?: boolean; outputRequired?: boolean; beforeModify?: () => string | null } = {}) {
+export function loopPreventionMiddleware(options: { general?: boolean; outputRequired?: boolean; needsResearch?: boolean; beforeModify?: () => string | null } = {}) {
   let lastReadSig: string | null = null;
   let consecutiveCount = 0;
   let researchCallCount = 0;
+  const researchBudget = options.general ? resolveResearchBudget(options) : null;
   const inspectionCounts = new Map<string, number>();
   // SKILL.md content never changes mid-run: the first read loads it, every
   // repeat is pure waste (observed as skill→plan→todos→repair→skill testing
@@ -109,7 +131,58 @@ export function loopPreventionMiddleware(options: { general?: boolean; outputReq
   const isModifying = (name: string) => /^(write_file|edit_file|delete|apply_patch|execute)$/i.test(name);
   const isInspection = (name: string) => /^(read_file|read_file_range|grep_search|glob|ls|view_file|search_code|code_structure|code_symbol)$/i.test(name);
   const isFileRead = (name: string) => /^(read_file|read_file_range)$/i.test(name);
-  const isResearchTool = (name: string) => /^(web_search|browser_fetch_api|browser_inspect|search_web|fetch_url)$/i.test(name);
+  const isResearchTool = (name: string, args?: any) => {
+    if (/^(web_search|browser_fetch_api|browser_inspect|search_web|fetch_url)$/i.test(name)) return true;
+    // browser_act covers both research (navigate/text) and interaction
+    // (click/fill/type). Only the research actions consume the budget.
+    if (/^browser_act$/i.test(name)) {
+      const action = String(args?.action || "").trim().toLowerCase();
+      return action === "navigate" || action === "text";
+    }
+    return false;
+  };
+
+  // Per-target research repeat tracking: same URL/query fetched repeatedly
+  // without progress gets a temporary per-run ban (that target only).
+  const researchTargetCounts = new Map<string, number>();
+  const bannedResearchTargets = new Set<string>();
+
+  const normalizeResearchUrl = (raw: unknown): string => {
+    const text = String(raw || "").trim();
+    if (!text) return "";
+    try {
+      const parsed = new URL(text.includes("://") ? text : `https://${text}`);
+      const host = parsed.hostname.toLowerCase();
+      if (!host) return text.toLowerCase();
+      const path = parsed.pathname.replace(/\/+$/, "") || "/";
+      return `${host}${path}${parsed.search || ""}`.toLowerCase();
+    } catch {
+      return text.toLowerCase().replace(/\s+/g, "");
+    }
+  };
+
+  // Stable per-target key so repeats of the same link/query are detected
+  // across URL spellings (trailing slash, case, fragment).
+  const researchTargetKey = (name: string, args?: any): string | null => {
+    const tool = name.toLowerCase();
+    if (tool === "web_search" || tool === "search_web") {
+      const query = String(args?.query || "").trim().toLowerCase().replace(/\s+/g, " ");
+      return query ? `q:${query}` : null;
+    }
+    if (tool === "browser_fetch_api" || tool === "fetch_url" || tool === "browser_inspect") {
+      const url = normalizeResearchUrl(args?.url);
+      return url ? `u:${url}` : null;
+    }
+    if (tool === "browser_act") {
+      const action = String(args?.action || "").trim().toLowerCase();
+      if (action === "navigate") {
+        const url = normalizeResearchUrl(args?.url);
+        return url ? `u:${url}` : null;
+      }
+      return null;
+    }
+    return null;
+  };
 
   const normalizePath = (args: any) => {
     if (!args || typeof args !== "object") return "";
@@ -138,16 +211,63 @@ export function loopPreventionMiddleware(options: { general?: boolean; outputReq
         lastReadSig = null;
         consecutiveCount = 0;
         researchCallCount = 0;
+        researchTargetCounts.clear();
+        bannedResearchTargets.clear();
         return handler(request);
       }
 
-      if (options.general && options.outputRequired && isResearchTool(toolName)) {
-        researchCallCount++;
-        if (researchCallCount > 8) {
+      // Per-target repeat ban for research: same URL/query stuck in a loop
+      // gets banned (that link only) with a steer-forward to the next source
+      // instead of aborting the whole run. Banned calls never execute and
+      // never consume the research budget.
+      if (isResearchTool(toolName, args)) {
+        const targetKey = researchTargetKey(toolName, args);
+        if (targetKey && bannedResearchTargets.has(targetKey)) {
           return new ToolMessage({
             tool_call_id: toolCallId,
             name: toolName,
-            content: "[SUPERVISOR INTERVENTION] The research budget for this task has been reached. Use the evidence already collected and take the next result-producing action. Do not perform another web search or page fetch unless it directly unblocks creation of the requested output.",
+            status: "error",
+            content: `[RESEARCH TARGET BANNED]: '${targetKey.slice(2)}' was already fetched repeatedly without progress and is banned for the rest of this run. Do NOT retry it. Move on: try a different source URL or a rephrased query, or continue with the next pending plan item (e.g. if LangChain docs failed, research LangGraph next).`,
+          });
+        }
+        if (targetKey) {
+          const repeatCount = (researchTargetCounts.get(targetKey) ?? 0) + 1;
+          researchTargetCounts.set(targetKey, repeatCount);
+          if (repeatCount >= 3) {
+            bannedResearchTargets.add(targetKey);
+            return new ToolMessage({
+              tool_call_id: toolCallId,
+              name: toolName,
+              status: "error",
+              content: `[RESEARCH TARGET BANNED]: '${targetKey.slice(2)}' failed or repeated ${repeatCount}x without progress — it is now banned for this run. Do NOT retry it. Switch to a different source or rephrased query and continue with the next plan item.`,
+            });
+          }
+          if (repeatCount === 2) {
+            const result = await handler(request);
+            const currentContent = typeof result.content === "string" ? result.content : JSON.stringify(result.content);
+            result.content = `${currentContent}\n\n[Notice: You already fetched '${targetKey.slice(2)}'. If this result is not useful, do NOT fetch it again — try a different source URL or a rephrased query, or move to the next plan item.]`;
+            if (researchBudget !== null) {
+              researchCallCount++;
+              if (researchCallCount > researchBudget) {
+                return new ToolMessage({
+                  tool_call_id: toolCallId,
+                  name: toolName,
+                  content: `[SUPERVISOR INTERVENTION] The research budget for this task has been reached (${researchBudget} web lookups). Use the evidence already collected and take the next result-producing action. Do not perform another web search or page fetch unless it directly unblocks creation of the requested output.`,
+                });
+              }
+            }
+            return result;
+          }
+        }
+      }
+
+      if (researchBudget !== null && isResearchTool(toolName, args)) {
+        researchCallCount++;
+        if (researchCallCount > researchBudget) {
+          return new ToolMessage({
+            tool_call_id: toolCallId,
+            name: toolName,
+            content: `[SUPERVISOR INTERVENTION] The research budget for this task has been reached (${researchBudget} web lookups). Use the evidence already collected and take the next result-producing action. Do not perform another web search or page fetch unless it directly unblocks creation of the requested output.`,
           });
         }
       }

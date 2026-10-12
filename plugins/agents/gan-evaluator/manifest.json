@@ -1,0 +1,13 @@
+{
+  "id": "gan-evaluator",
+  "name": "Gan Evaluator",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "GAN Harness — Evaluator agent. Tests the live running application via Playwright MCP (requires a Playwright MCP server to be configured), scores against rubric, and provides actionable feedback to the Generator.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

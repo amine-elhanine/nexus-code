@@ -1,0 +1,13 @@
+{
+  "id": "code-architect",
+  "name": "Code Architect",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Designs feature architectures by analyzing existing codebase patterns and conventions, then providing implementation blueprints with concrete files, interfaces, data flow, and build order.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

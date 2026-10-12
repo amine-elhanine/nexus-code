@@ -1,0 +1,13 @@
+{
+  "id": "flutter-test",
+  "name": "Flutter Test",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Run Flutter/Dart tests, report failures, and incrementally fix test issues. Covers unit, widget, golden, and integration tests.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

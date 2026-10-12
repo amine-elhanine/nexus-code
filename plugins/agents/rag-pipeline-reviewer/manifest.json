@@ -1,0 +1,13 @@
+{
+  "id": "rag-pipeline-reviewer",
+  "name": "Rag Pipeline Reviewer",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Reviews RAG (Retrieval-Augmented Generation) pipelines for retrieval quality, chunking strategy, embedding choices, and evaluation coverage. Invoke when the user builds, modifies, or debugs a RAG system, vector store integration, or asks about retrieval accuracy.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

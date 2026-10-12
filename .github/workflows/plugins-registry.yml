@@ -1,0 +1,132 @@
+name: Plugins Registry
+
+# Shared auto-discovery: pushing a new folder under plugins/ (with a valid
+# manifest.json) publishes it to the Marketplace automatically — no manual
+# registry.json edit. Each plugin is zipped, attached to a rolling
+# `plugins-latest` release, and indexed in the root registry.json that every
+# install fetches.
+#
+# Local equivalent (no CI involved): Settings → Marketplace → Advanced →
+# link a dev plugins folder; every subfolder with a manifest.json appears.
+
+on:
+  push:
+    branches: [main]
+    paths: ["plugins/**", ".github/workflows/plugins-registry.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: plugins-registry
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Build zips and regenerate registry.json
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          node -e '
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const { execFileSync } = require("node:child_process");
+          const root = path.join(process.cwd(), "plugins");
+          const out = path.join(process.cwd(), ".registry-build");
+          fs.rmSync(out, { recursive: true, force: true });
+          fs.mkdirSync(out, { recursive: true });
+          const SECTIONS = ["skills", "agents", "commands", "rules", "hooks"];
+          const bundleDirs = [];
+          for (const e of fs.readdirSync(root, { withFileTypes: true }).filter((x) => x.isDirectory())) {
+            const dir = path.join(root, e.name);
+            const hasManifest = fs.existsSync(path.join(dir, "manifest.json"));
+            if (hasManifest) {
+              bundleDirs.push(dir);
+            } else if (SECTIONS.includes(e.name.toLowerCase())) {
+              // Sectioned library: plugins/<capability>/<item>/ per plugin.
+              for (const item of fs.readdirSync(dir, { withFileTypes: true }).filter((x) => x.isDirectory())) {
+                bundleDirs.push(path.join(dir, item.name));
+              }
+            }
+          }
+          const entries = [];
+          const seenIds = new Set();
+          for (const dir of bundleDirs) {
+            const name = path.basename(dir);
+            let manifest;
+            try {
+              manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
+            } catch {
+              console.log(`skip ${name}: no valid manifest.json`);
+              continue;
+            }
+            if (typeof manifest !== "object" || manifest === null || typeof manifest.name !== "string" || !manifest.name.trim()) {
+              console.log(`skip ${name}: manifest needs a name`);
+              continue;
+            }
+            const id = String(manifest.id || manifest.name).trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+            if (!id || seenIds.has(id)) {
+              console.log(`skip ${name}: missing or duplicate id "${id}"`);
+              continue;
+            }
+            seenIds.add(id);
+            const caps = [];
+            for (const [folder, cap] of [["skills", "skills"], ["agents", "agents"], ["commands", "commands"], ["rules", "rules"]]) {
+              try {
+                if (fs.statSync(path.join(dir, folder)).isDirectory()) caps.push(cap);
+              } catch { /* absent */ }
+            }
+            try {
+              if (fs.statSync(path.join(dir, "hooks.json")).isFile()) caps.push("hooks");
+            } catch { /* absent */ }
+            const declared = Array.isArray(manifest.capabilities) ? manifest.capabilities.filter((c) => typeof c === "string") : [];
+            const zipName = `${id}.zip`;
+            execFileSync("zip", ["-qr", path.join(out, zipName), "."], { cwd: dir });
+            entries.push({
+              id,
+              name: manifest.name.trim(),
+              version: typeof manifest.version === "string" ? manifest.version : "0.1.0",
+              author: typeof manifest.author === "string" ? manifest.author : "",
+              description: typeof manifest.description === "string" ? manifest.description : "",
+              capabilities: declared.length ? declared : caps,
+              ...(manifest.modes !== undefined ? { modes: manifest.modes } : {}),
+              source: `https://github.com/${process.env.REPO}/releases/download/plugins-latest/${zipName}`,
+            });
+          }
+          entries.sort((a, b) => a.name.localeCompare(b.name));
+          fs.writeFileSync("registry.json", JSON.stringify({ plugins: entries }, null, 2) + "\n");
+          console.log(`indexed ${entries.length} plugin(s): ${entries.map((e) => e.id).join(", ") || "(none)"}`);
+          '
+
+      - name: Publish rolling release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if compgen -G ".registry-build/*.zip" > /dev/null; then
+            gh release view plugins-latest >/dev/null 2>&1 || gh release create plugins-latest --title "Plugins" --notes "Rolling Marketplace bundles (auto-published)." --prerelease
+            gh release upload plugins-latest .registry-build/*.zip --clobber
+          else
+            echo "No plugin bundles to publish."
+          fi
+
+      - name: Commit refreshed registry.json
+        run: |
+          if git diff --quiet -- registry.json; then
+            echo "registry.json unchanged."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add registry.json
+            git commit -m "chore(plugins): auto-index Marketplace registry"
+            git push
+          fi

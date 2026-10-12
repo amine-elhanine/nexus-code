@@ -275,6 +275,13 @@ export function createBrowserTools(_projectRoot?: string, opts?: { renderedInspe
     extraTools.push(
       tool(
         async (input: BrowserActInput) => {
+          // Only research actions (opening pages / reading rendered text)
+          // consume the Home research budget — clicks/fills are interaction.
+          const action = String((input as BrowserActInput)?.action || "").trim().toLowerCase();
+          if (action === "navigate" || action === "text") {
+            const guard = opts?.beforeRead?.("browser_act");
+            if (guard) return guard;
+          }
           try {
             return await agentBrowser.act(input);
           } catch (error: any) {

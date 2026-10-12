@@ -65,4 +65,35 @@ const dollarMath = renderMarkdown("The loss is $\\mathcal{L}(y, \\hat{y})$ here.
 assert.ok(dollarMath.includes("katex"), "Dollar delimited math should render as KaTeX");
 console.log("  ✓ Dollar math $...$ renders as KaTeX");
 
+// 5. Image rendering
+const imgMd = "Here is the result: ![Market Performance](chart_market_performance.png)";
+const renderedImg = renderMarkdown(imgMd);
+assert.ok(
+  renderedImg.includes('<img src="chart_market_performance.png" alt="Market Performance" class="md-image" loading="lazy" />'),
+  `Expected markdown image tag, got: ${renderedImg}`
+);
+console.log("  ✓ Markdown image renders correctly as <img> tag");
+
+// 6. Image alongside regular web link
+const mixedMd = "![Evidence](chart.png) and see [Documentation](https://example.com/docs)";
+const renderedMixed = renderMarkdown(mixedMd);
+assert.ok(
+  renderedMixed.includes('<img src="chart.png" alt="Evidence" class="md-image" loading="lazy" />'),
+  `Expected image in mixed text, got: ${renderedMixed}`
+);
+assert.ok(
+  renderedMixed.includes('<a href="https://example.com/docs" target="_blank" rel="noreferrer">Documentation</a>'),
+  `Expected link in mixed text, got: ${renderedMixed}`
+);
+console.log("  ✓ Image and web link coexist without syntax conflict");
+
+// 7. Unsafe schemes
+const unsafeMd = "![Malicious](javascript:alert(1))";
+const renderedUnsafe = renderMarkdown(unsafeMd);
+assert.ok(
+  !renderedUnsafe.includes("javascript:"),
+  `javascript: scheme must be neutralized, got: ${renderedUnsafe}`
+);
+console.log("  ✓ javascript: URL in image is neutralized");
+
 console.log("\nAll markdown & math rendering tests passed successfully!");

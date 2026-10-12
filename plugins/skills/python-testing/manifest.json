@@ -1,0 +1,13 @@
+{
+  "id": "python-testing",
+  "name": "Python Testing",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Python testing strategies using pytest, TDD methodology, fixtures, mocking, parametrization, and coverage requirements. Use when writing pytest tests — fixtures, mocks, parametrization, or coverage.",
+  "capabilities": [
+    "skills"
+  ],
+  "modes": [
+    "code"
+  ]
+}

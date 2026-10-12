@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
-import { Copy, Download, Check } from "lucide-react";
+import { Copy, Download, Check, Maximize2, X, Image as ImageIcon, ZoomIn, AlertCircle, RefreshCw } from "lucide-react";
 import { renderMarkdown } from "../../markdown.js";
 import {
   parseBarChart,
@@ -669,32 +669,337 @@ function RadarBlock({ source }: { source: string }) {
   );
 }
 
-const FENCE_PATTERN = /```(mermaid|scatter|bar|hbar|line|area|pie|donut|radar)\s*\n([\s\S]*?)```/gi;
+function ChatImageBlock({ alt, src }: { alt: string; src: string }) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [downloaded, setDownloaded] = useState(false);
+  const [zoomed, setZoomed] = useState(false);
+
+  const rawPath = (src || "").trim();
+  const cleanPath = rawPath.replace(/^file:\/\/\/?/, "").replace(/^\/+/, "").replace(/^\.\//, "");
+  const filename = cleanPath.split(/[/\\]/).pop() || cleanPath;
+
+  const displayTitle = alt?.trim()
+    ? alt.trim()
+    : filename.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
+
+  const loadCounterRef = useRef(0);
+
+  const loadImage = async () => {
+    const currentRun = ++loadCounterRef.current;
+    if (!rawPath) {
+      setError("No image path provided");
+      setLoading(false);
+      return;
+    }
+
+    if (rawPath.startsWith("data:") || rawPath.startsWith("http://") || rawPath.startsWith("https://")) {
+      setDataUrl(rawPath);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    const ext = filename.split(".").pop()?.toLowerCase() || "png";
+    const mime =
+      ext === "svg"
+        ? "image/svg+xml"
+        : ext === "jpg" || ext === "jpeg"
+        ? "image/jpeg"
+        : ext === "webp"
+        ? "image/webp"
+        : ext === "gif"
+        ? "image/gif"
+        : "image/png";
+
+    try {
+      const api = typeof window !== "undefined" ? (window as any).nexus : undefined;
+      // 1. Try home file
+      if (api?.readHomeFile) {
+        try {
+          const file = await api.readHomeFile(cleanPath);
+          if (currentRun !== loadCounterRef.current) return;
+          if (file?.base64) {
+            setDataUrl(`data:${mime};base64,${file.base64}`);
+            setLoading(false);
+            return;
+          }
+        } catch {
+          if (filename !== cleanPath) {
+            try {
+              const file = await api.readHomeFile(filename);
+              if (currentRun !== loadCounterRef.current) return;
+              if (file?.base64) {
+                setDataUrl(`data:${mime};base64,${file.base64}`);
+                setLoading(false);
+                return;
+              }
+            } catch { /* proceed */ }
+          }
+        }
+      }
+
+      // 2. Try workspace file
+      if (api?.readWorkspaceFileBase64) {
+        try {
+          const file = await api.readWorkspaceFileBase64(cleanPath);
+          if (currentRun !== loadCounterRef.current) return;
+          if (file?.base64) {
+            setDataUrl(`data:${mime};base64,${file.base64}`);
+            setLoading(false);
+            return;
+          }
+        } catch {
+          if (filename !== cleanPath) {
+            try {
+              const file = await api.readWorkspaceFileBase64(filename);
+              if (currentRun !== loadCounterRef.current) return;
+              if (file?.base64) {
+                setDataUrl(`data:${mime};base64,${file.base64}`);
+                setLoading(false);
+                return;
+              }
+            } catch { /* proceed */ }
+          }
+        }
+      }
+
+      if (currentRun !== loadCounterRef.current) return;
+      setError(`Could not locate image file "${filename}"`);
+      setLoading(false);
+    } catch (err) {
+      if (currentRun !== loadCounterRef.current) return;
+      setError(err instanceof Error ? err.message : String(err));
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadImage();
+  }, [src]);
+
+  const handleDownload = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const api = typeof window !== "undefined" ? (window as any).nexus : undefined;
+    if (api?.downloadHomeFile) {
+      try {
+        const res = await api.downloadHomeFile(cleanPath);
+        if (res) {
+          setDownloaded(true);
+          setTimeout(() => setDownloaded(false), 1800);
+          return;
+        }
+      } catch { /* proceed */ }
+    }
+
+    if (api?.downloadWorkspaceFile) {
+      try {
+        const res = await api.downloadWorkspaceFile(cleanPath);
+        if (res) {
+          setDownloaded(true);
+          setTimeout(() => setDownloaded(false), 1800);
+          return;
+        }
+      } catch { /* proceed */ }
+    }
+
+    if (dataUrl) {
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = filename || "chart.png";
+      a.click();
+      setDownloaded(true);
+      setTimeout(() => setDownloaded(false), 1800);
+    }
+  };
+
+  return (
+    <div className="rich-chart chat-inline-image-card" role="figure" aria-label={displayTitle}>
+      <div className="chat-inline-image-header">
+        <div className="chat-inline-image-title-group">
+          <span className="chat-inline-image-badge">
+            <ImageIcon size={11} />
+            <span>GRAPH EVIDENCE</span>
+          </span>
+          <span className="chat-inline-image-title" title={displayTitle}>
+            {displayTitle}
+          </span>
+        </div>
+        <div className="rich-chart-actions" style={{ position: "static", opacity: 1 }}>
+          {dataUrl && (
+            <button
+              type="button"
+              className="rich-chart-btn"
+              onClick={() => setZoomed(true)}
+              title="Expand / Zoom image"
+            >
+              <Maximize2 size={11} />
+              <span>Zoom</span>
+            </button>
+          )}
+          <button
+            type="button"
+            className="rich-chart-btn"
+            onClick={handleDownload}
+            title="Download image"
+          >
+            {downloaded ? <Check size={11} /> : <Download size={11} />}
+            <span>{downloaded ? "Saved" : "Download"}</span>
+          </button>
+        </div>
+      </div>
+
+      <div className="chat-inline-image-body">
+        {loading ? (
+          <div className="chat-inline-image-loading">
+            <div className="chat-inline-image-spinner" />
+            <span>Loading graph {filename}…</span>
+          </div>
+        ) : error ? (
+          <div className="chat-inline-image-error">
+            <AlertCircle size={16} />
+            <div className="chat-inline-image-error-text">
+              <span>{error}</span>
+              <button type="button" className="rich-chart-btn" onClick={loadImage}>
+                <RefreshCw size={10} />
+                <span>Retry</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div
+            className="chat-inline-image-preview-wrap"
+            onClick={() => setZoomed(true)}
+            title="Click to view full size"
+          >
+            <img
+              src={dataUrl!}
+              alt={displayTitle}
+              className="chat-inline-image-img"
+              loading="lazy"
+            />
+            <div className="chat-inline-image-zoom-overlay">
+              <ZoomIn size={16} />
+              <span>Click to enlarge</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {alt && alt !== filename && (
+        <div className="chat-inline-image-caption">
+          {alt}
+        </div>
+      )}
+
+      {zoomed && dataUrl && (
+        <div className="chat-image-lightbox-overlay" onClick={() => setZoomed(false)}>
+          <div className="chat-image-lightbox-content" onClick={(e) => e.stopPropagation()}>
+            <div className="chat-image-lightbox-header">
+              <div className="chat-image-lightbox-title-wrap">
+                <ImageIcon size={14} />
+                <span className="chat-image-lightbox-title">{displayTitle}</span>
+              </div>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <button
+                  type="button"
+                  className="rich-chart-btn"
+                  onClick={handleDownload}
+                  title="Download image"
+                >
+                  {downloaded ? <Check size={12} /> : <Download size={12} />}
+                  <span>{downloaded ? "Saved" : "Download"}</span>
+                </button>
+                <button
+                  type="button"
+                  className="rich-chart-btn"
+                  onClick={() => setZoomed(false)}
+                  title="Close preview"
+                >
+                  <X size={12} />
+                  <span>Close</span>
+                </button>
+              </div>
+            </div>
+            <div className="chat-image-lightbox-body">
+              <img
+                src={dataUrl}
+                alt={displayTitle}
+                className="chat-image-lightbox-img"
+              />
+            </div>
+            {alt && (
+              <div className="chat-image-lightbox-caption">
+                {alt}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const CHART_KINDS = new Set(["mermaid", "scatter", "bar", "hbar", "line", "area", "pie", "donut", "radar"]);
+const BLOCK_PATTERN = /(```([\w-]*)\s*\n([\s\S]*?)```)|(!\[([^\]]*)\]\(([^)]+)\))/gi;
 
 export function RichMarkdown({ source, className = "" }: { source: string; className?: string }) {
   const pieces: React.ReactNode[] = [];
-  const pattern = FENCE_PATTERN;
+  const pattern = new RegExp(BLOCK_PATTERN.source, "gi");
   let cursor = 0;
   let match: RegExpExecArray | null;
+
   while ((match = pattern.exec(source || ""))) {
     if (match.index > cursor) {
-      pieces.push(<div key={`md-${cursor}`} dangerouslySetInnerHTML={{ __html: renderMarkdown(source.slice(cursor, match.index)) }} />);
+      const textChunk = source.slice(cursor, match.index);
+      if (textChunk.trim()) {
+        pieces.push(
+          <div key={`md-${cursor}`} dangerouslySetInnerHTML={{ __html: renderMarkdown(textChunk) }} />
+        );
+      }
     }
-    const kind = match[1].toLowerCase();
-    const blockSource = match[2];
-    if (kind === "scatter") pieces.push(<ScatterBlock key={`scatter-${match.index}`} source={blockSource} />);
-    else if (kind === "bar") pieces.push(<CategoryChartBlock key={`bar-${match.index}`} source={blockSource} kind="bar" />);
-    else if (kind === "hbar") pieces.push(<HBarBlock key={`hbar-${match.index}`} source={blockSource} />);
-    else if (kind === "line") pieces.push(<CategoryChartBlock key={`line-${match.index}`} source={blockSource} kind="line" />);
-    else if (kind === "area") pieces.push(<CategoryChartBlock key={`area-${match.index}`} source={blockSource} kind="area" />);
-    else if (kind === "pie") pieces.push(<PieBlock key={`pie-${match.index}`} source={blockSource} donut={false} />);
-    else if (kind === "donut") pieces.push(<PieBlock key={`donut-${match.index}`} source={blockSource} donut={true} />);
-    else if (kind === "radar") pieces.push(<RadarBlock key={`radar-${match.index}`} source={blockSource} />);
-    else pieces.push(<MermaidBlock key={`mermaid-${match.index}`} source={blockSource} />);
+
+    if (match[1]) {
+      const kind = (match[2] || "").toLowerCase();
+      const blockSource = match[3];
+
+      if (CHART_KINDS.has(kind)) {
+        if (kind === "scatter") pieces.push(<ScatterBlock key={`scatter-${match.index}`} source={blockSource} />);
+        else if (kind === "bar") pieces.push(<CategoryChartBlock key={`bar-${match.index}`} source={blockSource} kind="bar" />);
+        else if (kind === "hbar") pieces.push(<HBarBlock key={`hbar-${match.index}`} source={blockSource} />);
+        else if (kind === "line") pieces.push(<CategoryChartBlock key={`line-${match.index}`} source={blockSource} kind="line" />);
+        else if (kind === "area") pieces.push(<CategoryChartBlock key={`area-${match.index}`} source={blockSource} kind="area" />);
+        else if (kind === "pie") pieces.push(<PieBlock key={`pie-${match.index}`} source={blockSource} donut={false} />);
+        else if (kind === "donut") pieces.push(<PieBlock key={`donut-${match.index}`} source={blockSource} donut={true} />);
+        else if (kind === "radar") pieces.push(<RadarBlock key={`radar-${match.index}`} source={blockSource} />);
+        else pieces.push(<MermaidBlock key={`mermaid-${match.index}`} source={blockSource} />);
+      } else {
+        pieces.push(
+          <div key={`code-${match.index}`} dangerouslySetInnerHTML={{ __html: renderMarkdown(match[1]) }} />
+        );
+      }
+    } else if (match[4]) {
+      const altText = match[5] || "";
+      const imgSrc = match[6] || "";
+      pieces.push(
+        <ChatImageBlock key={`img-${match.index}`} alt={altText} src={imgSrc} />
+      );
+    }
+
     cursor = match.index + match[0].length;
   }
+
   if (cursor < (source || "").length || !pieces.length) {
-    pieces.push(<div key={`md-${cursor}`} dangerouslySetInnerHTML={{ __html: renderMarkdown((source || "").slice(cursor)) }} />);
+    const remaining = (source || "").slice(cursor);
+    if (remaining.trim() || !pieces.length) {
+      pieces.push(
+        <div key={`md-${cursor}`} dangerouslySetInnerHTML={{ __html: renderMarkdown(remaining) }} />
+      );
+    }
   }
+
   return <div className={`rich-markdown md ${className}`}>{pieces}</div>;
 }

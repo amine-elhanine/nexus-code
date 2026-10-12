@@ -337,6 +337,14 @@ export function useHomeController(enabled = true) {
       setStreamingText("");
       setRunningSessionIds((curr) => new Set(curr).add(sessionId));
 
+      // Optimistic auto-title (backend persists the same rule): name the chat
+      // after the first sent message while it still has the default title.
+      const firstText = text.trim().slice(0, 60);
+      if (firstText && currentActive.title === "New chat") {
+        setActiveSession((curr) => (curr && curr.id === sessionId ? { ...curr, title: firstText } : curr));
+        setSessions((curr) => sortHomeSessions(curr.map((s) => (s.id === sessionId ? { ...s, title: firstText } : s))));
+      }
+
       // Append user turn locally for instant feedback
       setActiveSession((curr) => {
         if (!curr || curr.id !== sessionId) return curr;

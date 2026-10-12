@@ -1,0 +1,13 @@
+{
+  "id": "fastapi-review",
+  "name": "Fastapi Review",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Review a FastAPI application for architecture, async correctness, dependency injection, Pydantic schemas, security, performance, and testability.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

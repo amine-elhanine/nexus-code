@@ -1,0 +1,13 @@
+{
+  "id": "php-reviewer",
+  "name": "Php Reviewer",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Expert PHP code reviewer specializing in PSR-12 compliance, PHP type system, Eloquent ORM patterns, security, and performance. Use for all PHP code changes. MUST BE USED for PHP projects.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

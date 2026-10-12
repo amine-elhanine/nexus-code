@@ -36,7 +36,7 @@ import type { ProviderConfig } from "./store.js";
 import type { AgentEvent, AgentMemoryContext, AgentMode, AgentSettings, AgentTaskKind, AgentUsage, AttachmentDoc, HistoryInput, HomeTaskContract, PlanItem } from "./agent-types.js";
 import type { TaskComplexity } from "./task-routing.js";
 import { buildSystemPrompt, homeRequestNamesFileFormat, inferHomeOutputFormats, inferHomeTaskContract } from "./agent-prompt.js";
-import { DoomLoopError, loopPreventionMiddleware, toolParameterNormalizationMiddleware } from "./loop-prevention.js";
+import { DoomLoopError, RESEARCH_BUDGET_BASE, RESEARCH_BUDGET_WITH_RESEARCH, loopPreventionMiddleware, resolveResearchBudget, toolParameterNormalizationMiddleware } from "./loop-prevention.js";
 import { buildVerificationBatch, classifyTaskComplexity, detectPackageManager, findTargetedTests, isContinueRequest, isNewProjectTask, isWebTask, pickAffectedPackageCommands, pickFileScopedVerification, pickVerificationCommands, shouldSkipMcpForTask } from "./task-routing.js";
 import { describeToolCall, extractGithubLogin, extractSkillNameFromPath, loadedSkillNamesFromMessages, toolCallSummary, toolResultExcerpt } from "./tool-describe.js";
 import { saveLastRunCheckpoint, summarizeCompletedSteps } from "./run-checkpoint.js";
@@ -46,7 +46,7 @@ import type { AgentPromptAsset } from "./prompt-assets.js";
 // agent-service; the implementations now live in the focused modules above.
 export type { AgentMode, PlanItem, AgentTurn, HistoryEventItem, HistoryInput, AgentSettings, AgentUsage, AgentEvent, AgentMemoryContext, AgentTaskKind, HomeTaskContract, AttachmentDoc } from "./agent-types.js";
 export { inferHomeTaskContract, inferHomeOutputFormats, homeRequestNamesFileFormat } from "./agent-prompt.js";
-export { DoomLoopError, toolParameterNormalizationMiddleware, loopPreventionMiddleware } from "./loop-prevention.js";
+export { DoomLoopError, RESEARCH_BUDGET_BASE, RESEARCH_BUDGET_WITH_RESEARCH, resolveResearchBudget, toolParameterNormalizationMiddleware, loopPreventionMiddleware } from "./loop-prevention.js";
 export type { PackageManagerName, PackageManager, TaskComplexity } from "./task-routing.js";
 export { detectPackageManager, pickVerificationCommand, pickVerificationCommands, pickAffectedPackageCommands, pickFileScopedVerification, findTargetedTests, buildVerificationBatch, classifyTaskComplexity, shouldSkipMcpForTask, isWebTask, isNewProjectTask, isContinueRequest } from "./task-routing.js";
 export { extractSkillNameFromPath, loadedSkillNamesFromMessages, describeToolCall, extractGithubLogin, toolResultExcerpt } from "./tool-describe.js";
@@ -683,12 +683,18 @@ export async function runProjectAgent(options: {
 
   const allCodeTools = createCodeIntelligenceTools(projectRoot);
   const wantsBrowser = isWebTask(request);
+  // Adaptive research budget: tasks that need the latest docs/facts get room
+  // to browse (20), produce-from-local-context tasks get a tight budget (8)
+  // so the agent switches to creating. Non-deliverable tasks are unbudgeted.
+  const homeResearchBudget = isGeneral
+    ? resolveResearchBudget({ outputRequired: Boolean(homeTaskContract?.expectsOutput), needsResearch: homeTaskContract?.needsResearch })
+    : null;
   let homeResearchToolCalls = 0;
   const beforeHomeResearch = () => {
-    if (!isGeneral || !homeTaskContract?.expectsOutput) return null;
+    if (homeResearchBudget === null) return null;
     homeResearchToolCalls++;
-    if (homeResearchToolCalls > 8) {
-      return "[SUPERVISOR INTERVENTION] The research budget for this task has been reached. Use the evidence already collected and take the next result-producing action. Do not perform another web search or page fetch unless it directly unblocks creation of the requested output.";
+    if (homeResearchToolCalls > homeResearchBudget) {
+      return `[SUPERVISOR INTERVENTION] The research budget for this task has been reached (${homeResearchBudget} web lookups). Use the evidence already collected and take the next result-producing action. Do not perform another web search or page fetch unless it directly unblocks creation of the requested output.`;
     }
     return null;
   };
@@ -844,7 +850,7 @@ export async function runProjectAgent(options: {
     backend: compositeBackend as any,
     middleware: [
       toolParameterNormalizationMiddleware(projectRoot),
-      loopPreventionMiddleware({ general: isGeneral, outputRequired: Boolean(homeTaskContract?.expectsOutput), beforeModify: beforeCodeModify }),
+      loopPreventionMiddleware({ general: isGeneral, outputRequired: Boolean(homeTaskContract?.expectsOutput), needsResearch: homeTaskContract?.needsResearch, beforeModify: beforeCodeModify }),
       ...(isSimple ? [] : [todoListMiddleware()]),
       ...(hooksMiddleware ? [hooksMiddleware] : []),
     ],
@@ -1336,7 +1342,9 @@ export async function runProjectAgent(options: {
         // what the deliverable is; the sentinel + substance + no-named-format
         // guardrails keep it from dodging real file work.
         const responseTextTrimmed = String(state.response || "").trimEnd();
-        const hasVisualBlocks = /```(?:bar|hbar|line|area|pie|donut|scatter|radar|mermaid)\b/i.test(responseTextTrimmed);
+        const hasVisualBlocks =
+          /```(?:bar|hbar|line|area|pie|donut|scatter|radar|mermaid)\b/i.test(responseTextTrimmed) ||
+          /!\[[^\]]*\]\([^)]+\.(png|jpe?g|svg|webp|gif)\)/i.test(responseTextTrimmed);
         const chatAnswerDeclared =
           wantsDeliverable &&
           !homeRequestNamesFileFormat(request) &&
@@ -1382,7 +1390,7 @@ export async function runProjectAgent(options: {
           return {
             verification: "failed",
             repairs: currentRepairs + 1,
-            verifyFeedback: `You placed charts/graphs inside ${mdFilesWithCharts.map((f) => f.path).join(", ")}, but graphs must be included DIRECTLY in your chat response so the user can see them rendered on screen! The chat interface natively renders \`\`\`bar, \`\`\`line, \`\`\`scatter, and \`\`\`mermaid blocks. Do not offload them to an .md file. Deliver the complete visual answer with the charts directly in chat now.`,
+            verifyFeedback: `You placed charts/graphs inside ${mdFilesWithCharts.map((f) => f.path).join(", ")}, but graphs must be included DIRECTLY in your chat response so the user can see them rendered on screen! The chat interface natively renders \`\`\`bar, \`\`\`line, \`\`\`scatter, and \`\`\`mermaid blocks, as well as image charts via ![Caption](filename.png). Do not offload them to an .md file. Deliver the complete visual answer with the charts directly in chat now.`,
           };
         }
         const conversationalPromise = /\b(let me|i will|now i'll|i am going to|i'll now|going to write|next step is to)\b.{0,50}\b(write|create|generate|run|execute|build)\b/i.test(state.response || "");
@@ -1746,12 +1754,25 @@ export async function runProjectAgent(options: {
     result = await graph.invoke({ projectRoot, request }, { recursionLimit: outerLimit, signal });
   } catch (error) {
     let runError: unknown = error;
+    // Failed/cancelled runs still burned provider tokens (streamed chunks,
+    // subagent totals). Finalize the accumulator and stash it on the thrown
+    // error so IPC callers can persist it — otherwise session totals only
+    // ever grow on successful runs.
+    const attachFailureUsage = (err: unknown): unknown => {
+      if (err && typeof err === "object" && !(err as { usage?: unknown }).usage) {
+        try {
+          const fallbackOutput = unaccountedOutputChars > 0 ? Math.max(1, estimateTokens("x".repeat(unaccountedOutputChars))) : 0;
+          (err as { usage?: unknown }).usage = usage.finalize(modelName, estimatedFallbackInputTokens, fallbackOutput);
+        } catch { /* usage must never break the error path */ }
+      }
+      return err;
+    };
     for (;;) {
       const isCancel = runError instanceof RunCancelledError || (runError as any)?.name === "AbortError" || isCancelled() || signal?.aborted;
       if (isCancel) {
         saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
         await finishRunJournals("interrupted");
-        throw new RunCancelledError();
+        throw attachFailureUsage(new RunCancelledError());
       }
       const isDoom = runError instanceof DoomLoopError || (runError as any)?.name === "DoomLoopError";
       const isBudget = isRecursionLimitError(runError);
@@ -1785,7 +1806,7 @@ export async function runProjectAgent(options: {
         // task instead of a stale one, and record the journals as failed.
         saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
         await finishRunJournals("failed");
-        throw runError;
+        throw attachFailureUsage(runError);
       }
       saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
       await finishRunJournals("interrupted");
@@ -1822,14 +1843,18 @@ export async function runProjectAgent(options: {
   }
   // Never let final prose override an unmet Home output contract. A failed
   // run can still be resumed, but it must be reported as incomplete.
-  const homeFreshFiles = isGeneral && homeTaskContract?.expectsOutput
+  const homeFreshFiles = isGeneral
     ? await findFreshHomeFiles(projectRoot, initialHomeFiles, runStartMs)
     : [];
 
-  // Ensure visual charts are in the chat response: if the model placed charts inside an unrequested
-  // .md file instead of the response, extract the chart blocks and embed them directly in the chat response.
+  // Ensure visual charts and graph images are in the chat response:
+  // 1) If the model placed charts inside an unrequested .md file instead of the response, extract and embed them.
+  // 2) If the model generated fresh image files (e.g. via python matplotlib chart_*.png) that are not embedded in chat,
+  //    embed them directly with descriptive titles so the user sees the visual evidence alongside the answers.
   if (isGeneral && result?.response) {
-    let hasVisualBlocks = /```(?:bar|hbar|line|area|pie|donut|scatter|radar|mermaid)\b/i.test(result.response);
+    let hasVisualBlocks =
+      /```(?:bar|hbar|line|area|pie|donut|scatter|radar|mermaid)\b/i.test(result.response) ||
+      /!\[[^\]]*\]\([^)]+\.(png|jpe?g|svg|webp|gif)\)/i.test(result.response);
     const requestWantsVisuals = /\b(chart|charts|graph|graphs|diagram|diagrams|plot|plots|visual|visuals|visualization)\b/i.test(request);
     if (!homeRequestNamesFileFormat(request) || requestWantsVisuals) {
       for (let i = homeFreshFiles.length - 1; i >= 0; i--) {
@@ -1849,6 +1874,38 @@ export async function runProjectAgent(options: {
               }
             }
           } catch { /* best effort */ }
+        }
+      }
+
+      // Check for fresh image files produced during the run (e.g. chart_*.png, plot.svg, etc.)
+      const freshImages = homeFreshFiles.filter((f) => /\.(png|jpe?g|svg|webp|gif)$/i.test(f));
+      if (freshImages.length > 0) {
+        const unreferencedImages: string[] = [];
+        for (const img of freshImages) {
+          const basename = path.basename(img);
+          const isEmbedded =
+            result.response.includes(`](${img})`) ||
+            result.response.includes(`](${basename})`) ||
+            result.response.includes(`](./${basename})`) ||
+            result.response.includes(`](/${basename})`);
+          if (!isEmbedded) {
+            unreferencedImages.push(img);
+          }
+        }
+
+        if (unreferencedImages.length > 0) {
+          const imageEmbeds = unreferencedImages.map((img) => {
+            const base = path.basename(img);
+            const rawName = base.replace(/\.[^/.]+$/, "");
+            const cleanTitle = rawName.replace(/[_-]+/g, " ").replace(/^(chart|plot|graph)\s+/i, "").trim();
+            const title = cleanTitle
+              ? cleanTitle.split(/\s+/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ") + " Chart"
+              : "Visual Evidence";
+            return `![${title}](${img})`;
+          }).join("\n\n");
+
+          result.response = `${result.response.trim()}\n\n### Visual Evidence & Charts\n\n${imageEmbeds}`;
+          hasVisualBlocks = true;
         }
       }
     }

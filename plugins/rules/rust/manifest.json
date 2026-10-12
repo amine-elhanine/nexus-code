@@ -1,0 +1,13 @@
+{
+  "id": "rules-rust",
+  "name": "Rust Rules",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Rust coding rules and conventions.",
+  "capabilities": [
+    "rules"
+  ],
+  "modes": [
+    "code"
+  ]
+}

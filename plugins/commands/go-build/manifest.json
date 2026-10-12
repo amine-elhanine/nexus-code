@@ -1,0 +1,13 @@
+{
+  "id": "go-build",
+  "name": "Go Build",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Fix Go build errors, go vet warnings, and linter issues incrementally. Invokes the go-build-resolver agent for minimal, surgical fixes.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

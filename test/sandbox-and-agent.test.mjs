@@ -1177,6 +1177,21 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.equal(computed.estimatedCost, 0.0001);
   });
 
+  await test('calculateSessionUsage counts failed-run error events so failures add their burned tokens', () => {
+    const okUsage = { inputTokens: 1000, outputTokens: 250, totalTokens: 1250, estimatedCost: 0.0003 };
+    const failedUsage = { inputTokens: 500, outputTokens: 100, totalTokens: 600, estimatedCost: 0.0001 };
+    const computed = calculateSessionUsage([
+      { role: 'user', text: 'Do it' },
+      { role: 'assistant', text: 'Done', usage: okUsage },
+      { role: 'event', kind: 'error', text: 'Agent run failed: boom', usage: failedUsage },
+      { role: 'event', kind: 'tool', text: 'grep_search', usage: { inputTokens: 999, outputTokens: 999, totalTokens: 1998, estimatedCost: 9 } },
+    ]);
+    assert.equal(computed.inputTokens, 1500);
+    assert.equal(computed.outputTokens, 350);
+    assert.equal(computed.totalTokens, 1850);
+    assert.equal(computed.estimatedCost, 0.0004);
+  });
+
   console.log('\n=== 12. Git Worktree Isolation & Lifecycle Tests ===');
 
   await test('createSessionWorktree creates isolated worktree directory and branch in a git repository', async () => {

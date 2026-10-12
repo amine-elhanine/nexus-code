@@ -1,0 +1,13 @@
+{
+  "id": "gan-build",
+  "name": "Gan Build",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Run a generator/evaluator build loop for implementation tasks with bounded iterations and scoring.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

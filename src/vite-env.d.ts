@@ -80,9 +80,10 @@ export interface NexusApi {
   openSkillsFolder: (scope: "global" | "project") => Promise<boolean>;
   listMarketplacePlugins: () => Promise<Array<{ id: string; name: string; description?: string; version?: string; author?: string; source: string; capabilities?: string[]; modes?: string[]; installed?: boolean; installedVersion?: string }>>;
   listInstalledPlugins: () => Promise<Array<{ name: string; dir: string; manifest: { id?: string; version?: string; modes?: unknown } }>>;
-  getPluginRegistry: () => Promise<{ registryUrl?: string; developerCatalog?: Array<{ id: string; name: string; description?: string; version?: string; author?: string; source: string; capabilities?: string[]; modes?: string[] }> }>;
+  getPluginRegistry: () => Promise<{ registryUrl?: string; devRoot?: string; developerCatalog?: Array<{ id: string; name: string; description?: string; version?: string; author?: string; source: string; capabilities?: string[]; modes?: string[] }> }>;
   savePluginRegistry: (config: unknown) => Promise<unknown>;
   publishPlugin: () => Promise<unknown>;
+  pickDevRoot: () => Promise<string | null>;
   removePublishedPlugin: (id: string) => Promise<void>;
   installPlugin: (entry: unknown) => Promise<unknown>;
   uninstallPlugin: (id: string) => Promise<void>;

@@ -1,0 +1,13 @@
+{
+  "id": "cpp-review",
+  "name": "Cpp Review",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Comprehensive C++ code review for memory safety, modern C++ idioms, concurrency, and security. Invokes the cpp-reviewer agent.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

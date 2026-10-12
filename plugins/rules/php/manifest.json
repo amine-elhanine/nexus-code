@@ -1,0 +1,13 @@
+{
+  "id": "rules-php",
+  "name": "Php Rules",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Php coding rules and conventions.",
+  "capabilities": [
+    "rules"
+  ],
+  "modes": [
+    "code"
+  ]
+}

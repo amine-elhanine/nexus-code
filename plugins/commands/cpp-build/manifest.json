@@ -1,0 +1,13 @@
+{
+  "id": "cpp-build",
+  "name": "Cpp Build",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Fix C++ build errors, CMake issues, and linker problems incrementally. Invokes the cpp-build-resolver agent for minimal, surgical fixes.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

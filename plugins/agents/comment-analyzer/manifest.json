@@ -1,0 +1,13 @@
+{
+  "id": "comment-analyzer",
+  "name": "Comment Analyzer",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Analyze code comments for accuracy, completeness, maintainability, and comment rot risk.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

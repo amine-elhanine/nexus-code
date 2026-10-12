@@ -1,0 +1,13 @@
+{
+  "id": "update-docs",
+  "name": "Update Docs",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Sync documentation from source-of-truth files such as scripts, schemas, routes, and exports.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

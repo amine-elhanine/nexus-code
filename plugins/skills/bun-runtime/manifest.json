@@ -1,0 +1,13 @@
+{
+  "id": "bun-runtime",
+  "name": "Bun Runtime",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Bun as runtime, package manager, bundler, and test runner. When to choose Bun vs Node, migration notes, and Vercel support.",
+  "capabilities": [
+    "skills"
+  ],
+  "modes": [
+    "code"
+  ]
+}

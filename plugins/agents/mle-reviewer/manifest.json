@@ -1,0 +1,13 @@
+{
+  "id": "mle-reviewer",
+  "name": "Mle Reviewer",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Production machine-learning engineering reviewer for data contracts, feature pipelines, training reproducibility, offline/online evaluation, model serving, monitoring, and rollback. Use when ML, MLOps, model training, inference, feature store, or evaluation code changes.",
+  "capabilities": [
+    "agents"
+  ],
+  "modes": [
+    "code"
+  ]
+}

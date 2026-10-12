@@ -1,0 +1,13 @@
+{
+  "id": "gan-design",
+  "name": "Gan Design",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Run a generator/evaluator design loop for frontend or visual work with bounded iterations and scoring.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

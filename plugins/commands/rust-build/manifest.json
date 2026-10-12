@@ -1,0 +1,13 @@
+{
+  "id": "rust-build",
+  "name": "Rust Build",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Fix Rust build errors, borrow checker issues, and dependency problems incrementally. Invokes the rust-build-resolver agent for minimal, surgical fixes.",
+  "capabilities": [
+    "commands"
+  ],
+  "modes": [
+    "code"
+  ]
+}

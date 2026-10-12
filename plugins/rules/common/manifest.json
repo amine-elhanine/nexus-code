@@ -1,0 +1,13 @@
+{
+  "id": "rules-common",
+  "name": "Common Rules",
+  "version": "1.0.0",
+  "author": "Nexus",
+  "description": "Common coding rules and conventions.",
+  "capabilities": [
+    "rules"
+  ],
+  "modes": [
+    "code"
+  ]
+}

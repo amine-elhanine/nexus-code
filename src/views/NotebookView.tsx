@@ -1000,6 +1000,9 @@ export function NotebookView({
                 {sources.map((source) => {
                   const inScope = !excludedIds.includes(source.id);
                   const isProcessing = source.status !== "ready" && source.status !== "failed";
+                  // The last in-scope source cannot be excluded: an empty
+                  // selection would silently fall back to searching all files.
+                  const isLastInScope = inScope && scopedCount <= 1;
                   return (
                     <div
                       className={`notebook-source-card${inScope ? " in-scope" : " excluded"}${isProcessing ? " is-processing" : ""}`}
@@ -1011,7 +1014,8 @@ export function NotebookView({
                           type="checkbox"
                           checked={inScope}
                           onChange={() => onToggleScope(source.id)}
-                          title={inScope ? "In scope for search (click to exclude)" : "Excluded from search (click to include)"}
+                          disabled={isLastInScope}
+                          title={isLastInScope ? "At least one source must stay selected" : inScope ? "In scope for search (click to exclude)" : "Excluded from search (click to include)"}
                           className="scope-checkbox"
                         />
                         <span className="notebook-source-icon">

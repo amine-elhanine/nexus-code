@@ -65,7 +65,12 @@ export function getSessionUsage(session?: SessionRecord | null): AgentUsage | un
   let msgCost = 0;
   let msgCostKnown = true;
   for (const message of session.messages || []) {
-    if (message.usage && message.role === "assistant") {
+    // Mirrors calculateSessionUsage (store.ts): assistant turns plus terminal
+    // error events from failed/cancelled runs, so header totals include burn.
+    const countable =
+      message.usage &&
+      (message.role === "assistant" || ((message as { kind?: string }).kind === "error"));
+    if (countable && message.usage) {
       msgInput += message.usage.inputTokens || 0;
       msgOutput += message.usage.outputTokens || 0;
       msgTotal += message.usage.totalTokens || 0;
