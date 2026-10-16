@@ -60,18 +60,34 @@ function modesLabel(modes: string[] | undefined): string {
   return modes!.map(capMode).join(" · ");
 }
 
+function canBeProjectScoped(modes: string[] | undefined, currentMode?: string, projectActive?: boolean): { allowed: boolean; reason?: string } {
+  if (!projectActive) {
+    return { allowed: false, reason: "Requires an open project workspace" };
+  }
+  if (currentMode && currentMode !== "code") {
+    return { allowed: false, reason: "Project scope is only selectable in Code mode" };
+  }
+  const normalized = (modes || []).map((m) => m.toLowerCase().trim()).filter(Boolean);
+  if (normalized.length !== 1 || normalized[0] !== "code") {
+    return { allowed: false, reason: "Only Code-mode-only skills can be project-scoped" };
+  }
+  return { allowed: true };
+}
+
 export function SkillsManager({
   hasProject,
   enabled,
   onToggle,
+  mode = "code",
 }: {
   hasProject: boolean;
   enabled: boolean;
   onToggle: (enabled: boolean) => Promise<void>;
+  mode?: "home" | "code" | "notebook";
 }) {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [activeTab, setActiveTab] = useState<"import" | "create" | "preview">("import");
-  const [scope, setScope] = useState<"global" | "project">(hasProject ? "project" : "global");
+  const [scope, setScope] = useState<"global" | "project">("global");
   const [filterScope, setFilterScope] = useState<"all" | "global" | "project" | "system">("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedSources, setSelectedSources] = useState<string[]>([]);
@@ -88,12 +104,19 @@ export function SkillsManager({
   const [newSkillContent, setNewSkillContent] = useState("");
   const [newSkillModes, setNewSkillModes] = useState<string[]>([]);
   const [savingModesPath, setSavingModesPath] = useState("");
+  const [changingScopePath, setChangingScopePath] = useState("");
 
   const api = window.nexus || window.forgepilot;
 
   useEffect(() => {
     void reload();
   }, [hasProject]);
+
+  useEffect(() => {
+    if (scope === "project" && !canBeProjectScoped(newSkillModes, mode, hasProject).allowed) {
+      setScope("global");
+    }
+  }, [newSkillModes, mode, hasProject]);
 
   async function reload() {
     setLoadError("");
@@ -102,6 +125,26 @@ export function SkillsManager({
       setSkills(list);
     } catch (loadFail) {
       setLoadError(loadFail instanceof Error ? loadFail.message : "Unable to list skills.");
+    }
+  }
+
+  async function handleChangeScope(skill: SkillInfo, targetScope: "global" | "project") {
+    if (skill.source === targetScope) return;
+    setError("");
+    setSuccessNote("");
+    setChangingScopePath(skill.path);
+    try {
+      const updated = await api.changeSkillScope(skill.path, targetScope);
+      setSuccessNote(`Moved "${skill.name}" to ${targetScope} library.`);
+      await reload();
+      if (previewSkill?.path === skill.path) {
+        setPreviewSkill(updated);
+      }
+    } catch (scopeError) {
+      setError(scopeError instanceof Error ? scopeError.message : "Unable to change skill scope.");
+      await reload();
+    } finally {
+      setChangingScopePath("");
     }
   }
 
@@ -209,11 +252,15 @@ export function SkillsManager({
 
   async function handleSetModes(skill: SkillInfo, modes: string[]) {
     setError("");
+    setSuccessNote("");
     setSavingModesPath(skill.path);
     try {
       const updated = await api.setSkillModes(skill.path, modes);
-      setSkills((current) => current.map((s) => (s.path === skill.path ? { ...s, modes: updated?.modes || modes } : s)));
-      if (previewSkill?.path === skill.path) setPreviewSkill((current) => (current ? { ...current, modes: updated?.modes || modes } : current));
+      if (skill.source === "project" && (modes.length !== 1 || modes[0] !== "code")) {
+        setSuccessNote(`Modes updated. Since "${skill.name}" is no longer Code-mode only, it was automatically moved to the Global library.`);
+      }
+      await reload();
+      if (previewSkill?.path === skill.path) setPreviewSkill(updated || null);
     } catch (modesError) {
       setError(modesError instanceof Error ? modesError.message : "Unable to save skill modes.");
       await reload();
@@ -358,10 +405,43 @@ export function SkillsManager({
                       <span className={`skills-badge ${skill.source}`}>{skill.source}</span>
                     </div>
                     <p className="skills-card-desc">{skill.description || "No description provided."}</p>
-                    <div className="skills-card-footer">
+                    <div className="skills-card-footer" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                       <span className="skills-mode-pill">
                         {modesLabel(skill.modes)}
                       </span>
+                      {skill.source !== "system" && (
+                        <div style={{ display: "flex", gap: "4px" }}>
+                          {skill.source === "project" ? (
+                            <button
+                              type="button"
+                              className="skills-action-btn"
+                              style={{ width: "auto", padding: "1px 6px", fontSize: "10px" }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void handleChangeScope(skill, "global");
+                              }}
+                              disabled={changingScopePath === skill.path}
+                              title="Move skill to Global library"
+                            >
+                              Make Global
+                            </button>
+                          ) : canBeProjectScoped(skill.modes, mode, hasProject).allowed ? (
+                            <button
+                              type="button"
+                              className="skills-action-btn"
+                              style={{ width: "auto", padding: "1px 6px", fontSize: "10px" }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void handleChangeScope(skill, "project");
+                              }}
+                              disabled={changingScopePath === skill.path}
+                              title="Move skill to current Project"
+                            >
+                              Make Project
+                            </button>
+                          ) : null}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -432,8 +512,11 @@ export function SkillsManager({
                 Destination Library
                 <select value={scope} onChange={(event) => setScope(event.target.value as "global" | "project")}>
                   <option value="global">Global (available to all projects)</option>
-                  <option value="project" disabled={!hasProject}>
-                    Current project {hasProject ? "" : "(open a project first)"}
+                  <option
+                    value="project"
+                    disabled={mode !== "code" || !hasProject}
+                  >
+                    Current project {mode !== "code" ? "(Code mode only)" : hasProject ? "" : "(open a project first)"}
                   </option>
                 </select>
               </label>
@@ -498,7 +581,12 @@ export function SkillsManager({
                 Destination Library
                 <select value={scope} onChange={(event) => setScope(event.target.value as "global" | "project")}>
                   <option value="global">Global (available to all projects)</option>
-                  <option value="project" disabled={!hasProject}>Current project</option>
+                  <option
+                    value="project"
+                    disabled={!canBeProjectScoped(newSkillModes, mode, hasProject).allowed}
+                  >
+                    Current project {canBeProjectScoped(newSkillModes, mode, hasProject).allowed ? "" : `(${canBeProjectScoped(newSkillModes, mode, hasProject).reason})`}
+                  </option>
                 </select>
               </label>
               <label>
@@ -550,14 +638,34 @@ export function SkillsManager({
               </div>
 
               {previewSkill.source !== "system" && (
-                <label style={{ margin: "6px 0" }}>
-                  Usable in modes
-                  <ModeSelector
-                    modes={previewSkill.modes || []}
-                    disabled={savingModesPath === previewSkill.path}
-                    onChange={(next) => void handleSetModes(previewSkill, next)}
-                  />
-                </label>
+                <>
+                  <label style={{ margin: "6px 0" }}>
+                    Destination Library
+                    <select
+                      value={previewSkill.source}
+                      disabled={changingScopePath === previewSkill.path}
+                      onChange={(e) => void handleChangeScope(previewSkill, e.target.value as "global" | "project")}
+                      style={{ width: "100%", fontSize: "11px", padding: "4px 8px", marginTop: "2px" }}
+                    >
+                      <option value="global">Global (available everywhere)</option>
+                      <option
+                        value="project"
+                        disabled={!canBeProjectScoped(previewSkill.modes, mode, hasProject).allowed && previewSkill.source !== "project"}
+                      >
+                        Project {canBeProjectScoped(previewSkill.modes, mode, hasProject).allowed ? "(current workspace)" : `— ${canBeProjectScoped(previewSkill.modes, mode, hasProject).reason}`}
+                      </option>
+                    </select>
+                  </label>
+
+                  <label style={{ margin: "6px 0" }}>
+                    Usable in modes
+                    <ModeSelector
+                      modes={previewSkill.modes || []}
+                      disabled={savingModesPath === previewSkill.path}
+                      onChange={(next) => void handleSetModes(previewSkill, next)}
+                    />
+                  </label>
+                </>
               )}
 
               <small style={{ color: "var(--faint)", fontSize: "10px", wordBreak: "break-all", display: "block", margin: "4px 0" }}>

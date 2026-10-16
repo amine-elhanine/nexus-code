@@ -1487,6 +1487,7 @@ function App() {
       {showSkills && (
         <SkillsModal
           hasProject={Boolean(activeProject)}
+          mode={area}
           enabled={skillsEnabled}
           onToggle={async (enabled) => {
             setSkillsEnabled(enabled);

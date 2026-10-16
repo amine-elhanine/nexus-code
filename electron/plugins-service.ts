@@ -7,6 +7,8 @@ import { existsSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import JSZip from "jszip";
+import electronPkg from "electron";
+const app = (electronPkg as any)?.app || (electronPkg as any)?.default?.app;
 import { getPluginRegistryConfig, savePluginRegistryConfig, type PluginRegistryEntry } from "./store.js";
 
 export type PluginManifest = { id?: string; name?: string; description?: string; version?: string; author?: string; capabilities?: string[]; modes?: unknown };
@@ -34,50 +36,87 @@ export function pluginAppliesToMode(modes: unknown, mode: PluginMode): boolean {
   return normalized.length === 0 || normalized.includes(mode);
 }
 
+export function globalPluginsDir(): string {
+  if (app?.getPath) return path.join(app.getPath("userData"), "plugins");
+  if (process.env.NEXUS_GLOBAL_PLUGINS_DIR) return process.env.NEXUS_GLOBAL_PLUGINS_DIR;
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  return path.join(home, ".nexus", "plugins");
+}
+
 export function pluginsDir(projectRoot: string): string {
   return path.join(path.resolve(projectRoot), ".nexus", "plugins");
 }
 
-/** Lists installed plugins. Tolerant: unreadable or malformed entries are
- *  skipped with the directory name as the fallback plugin name. */
-export async function discoverPlugins(projectRoot: string): Promise<PluginInfo[]> {
-  const root = pluginsDir(projectRoot);
-  let entries: import("node:fs").Dirent[] = [];
-  try {
-    entries = (await fs.readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory());
-  } catch {
-    return [];
-  }
-  const plugins: PluginInfo[] = [];
-  for (const entry of entries) {
-    const dir = path.join(root, entry.name);
-    let manifest: PluginManifest = {};
+/** Lists installed plugins across global and project directories. Tolerant:
+ *  unreadable or malformed entries are skipped with the directory name as the fallback plugin name. */
+export async function discoverPlugins(projectRoot?: string, options?: { skipGlobal?: boolean }): Promise<PluginInfo[]> {
+  const pluginMap = new Map<string, PluginInfo>();
+
+  const scanDirectory = async (root: string) => {
+    let entries: import("node:fs").Dirent[] = [];
     try {
-      manifest = JSON.parse(await fs.readFile(path.join(dir, "manifest.json"), "utf8"));
-      if (typeof manifest !== "object" || manifest === null) manifest = {};
-    } catch { /* manifest optional */ }
-    const detectedCaps = detectPluginCapabilities(dir);
-    const caps = Array.isArray(manifest.capabilities) && manifest.capabilities.length > 0
-      ? manifest.capabilities
-      : detectedCaps;
-    manifest = { ...manifest, capabilities: caps };
-    plugins.push({
-      name: typeof manifest.name === "string" && manifest.name.trim() ? manifest.name.trim() : entry.name,
-      dir,
-      manifest,
-    });
+      entries = (await fs.readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory());
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const dir = path.join(root, entry.name);
+      let manifest: PluginManifest = {};
+      try {
+        manifest = JSON.parse(await fs.readFile(path.join(dir, "manifest.json"), "utf8"));
+        if (typeof manifest !== "object" || manifest === null) manifest = {};
+      } catch { /* manifest optional */ }
+      const detectedCaps = detectPluginCapabilities(dir);
+      const caps = Array.isArray(manifest.capabilities) && manifest.capabilities.length > 0
+        ? manifest.capabilities
+        : detectedCaps;
+      manifest = { ...manifest, capabilities: caps };
+      const id = safeId(
+        typeof manifest.id === "string" && manifest.id.trim()
+          ? manifest.id
+          : typeof manifest.name === "string" && manifest.name.trim()
+            ? manifest.name
+            : entry.name
+      );
+      pluginMap.set(id, {
+        name: typeof manifest.name === "string" && manifest.name.trim() ? manifest.name.trim() : entry.name,
+        dir,
+        manifest,
+      });
+    }
+  };
+
+  // 1. Scan global plugins if not explicitly skipped
+  if (!options?.skipGlobal) {
+    try {
+      const gDir = globalPluginsDir();
+      if (existsSync(gDir)) {
+        await scanDirectory(gDir);
+      }
+    } catch { /* ignore global read errors */ }
   }
-  return plugins;
+
+  // 2. Scan project plugins if projectRoot provided
+  if (projectRoot) {
+    try {
+      const pDir = pluginsDir(projectRoot);
+      if (existsSync(pDir) && (!existsSync(globalPluginsDir()) || path.resolve(pDir) !== path.resolve(globalPluginsDir()))) {
+        await scanDirectory(pDir);
+      }
+    } catch { /* ignore project read errors */ }
+  }
+
+  return Array.from(pluginMap.values());
 }
 
 /** Skill folders contributed by plugins (one per plugin, if present). */
-export async function pluginSkillDirs(projectRoot: string): Promise<string[]> {
+export async function pluginSkillDirs(projectRoot?: string): Promise<string[]> {
   return (await pluginSkillDirsWithModes(projectRoot)).map((entry) => entry.dir);
 }
 
 /** Skill folders with the owning plugin's default modes ([] = all modes).
  * A skill's own `modes:` frontmatter overrides this default (see skills-service). */
-export async function pluginSkillDirsWithModes(projectRoot: string): Promise<Array<{ dir: string; modes: PluginMode[] }>> {
+export async function pluginSkillDirsWithModes(projectRoot?: string): Promise<Array<{ dir: string; modes: PluginMode[] }>> {
   const plugins = await discoverPlugins(projectRoot);
   return plugins
     .map((plugin) => ({
@@ -88,12 +127,12 @@ export async function pluginSkillDirsWithModes(projectRoot: string): Promise<Arr
 }
 
 /** Agent folders contributed by plugins (one per plugin, if present). */
-export async function pluginAgentDirs(projectRoot: string): Promise<string[]> {
+export async function pluginAgentDirs(projectRoot?: string): Promise<string[]> {
   return (await pluginAgentDirsWithModes(projectRoot)).map((entry) => entry.dir);
 }
 
 /** Agent folders with the owning plugin's default modes ([] = all modes). */
-export async function pluginAgentDirsWithModes(projectRoot: string): Promise<Array<{ dir: string; modes: PluginMode[] }>> {
+export async function pluginAgentDirsWithModes(projectRoot?: string): Promise<Array<{ dir: string; modes: PluginMode[] }>> {
   const plugins = await discoverPlugins(projectRoot);
   return plugins
     .map((plugin) => ({
@@ -104,12 +143,12 @@ export async function pluginAgentDirsWithModes(projectRoot: string): Promise<Arr
 }
 
 /** Command folders contributed by plugins (one per plugin, if present). */
-export async function pluginCommandDirs(projectRoot: string): Promise<string[]> {
+export async function pluginCommandDirs(projectRoot?: string): Promise<string[]> {
   return (await pluginCommandDirsWithModes(projectRoot)).map((entry) => entry.dir);
 }
 
 /** Command folders with the owning plugin's default modes ([] = all modes). */
-export async function pluginCommandDirsWithModes(projectRoot: string): Promise<Array<{ dir: string; modes: PluginMode[] }>> {
+export async function pluginCommandDirsWithModes(projectRoot?: string): Promise<Array<{ dir: string; modes: PluginMode[] }>> {
   const plugins = await discoverPlugins(projectRoot);
   return plugins
     .map((plugin) => ({
@@ -120,12 +159,12 @@ export async function pluginCommandDirsWithModes(projectRoot: string): Promise<A
 }
 
 /** Rule folders contributed by plugins (one per plugin, if present). */
-export async function pluginRuleDirs(projectRoot: string): Promise<string[]> {
+export async function pluginRuleDirs(projectRoot?: string): Promise<string[]> {
   return (await pluginRuleDirsWithModes(projectRoot)).map((entry) => entry.dir);
 }
 
 /** Rule folders with the owning plugin's default modes ([] = all modes). */
-export async function pluginRuleDirsWithModes(projectRoot: string): Promise<Array<{ dir: string; modes: PluginMode[] }>> {
+export async function pluginRuleDirsWithModes(projectRoot?: string): Promise<Array<{ dir: string; modes: PluginMode[] }>> {
   const plugins = await discoverPlugins(projectRoot);
   return plugins
     .map((plugin) => ({
@@ -136,12 +175,12 @@ export async function pluginRuleDirsWithModes(projectRoot: string): Promise<Arra
 }
 
 /** hooks.json paths contributed by plugins (one per plugin, if present). */
-export async function pluginHookFiles(projectRoot: string): Promise<string[]> {
+export async function pluginHookFiles(projectRoot?: string): Promise<string[]> {
   return (await pluginHookFilesWithModes(projectRoot)).map((entry) => entry.file);
 }
 
 /** Hook files with the owning plugin's default modes ([] = all modes). */
-export async function pluginHookFilesWithModes(projectRoot: string): Promise<Array<{ file: string; modes: PluginMode[] }>> {
+export async function pluginHookFilesWithModes(projectRoot?: string): Promise<Array<{ file: string; modes: PluginMode[] }>> {
   const plugins = await discoverPlugins(projectRoot);
   return plugins
     .map((plugin) => ({
@@ -202,7 +241,7 @@ export async function listMarketplace(projectRoot?: string): Promise<Marketplace
     const valid = normalizeEntry(entry);
     if (valid) combined.set(valid.id, valid);
   }
-  const installed = projectRoot ? await discoverPlugins(projectRoot) : [];
+  const installed = await discoverPlugins(projectRoot);
   return [...combined.values()].map((entry) => {
     const match = installed.find((plugin) => {
       try { return safeId(plugin.manifest.id || plugin.name) === entry.id; }
@@ -320,7 +359,11 @@ async function extractZip(source: string, target: string) {
   }
 }
 
-export async function installMarketplacePlugin(projectRoot: string, entry: PluginRegistryEntry): Promise<PluginInfo> {
+export async function installMarketplacePlugin(
+  targetDirOrProjectRoot: string,
+  entry: PluginRegistryEntry,
+  options: { isTargetDir?: boolean } = {}
+): Promise<PluginInfo> {
   const normalized = normalizeEntry(entry);
   if (!normalized) throw new Error("Invalid plugin listing.");
   // Remote listings are untrusted JSON. Only https:// bundle URLs are
@@ -337,7 +380,7 @@ export async function installMarketplacePlugin(projectRoot: string, entry: Plugi
       throw new Error("Unsupported plugin source. Use an https:// bundle URL or a developer-catalog folder.");
     }
   }
-  const root = pluginsDir(projectRoot);
+  const root = options.isTargetDir ? path.resolve(targetDirOrProjectRoot) : pluginsDir(targetDirOrProjectRoot);
   const target = path.join(root, normalized.id);
   await fs.mkdir(root, { recursive: true });
   const staging = `${target}.installing-${Date.now().toString(36)}`;
@@ -379,13 +422,48 @@ export async function installMarketplacePlugin(projectRoot: string, entry: Plugi
     await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
-  const installed = (await discoverPlugins(projectRoot)).find((plugin) => plugin.dir === target);
-  if (!installed) throw new Error("Plugin installed but could not be discovered.");
+  const plugins = await discoverPlugins(options.isTargetDir ? undefined : targetDirOrProjectRoot);
+  const installed = plugins.find((plugin) => plugin.dir === target);
+  if (!installed) {
+    const detectedCaps = detectPluginCapabilities(target);
+    let manifest: PluginManifest = {};
+    try {
+      manifest = JSON.parse(await fs.readFile(path.join(target, "manifest.json"), "utf8"));
+    } catch { /* optional */ }
+    return {
+      name: typeof manifest.name === "string" && manifest.name.trim() ? manifest.name.trim() : normalized.name,
+      dir: target,
+      manifest: { ...manifest, capabilities: manifest.capabilities || detectedCaps },
+    };
+  }
   return installed;
 }
 
-export async function uninstallPlugin(projectRoot: string, id: string): Promise<void> {
-  const target = path.join(pluginsDir(projectRoot), safeId(id));
-  if (!path.resolve(target).startsWith(path.resolve(pluginsDir(projectRoot)) + path.sep)) throw new Error("Invalid plugin id.");
+export async function uninstallPlugin(targetDirOrProjectRoot: string, id: string, options: { isTargetDir?: boolean } = {}): Promise<void> {
+  const root = options.isTargetDir ? path.resolve(targetDirOrProjectRoot) : pluginsDir(targetDirOrProjectRoot);
+  const target = path.join(root, safeId(id));
+  if (!path.resolve(target).startsWith(path.resolve(root) + path.sep)) throw new Error("Invalid plugin id.");
   await fs.rm(target, { recursive: true, force: true });
+}
+
+export async function uninstallPluginAnywhere(id: string, projectRoot?: string): Promise<void> {
+  const cleanId = safeId(id);
+  let removed = false;
+  const globalTarget = path.join(globalPluginsDir(), cleanId);
+  if (existsSync(globalTarget)) {
+    await fs.rm(globalTarget, { recursive: true, force: true });
+    removed = true;
+  }
+  if (projectRoot) {
+    const projectTarget = path.join(pluginsDir(projectRoot), cleanId);
+    if (existsSync(projectTarget)) {
+      await fs.rm(projectTarget, { recursive: true, force: true });
+      removed = true;
+    }
+  }
+  if (!removed) {
+    try {
+      await uninstallPlugin(globalPluginsDir(), cleanId, { isTargetDir: true });
+    } catch { /* ignore */ }
+  }
 }

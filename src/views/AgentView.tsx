@@ -11,6 +11,7 @@ import { fileIcon } from "../utils/format.js";
 import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
 import { formatCost } from "../types.js";
 import type { ChatItem, FileEntry, ProviderConfig, ProviderDefinition, AgentUsage, ArtifactItem, ChatAttachment } from "../types.js";
+import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
 
 const AGENT_STARTERS = [
   { icon: <Sparkles size={13} className="file-icon-text" />, label: "Add feature", prompt: "Add a feature to " },
@@ -182,6 +183,8 @@ export function AgentView({
     if (slashQuery === null) return [];
     return filterSlashCommands(slashQuery, customCommands, DEFAULT_SLASH_COMMANDS);
   }, [slashQuery, customCommands]);
+
+  const latestPlan = useMemo(() => extractLatestPlan(liveEvents, messages, running), [liveEvents, messages, running]);
 
   const transcriptNodes: ReactNode[] = [];
   let pendingActivity: ChatItem[] = [];
@@ -618,6 +621,12 @@ export function AgentView({
           accept={ATTACHMENT_ACCEPT}
           multiple
           onChange={handleImageFileSelect}
+        />
+        <SlidingPlanDrawer
+          plan={latestPlan?.plan}
+          running={running}
+          isInterrupted={latestPlan?.isInterrupted}
+          onContinue={() => submit("continue")}
         />
         <div className="agent-input" style={{ position: "relative" }}>
           {mentionQuery !== null && matchingFiles.length > 0 && (

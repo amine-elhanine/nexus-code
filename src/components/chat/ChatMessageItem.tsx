@@ -461,8 +461,11 @@ function normalizeActivityEvents(
 
   for (let i = 0; i < events.length; i++) {
     const event = events[i];
+    // Plans are rendered in the sliding plan drawer above the text area, not in the steps timeline
+    if (event.kind === "plan") {
+      continue;
+    }
     const isError = event.kind === "error";
-    const isPlan = event.kind === "plan" && Boolean(event.plan && event.plan.length > 0);
     const isSubagent = event.kind === "subagent" && Boolean(event.subagent);
     const isArtifact = Boolean(event.artifact);
     const isDoneMarker = Boolean(event.text && /✓$/.test(event.text.trim()));
@@ -493,9 +496,6 @@ function normalizeActivityEvents(
     if (isError) {
       category = "error";
       badgeLabel = "ERROR";
-    } else if (isPlan) {
-      category = "plan";
-      badgeLabel = "PLAN";
     } else if (isSubagent) {
       category = "subagent";
       badgeLabel = "AGENT";
@@ -841,8 +841,8 @@ export function ChatItemView({
   if (message.role === "event" && message.kind === "subagent" && message.subagent) {
     return <SubagentCardView subagent={message.subagent} timestamp={message.createdAt} />;
   }
-  if (message.role === "event" && message.kind === "plan" && message.plan?.length) {
-    return <PlanCard plan={message.plan} createdAt={message.createdAt} />;
+  if (message.role === "event" && message.kind === "plan") {
+    return null;
   }
   if (message.role === "event") {
     const parsed = parseEventText(message.text, message.kind);

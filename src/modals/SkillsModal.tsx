@@ -6,15 +6,17 @@ export function SkillsModal({
   enabled,
   onToggle,
   onClose,
+  mode = "code",
 }: {
   hasProject: boolean;
   enabled: boolean;
   onToggle: (enabled: boolean) => Promise<void>;
   onClose: () => void;
+  mode?: "home" | "code" | "notebook";
 }) {
   return (
     <Modal wide title="Skills" subtitle="Manage step-by-step instructions, specialized playbooks, and guidelines for your agent." onClose={onClose}>
-      <SkillsManager hasProject={hasProject} enabled={enabled} onToggle={onToggle} />
+      <SkillsManager hasProject={hasProject} enabled={enabled} onToggle={onToggle} mode={mode} />
     </Modal>
   );
 }

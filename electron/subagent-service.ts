@@ -13,6 +13,7 @@ import type { AgentUsage } from "./agent-service.js";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { globalPluginsDir } from "./plugins-service.js";
 
 export type SubagentRole = string;
 
@@ -103,41 +104,52 @@ export function getSystemAgents(): Map<string, SubagentDefinition> {
 
 export function discoverPluginAgentsSync(projectRoot?: string, mode?: string): Map<string, SubagentDefinition> {
   const map = new Map<string, SubagentDefinition>();
-  if (!projectRoot) return map;
+  const roots: string[] = [];
   try {
-    const root = path.join(path.resolve(projectRoot), ".nexus", "plugins");
-    if (!existsSync(root)) return map;
-    const entries = readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory());
-    for (const entry of entries) {
-      const pluginDir = path.join(root, entry.name);
-      let manifestModes: string[] = [];
-      try {
-        const manifest = JSON.parse(readFileSync(path.join(pluginDir, "manifest.json"), "utf8"));
-        if (Array.isArray(manifest.modes)) manifestModes = manifest.modes.map(String);
-      } catch { /* optional */ }
+    const gRoot = globalPluginsDir();
+    if (existsSync(gRoot)) roots.push(gRoot);
+  } catch { /* ignore */ }
+  if (projectRoot) {
+    try {
+      const pRoot = path.join(path.resolve(projectRoot), ".nexus", "plugins");
+      if (existsSync(pRoot) && (!roots.length || path.resolve(pRoot) !== path.resolve(roots[0]))) {
+        roots.push(pRoot);
+      }
+    } catch { /* ignore */ }
+  }
 
-      if (mode && manifestModes.length > 0 && !manifestModes.includes(mode)) continue;
+  for (const root of roots) {
+    try {
+      const entries = readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory());
+      for (const entry of entries) {
+        const pluginDir = path.join(root, entry.name);
+        let manifestModes: string[] = [];
+        try {
+          const manifest = JSON.parse(readFileSync(path.join(pluginDir, "manifest.json"), "utf8"));
+          if (Array.isArray(manifest.modes)) manifestModes = manifest.modes.map(String);
+        } catch { /* optional */ }
 
-      const agentsDir = path.join(pluginDir, "agents");
-      if (existsSync(agentsDir)) {
-        const loaded = loadAgentsFromDirectory(agentsDir, "plugin", manifestModes);
-        for (const [key, config] of loaded) {
-          if (mode && config.modes && config.modes.length > 0 && !config.modes.includes(mode)) continue;
-          map.set(key, config);
+        if (mode && manifestModes.length > 0 && !manifestModes.includes(mode)) continue;
+
+        const agentsDir = path.join(pluginDir, "agents");
+        if (existsSync(agentsDir)) {
+          const loaded = loadAgentsFromDirectory(agentsDir, "plugin", manifestModes);
+          for (const [key, config] of loaded) {
+            if (mode && config.modes && config.modes.length > 0 && !config.modes.includes(mode)) continue;
+            map.set(key, config);
+          }
         }
       }
-    }
-  } catch { /* ignore */ }
+    } catch { /* ignore */ }
+  }
   return map;
 }
 
 export function getAvailableAgents(projectRoot?: string, mode?: string): Map<string, SubagentDefinition> {
   const map = new Map<string, SubagentDefinition>(getSystemAgents());
-  if (projectRoot) {
-    const pluginAgents = discoverPluginAgentsSync(projectRoot, mode);
-    for (const [key, config] of pluginAgents) {
-      map.set(key, config);
-    }
+  const pluginAgents = discoverPluginAgentsSync(projectRoot, mode);
+  for (const [key, config] of pluginAgents) {
+    map.set(key, config);
   }
   return map;
 }
