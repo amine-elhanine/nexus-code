@@ -554,10 +554,12 @@ function canonicalPathExisting(target: string): string {
 function validateSkillPathAllowed(skillPath: string, projectRoot?: string | null, allowSystem = false): string {
   const resolved = canonicalPathExisting(skillPath);
   const globalRoot = canonicalPathExisting(globalSkillsDir());
+  // Marketplace bundles install globally (userData/plugins), so a plugin's
+  // skills are just as writable as hand-made global skills.
   const globalPluginRoot = canonicalPathExisting(globalPluginsDir());
   const projectRootResolved = projectRoot ? canonicalPathExisting(projectSkillsDir(projectRoot)) : null;
   const legacyRootResolved = projectRoot ? canonicalPathExisting(legacyProjectSkillsDir(projectRoot)) : null;
-  const projectPluginRoot = projectRoot ? canonicalPathExisting(pluginsDir(projectRoot)) : null;
+  const pluginsRootResolved = projectRoot ? canonicalPathExisting(pluginsDir(projectRoot)) : null;
   const sysRoot = canonicalPathExisting(systemSkillsDir());
 
   const isInsideGlobal =
@@ -565,16 +567,22 @@ function validateSkillPathAllowed(skillPath: string, projectRoot?: string | null
     resolved.startsWith(`${globalRoot}${path.sep}`) ||
     resolved === globalPluginRoot ||
     resolved.startsWith(`${globalPluginRoot}${path.sep}`);
-  // Project skills only exist relative to a REAL project root.
+  // Project skills only exist relative to a REAL project root. The old
+  // no-project fallback (a regex over the whole path) accepted any directory
+  // shaped like `.nexus/skills` anywhere on disk.
   const isInsideProject = projectRootResolved
-    ? resolved === projectRootResolved ||
-      resolved.startsWith(`${projectRootResolved}${path.sep}`) ||
-      (legacyRootResolved !== null && (resolved === legacyRootResolved || resolved.startsWith(`${legacyRootResolved}${path.sep}`))) ||
-      (projectPluginRoot !== null && (resolved === projectPluginRoot || resolved.startsWith(`${projectPluginRoot}${path.sep}`)))
+    ? resolved === projectRootResolved || resolved.startsWith(`${projectRootResolved}${path.sep}`)
+    : false;
+  // Legacy project skills remain readable/deletable, never writable.
+  const isInsideLegacy = legacyRootResolved
+    ? resolved === legacyRootResolved || resolved.startsWith(`${legacyRootResolved}${path.sep}`)
+    : false;
+  const isInsidePlugins = pluginsRootResolved
+    ? resolved === pluginsRootResolved || resolved.startsWith(`${pluginsRootResolved}${path.sep}`)
     : false;
   const isInsideSystem = allowSystem && (resolved === sysRoot || resolved.startsWith(`${sysRoot}${path.sep}`));
 
-  if (!isInsideGlobal && !isInsideProject && !isInsideSystem) {
+  if (!isInsideGlobal && !isInsideProject && !isInsideLegacy && !isInsidePlugins && !isInsideSystem) {
     throw new Error(`Security violation: skill path '${skillPath}' is outside the authorized skills directories.`);
   }
   return resolved;
@@ -619,6 +627,8 @@ export function skillVirtualPath(skill: SkillInfo): string {
   const normalized = skill.path.replace(/\\/g, "/");
   const legacy = normalized.match(/\.deepagents\/skills\/([^/]+)\/SKILL\.md$/);
   if (legacy) return `${LEGACY_PROJECT_SKILLS_DIR}/${legacy[1]}/SKILL.md`;
+  const pluginMatch = normalized.match(/\.nexus\/plugins\/([^/]+)\/skills\/([^/]+)\/SKILL\.md$/);
+  if (pluginMatch) return `.nexus/plugins/${pluginMatch[1]}/skills/${pluginMatch[2]}/SKILL.md`;
   return `${PROJECT_SKILLS_DIR}/${folder}/SKILL.md`;
 }
 

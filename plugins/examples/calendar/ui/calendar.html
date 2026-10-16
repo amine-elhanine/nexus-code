@@ -1,0 +1,179 @@
+<div id="cal-app">
+  <style>
+    #cal-app { font-family: -apple-system, "Segoe UI", sans-serif; background: #0b0f16; color: #dbe2ec; padding: 16px; border-radius: 8px; }
+    #cal-app .cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    #cal-app .cal-title { font-size: 15px; font-weight: 600; }
+    #cal-app .cal-nav button { background: #16202e; color: #dbe2ec; border: 1px solid #28374a; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+    #cal-app .cal-nav button:hover { border-color: #3dd68c; }
+    #cal-app .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+    #cal-app .cal-dow { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: #687588; text-align: center; padding: 4px 0; }
+    #cal-app .cal-day { min-height: 64px; background: #101722; border: 1px solid #1d2a3d; border-radius: 6px; padding: 4px 6px; font-size: 12px; }
+    #cal-app .cal-day.other { opacity: 0.35; }
+    #cal-app .cal-day.today { border-color: #3dd68c; }
+    #cal-app .cal-num { font-weight: 600; margin-bottom: 2px; }
+    #cal-app .cal-ev { font-size: 10px; background: #14324a; border-radius: 4px; padding: 1px 4px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #cal-app .cal-add { display: flex; gap: 6px; margin-top: 12px; }
+    #cal-app .cal-add input { flex: 1; background: #090d14; border: 1px solid #28374a; border-radius: 6px; color: #dbe2ec; padding: 6px 8px; font-size: 12px; }
+    #cal-app .cal-add button { background: #3dd68c; color: #04120b; border: 0; border-radius: 6px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
+    #cal-app .cal-status { font-size: 11px; color: #687588; margin-top: 8px; min-height: 14px; }
+    #cal-app .cal-status.error { color: #e5484d; }
+  </style>
+  <div class="cal-head">
+    <div class="cal-title" id="cal-title">Calendar</div>
+    <div class="cal-nav">
+      <button id="cal-prev" type="button">‹ Prev</button>
+      <button id="cal-today" type="button">Today</button>
+      <button id="cal-next" type="button">Next ›</button>
+    </div>
+  </div>
+  <div class="cal-grid" id="cal-dow"></div>
+  <div class="cal-grid" id="cal-grid"></div>
+  <form class="cal-add" id="cal-form">
+    <input id="cal-date" type="text" maxlength="10" placeholder="YYYY-MM-DD" title="Event date" />
+    <input id="cal-text" type="text" maxlength="120" placeholder="New event title…" title="Event title" />
+    <button type="submit">Add</button>
+  </form>
+  <div class="cal-status" id="cal-status"></div>
+</div>
+<script>
+(function () {
+  "use strict";
+  var MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  var DOWS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  var now = new Date();
+  var viewYear = now.getFullYear();
+  var viewMonth = now.getMonth() + 1;
+  var todayStr = toDateStr(now.getFullYear(), now.getMonth() + 1, now.getDate());
+
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  function toDateStr(y, m, d) { return y + "-" + pad(m) + "-" + pad(d); }
+  function monthKey(y, m) { return y + "-" + pad(m); }
+  function $(id) { return document.getElementById(id); }
+
+  function setStatus(text, isError) {
+    var el = $("cal-status");
+    el.textContent = text || "";
+    el.className = "cal-status" + (isError ? " error" : "");
+  }
+
+  function bridge() {
+    if (window.nexusPlugin && typeof window.nexusPlugin.callTool === "function") return window.nexusPlugin;
+    return null;
+  }
+
+  function renderDow() {
+    $("cal-dow").innerHTML = DOWS.map(function (d) { return '<div class="cal-dow">' + d + "</div>"; }).join("");
+  }
+
+  function renderGrid(eventsByDate) {
+    var first = new Date(viewYear, viewMonth - 1, 1);
+    var offset = (first.getDay() + 6) % 7; // Monday-first
+    var daysInMonth = new Date(viewYear, viewMonth, 0).getDate();
+    var daysInPrev = new Date(viewYear, viewMonth - 1, 0).getDate();
+    var html = "";
+    for (var i = 0; i < 42; i++) {
+      var dayNum, dateStr, other = false;
+      if (i < offset) {
+        dayNum = daysInPrev - offset + 1 + i;
+        var pm = viewMonth === 1 ? 12 : viewMonth - 1;
+        var py = viewMonth === 1 ? viewYear - 1 : viewYear;
+        dateStr = toDateStr(py, pm, dayNum);
+        other = true;
+      } else if (i < offset + daysInMonth) {
+        dayNum = i - offset + 1;
+        dateStr = toDateStr(viewYear, viewMonth, dayNum);
+      } else {
+        dayNum = i - offset - daysInMonth + 1;
+        var nm = viewMonth === 12 ? 1 : viewMonth + 1;
+        var ny = viewMonth === 12 ? viewYear + 1 : viewYear;
+        dateStr = toDateStr(ny, nm, dayNum);
+        other = true;
+      }
+      var evs = eventsByDate[dateStr] || [];
+      html += '<div class="cal-day' + (other ? " other" : "") + (dateStr === todayStr ? " today" : "") + '" data-date="' + dateStr + '">'
+        + '<div class="cal-num">' + dayNum + "</div>"
+        + evs.slice(0, 3).map(function (e) { return '<div class="cal-ev" title="' + escapeHtml(e.title) + '">' + escapeHtml(e.title) + "</div>"; }).join("")
+        + (evs.length > 3 ? '<div class="cal-ev">+' + (evs.length - 3) + " more</div>" : "")
+        + "</div>";
+    }
+    $("cal-grid").innerHTML = html;
+    var cells = $("cal-grid").querySelectorAll(".cal-day");
+    cells.forEach(function (cell) {
+      cell.addEventListener("click", function () {
+        $("cal-date").value = cell.getAttribute("data-date") || "";
+        $("cal-text").focus();
+      });
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function refresh() {
+    $("cal-title").textContent = MONTHS[viewMonth - 1] + " " + viewYear;
+    var b = bridge();
+    if (!b) {
+      setStatus("No plugin bridge (static preview).", true);
+      renderGrid({});
+      return;
+    }
+    setStatus("Loading events…");
+    b.callTool("list_events", { month: monthKey(viewYear, viewMonth) }).then(function (res) {
+      if (!res || !res.ok) {
+        setStatus("Could not load events: " + ((res && res.error) || "unknown error"), true);
+        renderGrid({});
+        return;
+      }
+      var byDate = {};
+      var list = (res.result && res.result.events) || [];
+      list.forEach(function (e) {
+        if (!e || !e.date) return;
+        (byDate[e.date] = byDate[e.date] || []).push(e);
+      });
+      setStatus(list.length ? list.length + " event(s)." : "No events this month — add one below.");
+      renderGrid(byDate);
+    });
+  }
+
+  $("cal-prev").addEventListener("click", function () {
+    if (viewMonth === 1) { viewMonth = 12; viewYear--; } else { viewMonth--; }
+    refresh();
+  });
+  $("cal-next").addEventListener("click", function () {
+    if (viewMonth === 12) { viewMonth = 1; viewYear++; } else { viewMonth++; }
+    refresh();
+  });
+  $("cal-today").addEventListener("click", function () {
+    viewYear = now.getFullYear();
+    viewMonth = now.getMonth() + 1;
+    refresh();
+  });
+  $("cal-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var b = bridge();
+    if (!b) { setStatus("No plugin bridge.", true); return; }
+    var date = $("cal-date").value.trim();
+    var title = $("cal-text").value.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { setStatus("Date must look like YYYY-MM-DD.", true); return; }
+    if (!title) { setStatus("Title must not be empty.", true); return; }
+    setStatus("Adding…");
+    b.callTool("add_event", { date: date, title: title }).then(function (res) {
+      if (!res || !res.ok) {
+        setStatus("Add failed: " + ((res && res.error) || "unknown error"), true);
+        return;
+      }
+      $("cal-text").value = "";
+      var parts = date.split("-");
+      viewYear = Number(parts[0]);
+      viewMonth = Number(parts[1]);
+      refresh();
+    });
+  });
+
+  renderDow();
+  refresh();
+})();
+</script>

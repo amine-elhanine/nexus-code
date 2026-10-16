@@ -112,11 +112,15 @@ await test("R4: chat message persistence preserves steps", async () => {
   assert.equal(savedMsg.evaluation?.groundedness, 9);
 });
 
-await test("R5: buildSkillMounts resolves system skills across route permutations on Windows & POSIX", async () => {
-  const { buildSkillMounts, systemSkillsDir } = await import("../dist-electron/skills-service.js");
+await test("R5: buildSkillMounts resolves skill mounts across route permutations on Windows & POSIX", async () => {
+  const { buildSkillMounts } = await import("../dist-electron/skills-service.js");
   const { CompositeBackend, FilesystemBackend } = await import("deepagents");
 
-  const systemBackend = new FilesystemBackend({ rootDir: systemSkillsDir(), virtualMode: true });
+  const mockSkillDir = path.join(tmp, "mock-skills", "all", "pptx");
+  await fs.mkdir(mockSkillDir, { recursive: true });
+  await fs.writeFile(path.join(mockSkillDir, "SKILL.md"), Array(60).fill("# PPTX Skill line").join("\n"), "utf8");
+
+  const systemBackend = new FilesystemBackend({ rootDir: path.join(tmp, "mock-skills"), virtualMode: true });
   const mounts = buildSkillMounts(null, systemBackend);
   const composite = new CompositeBackend(new FilesystemBackend({ rootDir: tmp, virtualMode: true }), mounts);
 

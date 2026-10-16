@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import { ConfirmModal } from "../../modals/ConfirmModal.js";
 import { Modal } from "../common/Modal.js";
+import { ExecutablePlugins } from "./ExecutablePlugins.js";
 
 type Plugin = {
   id: string;
@@ -336,7 +337,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
     setBusy(plugin.id);
     setFeedback(null);
     try {
-      if (plugin.installed && hasProject) {
+      if (plugin.installed) {
         await api.uninstallPlugin(plugin.id).catch(() => undefined);
       }
       await api.removePublishedPlugin(plugin.id);
@@ -513,6 +514,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
         </div>
       </div>
 
+<ExecutablePlugins hasProject={hasProject} />
 
       {/* Interactive feedback alert */}
       {feedback && (

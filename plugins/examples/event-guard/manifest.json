@@ -1,0 +1,8 @@
+{
+  "id": "event-guard",
+  "name": "Event Guard",
+  "version": "1.0.0",
+  "description": "Sample policy hook plugin: blocks risky tool calls via declarative hooks.",
+  "capabilities": ["hooks"],
+  "modes": ["code"]
+}

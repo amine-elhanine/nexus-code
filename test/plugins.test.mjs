@@ -5,7 +5,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { discoverPlugins, installMarketplacePlugin, normalizePluginModes, entryFromFolder, scanPluginRoot, pluginSkillDirs, pluginHookFiles, pluginAgentDirs, pluginCommandDirs, pluginRuleDirs, uninstallPlugin, detectPluginCapabilities } from '../dist-electron/plugins-service.js';
-import { listSkills, skillAppliesToMode } from '../dist-electron/skills-service.js';
+import { listSkills, skillAppliesToMode, skillVirtualPath, skillDirVirtualPath, readSkillContent } from '../dist-electron/skills-service.js';
 import { discoverHooks } from '../dist-electron/hooks-service.js';
 import { getAvailableAgents, getAllSubagentRoles, buildSubagentCatalog } from '../dist-electron/subagent-service.js';
 import { discoverCustomCommands } from '../dist-electron/custom-commands-service.js';
@@ -63,7 +63,12 @@ await test('plugin skills and hooks are picked up automatically', async () => {
 
     assert.deepEqual(await pluginSkillDirs(tempDir), [path.join(pluginDir, 'skills')]);
     const skills = await listSkills(tempDir);
-    assert.ok(skills.some((s) => s.name === 'deploy-checklist' && s.source === 'project'), `plugin skill listed, got: ${skills.map((s) => s.name).join(', ')}`);
+    const foundSkill = skills.find((s) => s.name === 'deploy-checklist' && s.source === 'project');
+    assert.ok(foundSkill, `plugin skill listed, got: ${skills.map((s) => s.name).join(', ')}`);
+    assert.equal(skillVirtualPath(foundSkill), '.nexus/plugins/acme-tools/skills/deploy-checklist/SKILL.md');
+    assert.equal(skillDirVirtualPath(foundSkill), '.nexus/plugins/acme-tools/skills/deploy-checklist/');
+    const content = await readSkillContent(foundSkill.path, tempDir);
+    assert.match(content, /Check these before shipping/);
 
     const hooks = await discoverHooks(tempDir);
     assert.equal(hooks.length, 1);
