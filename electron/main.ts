@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-import { runProjectAgent, RunCancelledError, clearLastRunCheckpoint, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint, summarizeCompletedSteps, appendEntryLog, PROJECT_MEMORY_RUN_LOG_CAP, SESSION_MEMORY_ENTRY_CAP, SESSION_MEMORY_CHAR_CAP, type AgentMode, type AgentSettings, type AgentEvent, type AgentUsage, type HistoryInput } from "./agent-service.js";
+import { runProjectAgent, RunCancelledError, clearLastRunCheckpoint, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint, summarizeCompletedSteps, appendEntryLog, PROJECT_MEMORY_RUN_LOG_CAP, SESSION_MEMORY_ENTRY_CAP, SESSION_MEMORY_CHAR_CAP, type AgentMode, type AgentSettings, type AgentEvent, type AgentUsage, type HistoryInput, type PlanItem } from "./agent-service.js";
 import { PROVIDERS, fetchRemoteModels } from "./providers.js";
 import {
   appendHomeSessionMessages, appendSessionMessages, createHomeSession, createSession, deleteHomeSession, deleteProject, deleteSession, getHomeMemory, getHomeSession, getProject, getSession,
@@ -19,7 +19,7 @@ import {
   createProviderConnection, updateProviderConnection, updateProviderKey, setProviderEnabled, addProviderModels, updateProviderModel, removeProviderModel
 } from "./store.js";
 import { getPluginRegistryConfig, savePluginRegistryConfig } from "./store.js";
-import { discoverPlugins, installMarketplacePlugin, listMarketplace, publishLocalPlugin, removeMarketplacePlugin, uninstallPlugin, pluginsDir } from "./plugins-service.js";
+import { discoverPlugins, globalPluginsDir, installMarketplacePlugin, listMarketplace, publishLocalPlugin, removeMarketplacePlugin, uninstallPluginAnywhere } from "./plugins-service.js";
 import { validatePluginManifest } from "./plugin-manifest.js";
 import { listCapabilities } from "./capability-registry.js";
 import { getGrantedPermissions } from "./plugin-permissions.js";
@@ -31,7 +31,7 @@ import { homeTaskJournalPath } from "./home-task-service.js";
 import { removeMemoryFactWithCount } from "./home-memory-service.js";
 import { codeTaskJournalPath } from "./code-task-service.js";
 import { testMcpServer } from "./mcp-service.js";
-import { createSkill, deleteSkill, ensureSkillSourceDirs, importSkill, listAllSkills, listSkills, openSkillsFolder, readSkillContent, setSkillModes } from "./skills-service.js";
+import { changeSkillScope, createSkill, deleteSkill, ensureSkillSourceDirs, importSkill, listAllSkills, listSkills, openSkillsFolder, readSkillContent, setSkillModes } from "./skills-service.js";
 import { beginCommandRun, cancelCommandRun, endCommandRun, isCommandRunCancelled, runProjectCommand, getAgentBackend } from "./command-service.js";
 import { createWorkspaceCheckpoint, deleteWorkspaceCheckpoint, getWorkspaceDiffFiles, getWorkspaceGitStatus, restoreWorkspaceCheckpoint, revertAllWorkspaceChanges, revertWorkspaceFile, revertWorkspaceHunk } from "./diff-service.js";
 import { getWorkspaceGit, listWorkspaceFiles, readWorkspaceFile, readWorkspaceFileBase64, safePath, writeWorkspaceFile } from "./project-tools.js";
@@ -981,15 +981,15 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("skills:delete", async (_event, skillPath: string) => deleteSkill(skillPath, activeProjectRoot));
   ipcMain.handle("skills:set-modes", async (_event, input: { skillPath: string; modes: string[] }) => setSkillModes(input.skillPath, input.modes, activeProjectRoot));
+  ipcMain.handle("skills:change-scope", async (_event, input: { skillPath: string; targetScope: "global" | "project" }) => changeSkillScope(input.skillPath, input.targetScope, activeProjectRoot));
   ipcMain.handle("skills:open-folder", async (_event, scope: "global" | "project") => {
     const root = scope === "project" ? requireRoot() : (activeProjectRoot || "");
     return openSkillsFolder(scope, root);
   });
-  // Plugin Marketplace. Bundles are installed into the active project's
-  // .nexus/plugins folder, where skills-service and hooks-service discover
-  // them on the next agent run without a restart.
+  // Plugin Marketplace. Bundles are installed globally into userData/plugins
+  // so skills, rules, subagents, and commands are available across all modes.
   ipcMain.handle("plugins:marketplace:list", () => listMarketplace(activeProjectRoot || undefined));
-  ipcMain.handle("plugins:installed:list", () => activeProjectRoot ? discoverPlugins(activeProjectRoot) : []);
+  ipcMain.handle("plugins:installed:list", () => discoverPlugins(activeProjectRoot || undefined));
   ipcMain.handle("plugins:registry:get", () => getPluginRegistryConfig());
   ipcMain.handle("plugins:registry:save", (_event, config) => savePluginRegistryConfig(config));
   ipcMain.handle("plugins:developer:pick-and-publish", async () => {
@@ -1006,20 +1006,18 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("plugins:developer:remove", async (_event, id: string) => {
     await removeMarketplacePlugin(id);
-    // Removing a dev entry must not orphan its installed bundle: the bundle
-    // would stay active via discoverPlugins while vanishing from the
-    // Marketplace list with no way to uninstall it.
-    if (activeProjectRoot) {
-      await uninstallPlugin(activeProjectRoot, id).catch(() => undefined);
-    }
+    // Removing a dev entry must not orphan its installed bundle
+    await uninstallPluginAnywhere(id, activeProjectRoot || undefined).catch(() => undefined);
   });
-  ipcMain.handle("plugins:install", async (_event, entry) => installMarketplacePlugin(requireRoot(), entry));
+// Marketplace bundles install globally (userData/plugins) so their skills,
+// rules, subagents and commands are available in every mode — not just in
+// whichever project happens to be open.
+  ipcMain.handle("plugins:install", async (_event, entry) => installMarketplacePlugin(globalPluginsDir(), entry, { isTargetDir: true }));
   ipcMain.handle("plugins:uninstall", async (_event, id: string) => {
-    const root = requireRoot();
     // Deterministic cleanup: dispose executable state BEFORE deleting files
     // so tools/listeners/providers cannot survive uninstall.
     await disposePlugin(String(id)).catch(() => undefined);
-    await uninstallPlugin(root, id);
+    await uninstallPluginAnywhere(id, activeProjectRoot || undefined);
   });
   // v1 executable plugin platform: validation, lifecycle, capability listing.
   // Payloads are validated here; renderer is never trusted for permissions.
@@ -1047,14 +1045,11 @@ app.whenReady().then(async () => {
     }));
   });
   ipcMain.handle("plugins:enable", async (_event, id: string, approvedPermissions: unknown) => {
-    const root = requireRoot();
     const pluginId = String(id || "").trim();
     if (!pluginId) throw new Error("Plugin id is required.");
     const approved = Array.isArray(approvedPermissions) ? approvedPermissions.filter((p): p is string => typeof p === "string") : [];
     // Discover from the installed bundle dir when not yet managed.
-    const { pluginsDir } = await import("./plugins-service.js");
-    const pathMod = await import("node:path");
-    const dir = pathMod.join(pluginsDir(root), pluginId);
+    const dir = path.join(globalPluginsDir(), pluginId);
     let record = listManagedPlugins().find((p) => p.id === pluginId.toLowerCase());
     if (!record) {
       record = await discoverExecutablePlugin(dir);
@@ -1078,11 +1073,10 @@ app.whenReady().then(async () => {
   // gated boundary. Both validate every field; the renderer is never trusted
   // for paths, permissions, or modes.
   ipcMain.handle("plugins:read-ui", async (_event, input: unknown) => {
-    const root = requireRoot();
     const validated = validateUiRequest(input);
     if (!validated.ok) throw new Error(validated.error);
     const { pluginId, entry } = validated.request;
-    const dir = path.join(pluginsDir(root), pluginId);
+    const dir = path.join(globalPluginsDir(), pluginId);
     if (!existsSync(dir)) throw new Error(`Plugin "${pluginId}" is not installed.`);
     let record = listManagedPlugins().find((p) => p.id === pluginId);
     if (!record) record = await discoverExecutablePlugin(dir);
@@ -1527,9 +1521,10 @@ app.whenReady().then(async () => {
       // .nexus/run-checkpoints/ so "continue" survives an app restart.
       const stored = wantResume ? getLastRunCheckpoint(sessionId) ?? await loadLastRunCheckpoint(root, sessionId) : null;
       let resumeNote: string | null = null;
+      let lastPlan: PlanItem[] | null = null;
       if (wantResume) {
         const planEvents = session.messages.filter((m) => m.role === "event" && m.kind === "plan" && m.plan?.length);
-        const lastPlan = planEvents.length ? planEvents[planEvents.length - 1].plan! : null;
+        lastPlan = planEvents.length ? planEvents[planEvents.length - 1].plan! : null;
         const errorEvents = session.messages.filter((m) => m.role === "event" && m.kind === "error");
         const lastError = errorEvents.length ? errorEvents[errorEvents.length - 1].text : null;
         const assistants = session.messages.filter((m) => m.role === "assistant");
@@ -1642,7 +1637,7 @@ app.whenReady().then(async () => {
           agentBackend: backend,
           editPolicy,
           resumeMessages: stored?.messages ?? null,
-          resumePlanItems: stored?.planItems ?? null,
+          resumePlanItems: stored?.planItems ?? lastPlan ?? null,
           resumeNote,
           onProjectMemoryUpdate: (mutate) => updateProjectFacts(projectId, mutate),
           onUserQuestion: (questions) => askUserBlocking(sessionId, questions),
@@ -1863,9 +1858,10 @@ app.whenReady().then(async () => {
       const wantResume = isContinueRequest(payload.request || "");
       const stored = wantResume ? getLastRunCheckpoint(sessionId) ?? await loadLastRunCheckpoint(homeRoot, sessionId) : null;
       let resumeNote: string | null = null;
+      let lastPlan: PlanItem[] | null = null;
       if (wantResume) {
         const planEvents = session.messages.filter((m) => m.role === "event" && m.kind === "plan" && m.plan?.length);
-        const lastPlan = planEvents.length ? planEvents[planEvents.length - 1].plan! : null;
+        lastPlan = planEvents.length ? planEvents[planEvents.length - 1].plan! : null;
         const errorEvents = session.messages.filter((m) => m.role === "event" && m.kind === "error");
         const lastError = errorEvents.length ? errorEvents[errorEvents.length - 1].text : null;
         const assistants = session.messages.filter((m) => m.role === "assistant");
@@ -1922,7 +1918,7 @@ app.whenReady().then(async () => {
           mode: "auto",
           agentBackend: backend,
           resumeMessages: stored?.messages ?? null,
-          resumePlanItems: stored?.planItems ?? null,
+          resumePlanItems: stored?.planItems ?? lastPlan ?? null,
           resumeNote,
           onEvent: (event) => {
             // Token chunks stay ephemeral; assistant/usage are persisted once

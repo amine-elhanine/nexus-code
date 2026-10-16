@@ -288,13 +288,6 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
   }
 
   async function handleInstall(plugin: Plugin) {
-    if (!hasProject) {
-      setFeedback({
-        type: "info",
-        message: "Open a project workspace before installing plugins.",
-      });
-      return;
-    }
     setBusy(plugin.id);
     setFeedback(null);
     try {
@@ -305,7 +298,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
       }
       setFeedback({
         type: "success",
-        message: `"${plugin.name}" installed. Its skills and hooks are immediately active.`,
+        message: `"${plugin.name}" installed globally. Its capabilities are immediately active across all modes.`,
       });
     } catch (error) {
       setFeedback({
@@ -344,7 +337,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
     setBusy(plugin.id);
     setFeedback(null);
     try {
-      if (plugin.installed && hasProject) {
+      if (plugin.installed) {
         await api.uninstallPlugin(plugin.id).catch(() => undefined);
       }
       await api.removePublishedPlugin(plugin.id);
@@ -521,17 +514,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
         </div>
       </div>
 
-      <ExecutablePlugins hasProject={hasProject} />
-
-      {/* Global mode notification when no project is open */}
-      {!hasProject && (
-        <div className="market-notice-banner warning">
-          <Info size={15} style={{ flex: "none" }} />
-          <div style={{ flex: 1 }}>
-            <strong>Browsing in Global Mode</strong> — Plugins are installed per workspace repository. Open a project workspace to install and activate extensions.
-          </div>
-        </div>
-      )}
+<ExecutablePlugins hasProject={hasProject} />
 
       {/* Interactive feedback alert */}
       {feedback && (
@@ -604,7 +587,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
                   type="button"
                   className="market-btn primary"
                   onClick={() => void handleInstall(spotlightPlugin)}
-                  disabled={busy === spotlightPlugin.id || !hasProject}
+                  disabled={busy === spotlightPlugin.id}
                 >
                   {busy === spotlightPlugin.id ? <Loader2 size={12} className="spin" /> : <Download size={12} />}
                   <span>Install Suite</span>
@@ -756,11 +739,9 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
           ) : filterTab === "installed" ? (
             <>
               <Puzzle size={36} className="text-faint" />
-              <h4>No plugins installed in this project</h4>
+              <h4>No plugins installed</h4>
               <p>
-                {hasProject
-                  ? "Explore available plugins above to empower your agent with skills, rules, and subagents."
-                  : "Open a project workspace to install and use plugins."}
+                Explore available plugins above to empower your agent with skills, rules, and subagents across all modes.
               </p>
               <button
                 type="button"
@@ -945,7 +926,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
                         type="button"
                         className="market-btn-action update"
                         onClick={() => void handleInstall(plugin)}
-                        disabled={isBusy || !hasProject}
+                        disabled={isBusy}
                         title={`Update to v${plugin.version}`}
                       >
                         {isBusy ? <Loader2 size={12} className="spin" /> : <RefreshCw size={12} />}
@@ -969,8 +950,8 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
                         type="button"
                         className="market-btn-action primary"
                         onClick={() => void handleInstall(plugin)}
-                        disabled={isBusy || !hasProject}
-                        title={hasProject ? "Install into workspace" : "Open a project to install"}
+                        disabled={isBusy}
+                        title="Install globally"
                       >
                         {isBusy ? <Loader2 size={12} className="spin" /> : <Download size={12} />}
                         <span>Install</span>
@@ -1053,7 +1034,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
                       type="button"
                       className="market-btn-action update"
                       onClick={() => void handleInstall(plugin)}
-                      disabled={isBusy || !hasProject}
+                      disabled={isBusy}
                     >
                       {isBusy ? <Loader2 size={12} className="spin" /> : <RefreshCw size={12} />}
                       <span>Update</span>
@@ -1074,7 +1055,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
                       type="button"
                       className="market-btn-action primary"
                       onClick={() => void handleInstall(plugin)}
-                      disabled={isBusy || !hasProject}
+                      disabled={isBusy}
                     >
                       {isBusy ? <Loader2 size={12} className="spin" /> : <Download size={12} />}
                       <span>Install</span>
@@ -1115,7 +1096,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
                     {selectedPlugin.version && <span className="market-version-pill large">v{selectedPlugin.version}</span>}
                     {selectedPlugin.installed && (
                       <span className="market-badge installed">
-                        <Check size={11} /> Installed in current project
+                        <Check size={11} /> Installed globally
                       </span>
                     )}
                   </div>
@@ -1141,10 +1122,10 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
                     type="button"
                     className="market-btn primary"
                     onClick={() => void handleInstall(selectedPlugin)}
-                    disabled={busy === selectedPlugin.id || !hasProject}
+                    disabled={busy === selectedPlugin.id}
                   >
                     {busy === selectedPlugin.id ? <Loader2 size={13} className="spin" /> : <Download size={13} />}
-                    <span>{hasProject ? "Install into Project" : "Open Project to Install"}</span>
+                    <span>Install Globally</span>
                   </button>
                 )}
               </div>

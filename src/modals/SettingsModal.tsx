@@ -987,7 +987,7 @@ export function SettingsModal({
           )}
 
           {section === "skills" && (
-            <SkillsManager hasProject={hasProject} enabled={skillsEnabled} onToggle={onToggleSkills} />
+            <SkillsManager hasProject={hasProject} enabled={skillsEnabled} onToggle={onToggleSkills} mode={area || "code"} />
           )}
 
           {section === "rules" && (

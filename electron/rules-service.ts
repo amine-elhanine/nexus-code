@@ -218,14 +218,13 @@ async function loadRuleDir(dir: string, prefix: string, rules: ProjectRuleFile[]
   }
 }
 
-export async function discoverPluginRules(projectRoot: string): Promise<ProjectRuleFile[]> {
+export async function discoverPluginRules(projectRoot?: string): Promise<ProjectRuleFile[]> {
   const rules: ProjectRuleFile[] = [];
-  if (!projectRoot) return rules;
 
   try {
     const pluginDirs = await pluginRuleDirsWithModes(projectRoot).catch(() => []);
-    const root = path.resolve(projectRoot);
-    const deps = await readPackageDeps(root);
+    const root = projectRoot ? path.resolve(projectRoot) : null;
+    const deps = root ? await readPackageDeps(root) : {};
 
     for (const { dir } of pluginDirs) {
       const pluginName = path.basename(path.dirname(dir));
@@ -248,13 +247,13 @@ export async function discoverPluginRules(projectRoot: string): Promise<ProjectR
           } else {
             const stackSource = STACK_RULE_SOURCES.find((s) => s.dir === entry.name);
             let matches = false;
-            if (stackSource) {
+            if (stackSource && root) {
               try {
                 matches = await stackSource.detect(root, deps);
               } catch {
                 matches = false;
               }
-            } else {
+            } else if (!stackSource) {
               matches = true;
             }
             if (matches) {

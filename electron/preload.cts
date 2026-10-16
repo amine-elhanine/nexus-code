@@ -51,6 +51,7 @@ const nexusApi = {
   createSkill: (input: unknown) => invoke("skills:create", input),
   deleteSkill: (skillPath: string) => invoke("skills:delete", skillPath),
   setSkillModes: (skillPath: string, modes: string[]) => invoke("skills:set-modes", { skillPath, modes }),
+  changeSkillScope: (skillPath: string, targetScope: "global" | "project") => invoke("skills:change-scope", { skillPath, targetScope }),
   openSkillsFolder: (scope: "global" | "project") => invoke("skills:open-folder", scope),
   // Plugin Marketplace
   listMarketplacePlugins: () => invoke("plugins:marketplace:list"),

@@ -77,6 +77,7 @@ export interface NexusApi {
   createSkill: (input: { name: string; description?: string; scope: "global" | "project"; content?: string; modes?: string[] }) => Promise<SkillInfo>;
   deleteSkill: (skillPath: string) => Promise<void>;
   setSkillModes: (skillPath: string, modes: string[]) => Promise<SkillInfo>;
+  changeSkillScope: (skillPath: string, targetScope: "global" | "project") => Promise<SkillInfo>;
   openSkillsFolder: (scope: "global" | "project") => Promise<boolean>;
   listMarketplacePlugins: () => Promise<Array<{ id: string; name: string; description?: string; version?: string; author?: string; source: string; capabilities?: string[]; modes?: string[]; installed?: boolean; installedVersion?: string }>>;
   listInstalledPlugins: () => Promise<Array<{ name: string; dir: string; manifest: { id?: string; version?: string; modes?: unknown } }>>;

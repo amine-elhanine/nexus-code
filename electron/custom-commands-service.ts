@@ -221,14 +221,13 @@ export async function discoverCustomCommands(projectRoot?: string, scope?: Exclu
     }
   }
 
-  if (!projectRoot) return scope ? commands.filter((c) => commandAppliesToScope(c, scope)) : commands;
+  if (projectRoot) {
+    const customDirs = [
+      path.join(projectRoot, ".nexus", "commands"),
+      path.join(projectRoot, ".forgepilot", "commands"),
+    ];
 
-  const customDirs = [
-    path.join(projectRoot, ".nexus", "commands"),
-    path.join(projectRoot, ".forgepilot", "commands"),
-  ];
-
-  for (const customDir of customDirs) {
+    for (const customDir of customDirs) {
     try {
       if (!(await isInsideProject(projectRoot, customDir))) continue;
       const entries = await fs.readdir(customDir, { withFileTypes: true });
@@ -258,6 +257,7 @@ export async function discoverCustomCommands(projectRoot?: string, scope?: Exclu
       // directory doesn't exist
     }
   }
+}
 
   // Discover plugin-contributed commands (.nexus/plugins/<name>/commands)
   try {

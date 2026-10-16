@@ -15,6 +15,7 @@ import { QuizPlayerModal } from "../components/notebook/QuizPlayerModal.js";
 import { FlashcardPlayerModal } from "../components/notebook/FlashcardPlayerModal.js";
 import { MindmapViewerModal } from "../components/notebook/MindmapViewerModal.js";
 import { FilePreviewModal } from "../components/home/FilePreviewModal.js";
+import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
 import type { ChatItem, NotebookChat, NotebookDocument, NotebookEvaluation, NotebookFlashcardSet, NotebookMeta, NotebookMindmap, NotebookNote, NotebookPassage, NotebookQuiz, NotebookQuizType, NotebookSettings, NotebookSource, NotebookStats, NotebookSummary, NotebookSummaryLength, ProviderConfig, ProviderDefinition } from "../types.js";
 
 function verdictColor(verdict?: string) {
@@ -685,6 +686,8 @@ export function NotebookView({
     return { count: evals.length, avgPct: Math.round(avg * 100) };
   }, [activeChat]);
 
+  const latestPlan = useMemo(() => extractLatestPlan(undefined, activeChat?.messages as any, asking), [activeChat?.messages, asking]);
+
   function exportTranscript() {
     if (!activeChat || !activeNotebook) return;
     const lines = [`# ${activeNotebook.name} — ${activeChat.title}`, ""];
@@ -1264,6 +1267,12 @@ export function NotebookView({
             )}
           </div>
           <div className="agent-input-area">
+            <SlidingPlanDrawer
+              plan={latestPlan?.plan}
+              running={asking}
+              isInterrupted={latestPlan?.isInterrupted}
+              onContinue={() => void onAsk()}
+            />
             <div className="agent-input" style={{ position: "relative" }}>
               {slashQuery !== null && matchingCommands.length > 0 && (
                 <SlashCommandPopup

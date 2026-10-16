@@ -9,6 +9,7 @@ import { SlashCommandPopup, filterSlashCommands, type SlashCommand } from "../co
 import { formatCost } from "../types.js";
 import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
 import type { ChatItem, ProviderConfig, ProviderDefinition, AgentUsage, ChatAttachment } from "../types.js";
+import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
 
 export type HomeFile = { path: string; name: string; size: number; modified: string };
 
@@ -147,6 +148,8 @@ export function HomeView({
     if (slashQuery === null) return [];
     return filterSlashCommands(slashQuery, customCommands, []);
   }, [slashQuery, customCommands]);
+
+  const latestPlan = useMemo(() => extractLatestPlan(liveEvents, messages, running), [liveEvents, messages, running]);
 
   function updateCursorTriggers(value: string, cursorPosition: number) {
     const beforeCursor = value.slice(0, cursorPosition);
@@ -372,6 +375,12 @@ export function HomeView({
           accept={ATTACHMENT_ACCEPT}
           multiple
           onChange={handleImageFileSelect}
+        />
+        <SlidingPlanDrawer
+          plan={latestPlan?.plan}
+          running={running}
+          isInterrupted={latestPlan?.isInterrupted}
+          onContinue={() => submit("continue")}
         />
         <div className="agent-input" style={{ position: "relative" }}>
           {attachments.length > 0 && (

@@ -764,30 +764,24 @@ async function runNotebookAgent(
   try {
     const skillsConfig = await getSkillsConfig().catch(() => ({ enabled: true }));
     if (skillsConfig.enabled !== false && !options.disabledPromptAssets?.includes("skills")) {
-      const { GLOBAL_SKILLS_ROUTE, SKILL_SOURCE_PRIORITY, SYSTEM_SKILLS_ROUTE, buildSkillMounts, createSkillFilesTool, globalSkillsDir, listSkills, listSystemSkills, recommendSkills, skillAppliesToMode, skillDirVirtualPath, skillVirtualPath, systemSkillsDir } = await import("./skills-service.js");
+      const { GLOBAL_SKILLS_ROUTE, SKILL_SOURCE_PRIORITY, SYSTEM_SKILLS_ROUTE, buildSkillMounts, createSkillFilesTool, formatSkillNote, globalSkillsDir, listSkills, listSystemSkills, selectSkills, skillAppliesToMode, skillDirVirtualPath, systemSkillsDir } = await import("./skills-service.js");
       const fullCatalog = [...(await listSkills(workspace).catch(() => [])), ...(await listSystemSkills().catch(() => []))];
-      const catalog = fullCatalog.filter((s) => skillAppliesToMode(s, "notebook"));
-      skillFilesTool = createSkillFilesTool(catalog, workspace);
-      skillDirs = catalog
+      const modeEligible = fullCatalog.filter((s) => skillAppliesToMode(s, "notebook"));
+      skillFilesTool = createSkillFilesTool(modeEligible, workspace);
+      // Mount the whole eligible catalog so the system message lists every
+      // notebook skill, not just the ones a keyword match happened to find.
+      const selection = selectSkills(modeEligible, question);
+      skillDirs = selection.catalog
         .slice()
         .sort((a, b) => SKILL_SOURCE_PRIORITY[b.source] - SKILL_SOURCE_PRIORITY[a.source])
         .map(skillDirVirtualPath);
-      const recs = recommendSkills(catalog, question, 3);
       const offLimits = fullCatalog.filter((s) => !skillAppliesToMode(s, "notebook"));
-      const offUser = offLimits.filter((s) => s.source !== "system");
-      const offSystemCount = offLimits.length - offUser.length;
-      if (recs.length) {
-        const counts = (["project", "global", "system"] as const)
-          .map((source) => `${catalog.filter((s) => s.source === source).length} ${source}`)
-          .join(", ");
-        skillNote = `[System Note: ${catalog.length} skill(s) installed for notebook mode (${counts}). Most relevant to your task:\n${recs.map((s) => `- ${s.name}${s.description ? ` — ${s.description}` : ""} → read ${skillVirtualPath(s)} first`).join("\n")}\nIf a skill covers your task, read its SKILL.md BEFORE acting. This read is free.]`;
-      }
-      if (offUser.length) {
-        skillNote += `${skillNote ? "\n" : ""}[Skills NOT available in notebook mode — do NOT read, follow, or mention them: ${offUser.map((s) => s.name).join(", ")}.]`;
-      }
-      if (offSystemCount > 0) {
-        skillNote += `${skillNote ? "\n" : ""}[${offSystemCount} system skill(s) are disabled in notebook mode — only use skills listed above.]`;
-      }
+      skillNote = formatSkillNote(selection, {
+        modeLabel: "notebook",
+        offLimits,
+        offLimitsSystemCount: offLimits.length - offLimits.filter((s) => s.source !== "system").length,
+        budgetClause: "This read is free.",
+      });
       const skillsBackend = new FilesystemBackend({ rootDir: globalSkillsDir(), virtualMode: true });
       let systemBackend: any = null;
       try {
