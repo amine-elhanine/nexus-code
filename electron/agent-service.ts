@@ -652,9 +652,17 @@ export async function runProjectAgent(options: {
       // the system message instead of only the lexical matches.
       mountedSkillCatalog = selection.catalog;
       const offLimits = skillsMode ? fullCatalog.filter((s) => !skillAppliesToMode(s, skillsMode)) : [];
+      const forced = selection.forced || [];
+      const forcedNames = new Set(forced.map((s) => s.name.toLowerCase()));
+      const recs = recommendSkills(filterSkillsByMcp(selection.catalog, mcpResult.ok ? mcpResult.serverNames : []), request, 3);
+      const combinedRecommended = [
+        ...forced,
+        ...recs.filter((s) => !forcedNames.has(s.name.toLowerCase())),
+      ].slice(0, Math.max(forced.length, 3));
       const selectionForNote: SkillSelection = {
         catalog: selection.catalog,
-        recommended: recommendSkills(filterSkillsByMcp(selection.catalog, mcpResult.ok ? mcpResult.serverNames : []), request, 3),
+        recommended: combinedRecommended,
+        forced: selection.forced,
       };
       skillNote =
         formatSkillNote(selectionForNote, {

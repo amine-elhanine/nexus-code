@@ -336,6 +336,8 @@ function App() {
     showRulesModal,
     setShowRulesModal,
     customCommands,
+    installedSkills,
+    refreshSkills,
     showDaemonsModal,
     setShowDaemonsModal,
     inspectDiffFile,
@@ -1026,6 +1028,8 @@ function App() {
                 onOpenImage={openImagePreview}
                 onOpenAttachment={setAttachmentPreview}
                 customCommands={customCommands.filter((c) => !c.scope || c.scope === "all" || c.scope === "home")}
+                skills={installedSkills}
+                onRefreshSkills={refreshSkills}
               />
               </section>
             ) : (
@@ -1086,6 +1090,8 @@ function App() {
                   attachments={attachments}
                   setAttachments={setAttachments}
                   customCommands={customCommands.filter((c) => !c.scope || c.scope === "all" || c.scope === "code")}
+                  skills={installedSkills}
+                  onRefreshSkills={refreshSkills}
                 />
               ) : (
                 <MonacoEditorView
@@ -1481,7 +1487,10 @@ function App() {
             setShowSettings(false);
             setShowDaemonsModal(true);
           }}
-          onClose={() => setShowSettings(false)}
+          onClose={() => {
+            void refreshSkills();
+            setShowSettings(false);
+          }}
         />
       )}
       {showSkills && (
@@ -1493,7 +1502,10 @@ function App() {
             setSkillsEnabled(enabled);
             await api.saveSkillsConfig({ enabled });
           }}
-          onClose={() => setShowSkills(false)}
+          onClose={() => {
+            void refreshSkills();
+            setShowSkills(false);
+          }}
         />
       )}
       {showDaemonsModal && (

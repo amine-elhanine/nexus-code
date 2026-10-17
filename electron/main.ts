@@ -973,15 +973,30 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle("skills:import", async (_event, input: { sourcePath: string; scope: "global" | "project" }) => {
     const root = input.scope === "project" ? requireRoot() : (activeProjectRoot || "");
-    return importSkill(root, input.sourcePath, input.scope);
+    const res = await importSkill(root, input.sourcePath, input.scope);
+    mainWindow?.webContents.send("skills:changed");
+    return res;
   });
   ipcMain.handle("skills:create", async (_event, input: { name: string; description?: string; scope: "global" | "project"; content?: string; modes?: string[] }) => {
     const root = input.scope === "project" ? requireRoot() : (activeProjectRoot || "");
-    return createSkill(root, input);
+    const res = await createSkill(root, input);
+    mainWindow?.webContents.send("skills:changed");
+    return res;
   });
-  ipcMain.handle("skills:delete", async (_event, skillPath: string) => deleteSkill(skillPath, activeProjectRoot));
-  ipcMain.handle("skills:set-modes", async (_event, input: { skillPath: string; modes: string[] }) => setSkillModes(input.skillPath, input.modes, activeProjectRoot));
-  ipcMain.handle("skills:change-scope", async (_event, input: { skillPath: string; targetScope: "global" | "project" }) => changeSkillScope(input.skillPath, input.targetScope, activeProjectRoot));
+  ipcMain.handle("skills:delete", async (_event, skillPath: string) => {
+    await deleteSkill(skillPath, activeProjectRoot);
+    mainWindow?.webContents.send("skills:changed");
+  });
+  ipcMain.handle("skills:set-modes", async (_event, input: { skillPath: string; modes: string[] }) => {
+    const res = await setSkillModes(input.skillPath, input.modes, activeProjectRoot);
+    mainWindow?.webContents.send("skills:changed");
+    return res;
+  });
+  ipcMain.handle("skills:change-scope", async (_event, input: { skillPath: string; targetScope: "global" | "project" }) => {
+    const res = await changeSkillScope(input.skillPath, input.targetScope, activeProjectRoot);
+    mainWindow?.webContents.send("skills:changed");
+    return res;
+  });
   ipcMain.handle("skills:open-folder", async (_event, scope: "global" | "project") => {
     const root = scope === "project" ? requireRoot() : (activeProjectRoot || "");
     return openSkillsFolder(scope, root);
@@ -1008,16 +1023,22 @@ app.whenReady().then(async () => {
     await removeMarketplacePlugin(id);
     // Removing a dev entry must not orphan its installed bundle
     await uninstallPluginAnywhere(id, activeProjectRoot || undefined).catch(() => undefined);
+    mainWindow?.webContents.send("skills:changed");
   });
 // Marketplace bundles install globally (userData/plugins) so their skills,
 // rules, subagents and commands are available in every mode — not just in
 // whichever project happens to be open.
-  ipcMain.handle("plugins:install", async (_event, entry) => installMarketplacePlugin(globalPluginsDir(), entry, { isTargetDir: true }));
+  ipcMain.handle("plugins:install", async (_event, entry) => {
+    const res = await installMarketplacePlugin(globalPluginsDir(), entry, { isTargetDir: true });
+    mainWindow?.webContents.send("skills:changed");
+    return res;
+  });
   ipcMain.handle("plugins:uninstall", async (_event, id: string) => {
     // Deterministic cleanup: dispose executable state BEFORE deleting files
     // so tools/listeners/providers cannot survive uninstall.
     await disposePlugin(String(id)).catch(() => undefined);
     await uninstallPluginAnywhere(id, activeProjectRoot || undefined);
+    mainWindow?.webContents.send("skills:changed");
   });
   // v1 executable plugin platform: validation, lifecycle, capability listing.
   // Payloads are validated here; renderer is never trusted for permissions.

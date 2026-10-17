@@ -130,6 +130,60 @@ await test("scoring stays a pure ranking signal with no filtering of its own", (
   assert.deepEqual(recommendSkills(CATALOG, "refactor this component"), []);
 });
 
+await test("tagging a skill with @name forces that skill to the top even with zero lexical overlap", () => {
+  const selection = selectSkills(CATALOG, "refactor this component @pptx", "home");
+  assert.deepEqual(selection.forced.map((entry) => entry.name), ["pptx"]);
+  assert.deepEqual(selection.recommended.map((entry) => entry.name), ["pptx"]);
+  assert.equal(selection.catalog[0].name, "pptx");
+});
+
+await test("tagging multiple skills forces all of them in order at the front", () => {
+  const selection = selectSkills(CATALOG, "create a report with @xlsx and @docx", "home");
+  assert.deepEqual(selection.forced.map((entry) => entry.name), ["xlsx", "docx"]);
+  assert.deepEqual(selection.recommended.slice(0, 2).map((entry) => entry.name), ["xlsx", "docx"]);
+  assert.equal(selection.catalog[0].name, "xlsx");
+  assert.equal(selection.catalog[1].name, "docx");
+});
+
+await test("untagged requests do not force any skills and preserve standard automatic selection", () => {
+  const selectionNoMatch = selectSkills(CATALOG, "refactor this component", "home");
+  assert.deepEqual(selectionNoMatch.forced, []);
+  assert.deepEqual(selectionNoMatch.recommended, []);
+
+  const selectionMatch = selectSkills(CATALOG, "generate me a presentation", "home");
+  assert.deepEqual(selectionMatch.forced, []);
+  assert.deepEqual(selectionMatch.recommended.map((entry) => entry.name), ["pptx"]);
+});
+
+await test("formatSkillNote highlights forced skills with special markers and mandatory directive", () => {
+  const selection = selectSkills(CATALOG, "build slides @pptx", "home");
+  const note = formatSkillNote(selection, { modeLabel: "home" });
+  assert.match(note, /FORCED BY USER — MUST USE THIS SKILL/);
+  assert.match(note, /USER FORCED SKILL\(S\)/);
+  assert.match(note, /@pptx/);
+
+  // Untagged request does not contain forced markers
+  const untaggedSelection = selectSkills(CATALOG, "build slides", "home");
+  const untaggedNote = formatSkillNote(untaggedSelection, { modeLabel: "home" });
+  assert.doesNotMatch(untaggedNote, /FORCED BY USER/);
+  assert.doesNotMatch(untaggedNote, /USER FORCED SKILL/);
+});
+
+await test("skills scoped to another mode cannot be forced into an incompatible mode", () => {
+  const selection = selectSkills(CATALOG, "check hooks @react-reviewer", "home");
+  assert.deepEqual(selection.forced, [], "Code-only skill cannot be forced in Home mode");
+  assert.ok(!selection.catalog.some((entry) => entry.name === "react-reviewer"));
+
+  const codeSelection = selectSkills(CATALOG, "check hooks @react-reviewer", "code");
+  assert.deepEqual(codeSelection.forced.map((entry) => entry.name), ["react-reviewer"]);
+  assert.equal(codeSelection.catalog[0].name, "react-reviewer");
+});
+
+await test("recommendSkills prioritizes forced/tagged skills", () => {
+  const recs = recommendSkills(CATALOG, "unrelated text @pdf", 3, "home");
+  assert.deepEqual(recs.map((entry) => entry.name), ["pdf"]);
+});
+
 if (failed > 0) {
   console.error(`\nTests failed: ${failed}`);
   process.exit(1);

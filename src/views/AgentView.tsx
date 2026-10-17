@@ -10,7 +10,7 @@ import { ChatItemView, ActivityGroupView, StreamingAssistantMessage } from "../c
 import { fileIcon } from "../utils/format.js";
 import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
 import { formatCost } from "../types.js";
-import type { ChatItem, FileEntry, ProviderConfig, ProviderDefinition, AgentUsage, ArtifactItem, ChatAttachment } from "../types.js";
+import type { ChatItem, FileEntry, ProviderConfig, ProviderDefinition, AgentUsage, ArtifactItem, ChatAttachment, SkillInfo } from "../types.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
 
 const AGENT_STARTERS = [
@@ -115,6 +115,8 @@ export function AgentView({
   attachments,
   setAttachments,
   customCommands,
+  skills,
+  onRefreshSkills,
 }: {
   hasProject: boolean;
   activeFile: string;
@@ -156,6 +158,8 @@ export function AgentView({
   attachments: ChatAttachment[];
   setAttachments: React.Dispatch<React.SetStateAction<ChatAttachment[]>>;
   customCommands?: SlashCommand[];
+  skills?: SkillInfo[];
+  onRefreshSkills?: () => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
@@ -227,13 +231,30 @@ export function AgentView({
   });
   flushActivity();
 
-  const matchingFiles = useMemo(() => {
+  const [localSkills, setLocalSkills] = useState<SkillInfo[] | null>(null);
+  const effectiveSkills = localSkills || skills || [];
+
+  const mentionItems = useMemo(() => {
     if (mentionQuery === null) return [];
     const query = mentionQuery.toLowerCase();
-    return files
+    const matchingSkills = effectiveSkills
+      .filter((s) => {
+        if (s.modes && s.modes.length > 0 && !s.modes.includes("code")) return false;
+        return (
+          s.name.toLowerCase().includes(query) ||
+          (query.length >= 2 && s.description.toLowerCase().includes(query))
+        );
+      })
+      .slice(0, 5)
+      .map((s) => ({ kind: "skill" as const, name: s.name, description: s.description }));
+
+    const matchingFileList = files
       .filter((f) => f.kind === "file" && f.path.toLowerCase().includes(query))
-      .slice(0, 8);
-  }, [mentionQuery, files]);
+      .slice(0, 8)
+      .map((f) => ({ kind: "file" as const, path: f.path }));
+
+    return [...matchingSkills, ...matchingFileList];
+  }, [mentionQuery, effectiveSkills, files]);
 
   function updateCursorTriggers(value: string, cursorPosition: number) {
     const beforeCursor = value.slice(0, cursorPosition);
@@ -242,6 +263,10 @@ export function AgentView({
       setMentionQuery(mentionMatch[1]);
       setMentionIndex(0);
       setSlashQuery(null);
+      onRefreshSkills?.();
+      api?.listSkills?.().then((list) => {
+        if (Array.isArray(list)) setLocalSkills(list);
+      }).catch(() => {});
       return;
     } else {
       setMentionQuery(null);
@@ -261,12 +286,13 @@ export function AgentView({
     updateCursorTriggers(value, cursorPosition);
   }
 
-  function insertMention(filePath: string) {
+  function insertMentionItem(item: { kind: "skill"; name: string } | { kind: "file"; path: string }) {
     if (!textareaRef.current) return;
     const cursor = textareaRef.current.selectionStart || draft.length;
     const beforeCursor = draft.slice(0, cursor);
     const afterCursor = draft.slice(cursor);
-    const updatedBefore = beforeCursor.replace(/@([a-zA-Z0-9_./-]*)$/, `@${filePath} `);
+    const textToInsert = item.kind === "skill" ? `@${item.name} ` : `@${item.path} `;
+    const updatedBefore = beforeCursor.replace(/@([a-zA-Z0-9_./-]*)$/, textToInsert);
     setDraft(`${updatedBefore}${afterCursor}`);
     setMentionQuery(null);
     setTimeout(() => textareaRef.current?.focus(), 10);
@@ -385,20 +411,20 @@ export function AgentView({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (mentionQuery !== null && matchingFiles.length > 0) {
+    if (mentionQuery !== null && mentionItems.length > 0) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
-        setMentionIndex((current) => (current + 1) % matchingFiles.length);
+        setMentionIndex((current) => (current + 1) % mentionItems.length);
         return;
       }
       if (event.key === "ArrowUp") {
         event.preventDefault();
-        setMentionIndex((current) => (current - 1 + matchingFiles.length) % matchingFiles.length);
+        setMentionIndex((current) => (current - 1 + mentionItems.length) % mentionItems.length);
         return;
       }
       if (event.key === "Enter" || event.key === "Tab") {
         event.preventDefault();
-        insertMention(matchingFiles[mentionIndex].path);
+        insertMentionItem(mentionItems[mentionIndex]);
         return;
       }
       if (event.key === "Escape") {
@@ -629,16 +655,27 @@ export function AgentView({
           onContinue={() => submit("continue")}
         />
         <div className="agent-input" style={{ position: "relative" }}>
-          {mentionQuery !== null && matchingFiles.length > 0 && (
+          {mentionQuery !== null && mentionItems.length > 0 && (
             <div className="mention-dropdown">
-              {matchingFiles.map((file, idx) => (
+              {mentionItems.map((item, idx) => (
                 <button
-                  key={file.path}
+                  key={item.kind === "skill" ? `skill-${item.name}` : `file-${item.path}`}
                   className={`mention-item ${idx === mentionIndex ? "active" : ""}`}
-                  onClick={() => insertMention(file.path)}
+                  onClick={() => insertMentionItem(item)}
                 >
-                  {fileIcon(file.path)}
-                  <span>{file.path}</span>
+                  {item.kind === "skill" ? (
+                    <>
+                      <Sparkles size={12} style={{ color: "#a496ff", flexShrink: 0 }} />
+                      <span style={{ fontWeight: 600, color: "#e1dbff" }}>@{item.name}</span>
+                      <span className="mention-badge">Skill</span>
+                      {item.description && <span className="mention-desc">— {item.description}</span>}
+                    </>
+                  ) : (
+                    <>
+                      {fileIcon(item.path)}
+                      <span>{item.path}</span>
+                    </>
+                  )}
                 </button>
               ))}
             </div>
@@ -686,6 +723,12 @@ export function AgentView({
           <textarea
             ref={textareaRef}
             value={draft}
+            onFocus={() => {
+              onRefreshSkills?.();
+              api?.listSkills?.().then((list) => {
+                if (Array.isArray(list)) setLocalSkills(list);
+              }).catch(() => {});
+            }}
             onChange={(event) =>
               handleDraftChange(
                 event.target.value,

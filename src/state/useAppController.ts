@@ -14,6 +14,7 @@ import type {
   SessionRecord,
   WorkspaceDiffFile,
   ChatAttachment,
+  SkillInfo,
 } from "../types.js";
 
 export const FALLBACK_PROVIDERS: ProviderDefinition[] = [
@@ -85,6 +86,14 @@ export function useAppController() {
   const [showContext, setShowContext] = useState(true);
   const [showProviders, setShowProviders] = useState(false);
   const [skillsEnabled, setSkillsEnabled] = useState(true);
+  const [installedSkills, setInstalledSkills] = useState<SkillInfo[]>([]);
+
+  const refreshSkills = async () => {
+    try {
+      const list = await api.listSkills();
+      if (Array.isArray(list)) setInstalledSkills(list as SkillInfo[]);
+    } catch { /* ignore */ }
+  };
   const [rulesEnabled, setRulesEnabled] = useState(true);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [activeArtifact, setActiveArtifact] = useState<ArtifactItem | null>(null);
@@ -126,19 +135,21 @@ export function useAppController() {
       api.getRulesConfig(),
       api.getSkillsConfig(),
       api.listCustomCommands(),
-    ]).then(async ([projectList, providerList, definitions, rulesConfig, skillsConfig, cmds]) => {
+      api.listSkills().catch(() => []),
+    ]).then(async ([projectList, providerList, definitions, rulesConfig, skillsConfig, cmds, initialSkills]) => {
       setProjects(projectList);
       setProviders(providerList);
       if (definitions?.length) setProviderDefinitions(definitions);
       setRulesEnabled(rulesConfig?.enabled !== false);
       setSkillsEnabled(skillsConfig?.enabled !== false);
       if (cmds?.length) setCustomCommands(cmds as SlashCommand[]);
+      if (Array.isArray(initialSkills)) setInstalledSkills(initialSkills as SkillInfo[]);
       if (projectList[0]) {
         await activateProject(projectList[0].id);
       }
     });
 
-    return api.onAgentEvent((event) => {
+    const unsubAgent = api.onAgentEvent((event) => {
       const bucket = event.sessionId || "unknown";
       // Events from a session other than the currently viewed one still
       // accumulate (so switching later shows them) but don't stream into view.
@@ -211,6 +222,16 @@ export function useAppController() {
       liveEventsRef.current = pushLiveEvent(liveEventsRef.current, bucket, item);
       setLiveEvents(liveEventsRef.current);
     });
+
+    const unsubSkills = api.onSkillsChanged ? api.onSkillsChanged(() => { void refreshSkills(); }) : undefined;
+    const onCustomSkillsUpdated = () => { void refreshSkills(); };
+    window.addEventListener("skills:updated", onCustomSkillsUpdated);
+
+    return () => {
+      if (typeof unsubAgent === "function") unsubAgent();
+      unsubSkills?.();
+      window.removeEventListener("skills:updated", onCustomSkillsUpdated);
+    };
   }, []);
 
   function resetWorkspace() {
@@ -264,6 +285,7 @@ export function useAppController() {
     }
     void api.getProjectRules(projectId).then(setProjectRules).catch(() => setProjectRules(null));
     void api.listCustomCommands().then((c) => setCustomCommands(c as SlashCommand[])).catch(() => {});
+    void refreshSkills();
     await loadWorkspace();
   }
 
@@ -841,6 +863,8 @@ export function useAppController() {
     setShowSkills,
     skillsEnabled,
     setSkillsEnabled,
+    installedSkills,
+    refreshSkills,
     rulesEnabled,
     setRulesEnabled,
     confirmDialog,

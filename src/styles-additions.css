@@ -4989,3 +4989,24 @@
   margin: 12px 0;
 }
 
+.mention-item .mention-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(164, 150, 255, 0.15);
+  color: #a496ff;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+
+.mention-item .mention-desc {
+  font-size: 9.5px;
+  color: var(--muted, #8b9bb4);
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-left: 4px;
+}
+

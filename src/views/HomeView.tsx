@@ -8,7 +8,7 @@ import { ChatItemView, ActivityGroupView, StreamingAssistantMessage } from "../c
 import { SlashCommandPopup, filterSlashCommands, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
 import { formatCost } from "../types.js";
 import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
-import type { ChatItem, ProviderConfig, ProviderDefinition, AgentUsage, ChatAttachment } from "../types.js";
+import type { ChatItem, ProviderConfig, ProviderDefinition, AgentUsage, ChatAttachment, SkillInfo } from "../types.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
 
 export type HomeFile = { path: string; name: string; size: number; modified: string };
@@ -72,6 +72,8 @@ export function HomeView({
   onOpenImage,
   onOpenAttachment,
   customCommands,
+  skills,
+  onRefreshSkills,
 }: {
   messages: ChatItem[];
   draft: string;
@@ -100,6 +102,8 @@ export function HomeView({
   onOpenImage?: (src: string) => void;
   onOpenAttachment?: (attachment: ChatAttachment) => void;
   customCommands?: SlashCommand[];
+  skills?: SkillInfo[];
+  onRefreshSkills?: () => void;
 }) {
   const api = window.nexus || window.forgepilot;
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -143,16 +147,49 @@ export function HomeView({
 
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
 
   const matchingCommands = useMemo(() => {
     if (slashQuery === null) return [];
     return filterSlashCommands(slashQuery, customCommands, []);
   }, [slashQuery, customCommands]);
 
+  const [localSkills, setLocalSkills] = useState<SkillInfo[] | null>(null);
+  const effectiveSkills = localSkills || skills || [];
+
+  const matchingSkills = useMemo(() => {
+    if (mentionQuery === null || !effectiveSkills.length) return [];
+    const query = mentionQuery.toLowerCase();
+    return effectiveSkills
+      .filter((s) => {
+        if (s.modes && s.modes.length > 0 && !s.modes.includes("home")) return false;
+        return (
+          s.name.toLowerCase().includes(query) ||
+          (query.length >= 2 && s.description.toLowerCase().includes(query))
+        );
+      })
+      .slice(0, 8);
+  }, [mentionQuery, effectiveSkills]);
+
   const latestPlan = useMemo(() => extractLatestPlan(liveEvents, messages, running), [liveEvents, messages, running]);
 
   function updateCursorTriggers(value: string, cursorPosition: number) {
     const beforeCursor = value.slice(0, cursorPosition);
+    const mentionMatch = beforeCursor.match(/@([a-zA-Z0-9_./-]*)$/);
+    if (mentionMatch) {
+      setMentionQuery(mentionMatch[1]);
+      setMentionIndex(0);
+      setSlashQuery(null);
+      onRefreshSkills?.();
+      api?.listSkills?.().then((list) => {
+        if (Array.isArray(list)) setLocalSkills(list);
+      }).catch(() => {});
+      return;
+    } else {
+      setMentionQuery(null);
+    }
+
     const slashMatch = beforeCursor.match(/(?:^|\s)\/([a-zA-Z0-9_-]*)$/);
     if (slashMatch) {
       setSlashQuery(slashMatch[1]);
@@ -165,6 +202,17 @@ export function HomeView({
   function handleDraftChange(value: string, cursorPosition: number) {
     setDraft(value);
     updateCursorTriggers(value, cursorPosition);
+  }
+
+  function insertSkillMention(skillName: string) {
+    if (!textareaRef.current) return;
+    const cursor = textareaRef.current.selectionStart || draft.length;
+    const beforeCursor = draft.slice(0, cursor);
+    const afterCursor = draft.slice(cursor);
+    const updatedBefore = beforeCursor.replace(/@([a-zA-Z0-9_./-]*)$/, `@${skillName} `);
+    setDraft(`${updatedBefore}${afterCursor}`);
+    setMentionQuery(null);
+    setTimeout(() => textareaRef.current?.focus(), 10);
   }
 
   function handleSlashSelect(cmd: SlashCommand) {
@@ -191,6 +239,31 @@ export function HomeView({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (mentionQuery !== null && matchingSkills.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setMentionIndex((c) => (c + 1) % matchingSkills.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setMentionIndex((c) => (c - 1 + matchingSkills.length) % matchingSkills.length);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMentionQuery(null);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        if (!event.ctrlKey && !event.metaKey && !event.shiftKey) {
+          event.preventDefault();
+          insertSkillMention(matchingSkills[mentionIndex].name);
+          return;
+        }
+      }
+    }
+
     if (slashQuery !== null && matchingCommands.length > 0) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -411,6 +484,22 @@ export function HomeView({
               ))}
             </div>
           )}
+          {mentionQuery !== null && matchingSkills.length > 0 && (
+            <div className="mention-dropdown">
+              {matchingSkills.map((skill, idx) => (
+                <button
+                  key={skill.name}
+                  className={`mention-item ${idx === mentionIndex ? "active" : ""}`}
+                  onClick={() => insertSkillMention(skill.name)}
+                >
+                  <Sparkles size={12} style={{ color: "#a496ff", flexShrink: 0 }} />
+                  <span style={{ fontWeight: 600, color: "#e1dbff" }}>@{skill.name}</span>
+                  <span className="mention-badge">Skill</span>
+                  {skill.description && <span className="mention-desc">— {skill.description}</span>}
+                </button>
+              ))}
+            </div>
+          )}
           {slashQuery !== null && matchingCommands.length > 0 && (
             <SlashCommandPopup
               filter={slashQuery}
@@ -424,6 +513,12 @@ export function HomeView({
           <textarea
             ref={textareaRef}
             value={draft}
+            onFocus={() => {
+              onRefreshSkills?.();
+              api?.listSkills?.().then((list) => {
+                if (Array.isArray(list)) setLocalSkills(list);
+              }).catch(() => {});
+            }}
             onChange={(event) =>
               handleDraftChange(
                 event.target.value,
