@@ -6,6 +6,7 @@ import { ProviderManager } from "../components/settings/ProviderManager.js";
 import { McpManager } from "../components/settings/McpManager.js";
 import { SkillsManager } from "../components/settings/SkillsManager.js";
 import { PluginMarketplace } from "../components/settings/PluginMarketplace.js";
+import { ProviderModelSelect } from "../components/settings/ProviderModelSelect.js";
 import { MemoryRow } from "../views/MemoryView.js";
 import { APP_THEMES, applyTheme, getStoredThemeId } from "../state/theme.js";
 import type { EmbeddingEndpointKind, EmbeddingProviderConfig, ProviderConfig, ProviderDefinition, UpdaterState } from "../types.js";
@@ -340,6 +341,7 @@ export function SettingsModal({
   }
 
   const activeEmbProvider = embProviders.find((p) => p.id === embeddingProviderId);
+  const activeRerankProvider = providers.find((p) => p.id === rerankProviderId);
 
   type NavItem = {
     id: SettingsSection;
@@ -693,27 +695,38 @@ export function SettingsModal({
                       </div>
                     </div>
                     <label className="field-label" style={{ marginTop: 10 }}>Embedding provider</label>
-                    <select value={embeddingProviderId} onChange={(e) => setEmbeddingProviderId(e.target.value)} className="select-field">
+                    <select
+                      value={embeddingProviderId}
+                      onChange={(e) => {
+                        const nextId = e.target.value;
+                        setEmbeddingProviderId(nextId);
+                        // Don't carry a model the next provider doesn't serve.
+                        const nextModels = embProviders.find((p) => p.id === nextId)?.models ?? [];
+                        if (!nextModels.includes(embeddingModel)) setEmbeddingModel(nextModels[0] ?? "");
+                      }}
+                      className="select-field"
+                    >
                       <option value="">Local built-in (offline, no key)</option>
                       {embProviders.map((p) => (
                         <option key={p.id} value={p.id}>{p.name}</option>
                       ))}
                     </select>
                     <label className="field-label" style={{ marginTop: 10 }}>Embedding model</label>
-                    <input
+                    <ProviderModelSelect
                       value={embeddingModel}
-                      onChange={(e) => setEmbeddingModel(e.target.value)}
-                      placeholder="text-embedding-3-small"
-                      className="text-field"
-                      list="emb-active-models"
+                      models={activeEmbProvider?.models ?? []}
+                      onChange={setEmbeddingModel}
+                      disabled={!embeddingProviderId}
+                      emptyHint={activeEmbProvider
+                        ? "This provider has no models yet — add one in its model list below."
+                        : "Local built-in hashes locally with a fixed model."}
+                      staleLabel={embeddingProviderId ? " — not in this provider's list" : ""}
                     />
-                    {!!activeEmbProvider?.models.length && (
-                      <datalist id="emb-active-models">
-                        {activeEmbProvider.models.map((m: string) => (
-                          <option key={m} value={m} />
-                        ))}
-                      </datalist>
-                    )}
+                    <small style={{ display: "block", marginTop: 6 }}>
+                      {embeddingProviderId
+                        ? `Models configured on ${activeEmbProvider?.name ?? "this provider"}. Changing the model changes the vector space and requires re-indexing sources.`
+                        : "Offline hashing — no key, no network, and re-indexing is not required."}
+                    </small>
                     <div className="modal-actions" style={{ marginTop: 12 }}>
                       <button
                         className="secondary"
@@ -751,17 +764,14 @@ export function SettingsModal({
                       {providers.filter((provider) => provider.enabled !== false).map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}
                     </select>
                     <label className="field-label" style={{ marginTop: 10 }}>Reranker model</label>
-                    <input
-                      className="text-field"
+                    <ProviderModelSelect
                       value={rerankModel}
-                      onChange={(e) => setRerankModel(e.target.value)}
-                      list="reranker-models"
-                      placeholder="Use provider default model"
+                      models={activeRerankProvider?.models ?? []}
+                      onChange={setRerankModel}
                       disabled={!rerankEnabled}
+                      emptyOption="Provider default (first model)"
+                      emptyHint={activeRerankProvider ? "This provider has no models yet." : "Pick a provider above to list its models."}
                     />
-                    <datalist id="reranker-models">
-                      {(providers.find((provider) => provider.id === rerankProviderId)?.models || []).map((model) => <option key={model} value={model} />)}
-                    </datalist>
                     <div className="modal-actions" style={{ marginTop: 12 }}>
                       <button className="primary full" onClick={() => void saveRerankConfig()}><Check size={14} /> Save reranking config</button>
                     </div>

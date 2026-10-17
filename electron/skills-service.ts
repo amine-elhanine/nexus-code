@@ -741,19 +741,50 @@ export function scoreSkills(skills: SkillInfo[], request: string): ScoredSkill[]
 const SKILL_RECOMMEND_SCORE = 3;
 
 /**
+ * Extracts mode-eligible skills explicitly tagged in the request with `@name` or `skill:name`.
+ * Matching is case-insensitive, deduplicated, and preserves the order skills appear in the request.
+ */
+export function extractTaggedSkills(skills: SkillInfo[], request: string): SkillInfo[] {
+  if (!request || !skills.length) return [];
+  const byName = new Map<string, SkillInfo>();
+  for (const s of skills) {
+    const key = s.name.toLowerCase();
+    const kept = byName.get(key);
+    if (!kept || SKILL_SOURCE_PRIORITY[s.source] < SKILL_SOURCE_PRIORITY[kept.source]) {
+      byName.set(key, s);
+    }
+  }
+  const matches = request.matchAll(/(?:^|[\s,;!?(])(?:@|skill:)([a-zA-Z0-9_-]+)/gi);
+  const forced: SkillInfo[] = [];
+  const seen = new Set<string>();
+  for (const match of matches) {
+    const rawTag = match[1].toLowerCase();
+    const found = byName.get(rawTag);
+    if (found && !seen.has(found.name.toLowerCase())) {
+      seen.add(found.name.toLowerCase());
+      forced.push(found);
+    }
+  }
+  return forced;
+}
+
+/**
  * Shortlist for the System Note: the highest-scoring skills, above the noise
  * floor. Minimum score 3 = at least one strong signal (a name hit) or two weak
  * ones. Single description-word hits (e.g. "fix" matching a skill that merely
  * mentions fixing) are noise that teaches the model to ignore the shortlist.
+ * Explicitly tagged/forced skills always lead the shortlist.
  *
  * Prefer selectSkills for choosing what to advertise — this only orders.
  */
 export function recommendSkills(skills: SkillInfo[], request: string, maxN = 3, mode?: SkillMode): SkillInfo[] {
   const eligible = mode ? skills.filter((s) => skillAppliesToMode(s, mode)) : skills;
-  return scoreSkills(eligible, request)
-    .filter((s) => s.score >= SKILL_RECOMMEND_SCORE)
-    .slice(0, Math.max(1, maxN))
+  const forced = extractTaggedSkills(eligible, request);
+  const forcedNames = new Set(forced.map((s) => s.name.toLowerCase()));
+  const scored = scoreSkills(eligible, request)
+    .filter((s) => s.score >= SKILL_RECOMMEND_SCORE && !forcedNames.has(s.skill.name.toLowerCase()))
     .map((s) => s.skill);
+  return [...forced, ...scored].slice(0, Math.max(forced.length, Math.max(1, maxN)));
 }
 
 export type SkillSelection = {
@@ -761,6 +792,8 @@ export type SkillSelection = {
   catalog: SkillInfo[];
   /** The leading slice of `catalog` that scored above the noise floor. */
   recommended: SkillInfo[];
+  /** Skills explicitly tagged/forced by the user in the prompt. */
+  forced?: SkillInfo[];
 };
 
 /**
@@ -773,9 +806,15 @@ export type SkillSelection = {
  * the model that installing one does nothing. So the complete mode-eligible
  * catalog is always advertised, ranked best-first, and the model does the
  * semantic match. That is the job it is good at; token overlap is not.
+ *
+ * Explicitly tagged skills (@skill-name) are forced to the very front of the
+ * catalog and recommended shortlist, commanding the agent to load them.
  */
 export function selectSkills(all: SkillInfo[], request: string, mode?: SkillMode, maxRecommended = 3): SkillSelection {
   const eligible = mode ? all.filter((skill) => skillAppliesToMode(skill, mode)) : all;
+  const forced = extractTaggedSkills(eligible, request);
+  const forcedNames = new Set(forced.map((s) => s.name.toLowerCase()));
+
   const evidence = new Map<string, SkillEvidence>();
   for (const entry of scoreSkills(eligible, request)) {
     const current = evidence.get(entry.skill.name);
@@ -790,16 +829,32 @@ export function selectSkills(all: SkillInfo[], request: string, mode?: SkillMode
     const kept = byName.get(skill.name);
     if (!kept || SKILL_SOURCE_PRIORITY[skill.source] < SKILL_SOURCE_PRIORITY[kept.source]) byName.set(skill.name, skill);
   }
+
+  const canonicalForced = forced.map((s) => byName.get(s.name) || s);
+
   // Best match first: sort is ascending, so compare each entry against the one
   // beside it rather than the other way round.
-  const catalog = [...byName.values()].sort(
-    (a, b) =>
-      compareEvidence(of(b), of(a)) ||
-      SKILL_SOURCE_PRIORITY[a.source] - SKILL_SOURCE_PRIORITY[b.source] ||
-      a.name.localeCompare(b.name)
-  );
-  const recommended = recommendedSkills(catalog, of, maxRecommended);
-  return { catalog, recommended };
+  const unforcedCatalog = [...byName.values()]
+    .filter((s) => !forcedNames.has(s.name.toLowerCase()))
+    .sort(
+      (a, b) =>
+        compareEvidence(of(b), of(a)) ||
+        SKILL_SOURCE_PRIORITY[a.source] - SKILL_SOURCE_PRIORITY[b.source] ||
+        a.name.localeCompare(b.name)
+    );
+
+  const catalog = [...canonicalForced, ...unforcedCatalog];
+
+  if (!canonicalForced.length) {
+    const recommended = recommendedSkills(catalog, of, maxRecommended);
+    return { catalog, recommended, forced: [] };
+  }
+
+  const unforcedRecs = recommendedSkills(unforcedCatalog, of, maxRecommended)
+    .filter((s) => !forcedNames.has(s.name.toLowerCase()));
+  const recommended = [...canonicalForced, ...unforcedRecs].slice(0, Math.max(canonicalForced.length, maxRecommended));
+
+  return { catalog, recommended, forced: canonicalForced };
 }
 
 type SkillEvidence = ScoredSkill;
@@ -853,6 +908,8 @@ export function formatSkillNote(
   options: { modeLabel?: string; offLimits?: SkillInfo[]; offLimitsSystemCount?: number; budgetClause?: string } = {}
 ): string {
   const { catalog, recommended } = selection;
+  const forced = selection.forced ?? [];
+  const forcedNames = new Set(forced.map((skill) => skill.name));
   const offLimits = options.offLimits ?? [];
   const offSystemCount = options.offLimitsSystemCount ?? 0;
   if (!catalog.length && !offLimits.length && !offSystemCount) return "";
@@ -863,11 +920,19 @@ export function formatSkillNote(
     .join(", ");
   const lines = catalog.map((skill) => {
     const description = skillNoteDescription(skill);
-    const marker = recommendedNames.has(skill.name) ? "READ FIRST" : "read if it covers the task";
+    const marker = forcedNames.has(skill.name)
+      ? "FORCED BY USER — MUST USE THIS SKILL"
+      : recommendedNames.has(skill.name)
+        ? "READ FIRST"
+        : "read if it covers the task";
     return `- **${skill.name}**${description ? ` — ${description}` : ""} → ${skillVirtualPath(skill)} (${marker})`;
   });
   const budget = options.budgetClause ?? "This read is free and does not count against your exploration budget.";
   let note = `[System Note: ${catalog.length} skill(s) installed${modeLabel} (${counts}). This is the COMPLETE list of skills available to you in this mode, ordered best match first — not a filtered shortlist.\n${lines.join("\n")}\nBefore improvising, read the SKILL.md of ANY entry whose description covers the task, including entries not marked READ FIRST: matching a request to a skill takes meaning, not keyword overlap. ${budget}\nIMPORTANT: SKILL.md contains private operational guidance for YOU. NEVER output, quote, echo, or dump its text or numbered lines to the user. Silently apply the skill to fulfill the user's request.]`;
+  if (forced.length > 0) {
+    const forcedTagList = forced.map((s) => `**@${s.name}**`).join(", ");
+    note += `\n[USER FORCED SKILL(S): The user explicitly tagged and commanded the use of ${forcedTagList}. You MUST read the SKILL.md of ${forcedTagList} immediately and strictly follow its instructions to fulfill this request. Do NOT substitute, ignore, or skip forced skills.]`;
+  }
   const offUser = offLimits.filter((skill) => skill.source !== "system");
   if (offUser.length) {
     note += `\n[Skills NOT available in this mode — do NOT read, follow, or mention them: ${offUser.map((skill) => skill.name).join(", ")}.]`;

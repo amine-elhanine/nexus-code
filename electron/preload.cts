@@ -53,6 +53,11 @@ const nexusApi = {
   setSkillModes: (skillPath: string, modes: string[]) => invoke("skills:set-modes", { skillPath, modes }),
   changeSkillScope: (skillPath: string, targetScope: "global" | "project") => invoke("skills:change-scope", { skillPath, targetScope }),
   openSkillsFolder: (scope: "global" | "project") => invoke("skills:open-folder", scope),
+  onSkillsChanged: (listener: () => void) => {
+    const handler = () => listener();
+    ipcRenderer.on("skills:changed", handler);
+    return () => ipcRenderer.removeListener("skills:changed", handler);
+  },
   // Plugin Marketplace
   listMarketplacePlugins: () => invoke("plugins:marketplace:list"),
   listInstalledPlugins: () => invoke("plugins:installed:list"),

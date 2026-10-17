@@ -123,6 +123,7 @@ export function SkillsManager({
     try {
       const list = await api.listSkills();
       setSkills(list);
+      window.dispatchEvent(new CustomEvent("skills:updated"));
     } catch (loadFail) {
       setLoadError(loadFail instanceof Error ? loadFail.message : "Unable to list skills.");
     }

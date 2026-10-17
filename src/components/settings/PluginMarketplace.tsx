@@ -293,6 +293,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
     try {
       await api.installPlugin(plugin);
       await refresh();
+      window.dispatchEvent(new CustomEvent("skills:updated"));
       if (selectedPlugin?.id === plugin.id) {
         setSelectedPlugin((prev) => (prev ? { ...prev, installed: true, installedVersion: plugin.version } : null));
       }
@@ -316,6 +317,7 @@ export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
     try {
       await api.uninstallPlugin(plugin.id);
       await refresh();
+      window.dispatchEvent(new CustomEvent("skills:updated"));
       if (selectedPlugin?.id === plugin.id) {
         setSelectedPlugin((prev) => (prev ? { ...prev, installed: false, installedVersion: undefined } : null));
       }
