@@ -1032,6 +1032,9 @@ export function createSkillFilesTool(eligibleSkills: SkillInfo[], workspaceRoot:
       eligibleSkills.filter((s) => s.name.toLowerCase().includes(query)).sort(byPriority)[0];
     if (!match) return `Skill "${name}" not found among the skills available in this mode.`;
     const rel = sanitizeSkillDest(dest, match.name);
+    if (rel.replace(/\\/g, "/").toLowerCase() === ".deepagents" || rel.replace(/\\/g, "/").toLowerCase().startsWith(".deepagents/")) {
+      return "Blocked: do not create or write into `.deepagents/`. Nexus stores project state under `.nexus/` only.";
+    }
     const target = path.join(root, rel);
     if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
       return "Destination escapes the workspace — pick a relative folder.";

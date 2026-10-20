@@ -56,7 +56,7 @@ function parseNumstat(output: string) {
   });
 }
 
-const IGNORED_PREFIXES = [".nexus/", ".forgepilot/", ".deepagents/", ".git/"];
+const IGNORED_PREFIXES = [".nexus/", ".deepagents/", ".git/"];
 function isIgnoredPath(p: string): boolean {
   const normalized = p.replace(/\\/g, "/");
   return IGNORED_PREFIXES.some((prefix) => normalized === prefix.slice(0, -1) || normalized.startsWith(prefix) || normalized.includes(`/${prefix}`));
@@ -185,7 +185,6 @@ export async function revertWorkspaceFile(projectRoot: string, relativePath: str
 // agent telemetry, reinstallable-but-slow dirs, and local-only secrets.
 const CLEAN_EXCLUDES = [
   ".nexus",
-  ".forgepilot",
   ".deepagents",
   "node_modules",
   "dist",
@@ -330,9 +329,9 @@ async function loadCheckpoint(projectRoot: string, checkpointId: string): Promis
   try {
     // A worktree execution root: the checkpoint may live in the main root.
     const mainRootGuess = path.dirname(path.dirname(callerRoot));
-    if (existsSync(path.join(mainRootGuess, ".forgepilot", "worktrees"))) roots.add(mainRootGuess);
+    if (existsSync(path.join(mainRootGuess, ".nexus", "worktrees"))) roots.add(mainRootGuess);
     // A main root: checkpoints may have been taken inside one of its worktrees.
-    const worktreesDir = path.join(callerRoot, ".forgepilot", "worktrees");
+    const worktreesDir = path.join(callerRoot, ".nexus", "worktrees");
     if (existsSync(worktreesDir)) {
       for (const entry of await fs.readdir(worktreesDir)) {
         roots.add(path.join(worktreesDir, entry));

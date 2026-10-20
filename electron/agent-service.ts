@@ -4,7 +4,7 @@ import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import { createDeepAgent, CompositeBackend, FilesystemBackend } from "deepagents";
 import { todoListMiddleware, createMiddleware } from "langchain";
-import { createChatModel } from "./providers.js";
+import { createChatModel, resolveModelContextWindow, resolveModelMaxOutput, formatContextWindow, formatTokenCount } from "./providers.js";
 import { createCodeIntelligenceTools, pickRuntimeCodeTools } from "./code-tools.js";
 import { createEditTools, createQuestionTool } from "./edit-tools.js";
 import { createBrowserTools } from "./browser-tool.js";
@@ -24,7 +24,7 @@ import { GLOBAL_SKILLS_ROUTE, PROJECT_SKILLS_DIR, SKILL_SOURCE_PRIORITY, SYSTEM_
 import { createPluginAgentTools } from "./tool-executor.js";
 import { collectDynamicPluginContext } from "./plugin-lifecycle.js";
 import type { PluginMode } from "./plugin-manifest.js";
-import { compactHistory, compactHistoryWithModel, estimateTokens, StreamUsageTracker } from "./context-service.js";
+import { computeCompactionThreshold, compactHistory, compactHistoryWithModel, estimateTokens, StreamUsageTracker } from "./context-service.js";
 import { saveArtifact, type ArtifactItem } from "./artifacts-service.js";
 import { TrajectoryLogger } from "./trajectory-service.js";
 import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint } from "./rate-limit.js";
@@ -470,8 +470,9 @@ export async function runProjectAgent(options: {
     emit("error", "No workspace backend is available for this project.");
     throw new Error("Missing workspace backend");
   }
-  emit("status", `Starting agent · ${provider.label} / ${modelName} · ${mode} mode`);
-  const llm = await createChatModel(provider, modelName);
+  const effort = settings.effort || settings.reasoningEffort;
+  emit("status", `Starting agent · ${provider.label} / ${modelName}${effort ? ` (${effort} effort)` : ""} · ${mode} mode`);
+  const llm = await createChatModel(provider, modelName, { reasoningEffort: effort });
 
   // An MCP stdio server that never answers must not wedge the run: bound
   // the whole setup fetch, MCP included, so a dead server degrades to
@@ -925,26 +926,65 @@ export async function runProjectAgent(options: {
     ),
   });
 
-  // Context compaction: simple tasks (greetings, single lookups) answer from
-  // recent turns with the cheap heuristic — a model summarization call here
-  // would add a silent ≤20s stall before the first token. Complex runs get
-  // the model-backed summary with a visible status line instead of a gap.
+    const modelContextWindow =
+    settings.contextWindow ??
+    provider.modelContextWindows?.[modelName] ??
+    resolveModelContextWindow(provider.id, modelName, provider);
+
+  const modelMaxOutput =
+    settings.maxOutput ??
+    provider.modelMaxOutputs?.[modelName] ??
+    resolveModelMaxOutput(provider.id, modelName, provider);
+
+  const compactionThreshold = computeCompactionThreshold(modelContextWindow, modelMaxOutput);
+  const targetBudget = Math.max(4000, Math.floor(compactionThreshold * 0.55));
+  const estimatedHistoryTokens = history.reduce((sum, t) => sum + estimateTokens(t.text), 0);
+
+  // Auto context compaction (like Claude Code & Codex):
+  // - If conversation history is within safe context bounds (< ~80%), keep full history verbatim
+  // - If conversation history reaches or nears the model's context window limit (>= threshold),
+  //   automatically compact older history down to targetBudget (~50%), preserving the last 4 turns verbatim.
   let compactedHistory;
-  if (isSimple) {
-    compactedHistory = compactHistory(history, 3000);
+  if (estimatedHistoryTokens < compactionThreshold && !isSimple) {
+    compactedHistory = history
+      .filter((t) => t.role === "user" || t.role === "assistant")
+      .map((t) => ({ role: t.role as "user" | "assistant", text: t.text }));
+  } else if (isSimple) {
+    compactedHistory = compactHistory(history, Math.min(3000, targetBudget));
   } else {
-    if (history.filter((t) => t.role !== "event").length > 6) {
-      emit("status", "Summarizing long history…");
-    }
-    compactedHistory = await compactHistoryWithModel(history, async (prompt) => {
-      try {
-        const res: any = await llm.invoke(prompt);
-        const text = typeof res?.content === "string" ? res.content : Array.isArray(res?.content) ? res.content.map((p: any) => (typeof p === "string" ? p : p?.text || "")).join("\n") : String(res?.content || res?.text || "");
-        return text;
-      } catch {
-        throw new Error("summarizer failed");
-      }
-    }).catch(() => compactHistory(history));
+    const pct = Math.round((estimatedHistoryTokens / modelContextWindow) * 100);
+    emit("status", `Auto-compacting context (${formatTokenCount(estimatedHistoryTokens)} / ${formatContextWindow(modelContextWindow)} tokens, ~${pct}% capacity) — summarizing history…`);
+
+    compactedHistory = await compactHistoryWithModel(
+      history,
+      async (prompt) => {
+        try {
+          const res: any = await llm.invoke(prompt);
+          const text = typeof res?.content === "string" ? res.content : Array.isArray(res?.content) ? res.content.map((p: any) => (typeof p === "string" ? p : p?.text || "")).join("\n") : String(res?.content || res?.text || "");
+          return text;
+        } catch {
+          throw new Error("summarizer failed");
+        }
+      },
+      targetBudget
+    ).catch(() => compactHistory(history, targetBudget));
+
+    const compactedTokens = compactedHistory.reduce((sum, t) => sum + estimateTokens(t.text), 0);
+    const freedTokens = Math.max(0, estimatedHistoryTokens - compactedTokens);
+
+    emit("status", `Context auto-compacted: ${formatTokenCount(estimatedHistoryTokens)} → ${formatTokenCount(compactedTokens)} tokens (${formatTokenCount(freedTokens)} freed)`);
+    onEvent({
+      type: "status",
+      sessionId: sessionId || "",
+      text: `Context auto-compacted: ${formatTokenCount(estimatedHistoryTokens)} → ${formatTokenCount(compactedTokens)} tokens (${formatTokenCount(freedTokens)} freed)`,
+      timestamp: new Date().toISOString(),
+      usage: {
+        inputTokens: compactedTokens,
+        outputTokens: 0,
+        totalTokens: compactedTokens,
+        estimatedCost: null,
+      },
+    });
   }
   const priorMessages = compactedHistory.map((turn) =>
     turn.role === "assistant"

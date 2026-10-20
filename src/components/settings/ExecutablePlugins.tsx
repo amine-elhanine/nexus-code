@@ -33,7 +33,7 @@ type OpenUi = { pluginId: string; entry: string; title: string } | null;
  * this only lists manifests that validated on the strict v2 path.
  */
 export function ExecutablePlugins({ hasProject }: { hasProject: boolean }) {
-  const api = window.nexus || window.forgepilot;
+  const api = window.nexus;
   const [items, setItems] = useState<ExecPlugin[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);

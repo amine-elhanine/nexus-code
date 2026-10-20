@@ -48,6 +48,10 @@ const DENY_PATTERNS: RegExp[] = [
   /\b(?:rm|del|erase|Remove-Item|ri)\b[^;|&\n]*(?:--recursive|-(?:[a-z]*r[a-z]*|recurse|recursive)\b|\/s\b)[^;|&\n]*(?:^|[\s"'=\\/])\.\.(?:[\\/]|[\s"';&|]|$)/im,
   /\b(?:rmdir|rd)\b[^;|&\n]*(?:^|[\s"'=\\/])\.\.(?:[\\/]|[\s"';&|]|$)/im,
   /\breg\s+delete\b/i, // registry deletes (query stays allowed)
+  // Nexus state lives only in .nexus/ — the agent must never create or write
+  // the legacy .deepagents folder (shell-level backstop; backend writes are
+  // guarded in state-guard.ts).
+  /(^|[^a-z0-9_.-])\.deepagents\b/i,
   // --- account seizure / privilege escalation ---
   /takeown|icacls.*\/grant/i,
   /\bnet\s+user\b[^;|&]*\/add/i,

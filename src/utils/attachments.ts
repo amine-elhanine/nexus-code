@@ -33,8 +33,7 @@ export async function loadAttachmentBytes(attachment: Pick<ChatAttachment, "url"
   // preview): it resolves nexus-attachment:// and data: URLs to bytes
   // without depending on custom-scheme fetch from the renderer.
   try {
-    const api = (window as unknown as { nexus?: { readAttachment?: (url: string) => Promise<{ base64: string; mimeType: string }> }; forgepilot?: { readAttachment?: (url: string) => Promise<{ base64: string; mimeType: string }> } }).nexus
-      || (window as unknown as { forgepilot?: { readAttachment?: (url: string) => Promise<{ base64: string; mimeType: string }> } }).forgepilot;
+    const api = (window as unknown as { nexus?: { readAttachment?: (url: string) => Promise<{ base64: string; mimeType: string }> } }).nexus;
     if (api?.readAttachment) {
       const file = await api.readAttachment(attachment.url);
       const binary = atob(file.base64);

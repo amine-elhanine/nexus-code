@@ -46,7 +46,7 @@ export function SettingsModal({
   onQuitAndInstall: () => void;
   onClose: () => void;
 }) {
-  const api = window.nexus || window.forgepilot;
+  const api = window.nexus;
   const [section, setSection] = useState<SettingsSection>("appearance");
   const [themeId, setThemeId] = useState(() => getStoredThemeId());
   const [themeNote, setThemeNote] = useState("");

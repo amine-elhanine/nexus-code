@@ -92,7 +92,7 @@ export const MonacoDiffModal: React.FC<MonacoDiffModalProps> = ({
     let active = true;
     async function loadCurrent() {
       try {
-        const api = window.nexus || window.forgepilot;
+        const api = window.nexus;
         const [fileData, headContent] = await Promise.all([
           api.readFile(filePath).catch(() => ({ content: "" })),
           api.readHead ? api.readHead(filePath).catch(() => "") : Promise.resolve(""),

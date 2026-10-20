@@ -95,8 +95,8 @@ export const MonacoEditorView: React.FC<MonacoEditorViewProps> = ({
   const handleEditorDidMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
 
-    // Define custom dark theme matching ForgePilot aesthetics
-    monaco.editor.defineTheme("forgepilot-dark", {
+    // Define custom dark theme matching Nexus aesthetics
+    monaco.editor.defineTheme("nexus-dark", {
       base: "vs-dark",
       inherit: true,
       rules: [
@@ -120,7 +120,7 @@ export const MonacoEditorView: React.FC<MonacoEditorViewProps> = ({
       },
     });
 
-    monaco.editor.setTheme("forgepilot-dark");
+    monaco.editor.setTheme("nexus-dark");
 
     // Add Ctrl+S / Cmd+S save hotkey
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
@@ -215,7 +215,7 @@ export const MonacoEditorView: React.FC<MonacoEditorViewProps> = ({
           path={activeFile}
           language={language}
           value={content}
-          theme="forgepilot-dark"
+          theme="nexus-dark"
           onChange={(value) => setContent(value || "")}
           onMount={handleEditorDidMount}
           options={{

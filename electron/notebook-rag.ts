@@ -43,6 +43,7 @@ export type NotebookRagOptions = {
   fileIds?: string[]; // user-selected scope; default = all files
   chatProviderId?: string;
   chatModel?: string;
+  chatEffort?: string;
   instructions?: string;
   /** Controlled evaluation only: omit selected prompt assets from this run. */
   disabledPromptAssets?: AgentPromptAsset[];
@@ -459,7 +460,7 @@ async function generateAnswer(
   let firstError: unknown = null;
   for (const attempt of attempts) {
     try {
-      const llm = await createChatModel(attempt.provider, attempt.model);
+      const llm = await createChatModel(attempt.provider, attempt.model, options.chatEffort ? { reasoningEffort: options.chatEffort } : undefined);
       const messages = [
         { role: "system", content: system } as never,
         { role: "user", content: user } as never,
@@ -801,7 +802,7 @@ async function runNotebookAgent(
 
   try {
     options.onStatus?.("Preparing a grounded answer…");
-    const llm = await createChatModel(provider, modelName);
+    const llm = await createChatModel(provider, modelName, options.chatEffort ? { reasoningEffort: options.chatEffort } : undefined);
     const agent = await createDeepAgent({
       model: llm,
       backend,

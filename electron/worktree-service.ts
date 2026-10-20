@@ -15,7 +15,7 @@ export type WorktreeInfo = {
 };
 
 export function getWorktreeBaseDir(projectRoot: string): string {
-  return path.join(projectRoot, ".forgepilot", "worktrees");
+  return path.join(projectRoot, ".nexus", "worktrees");
 }
 
 export async function isGitRepo(projectRoot: string): Promise<boolean> {
@@ -58,7 +58,7 @@ export async function createSessionWorktree(
 
   const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
   const worktreePath = path.join(baseDir, `session-${safeSessionId}`);
-  const branchName = `forgepilot/session-${safeSessionId}`;
+  const branchName = `nexus/session-${safeSessionId}`;
 
   // If worktree directory already exists and is valid, return it
   if (existsSync(worktreePath)) {
@@ -109,7 +109,7 @@ export async function getSessionWorktree(
   const root = path.resolve(projectRoot);
   const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
   const worktreePath = path.join(getWorktreeBaseDir(root), `session-${safeSessionId}`);
-  const branchName = `forgepilot/session-${safeSessionId}`;
+  const branchName = `nexus/session-${safeSessionId}`;
 
   if (existsSync(worktreePath)) {
     return { worktreePath, branch: branchName };
@@ -142,8 +142,8 @@ export async function listSessionWorktrees(projectRoot: string): Promise<Worktre
         else if (line.startsWith("branch ")) branch = line.slice(7).replace("refs/heads/", "").trim();
       }
 
-      if (wtPath && branch.startsWith("forgepilot/session-")) {
-        const match = branch.match(/^forgepilot\/session-(.+)$/);
+      if (wtPath && branch.startsWith("nexus/session-")) {
+        const match = branch.match(/^nexus\/session-(.+)$/);
         const sessionId = match ? match[1] : path.basename(wtPath).replace(/^session-/, "");
         worktrees.push({
           sessionId,
@@ -168,7 +168,7 @@ export async function mergeWorktreeToMain(
 ): Promise<{ success: boolean; mergedBranch: string; error?: string; conflictFiles?: string[] }> {
   const root = path.resolve(projectRoot);
   const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const branchName = `forgepilot/session-${safeSessionId}`;
+  const branchName = `nexus/session-${safeSessionId}`;
   const worktreePath = path.join(getWorktreeBaseDir(root), `session-${safeSessionId}`);
 
   const listConflicts = async (): Promise<string[]> => {
@@ -192,7 +192,7 @@ export async function mergeWorktreeToMain(
         await execFileAsync("git", ["add", "-A"], { cwd: worktreePath, maxBuffer: 1_000_000 });
         const status = (await execFileAsync("git", ["status", "--porcelain"], { cwd: worktreePath, maxBuffer: 500_000 })).stdout.trim();
         if (status) {
-          const msg = commitMessage || `ForgePilot session ${sessionId} changes`;
+          const msg = commitMessage || `Nexus session ${sessionId} changes`;
           await execFileAsync("git", ["commit", "-m", msg], { cwd: worktreePath, maxBuffer: 1_000_000 });
         }
       } catch { /* proceed if nothing to commit */ }
@@ -231,7 +231,7 @@ export async function discardSessionWorktree(projectRoot: string, sessionId: str
   const root = path.resolve(projectRoot);
   const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
   const worktreePath = path.join(getWorktreeBaseDir(root), `session-${safeSessionId}`);
-  const branchName = `forgepilot/session-${safeSessionId}`;
+  const branchName = `nexus/session-${safeSessionId}`;
 
   try {
     if (existsSync(worktreePath)) {

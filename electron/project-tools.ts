@@ -8,7 +8,6 @@ const execFileAsync = promisify(execFile);
 const IGNORED = new Set([
   ".git",
   ".nexus",
-  ".forgepilot",
   ".deepagents",
   "node_modules",
   "dist",

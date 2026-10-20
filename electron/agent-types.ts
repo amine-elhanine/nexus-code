@@ -19,7 +19,7 @@ export type HistoryEventItem = {
   subagent?: { role: string; task: string; status: string };
 };
 export type HistoryInput = AgentTurn | HistoryEventItem;
-export type AgentSettings = { provider?: ProviderConfig; model?: string; apiKey?: string; baseUrl?: string };
+export type AgentSettings = { provider?: ProviderConfig; model?: string; apiKey?: string; baseUrl?: string; effort?: string; reasoningEffort?: string; contextWindow?: number; maxOutput?: number };
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
 export type AgentEvent = {
   type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact" | "stream-reset";

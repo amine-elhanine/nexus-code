@@ -10,7 +10,6 @@ import { parseSymbolsFromCode } from "./code-tools.js";
 const MAP_IGNORED_DIRS = new Set([
   ".git",
   ".nexus",
-  ".forgepilot",
   ".deepagents",
   "node_modules",
   "dist",

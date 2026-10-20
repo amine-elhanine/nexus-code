@@ -24,7 +24,7 @@ export const WorktreeBar: React.FC<WorktreeBarProps> = ({
 
   if (!isGit || !worktree) return null;
 
-  const api = window.nexus || window.forgepilot;
+  const api = window.nexus;
 
   const handleMerge = async () => {
     try {

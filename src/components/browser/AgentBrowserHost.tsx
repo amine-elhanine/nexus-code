@@ -32,7 +32,7 @@ export const AgentBrowserHost: React.FC = () => {
   const codeRef = useRef<AgentWebview | null>(null);
 
   useEffect(() => {
-    const api = (window.nexus || window.forgepilot) as unknown as {
+    const api = (window.nexus) as unknown as {
       onAgentBrowserRequest?: (handler: (req: BridgeRequest) => Promise<BridgeReply>) => () => void;
     };
     if (typeof api.onAgentBrowserRequest !== "function") return undefined;

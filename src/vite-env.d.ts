@@ -8,11 +8,11 @@ type SubagentItem = { id: string; role: SubagentRole; task: string; status: "run
 type ArtifactStatus = "draft" | "pending_approval" | "approved" | "completed" | "rejected";
 type ArtifactItem = { id: string; sessionId: string; name: string; filename: string; path: string; content: string; status: ArtifactStatus; userFacing: boolean; requestFeedback: boolean; createdAt: string; updatedAt: string };
 type AgentEvent = { type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact"; sessionId: string; text: string; timestamp: string; items?: PlanItem[]; usage?: AgentUsage; subagent?: SubagentItem; artifact?: ArtifactItem; detail?: string };
-type ProviderDefinition = { id: string; label: string; packageName: string; envKey: string; defaultBaseUrl?: string; models: string[] };
-type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[]; modelEndpoints?: Partial<Record<string, ChatEndpointKind>> };
+type ProviderDefinition = { id: string; label: string; packageName: string; envKey: string; defaultBaseUrl?: string; models: string[]; modelEfforts?: Record<string, string[]> };
+type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[]; modelEndpoints?: Partial<Record<string, ChatEndpointKind>>; modelEfforts?: Partial<Record<string, string[]>> };
 type ChatEndpointKind = "chat" | "responses" | "messages";
 type ChatAttachment = { url: string; name: string; mimeType: string; size: number };
-type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; checkpointIds?: string[]; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: AgentEvent["type"]; createdAt: string; plan?: PlanItem[]; usage?: AgentUsage; subagent?: SubagentItem }>; model?: { providerId: string; model: string } };
+type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; checkpointIds?: string[]; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: AgentEvent["type"]; createdAt: string; plan?: PlanItem[]; usage?: AgentUsage; subagent?: SubagentItem }>; model?: { providerId: string; model: string; effort?: string } };
 type ProjectRecord = { id: string; name: string; root: string; createdAt: string; updatedAt: string; memory: string; sessions: SessionRecord[] };
 type ActiveContext = { project: ProjectRecord; session: SessionRecord | null } | null;
 type WorkspaceDiffFile = { path: string; directory: string; name: string; additions: number; deletions: number; status: string; patch: string };
@@ -53,11 +53,14 @@ export interface NexusApi {
   updateProviderMeta: (providerId: string, patch: { label?: string; baseUrl?: string }) => Promise<ProviderConfig>;
   updateProviderKey: (providerId: string, apiKey: string) => Promise<ProviderConfig>;
   setProviderEnabled: (providerId: string, enabled: boolean) => Promise<ProviderConfig>;
-  addProviderModels: (providerId: string, models: string[]) => Promise<ProviderConfig>;
-  updateProviderModel: (providerId: string, model: string, patch: { newName?: string; endpoint?: "" | string }) => Promise<ProviderConfig>;
+  addProviderModels: (providerId: string, models: string[], efforts?: Record<string, string[]>) => Promise<ProviderConfig>;
+  updateProviderModel: (providerId: string, model: string, patch: { newName?: string; endpoint?: "" | string; efforts?: string[] }) => Promise<ProviderConfig>;
+  detectProviderModelEfforts: (providerId: string, model: string) => Promise<string[]>;
+  detectProviderModelContext: (providerId: string, model: string) => Promise<{ contextWindow: number; maxOutput?: number; tokenizer?: string; modality?: string }>;
+  compactSession: (payload?: { sessionId?: string; projectId?: string }) => Promise<{ originalTokens: number; compactedTokens: number; freedTokens: number; contextWindow?: number; threshold?: number; notice?: string }>;
   removeProviderModel: (providerId: string, model: string) => Promise<ProviderConfig>;
   removeProvider: (providerId: string) => Promise<ProviderConfig[]>;
-  fetchProviderModels: (input: { providerId?: string; baseUrl?: string; apiKey?: string }) => Promise<string[]>;
+  fetchProviderModels: (input: { providerId?: string; baseUrl?: string; apiKey?: string }) => Promise<string[] | { models: string[]; modelEfforts?: Record<string, string[]>; defaultEfforts?: Record<string, string> }>;
   listMcpServers: () => Promise<McpServerConfig[]>;
   saveMcpServer: (server: Partial<McpServerConfig> & { name: string; transport: McpTransport }) => Promise<McpServerConfig[]>;
   removeMcpServer: (serverId: string) => Promise<McpServerConfig[]>;
@@ -191,7 +194,7 @@ export interface NexusApi {
   activateHomeSession: (sessionId: string) => Promise<SessionRecord | null>;
   deleteHomeSession: (sessionId: string, options?: { deleteFiles?: boolean }) => Promise<{ success: boolean }>;
   updateHomeSession: (sessionId: string, patch: Partial<SessionRecord>) => Promise<SessionRecord>;
-  runHomeAgent: (payload: { sessionId: string; request: string; images?: string[]; attachments?: ChatAttachment[]; providerId?: string; model?: string }) => Promise<string>;
+  runHomeAgent: (payload: { sessionId: string; request: string; images?: string[]; attachments?: ChatAttachment[]; providerId?: string; model?: string; effort?: string }) => Promise<string>;
   cancelHomeAgent: (sessionId?: string) => Promise<boolean>;
   listHomeFiles: () => Promise<Array<{ path: string; name: string; size: number; modified: string }>>;
   listHomeSessionFiles: (sessionId: string) => Promise<Array<{ path: string; name: string; size: number; modified: string }>>;
@@ -221,7 +224,7 @@ export interface NexusApi {
   notebookCreateChat: (notebookId: string, title?: string) => Promise<{ id: string; notebookId: string; title: string; createdAt: string; updatedAt: string; messages: Array<{ role: "user" | "assistant"; text: string; createdAt: string }> }>;
   notebookDeleteChat: (notebookId: string, chatId: string) => Promise<Array<{ id: string; notebookId: string; title: string; createdAt: string; updatedAt: string; messages: Array<{ role: "user" | "assistant"; text: string; createdAt: string }> }>>;
   notebookRetrieve: (notebookId: string, query: string, topK?: number, fileIds?: string[]) => Promise<{ results: Array<{ chunkId: string; sourceId: string; sourceName: string; headingPath: string[]; text: string; semantic: number; lexical: number; graphBoost: number; fused: number; final: number; methods: string[] }>; embeddingModel: string; dims: number }>;
-  notebookAsk: (payload: { notebookId: string; chatId: string; question: string; fileIds?: string[]; providerId?: string; model?: string; topK?: number }) => Promise<{ result: { answer: string; sources: Array<{ index: number; sourceId: string; sourceName: string; chunkId: string; heading: string; excerpt: string; snippet: string; score: number }>; retrieval: Array<{ chunkId: string; sourceName: string; score: number; methods: string[] }>; metadata: { routing?: string; topScore?: number; refused?: boolean; fallbackModel?: boolean }; embeddingModel: string; dims: number }; chat: { id: string; notebookId: string; title: string; createdAt: string; updatedAt: string; messages: Array<{ role: "user" | "assistant"; text: string; createdAt: string }> } }>;
+  notebookAsk: (payload: { notebookId: string; chatId: string; question: string; fileIds?: string[]; providerId?: string; model?: string; effort?: string; topK?: number }) => Promise<{ result: { answer: string; sources: Array<{ index: number; sourceId: string; sourceName: string; chunkId: string; heading: string; excerpt: string; snippet: string; score: number }>; retrieval: Array<{ chunkId: string; sourceName: string; score: number; methods: string[] }>; metadata: { routing?: string; topScore?: number; refused?: boolean; fallbackModel?: boolean }; embeddingModel: string; dims: number }; chat: { id: string; notebookId: string; title: string; createdAt: string; updatedAt: string; messages: Array<{ role: "user" | "assistant"; text: string; createdAt: string }> } }>;
   notebookReindexAll: (notebookId: string) => Promise<{ result: { chunks: number; model: string; dims: number }; sources: Array<{ id: string; notebookId: string; filename: string; status: string }> }>;
   notebookOutline: (notebookId: string) => Promise<Array<{ fileId: string; filename: string; headings: Array<{ path: string[]; summary: string; chunkCount: number }>; sectionCount: number; chunkCount: number }>>;
   notebookDigest: (notebookId: string) => Promise<{ outline: string[]; topics: string[]; updatedAt: string } | null>;
@@ -243,7 +246,7 @@ export interface NexusApi {
   removeEmbeddingProvider: (providerId: string) => Promise<Array<{ id: string; name: string; kind: string; baseUrl?: string; apiKey: string; models: string[] }>>;
   testEmbeddingProvider: (input: { id?: string; kind: string; baseUrl?: string; apiKey?: string; model: string }) => Promise<{ dims: number }>;
 
-  runAgent: (payload: { request: string; images?: string[]; attachments?: ChatAttachment[]; providerId?: string; model?: string; mode?: string; sessionId?: string; projectId?: string }) => Promise<string>;
+  runAgent: (payload: { request: string; images?: string[]; attachments?: ChatAttachment[]; providerId?: string; model?: string; effort?: string; mode?: string; sessionId?: string; projectId?: string }) => Promise<string>;
   cancelAgent: (sessionId?: string) => Promise<boolean>;
   resolveUserQuestion: (id: string, answers?: Record<string, string> | null, cancelled?: boolean) => Promise<boolean>;
   onUserQuestionRequest: (listener: (request: { id: string; sessionId: string; questions: Array<{ header: string; question: string; options: string[] }> }) => void) => () => void;
@@ -258,7 +261,6 @@ declare global {
   }
   interface Window {
     nexus: NexusApi;
-    forgepilot: NexusApi;
   }
 }
 export {};

@@ -7,7 +7,7 @@ export interface ProjectRuleFile {
   filename: string;
   relativePath: string;
   content: string;
-  source: "cursorrules" | "agent_md" | "claude_md" | "windsurf" | "nexus" | "forgepilot" | "system" | "plugin";
+  source: "cursorrules" | "agent_md" | "claude_md" | "windsurf" | "nexus" | "system" | "plugin";
 }
 
 export interface ProjectRulesResult {
@@ -49,10 +49,9 @@ export async function discoverProjectRules(projectRoot: string): Promise<Project
     }
   }
 
-  // Check .nexus/rules/ (primary) and .forgepilot/rules/ (fallback)
+  // Check .nexus/rules/
   const candidateDirs = [
     { dir: path.join(root, ".nexus", "rules"), prefix: ".nexus/rules" },
-    { dir: path.join(root, ".forgepilot", "rules"), prefix: ".forgepilot/rules" },
   ];
 
   for (const item of candidateDirs) {

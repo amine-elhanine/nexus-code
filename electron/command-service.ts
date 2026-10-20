@@ -7,6 +7,7 @@ import { isDeniedCommand, classifyCommand, isHttpMutationCommand, isWindowsDownl
 import { stripProjectRoot, normalizeCommandPaths, normalizeVirtualPath } from "./path-utils.js";
 import type { CommandPolicy } from "./permissions.js";
 import { requestCommandApproval } from "./approval-service.js";
+import { guardAgainstLegacyStateDir } from "./state-guard.js";
 import { scrubSecretEnv } from "./child-env.js";
 import type { ProjectRecord } from "./store.js";
 
@@ -274,6 +275,9 @@ export async function getAgentBackend(project: ProjectRecord, options: { readOnl
     backend.delete = refuse("delete");
     backend.execute = refuse("execute");
   } else {
+    // Never write into `.deepagents/` — Nexus state lives in `.nexus/`. The
+    // model sometimes invents the legacy DeepAgents folder on its own.
+    guardAgainstLegacyStateDir(backend, project.root);
     // Pin policy at run start. Otherwise the agent could write an allow rule
     // into the workspace and use it to self-approve a later shell command.
     const commandPolicy = await readCommandPolicy(project.root);

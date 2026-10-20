@@ -46,7 +46,7 @@ export const DaemonsModal: React.FC<DaemonsModalProps> = ({ onClose, projectRoot
 
   const loadDaemons = async () => {
     try {
-      const list = await window.forgepilot.listDaemons();
+      const list = await window.nexus.listDaemons();
       setDaemons(list);
       const current = selectedIdRef.current;
       if (list.length && (!current || !list.some((d) => d.id === current))) {
@@ -62,7 +62,7 @@ export const DaemonsModal: React.FC<DaemonsModalProps> = ({ onClose, projectRoot
   const loadLogs = async (id: string) => {
     if (!id) return;
     try {
-      const logLines = await window.forgepilot.getDaemonLogs(id);
+      const logLines = await window.nexus.getDaemonLogs(id);
       setLogs(logLines);
     } catch {
       setLogs([]);
@@ -81,7 +81,7 @@ export const DaemonsModal: React.FC<DaemonsModalProps> = ({ onClose, projectRoot
     if (selectedId) {
       stickToBottomRef.current = true;
       void loadLogs(selectedId);
-      const unsub = window.forgepilot.onDaemonLog?.(({ id, data }) => {
+      const unsub = window.nexus.onDaemonLog?.(({ id, data }) => {
         if (id === selectedId) {
           setLogs((prev) => [...prev, ...data.split("\n").filter(Boolean)].slice(-1000));
         }
@@ -100,7 +100,7 @@ export const DaemonsModal: React.FC<DaemonsModalProps> = ({ onClose, projectRoot
     e.preventDefault();
     if (!newName.trim() || !newCommand.trim()) return;
     try {
-      const created = await window.forgepilot.startDaemon(
+      const created = await window.nexus.startDaemon(
         newName.trim(),
         newCommand.trim(),
         projectRoot || ""
@@ -119,7 +119,7 @@ export const DaemonsModal: React.FC<DaemonsModalProps> = ({ onClose, projectRoot
     setActingId(id);
     setActionError(null);
     try {
-      const ok = await window.forgepilot.stopDaemon(id);
+      const ok = await window.nexus.stopDaemon(id);
       await loadDaemons();
       await loadLogs(id);
       if (!ok) {
@@ -137,7 +137,7 @@ export const DaemonsModal: React.FC<DaemonsModalProps> = ({ onClose, projectRoot
     setActingId(id);
     setActionError(null);
     try {
-      const ok = await window.forgepilot.restartDaemon(id);
+      const ok = await window.nexus.restartDaemon(id);
       await loadDaemons();
       await loadLogs(id);
       if (!ok) setActionError("Restart failed — the old process could not be stopped.");
@@ -147,13 +147,13 @@ export const DaemonsModal: React.FC<DaemonsModalProps> = ({ onClose, projectRoot
   };
 
   const handleRemove = async (id: string) => {
-    if (typeof window.forgepilot.removeDaemon !== "function") return;
+    if (typeof window.nexus.removeDaemon !== "function") return;
     setActingId(id);
     try {
-      await window.forgepilot.removeDaemon(id);
+      await window.nexus.removeDaemon(id);
       setLogs([]);
       try {
-        const list = await window.forgepilot.listDaemons();
+        const list = await window.nexus.listDaemons();
         setDaemons(list);
         // Keep the selection on a neighbour instead of jumping to the top.
         setSelectedId((prev) => {

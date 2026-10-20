@@ -22,7 +22,7 @@ function electronMod(): ElectronShim {
 
 import type { SubagentItem } from "./subagent-service.js";
 
-export type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[]; modelEndpoints?: Partial<Record<string, ChatEndpointKind>>; /** Disabled connections stay configured but disappear from the session model pickers. */ enabled?: boolean; /** Set at load when the stored ciphertext could not be decrypted on this machine. Never persisted. */ keyNeedsReentry?: boolean };
+export type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[]; modelEndpoints?: Partial<Record<string, ChatEndpointKind>>; modelEfforts?: Partial<Record<string, string[]>>; modelContextWindows?: Partial<Record<string, number>>; modelMaxOutputs?: Partial<Record<string, number>>; /** Disabled connections stay configured but disappear from the session model pickers. */ enabled?: boolean; /** Set at load when the stored ciphertext could not be decrypted on this machine. Never persisted. */ keyNeedsReentry?: boolean };
 // Wire protocol a model speaks. Providers default to chat completions,
 // except Anthropic-native which defaults to messages. A per-model entry
 // overrides the default — e.g. gateways like OpenCode Zen serve different
@@ -84,7 +84,7 @@ export type NotebookParserConfig = {
 export type ProjectRecord = { id: string; name: string; root: string; createdAt: string; updatedAt: string; memory: string; /** Agent-recorded durable facts (home-memory markdown format). Optional so pre-facts snapshots load cleanly. */ facts?: string; sessions: SessionRecord[] };
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
 export type ChatAttachment = { url: string; name: string; mimeType: string; size: number };
-export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; checkpointIds?: string[]; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact" | "stream-reset"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; subagent?: SubagentItem; artifact?: unknown; detail?: string }>; model?: { providerId: string; model: string } };
+export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; checkpointIds?: string[]; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact" | "stream-reset"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; subagent?: SubagentItem; artifact?: unknown; detail?: string }>; model?: { providerId: string; model: string; effort?: string } };
 type PersistedState = { stateVersion?: number; projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; hooks?: HooksConfig; rules?: RulesConfig; appSettings?: AppSettings; pluginRegistry?: PluginRegistryConfig; notebookParser?: NotebookParserConfig; homeSessions?: SessionRecord[]; homeMemory?: string };
 
 let cache: PersistedState | null = null;
@@ -101,10 +101,7 @@ function candidateStatePaths(): string[] {
   const parent = path.dirname(userData);
   return [
     path.join(userData, "nexus-state.json"),
-    path.join(userData, "forgepilot-state.json"),
     path.join(parent, "nexus", "nexus-state.json"),
-    path.join(parent, "nexus", "forgepilot-state.json"),
-    path.join(parent, "forgepilot", "forgepilot-state.json"),
   ];
 }
 
@@ -770,39 +767,96 @@ export async function setProviderEnabled(providerId: string, enabled: boolean): 
   return provider;
 }
 
-export async function addProviderModels(providerId: string, models: string[]): Promise<ProviderConfig> {
+export async function addProviderModels(
+  providerId: string,
+  models: string[],
+  efforts?: Record<string, string[]>,
+  contextWindows?: Record<string, number>,
+  maxOutputs?: Record<string, number>
+): Promise<ProviderConfig> {
   const state = await ensureLoaded();
   const provider = requireProvider(state, providerId);
   const cleaned = (models || []).map((m) => m.trim()).filter(Boolean);
-  if (!cleaned.length) throw new Error("No model names given.");
-  provider.models = Array.from(new Set([...(provider.models || []), ...cleaned]));
+  if (!cleaned.length && (!efforts || !Object.keys(efforts).length)) throw new Error("No model names given.");
+  if (cleaned.length) {
+    provider.models = Array.from(new Set([...(provider.models || []), ...cleaned]));
+  }
+  if (efforts && Object.keys(efforts).length) {
+    provider.modelEfforts = { ...(provider.modelEfforts || {}), ...efforts };
+  }
+  if (contextWindows && Object.keys(contextWindows).length) {
+    provider.modelContextWindows = { ...(provider.modelContextWindows || {}), ...contextWindows };
+  }
+  if (maxOutputs && Object.keys(maxOutputs).length) {
+    provider.modelMaxOutputs = { ...(provider.modelMaxOutputs || {}), ...maxOutputs };
+  }
   await persist();
   return provider;
 }
 
-export async function updateProviderModel(providerId: string, model: string, patch: { newName?: string; endpoint?: "" | ChatEndpointKind }): Promise<ProviderConfig> {
+export async function updateProviderModel(
+  providerId: string,
+  model: string,
+  patch: {
+    newName?: string;
+    endpoint?: "" | ChatEndpointKind;
+    efforts?: string[];
+    contextWindow?: number;
+    maxOutput?: number;
+  }
+): Promise<ProviderConfig> {
   const state = await ensureLoaded();
   const provider = requireProvider(state, providerId);
   const oldName = model.trim();
   const list = provider.models || [];
   if (!list.includes(oldName)) throw new Error(`Model "${oldName}" not found.`);
   const endpoints = { ...(provider.modelEndpoints || {}) };
+  const efforts = { ...(provider.modelEfforts || {}) };
+  const contextWindows = { ...(provider.modelContextWindows || {}) };
+  const maxOutputs = { ...(provider.modelMaxOutputs || {}) };
   const newName = patch.newName?.trim();
   if (newName && newName !== oldName) {
     if (newName && list.includes(newName)) throw new Error(`Model "${newName}" already exists.`);
     provider.models = list.map((m) => (m === oldName ? newName : m));
-    // Carry a per-model path override across renames.
+    // Carry a per-model path override, efforts and context across renames.
     if (endpoints[oldName]) {
       endpoints[newName] = endpoints[oldName];
       delete endpoints[oldName];
     }
+    if (efforts[oldName]) {
+      efforts[newName] = efforts[oldName];
+      delete efforts[oldName];
+    }
+    if (contextWindows[oldName]) {
+      contextWindows[newName] = contextWindows[oldName];
+      delete contextWindows[oldName];
+    }
+    if (maxOutputs[oldName]) {
+      maxOutputs[newName] = maxOutputs[oldName];
+      delete maxOutputs[oldName];
+    }
   }
+  const target = newName || oldName;
   if (patch.endpoint !== undefined) {
-    const target = newName || oldName;
     if (patch.endpoint) endpoints[target] = patch.endpoint;
     else delete endpoints[target];
   }
+  if (patch.efforts !== undefined) {
+    if (patch.efforts && patch.efforts.length) efforts[target] = patch.efforts;
+    else delete efforts[target];
+  }
+  if (patch.contextWindow !== undefined) {
+    if (patch.contextWindow > 0) contextWindows[target] = patch.contextWindow;
+    else delete contextWindows[target];
+  }
+  if (patch.maxOutput !== undefined) {
+    if (patch.maxOutput > 0) maxOutputs[target] = patch.maxOutput;
+    else delete maxOutputs[target];
+  }
   provider.modelEndpoints = endpoints;
+  provider.modelEfforts = efforts;
+  provider.modelContextWindows = contextWindows;
+  provider.modelMaxOutputs = maxOutputs;
   await persist();
   return provider;
 }
@@ -816,6 +870,21 @@ export async function removeProviderModel(providerId: string, model: string): Pr
     const endpoints = { ...provider.modelEndpoints };
     delete endpoints[name];
     provider.modelEndpoints = endpoints;
+  }
+  if (provider.modelEfforts) {
+    const efforts = { ...provider.modelEfforts };
+    delete efforts[name];
+    provider.modelEfforts = efforts;
+  }
+  if (provider.modelContextWindows) {
+    const contextWindows = { ...provider.modelContextWindows };
+    delete contextWindows[name];
+    provider.modelContextWindows = contextWindows;
+  }
+  if (provider.modelMaxOutputs) {
+    const maxOutputs = { ...provider.modelMaxOutputs };
+    delete maxOutputs[name];
+    provider.modelMaxOutputs = maxOutputs;
   }
   await persist();
   return provider;

@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-const GITIGNORE_ENTRIES = [".nexus", ".forgepilot", ".deepagents", "node_modules", "dist", "dist-electron", "release", ".env"];
+const GITIGNORE_ENTRIES = [".nexus", ".deepagents", "node_modules", "dist", "dist-electron", "release", ".env"];
 
 export async function hasGitBinary(): Promise<boolean> {
   try {

@@ -12,6 +12,7 @@ import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../u
 import { formatCost } from "../types.js";
 import type { ChatItem, FileEntry, ProviderConfig, ProviderDefinition, AgentUsage, ArtifactItem, ChatAttachment, SkillInfo } from "../types.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
+import { resolveModelEfforts, formatEffortLabel, resolveModelContextWindow, resolveModelMaxOutput, formatContextWindow, formatTokenCount, computeCompactionThreshold } from "../utils/modelEfforts.js";
 
 const AGENT_STARTERS = [
   { icon: <Sparkles size={13} className="file-icon-text" />, label: "Add feature", prompt: "Add a feature to " },
@@ -20,56 +21,382 @@ const AGENT_STARTERS = [
   { icon: <CheckCircle2 size={13} className="file-icon-ppt" />, label: "Write tests", prompt: "Write comprehensive unit tests for " },
 ];
 
+export function ModelContextLine({
+  providerId,
+  model,
+  provider,
+  definition,
+  sessionUsage,
+  activeSessionId,
+}: {
+  providerId: string;
+  model: string;
+  provider?: ProviderConfig;
+  definition?: ProviderDefinition;
+  sessionUsage?: AgentUsage | null;
+  activeSessionId?: string;
+}) {
+  const [detectedContext, setDetectedContext] = useState<{ contextWindow?: number; maxOutput?: number } | null>(null);
+  const [isHovered, setIsHovered] = useState(false);
+  const [isCompacting, setIsCompacting] = useState(false);
+  const [compactNotice, setCompactNotice] = useState<string | null>(null);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleMouseEnter = () => {
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+    setIsHovered(true);
+  };
+
+  const handleMouseLeave = () => {
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current);
+    }
+    hoverTimerRef.current = setTimeout(() => {
+      setIsHovered(false);
+    }, 220);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimerRef.current) {
+        clearTimeout(hoverTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    setDetectedContext(null);
+    if (!providerId || !model) return;
+
+    const savedCtx = provider?.modelContextWindows?.[model];
+    if (savedCtx === undefined) {
+      const api = typeof window !== "undefined" ? (window.nexus) : undefined;
+      if (api?.detectProviderModelContext) {
+        void api.detectProviderModelContext(providerId, model).then((res) => {
+          if (res && res.contextWindow) {
+            setDetectedContext({ contextWindow: res.contextWindow, maxOutput: res.maxOutput });
+          }
+        }).catch(() => {});
+      }
+    }
+  }, [providerId, model, provider?.id]);
+
+  const contextWindow =
+    provider?.modelContextWindows?.[model] ??
+    detectedContext?.contextWindow ??
+    resolveModelContextWindow(providerId, model, provider, definition);
+
+  const maxOutput =
+    provider?.modelMaxOutputs?.[model] ??
+    detectedContext?.maxOutput ??
+    resolveModelMaxOutput(providerId, model, provider, definition);
+
+  const compactionThreshold = computeCompactionThreshold(contextWindow, maxOutput);
+  const thresholdPct = Math.min(95, Math.max(50, (compactionThreshold / contextWindow) * 100));
+
+  const ctxLabel = formatContextWindow(contextWindow);
+  const usedTokens = sessionUsage?.totalTokens || 0;
+  const pct = Math.min(100, Math.max(0, (usedTokens / contextWindow) * 100));
+  const remainingTokens = Math.max(0, contextWindow - usedTokens);
+  const tokensToThreshold = Math.max(0, compactionThreshold - usedTokens);
+
+  const isNearThreshold = usedTokens >= compactionThreshold * 0.85;
+  const isAtThreshold = usedTokens >= compactionThreshold;
+
+  let statusTone: "normal" | "warning" | "critical" = "normal";
+  if (isAtThreshold || pct >= 90) statusTone = "critical";
+  else if (isNearThreshold || pct >= 70) statusTone = "warning";
+
+  let badgeLabel = "CTX";
+  let badgeClass = "context-badge";
+  if (isAtThreshold) {
+    badgeLabel = "AUTO-COMPACT";
+    badgeClass = "context-badge critical";
+  } else if (isNearThreshold) {
+    badgeLabel = "NEAR COMPACT";
+    badgeClass = "context-badge warning";
+  }
+
+  const handleCompactNow = async () => {
+    const api = typeof window !== "undefined" ? (window.nexus) : undefined;
+    if (!api?.compactSession) return;
+    setIsCompacting(true);
+    setCompactNotice(null);
+    try {
+      const res = await api.compactSession({ sessionId: activeSessionId });
+      if (res?.freedTokens) {
+        setCompactNotice(`Freed ${formatTokenCount(res.freedTokens)} tokens`);
+      } else if (res?.notice) {
+        setCompactNotice(res.notice);
+      } else {
+        setCompactNotice("Context compacted successfully.");
+      }
+    } catch (err) {
+      setCompactNotice(err instanceof Error ? err.message : "Compaction failed");
+    } finally {
+      setIsCompacting(false);
+    }
+  };
+
+  return (
+    <div
+      className={`model-context-line status-${statusTone}`}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      role="group"
+      aria-label={`Context window ${ctxLabel}, ${usedTokens.toLocaleString()} of ${formatTokenCount(contextWindow)} tokens used. Auto-compacts at ${thresholdPct.toFixed(0)}%`}
+    >
+      <span className={badgeClass}>{badgeLabel}</span>
+      <span className="context-value">{ctxLabel}</span>
+      <div
+        className="context-meter-track"
+        title={`Session: ${usedTokens.toLocaleString()} / ${formatTokenCount(contextWindow)} tokens (${pct.toFixed(1)}%) • Auto-compacts at ${thresholdPct.toFixed(0)}% (${formatTokenCount(compactionThreshold)} tokens)`}
+      >
+        <div
+          className="context-meter-threshold"
+          style={{ left: `${thresholdPct}%` }}
+          title={`Auto-compaction threshold: ${formatTokenCount(compactionThreshold)} tokens (${thresholdPct.toFixed(0)}%)`}
+        />
+        <div
+          className={`context-meter-fill status-${statusTone}`}
+          style={{ width: `${usedTokens > 0 ? Math.max(pct, 4) : 0}%` }}
+        />
+      </div>
+
+      {isHovered && (
+        <div
+          className="context-info-tooltip"
+          onMouseEnter={handleMouseEnter}
+          onMouseLeave={handleMouseLeave}
+        >
+          <div className="ctx-tip-header">
+            <div className="ctx-tip-title-wrap">
+              <span className="ctx-tip-title" title={model}>{model}</span>
+              <span className="ctx-tip-badge">{ctxLabel} limit</span>
+            </div>
+            <span className={`ctx-status-pill status-${statusTone}`}>
+              {isAtThreshold ? "Auto-Compacting" : isNearThreshold ? "Near Auto-Compact" : usedTokens > 0 ? "Active" : "Ready"}
+            </span>
+          </div>
+
+          <div className="ctx-bar-wrap">
+            <div className="ctx-bar-track">
+              <div
+                className="ctx-bar-threshold-mark"
+                style={{ left: `${thresholdPct}%` }}
+                title={`Auto-compacts at ${thresholdPct.toFixed(0)}%`}
+              />
+              <div
+                className={`ctx-bar-fill status-${statusTone}`}
+                style={{ width: `${usedTokens > 0 ? Math.max(pct, 3) : 0}%` }}
+              />
+            </div>
+            <div className="ctx-bar-stats">
+              <span>{usedTokens.toLocaleString()} used</span>
+              <span className="ctx-threshold-stat">Auto-compact @ {thresholdPct.toFixed(0)}%</span>
+              <span>{pct.toFixed(1)}%</span>
+            </div>
+          </div>
+
+          <div className="ctx-details-grid">
+            <div className="ctx-detail-item">
+              <span className="ctx-detail-label">Context Window</span>
+              <span className="ctx-detail-value">{formatTokenCount(contextWindow)}</span>
+            </div>
+            <div className="ctx-detail-item">
+              <span className="ctx-detail-label">Auto-Compact At</span>
+              <span className="ctx-detail-value highlighted">{formatTokenCount(compactionThreshold)} ({thresholdPct.toFixed(0)}%)</span>
+            </div>
+            <div className="ctx-detail-item">
+              <span className="ctx-detail-label">Headroom to Compact</span>
+              <span className="ctx-detail-value">{formatTokenCount(tokensToThreshold)} tokens</span>
+            </div>
+            {maxOutput ? (
+              <div className="ctx-detail-item">
+                <span className="ctx-detail-label">Max Output</span>
+                <span className="ctx-detail-value">{formatTokenCount(maxOutput)}</span>
+              </div>
+            ) : null}
+            {sessionUsage && sessionUsage.totalTokens > 0 ? (
+              <>
+                <div className="ctx-detail-item">
+                  <span className="ctx-detail-label">Session In / Out</span>
+                  <span className="ctx-detail-value">
+                    {formatTokenCount(sessionUsage.inputTokens)} / {formatTokenCount(sessionUsage.outputTokens)}
+                  </span>
+                </div>
+                {sessionUsage?.estimatedCost != null && sessionUsage.estimatedCost > 0 && (
+                  <div className="ctx-detail-item">
+                    <span className="ctx-detail-label">Est. Cost</span>
+                    <span className="ctx-detail-value">{formatCost(sessionUsage.estimatedCost)}</span>
+                  </div>
+                )}
+              </>
+            ) : null}
+          </div>
+
+          <div className="ctx-actions">
+            <button
+              type="button"
+              className="ctx-compact-btn"
+              disabled={isCompacting || usedTokens < 1000}
+              onClick={(e) => {
+                e.stopPropagation();
+                void handleCompactNow();
+              }}
+              title={usedTokens < 1000 ? "Session is fresh, compaction not needed yet" : "Compact context now (like Claude Code /compact)"}
+            >
+              <Sparkles size={11} />
+              {isCompacting ? "Compacting History…" : "Compact Context Now"}
+            </button>
+            {compactNotice && (
+              <div className="ctx-compact-notice">
+                <span>{compactNotice}</span>
+              </div>
+            )}
+          </div>
+
+          <div className="ctx-tip-footer">
+            <span>Auto-compacts near context window limit like Claude Code & Codex</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ModelSelect({
   selectedProviderId,
   selectedModel,
+  selectedEffort,
   providers,
   definitions,
   switchModel,
+  switchEffort,
   onOpenProviders,
+  sessionUsage,
+  activeSessionId,
 }: {
   selectedProviderId: string;
   selectedModel: string;
+  selectedEffort?: string;
   providers: ProviderConfig[];
   definitions: ProviderDefinition[];
-  switchModel: (providerId: string, model: string) => void;
+  switchModel: (providerId: string, model: string, effort?: string) => void;
+  switchEffort?: (effort: string) => void;
   onOpenProviders: () => void;
+  sessionUsage?: AgentUsage | null;
+  activeSessionId?: string;
 }) {
   const provider = providers.find((item) => item.id === selectedProviderId);
+  const def = definitions.find((d) => d.id === (provider?.provider || selectedProviderId));
   const modelExists = provider?.models.includes(selectedModel);
   const selectValue = provider && modelExists ? `${selectedProviderId}::${selectedModel}` : "";
 
-  return (
-    <div className="model-select">
-      <select
-        value={selectValue}
-        onChange={(event) => {
-          const val = event.target.value;
-          if (!val) {
-            onOpenProviders();
-            return;
+  const [discoveredEfforts, setDiscoveredEfforts] = useState<string[] | null>(null);
+
+  // Background auto-discover efforts for selected model if not cached yet
+  useEffect(() => {
+    setDiscoveredEfforts(null);
+    if (!selectedProviderId || !selectedModel || !provider || !modelExists) return;
+
+    if (!provider.modelEfforts || provider.modelEfforts[selectedModel] === undefined) {
+      const api = typeof window !== "undefined" ? (window.nexus) : undefined;
+      if (api?.detectProviderModelEfforts) {
+        void api.detectProviderModelEfforts(selectedProviderId, selectedModel).then((detected) => {
+          if (detected && detected.length > 0) {
+            setDiscoveredEfforts(detected);
           }
-          const [id, ...rest] = val.split("::");
-          switchModel(id, rest.join("::"));
-        }}
+        }).catch(() => {});
+      }
+    }
+  }, [selectedProviderId, selectedModel, provider?.id, modelExists]);
+
+  const supportedEfforts = resolveModelEfforts(selectedProviderId, selectedModel, provider, def);
+
+  // Display detected efforts if available, else standard reasoning levels
+  const displayEfforts = useMemo(() => {
+    if (supportedEfforts.length > 0) return supportedEfforts;
+    if (discoveredEfforts && discoveredEfforts.length > 0) return discoveredEfforts;
+    return ["low", "medium", "high", "max"];
+  }, [supportedEfforts, discoveredEfforts]);
+
+  const hasSelectedModel = Boolean(selectedModel);
+
+  return (
+    <div className="model-select-wrapper">
+      <div className="model-select">
+        <select
+          value={selectValue}
+          onChange={(event) => {
+            const val = event.target.value;
+            if (!val) {
+              onOpenProviders();
+              return;
+            }
+            const [id, ...rest] = val.split("::");
+            switchModel(id, rest.join("::"));
+          }}
+        >
+          <option value="">{providers.length ? "Select model…" : "Configure provider…"}</option>
+          {providers.filter((item) => item.enabled !== false).map((item) => (
+            <optgroup key={item.id} label={item.label}>
+              {item.models.map((model) => (
+                <option key={`${item.id}-${model}`} value={`${item.id}::${model}`}>
+                  {model}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+        {provider && (
+          <span className="provider-dot" style={{ pointerEvents: "none" }}>
+            {provider.label.slice(0, 1)}
+          </span>
+        )}
+        <ChevronDown size={12} style={{ pointerEvents: "none" }} />
+      </div>
+
+      <div
+        className={`effort-select${!hasSelectedModel ? " disabled" : ""}`}
+        title={hasSelectedModel ? `Reasoning effort for ${selectedModel}` : "Select a model to set reasoning effort"}
       >
-        <option value="">{providers.length ? "Select model…" : "Configure provider…"}</option>
-        {providers.filter((item) => item.enabled !== false).map((item) => (
-          <optgroup key={item.id} label={item.label}>
-            {item.models.map((model) => (
-              <option key={`${item.id}-${model}`} value={`${item.id}::${model}`}>
-                {model}
-              </option>
-            ))}
-          </optgroup>
-        ))}
-      </select>
-      {provider && (
-        <span className="provider-dot" style={{ pointerEvents: "none" }}>
-          {provider.label.slice(0, 1)}
-        </span>
+        <span className="effort-badge">EFFORT</span>
+        <select
+          disabled={!hasSelectedModel}
+          value={selectedEffort || ""}
+          onChange={(e) => {
+            const val = e.target.value;
+            if (switchEffort) {
+              switchEffort(val);
+            } else {
+              switchModel(selectedProviderId, selectedModel, val);
+            }
+          }}
+        >
+          <option value="">Auto</option>
+          {displayEfforts.map((eff) => (
+            <option key={eff} value={eff}>
+              {formatEffortLabel(eff)}
+            </option>
+          ))}
+        </select>
+        <ChevronDown size={12} style={{ pointerEvents: "none" }} />
+      </div>
+
+      {hasSelectedModel && (
+        <ModelContextLine
+          providerId={selectedProviderId}
+          model={selectedModel}
+          provider={provider}
+          definition={def}
+          sessionUsage={sessionUsage}
+          activeSessionId={activeSessionId}
+        />
       )}
-      <ChevronDown size={12} style={{ pointerEvents: "none" }} />
     </div>
   );
 }
@@ -89,6 +416,7 @@ export function AgentView({
   setMode,
   selectedProviderId,
   selectedModel,
+  selectedEffort,
   providers,
   definitions,
   files,
@@ -98,6 +426,7 @@ export function AgentView({
   onUndoRun,
   onKeepChanges,
   switchModel,
+  switchEffort,
   onOpenProviders,
   onAttachFile,
   onAttachDiff,
@@ -132,6 +461,7 @@ export function AgentView({
   setMode: (value: string) => void;
   selectedProviderId: string;
   selectedModel: string;
+  selectedEffort?: string;
   providers: ProviderConfig[];
   definitions: ProviderDefinition[];
   files: FileEntry[];
@@ -140,7 +470,8 @@ export function AgentView({
   undoLevels?: number;
   onUndoRun: (id: string) => void;
   onKeepChanges: () => void;
-  switchModel: (providerId: string, model: string) => void;
+  switchModel: (providerId: string, model: string, effort?: string) => void;
+  switchEffort?: (effort: string) => void;
   onOpenProviders: () => void;
   onAttachFile: () => void;
   onAttachDiff: () => void;
@@ -168,7 +499,7 @@ export function AgentView({
   // mid-run must not be yanked around by every streamed token.
   const stickToBottomRef = useRef(true);
 
-  const api = window.nexus || window.forgepilot;
+  const api = window.nexus;
   const [showComposerMenu, setShowComposerMenu] = useState(false);
 
   useEffect(() => {
@@ -787,10 +1118,14 @@ export function AgentView({
               <ModelSelect
                 selectedProviderId={selectedProviderId}
                 selectedModel={selectedModel}
+                selectedEffort={selectedEffort}
                 providers={providers}
                 definitions={definitions}
                 switchModel={switchModel}
+                switchEffort={switchEffort}
                 onOpenProviders={onOpenProviders}
+                sessionUsage={sessionUsage}
+                activeSessionId={activeSessionId}
               />
             </div>
             <button

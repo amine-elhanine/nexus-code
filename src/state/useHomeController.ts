@@ -28,7 +28,7 @@ export function sortHomeSessions(list: SessionRecord[]): SessionRecord[] {
 }
 
 export function useHomeController(enabled = true) {
-  const api = window.nexus || window.forgepilot;
+  const api = window.nexus;
 
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [activeSession, setActiveSession] = useState<SessionRecord | null>(null);
@@ -311,7 +311,7 @@ export function useHomeController(enabled = true) {
   const submit = useCallback(
     async (
       overrideText?: string,
-      modelConfig?: { providerId: string; model: string }
+      modelConfig?: { providerId: string; model: string; effort?: string }
     ) => {
       const text = (overrideText ?? draft).trim();
       if (!text && !attachedImages.length && !attachments.length) return;
@@ -371,6 +371,7 @@ export function useHomeController(enabled = true) {
           attachments: attachmentsToSend.length ? attachmentsToSend : undefined,
           providerId: modelConfig?.providerId,
           model: modelConfig?.model,
+          effort: modelConfig?.effort,
         });
       } catch (error) {
         console.error("Home agent run failed", error);

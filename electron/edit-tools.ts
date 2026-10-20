@@ -4,6 +4,7 @@ import path from "node:path";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { stripProjectRoot } from "./path-utils.js";
+import { LEGACY_STATE_REJECTION } from "./state-guard.js";
 
 async function safePath(projectRoot: string, requested: string) {
   const root = await fs.realpath(path.resolve(projectRoot));
@@ -11,6 +12,11 @@ async function safePath(projectRoot: string, requested: string) {
   const candidate = path.resolve(root, stripped || ".");
   if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
     throw new Error("Path escapes the selected project root.");
+  }
+  // Nexus state lives only in .nexus/ — the agent must never write .deepagents.
+  const relToRoot = path.relative(root, candidate).replace(/\\/g, "/").toLowerCase();
+  if (relToRoot === ".deepagents" || relToRoot.startsWith(".deepagents/")) {
+    throw new Error(LEGACY_STATE_REJECTION);
   }
   // Resolve the existing target, or the nearest existing parent for a new
   // file. This prevents a lexical-safe path from traversing an in-repo

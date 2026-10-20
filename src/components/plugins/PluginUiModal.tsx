@@ -69,7 +69,7 @@ export function PluginUiModal({
   mode: string;
   onClose: () => void;
 }) {
-  const api = window.nexus || window.forgepilot;
+  const api = window.nexus;
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [html, setHtml] = useState<string | null>(null);
   const [slot, setSlot] = useState("");

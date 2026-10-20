@@ -1,3 +1,4 @@
+import { compactHistory, compactHistoryWithModel, estimateTokens } from "./context-service.js";
 import { app, BrowserWindow, dialog, ipcMain, shell, session, protocol, net } from "electron";
 import path from "node:path";
 import { existsSync, promises as fs } from "node:fs";
@@ -8,7 +9,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 import { runProjectAgent, RunCancelledError, clearLastRunCheckpoint, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint, summarizeCompletedSteps, appendEntryLog, PROJECT_MEMORY_RUN_LOG_CAP, SESSION_MEMORY_ENTRY_CAP, SESSION_MEMORY_CHAR_CAP, type AgentMode, type AgentSettings, type AgentEvent, type AgentUsage, type HistoryInput, type PlanItem } from "./agent-service.js";
-import { PROVIDERS, fetchRemoteModels } from "./providers.js";
+import { PROVIDERS, fetchRemoteModels, autoDiscoverModelEfforts, resolveModelEfforts, autoDiscoverModelContextWindow, resolveModelContextWindow, resolveModelMaxOutput, computeCompactionThreshold, createChatModel } from "./providers.js";
 import {
   appendHomeSessionMessages, appendSessionMessages, createHomeSession, createSession, deleteHomeSession, deleteProject, deleteSession, getHomeMemory, getHomeSession, getProject, getSession,
   getHooksConfig, getRulesConfig, getSkillsConfig, listEmbeddingProviders, listHomeSessions, listMcpServers, listProjects, listProviders, listSessions,
@@ -741,7 +742,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("notebook:createChat", (_event, notebookId: string, title?: string) => createNotebookChat(notebookId, title));
   ipcMain.handle("notebook:deleteChat", (_event, notebookId: string, chatId: string) => deleteNotebookChat(notebookId, chatId));
   ipcMain.handle("notebook:retrieve", (_event, notebookId: string, query: string, topK?: number, fileIds?: string[]) => hybridRetrieve(notebookId, query, topK || 8, fileIds));
-  ipcMain.handle("notebook:ask", async (_event, payload: { notebookId: string; chatId: string; question: string; fileIds?: string[]; providerId?: string; model?: string; topK?: number }) => {
+  ipcMain.handle("notebook:ask", async (_event, payload: { notebookId: string; chatId: string; question: string; fileIds?: string[]; providerId?: string; model?: string; effort?: string; topK?: number }) => {
     if (activeRunSessions.has(payload.chatId)) {
       throw new Error("A response is already running in this chat. Stop it before sending another question.");
     }
@@ -768,6 +769,7 @@ app.whenReady().then(async () => {
         fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
         chatProviderId: payload.providerId,
         chatModel: payload.model,
+        chatEffort: payload.effort,
         topK: payload.topK || 8,
         instructions: notebookSettings.instructions,
         rerank: appSettings.notebookRerankEnabled ? {
@@ -925,15 +927,188 @@ app.whenReady().then(async () => {
 
   ipcMain.handle("providers:definitions", () => PROVIDERS);
   const maskProviders = (list: ProviderConfig[]) => list.map((provider) => ({ ...provider, apiKey: provider.apiKey ? "********" : "" }));
-  ipcMain.handle("providers:list", async () => maskProviders(await listProviders()));
+  ipcMain.handle("providers:list", async () => {
+    const list = await listProviders();
+    // Non-blocking background fill for legacy models that have no modelEfforts entry
+    for (const p of list) {
+      if (!p.models || !p.models.length) continue;
+      const missing = p.models.filter((m) => !p.modelEfforts || p.modelEfforts[m] === undefined || !p.modelContextWindows || p.modelContextWindows[m] === undefined);
+      if (missing.length > 0) {
+        setTimeout(async () => {
+          for (const m of missing) {
+            try {
+              const detected = await autoDiscoverModelEfforts(p, m);
+              const ctx = await autoDiscoverModelContextWindow(p, m);
+              await updateProviderModel(p.id, m, {
+                efforts: detected,
+                contextWindow: ctx?.contextWindow,
+                maxOutput: ctx?.maxOutput,
+              });
+            } catch {}
+          }
+        }, 100);
+      }
+    }
+    return maskProviders(list);
+  });
   // Granular provider CRUD: the renderer never sends (or holds) the real key
   // except through provider:updateKey, and model edits cannot touch it.
   ipcMain.handle("provider:create", async (_event, input: { provider: string; label: string; apiKey: string; baseUrl?: string }) => maskProviders([await createProviderConnection(input)])[0]);
   ipcMain.handle("provider:updateMeta", async (_event, providerId: string, patch: { label?: string; baseUrl?: string }) => maskProviders([await updateProviderConnection(providerId, patch)])[0]);
   ipcMain.handle("provider:updateKey", async (_event, providerId: string, apiKey: string) => maskProviders([await updateProviderKey(providerId, apiKey)])[0]);
   ipcMain.handle("provider:setEnabled", async (_event, providerId: string, enabled: boolean) => maskProviders([await setProviderEnabled(providerId, enabled)])[0]);
-  ipcMain.handle("provider:models:add", async (_event, providerId: string, models: string[]) => maskProviders([await addProviderModels(providerId, models)])[0]);
-  ipcMain.handle("provider:models:update", async (_event, providerId: string, model: string, patch: { newName?: string; endpoint?: "" | ChatEndpointKind }) => maskProviders([await updateProviderModel(providerId, model, patch)])[0]);
+  ipcMain.handle("provider:models:add", async (_event, providerId: string, models: string[], efforts?: Record<string, string[]>) => {
+    const rawProviders = await listProviders();
+    const stored = rawProviders.find((p) => p.id === providerId);
+    const resolvedEfforts: Record<string, string[]> = { ...(efforts || {}) };
+    const resolvedContexts: Record<string, number> = {};
+    const resolvedMaxOutputs: Record<string, number> = {};
+    if (stored) {
+      for (const m of models) {
+        if (!resolvedEfforts[m]) {
+          try {
+            const detected = await autoDiscoverModelEfforts(stored, m);
+            if (detected && detected.length) {
+              resolvedEfforts[m] = detected;
+            }
+          } catch {
+            const fallback = resolveModelEfforts(stored.provider, m, stored);
+            if (fallback.length) resolvedEfforts[m] = fallback;
+          }
+        }
+        try {
+          const ctx = await autoDiscoverModelContextWindow(stored, m);
+          if (ctx?.contextWindow) resolvedContexts[m] = ctx.contextWindow;
+          if (ctx?.maxOutput) resolvedMaxOutputs[m] = ctx.maxOutput;
+        } catch {
+          const fallbackCtx = resolveModelContextWindow(stored.provider, m, stored);
+          if (fallbackCtx) resolvedContexts[m] = fallbackCtx;
+        }
+      }
+    }
+    return maskProviders([await addProviderModels(providerId, models, resolvedEfforts, resolvedContexts, resolvedMaxOutputs)])[0];
+  });
+  ipcMain.handle("provider:models:update", async (_event, providerId: string, model: string, patch: { newName?: string; endpoint?: "" | ChatEndpointKind; efforts?: string[] }) => {
+    if (patch.newName && !patch.efforts) {
+      const rawProviders = await listProviders();
+      const stored = rawProviders.find((p) => p.id === providerId);
+      if (stored) {
+        try {
+          const detected = await autoDiscoverModelEfforts(stored, patch.newName);
+          if (detected && detected.length) {
+            patch.efforts = detected;
+          }
+        } catch {
+          const fallback = resolveModelEfforts(stored.provider, patch.newName, stored);
+          if (fallback.length) patch.efforts = fallback;
+        }
+      }
+    }
+    return maskProviders([await updateProviderModel(providerId, model, patch)])[0];
+  });
+  ipcMain.handle("session:compact", async (_event, payload?: { sessionId?: string; projectId?: string }) => {
+    const root = requireRoot();
+    const sessionId = payload?.sessionId || activeSessionId;
+    const projectId = payload?.projectId || activeProjectId;
+    if (!projectId || !sessionId) throw new Error("No active session.");
+
+    const project = await getProject(projectId);
+    if (!project) throw new Error("Project not found.");
+    const session = project.sessions.find((s) => s.id === sessionId);
+    if (!session) throw new Error("Session not found.");
+
+    const rawProviders = await listProviders();
+    const provider = rawProviders.find((p) => p.id === session.model?.providerId) || rawProviders[0];
+    const modelName = session.model?.model || provider?.models[0] || "default";
+
+    const contextWindow = provider?.modelContextWindows?.[modelName] || resolveModelContextWindow(provider?.id || "", modelName, provider);
+    const maxOutput = provider?.modelMaxOutputs?.[modelName] || resolveModelMaxOutput(provider?.id || "", modelName, provider);
+    const threshold = computeCompactionThreshold(contextWindow, maxOutput);
+    const targetBudget = Math.max(4000, Math.floor(threshold * 0.55));
+
+    const history = (session.messages || []).map((m) => ({
+      role: m.role as "user" | "assistant" | "event",
+      text: m.text,
+      kind: m.kind,
+    }));
+
+    const originalTokens = history.reduce((sum, t) => sum + estimateTokens(t.text), 0);
+    if (originalTokens < 1000) {
+      return { originalTokens, compactedTokens: originalTokens, freedTokens: 0, notice: "Session context is already minimal." };
+    }
+
+    let compacted;
+    try {
+      const llm = await createChatModel(provider, modelName);
+      compacted = await compactHistoryWithModel(
+        history,
+        async (prompt) => {
+          const res: any = await llm.invoke(prompt);
+          return typeof res?.content === "string" ? res.content : String(res?.content || "");
+        },
+        targetBudget
+      );
+    } catch {
+      compacted = compactHistory(history, targetBudget);
+    }
+
+    const compactedTokens = compacted.reduce((sum, t) => sum + estimateTokens(t.text), 0);
+    const freedTokens = Math.max(0, originalTokens - compactedTokens);
+
+    const newMessages = compacted.map((turn) => ({
+      role: turn.role,
+      text: turn.text,
+      createdAt: new Date().toISOString(),
+    }));
+
+    await updateSession(projectId, sessionId, {
+      messages: newMessages,
+      usage: {
+        inputTokens: compactedTokens,
+        outputTokens: session.usage?.outputTokens || 0,
+        totalTokens: compactedTokens + (session.usage?.outputTokens || 0),
+        estimatedCost: session.usage?.estimatedCost ?? null,
+      },
+    });
+
+    return { originalTokens, compactedTokens, freedTokens, contextWindow, threshold };
+  });
+
+  ipcMain.handle("provider:model:detect-context", async (_event, providerId: string, model: string) => {
+    const rawProviders = await listProviders();
+    const stored = rawProviders.find((p) => p.id === providerId);
+    if (!stored) return { contextWindow: 128_000 };
+    try {
+      const detected = await autoDiscoverModelContextWindow(stored, model);
+      await updateProviderModel(providerId, model, {
+        contextWindow: detected.contextWindow,
+        maxOutput: detected.maxOutput,
+      });
+      return detected;
+    } catch {
+      const fallback = resolveModelContextWindow(stored.provider, model, stored);
+      const maxOutput = resolveModelMaxOutput(stored.provider, model, stored);
+      return { contextWindow: fallback, maxOutput };
+    }
+  });
+  ipcMain.handle("provider:model:detect-efforts", async (_event, providerId: string, model: string) => {
+    const rawProviders = await listProviders();
+    const stored = rawProviders.find((p) => p.id === providerId);
+    if (!stored) return [];
+    try {
+      const detected = await autoDiscoverModelEfforts(stored, model);
+      if (detected) {
+        await updateProviderModel(providerId, model, { efforts: detected });
+      }
+      return detected || [];
+    } catch {
+      const fallback = resolveModelEfforts(stored.provider, model, stored);
+      if (fallback.length) {
+        await updateProviderModel(providerId, model, { efforts: fallback });
+      }
+      return fallback;
+    }
+  });
   ipcMain.handle("provider:models:remove", async (_event, providerId: string, model: string) => maskProviders([await removeProviderModel(providerId, model)])[0]);
   ipcMain.handle("provider:remove", async (_event, providerId: string) => maskProviders(await removeProvider(providerId)));
   // Model discovery: when the renderer has no key (it never does — only a
@@ -1459,7 +1634,7 @@ app.whenReady().then(async () => {
   // session in one batch — tool traces and plans survive an app restart now.
   type RunTranscript = { items: Array<{ role: "event"; text: string; kind: AgentEvent["type"]; createdAt: string; plan?: AgentEvent["items"]; subagent?: AgentEvent["subagent"]; artifact?: AgentEvent["artifact"]; usage?: AgentEvent["usage"]; detail?: string }> };
 
-  ipcMain.handle("agent:run", async (_event, payload: { request: string; images?: string[]; attachments?: Array<{ url: string; name: string; mimeType: string; size: number }>; providerId?: string; model?: string; mode?: string; sessionId?: string; projectId?: string }) => {
+  ipcMain.handle("agent:run", async (_event, payload: { request: string; images?: string[]; attachments?: Array<{ url: string; name: string; mimeType: string; size: number }>; providerId?: string; model?: string; effort?: string; mode?: string; sessionId?: string; projectId?: string }) => {
     const root = requireRoot();
     const sessionId = payload.sessionId || activeSessionId;
     const projectId = payload.projectId || activeProjectId;
@@ -1492,7 +1667,13 @@ app.whenReady().then(async () => {
       const mode: AgentMode = payload.mode === "plan" || payload.mode === "auto" ? payload.mode : "ask";
       const configured = payload.providerId ? (await listProviders()).find((provider) => provider.id === payload.providerId) : undefined;
       const provider = configured || (await listProviders())[0];
-      const runSettings: AgentSettings = provider ? { provider, model: payload.model || session.model?.model } : { ...settings };
+      const modelName = payload.model || session.model?.model;
+      const effort = payload.effort !== undefined ? payload.effort : session.model?.effort;
+      const runSettings: AgentSettings = provider ? { provider, model: modelName, effort } : { ...settings, effort };
+
+      if (provider && modelName) {
+        await updateSession(projectId, sessionId, { model: { providerId: provider.id, model: modelName, effort: effort || undefined } });
+      }
 
       if (session.title === "New coding task" && payload.request) {
         await updateSession(projectId, sessionId, { title: payload.request.slice(0, 60) });
@@ -1774,6 +1955,7 @@ app.whenReady().then(async () => {
     attachments?: ChatAttachment[];
     providerId?: string;
     model?: string;
+    effort?: string;
   }) => {
     const { sessionId } = payload;
     const session = await getHomeSession(sessionId);
@@ -1808,12 +1990,13 @@ app.whenReady().then(async () => {
       const providerId = payload.providerId || session.model?.providerId;
       const provider = providers.find((p) => p.id === providerId) || providers[0];
       const modelName = payload.model || session.model?.model || provider?.models[0] || "";
+      const effort = payload.effort !== undefined ? payload.effort : session.model?.effort;
 
       if (!provider || !modelName) {
         throw new Error("No provider/model selected for Home Assistant. Configure Providers first.");
       }
 
-      await updateHomeSession(sessionId, { model: { providerId: provider.id, model: modelName } });
+      await updateHomeSession(sessionId, { model: { providerId: provider.id, model: modelName, effort: effort || undefined } });
 
       // Code parity (agent:run): name the chat after the first sent message
       // while it still has the default title — later user renames stick.
@@ -1933,6 +2116,7 @@ app.whenReady().then(async () => {
             model: modelName,
             apiKey: provider.apiKey,
             baseUrl: provider.baseUrl,
+            effort,
           },
           memory: { projectMemory: homeMemoryAtStart, sessionMemory: session.memory },
           history,

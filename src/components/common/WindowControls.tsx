@@ -6,13 +6,13 @@ export function WindowControls() {
 
   const handleToggleMax = async () => {
     try {
-      const api = window.nexus || window.forgepilot;
+      const api = window.nexus;
       const next = await api?.maximizeWindow?.();
       setIsMax(Boolean(next));
     } catch { /* ignore */ }
   };
 
-  const api = window.nexus || window.forgepilot;
+  const api = window.nexus;
 
   return (
     <div className="window-controls">
