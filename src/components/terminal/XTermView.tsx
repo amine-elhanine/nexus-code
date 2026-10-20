@@ -79,7 +79,7 @@ export const XTermView: React.FC<XTermViewProps> = ({ projectRoot, files = [] })
     termRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    const api = window.nexus || window.forgepilot;
+    const api = window.nexus;
 
     // Start shell session with initial dimensions
     void api?.createTerminal?.(terminalId, projectRoot, term.cols, term.rows);
@@ -120,12 +120,12 @@ export const XTermView: React.FC<XTermViewProps> = ({ projectRoot, files = [] })
   }, [projectRoot, terminalId]);
 
   const sendQuickCommand = (cmd: string) => {
-    const api = window.nexus || window.forgepilot;
+    const api = window.nexus;
     void api?.writeTerminal?.(terminalId, `${cmd}\r\n`);
   };
 
   const restartShell = () => {
-    const api = window.nexus || window.forgepilot;
+    const api = window.nexus;
     termRef.current?.clear();
     void api?.killTerminal?.(terminalId);
     void api?.createTerminal?.(terminalId, projectRoot, termRef.current?.cols, termRef.current?.rows);

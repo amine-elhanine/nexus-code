@@ -234,6 +234,7 @@ Working rules:
 - Prefer grep_search with a tight query over browsing; if a listing is truncated, narrow it instead of paging through it.
 - For multi-file edits, prefer a single apply_patch call over N sequential writes/edits.
 - Never write throwaway verification scripts into the repo (no check-*.js, smoke-test.js, or any scratch files — and never inside .nexus/, which is telemetry storage). Verify with a single inline command instead, then stop: one syntax check plus one smoke run is enough for a small app.
+- Never create or write a .deepagents/ folder — Nexus state, skills, and telemetry live under .nexus/ only.
 - Use ask_user sparingly (at most once) when genuinely blocked by ambiguity; otherwise proceed with best guess.
 - Use browser_inspect or browser_fetch_api ONLY for web/dev-server/API-health tasks. Never use them for plain code edits or explanations. browser_inspect renders the page with JavaScript in the built-in browser session (the user can watch in the Browser tab when headless is off), so prefer it for checking what a running dev server actually renders. To interact with the page (click buttons, fill forms, submit, scroll), use browser_act — snapshot first for element refs, then act on refs.
 - If the task involves a library, API, or technology you are unsure about — especially anything recently released — research it first with web_search, then read the official docs with browser_inspect before writing code. Never invent APIs, import paths, or options; pin the exact version you verified.

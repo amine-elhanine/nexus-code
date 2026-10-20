@@ -291,6 +291,7 @@ function App() {
     providerDefinitions,
     selectedProviderId,
     selectedModel,
+    selectedEffort,
     files,
     expandedFolders,
     gitBranch,
@@ -375,6 +376,7 @@ function App() {
     undoing,
     keepChanges,
     switchModel,
+    switchEffort,
     handleProvidersChange,
     removeProjectFact,
     clearSessionMemory,
@@ -386,7 +388,7 @@ function App() {
 
   const sortedSessions = useMemo(() => sortSessionsByUpdatedAt(sessions), [sessions]);
 
-  const api = window.nexus || window.forgepilot;
+  const api = window.nexus;
   const home = useHomeController(area === "home");
   const notebook = useNotebookController(area === "notebook");
   const headerTitle = area === "notebook"
@@ -400,7 +402,7 @@ function App() {
   // the user can choose "delete chat" vs "delete chat + the files it created".
   const [homeDeleteDialog, setHomeDeleteDialog] = useState<{ session: SessionRecord; ownedFiles: Array<{ path: string; name: string; size: number; modified: string }> } | null>(null);
   function openHomeDeleteDialog(session: SessionRecord) {
-    const api = window.nexus || window.forgepilot;
+    const api = window.nexus;
     api.listHomeSessionFilesForDeletion(session.id)
       .catch(() => [])
       .then((files) => setHomeDeleteDialog({ session, ownedFiles: files || [] }));
@@ -985,14 +987,16 @@ function App() {
                       notebook.setNotice(error instanceof Error ? error.message : "Re-index failed.");
                     }
                   }}
-                  onAsk={() => void notebook.ask(selectedProviderId, selectedModel)}
+                  onAsk={() => void notebook.ask(selectedProviderId, selectedModel, selectedEffort)}
                   onStop={() => void notebook.stopAsk()}
                   onExitToSessions={() => notebook.exitToSessions()}
                   selectedProviderId={selectedProviderId}
                   selectedModel={selectedModel}
+                  selectedEffort={selectedEffort}
                   providers={providers}
                   definitions={providerDefinitions}
-                  switchModel={(providerId, model) => void switchModel(providerId, model)}
+                  switchModel={(providerId, model, effort) => void switchModel(providerId, model, effort)}
+                  switchEffort={(effort) => void switchEffort(effort)}
                   onOpenProviders={() => setShowProviders(true)}
                   hasProvider={providers.length > 0}
                   customCommands={customCommands.filter((c) => !c.scope || c.scope === "all" || c.scope === "notebook")}
@@ -1004,16 +1008,18 @@ function App() {
                 messages={home.currentMessages}
                 draft={home.draft}
                 setDraft={home.setDraft}
-                submit={(override) => void home.submit(override, { providerId: selectedProviderId, model: selectedModel })}
+                submit={(override) => void home.submit(override, { providerId: selectedProviderId, model: selectedModel, effort: selectedEffort })}
                 running={home.running}
                 onStop={() => void home.stopAgent()}
                 streamingText={home.streamingText}
                 liveEvents={home.liveEvents}
                 selectedProviderId={selectedProviderId}
                 selectedModel={selectedModel}
+                selectedEffort={selectedEffort}
                 providers={providers}
                 definitions={providerDefinitions}
-                switchModel={(providerId, model) => void switchModel(providerId, model)}
+                switchModel={(providerId, model, effort) => void switchModel(providerId, model, effort)}
+                switchEffort={(effort) => void switchEffort(effort)}
                 onOpenProviders={() => setShowProviders(true)}
                 sessionUsage={home.sessionUsage}
                 homeRoot={home.homeRoot}
@@ -1050,6 +1056,7 @@ function App() {
                   setMode={setMode}
                   selectedProviderId={selectedProviderId}
                   selectedModel={selectedModel}
+                  selectedEffort={selectedEffort}
                   providers={providers}
                   definitions={providerDefinitions}
                   files={files}
@@ -1058,7 +1065,8 @@ function App() {
                   undoLevels={undoLevels}
                   onUndoRun={(id) => void undoRun(id)}
                   onKeepChanges={() => void keepChanges()}
-                  switchModel={(providerId, model) => void switchModel(providerId, model)}
+                  switchModel={(providerId, model, effort) => void switchModel(providerId, model, effort)}
+                  switchEffort={(effort) => void switchEffort(effort)}
                   onOpenProviders={() => setShowProviders(true)}
                   onAttachFile={() => {
                     setDraft((curr) => `${curr}${curr ? "\n" : ""}@${activeFile || "current-file"}`);

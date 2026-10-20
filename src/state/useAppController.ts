@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type SetStateAction } from "react";
 import type { SlashCommand } from "../components/chat/SlashCommandPopup.js";
 import { nowIso, pushLiveEvent } from "../utils/format.js";
 import { isKnownBinaryFile } from "../utils/binaryFiles.js";
+import { resolveModelEfforts } from "../utils/modelEfforts.js";
 import type {
   AppView,
   ArtifactItem,
@@ -18,19 +19,95 @@ import type {
 } from "../types.js";
 
 export const FALLBACK_PROVIDERS: ProviderDefinition[] = [
-  { id: "openai", label: "OpenAI", packageName: "@langchain/openai", envKey: "OPENAI_API_KEY", models: ["gpt-5.5", "gpt-5.5-mini", "gpt-4.1", "gpt-4.1-mini", "o3", "o4-mini"] },
-  { id: "anthropic", label: "Anthropic", packageName: "@langchain/anthropic", envKey: "ANTHROPIC_API_KEY", models: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"] },
-  { id: "google", label: "Google Gemini", packageName: "@langchain/google-genai", envKey: "GOOGLE_API_KEY", models: ["gemini-3.7-pro", "gemini-3.7-flash", "gemini-2.5-flash"] },
+  {
+    id: "openai",
+    label: "OpenAI",
+    packageName: "@langchain/openai",
+    envKey: "OPENAI_API_KEY",
+    models: ["gpt-5.5", "gpt-5.5-mini", "gpt-4.1", "gpt-4.1-mini", "o3", "o4-mini"],
+    modelEfforts: {
+      "gpt-5.5": ["none", "low", "medium", "high"],
+      "gpt-5.5-mini": ["none", "low", "medium", "high"],
+      "o3": ["low", "medium", "high"],
+      "o4-mini": ["low", "medium", "high"],
+    },
+  },
+  {
+    id: "anthropic",
+    label: "Anthropic",
+    packageName: "@langchain/anthropic",
+    envKey: "ANTHROPIC_API_KEY",
+    models: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
+    modelEfforts: {
+      "claude-opus-4-6": ["low", "medium", "high", "max"],
+      "claude-sonnet-4-6": ["low", "medium", "high", "max"],
+    },
+  },
+  {
+    id: "google",
+    label: "Google Gemini",
+    packageName: "@langchain/google-genai",
+    envKey: "GOOGLE_API_KEY",
+    models: ["gemini-3.7-pro", "gemini-3.7-flash", "gemini-2.5-flash"],
+    modelEfforts: {
+      "gemini-3.7-pro": ["none", "low", "medium", "high"],
+      "gemini-3.7-flash": ["none", "low", "medium", "high"],
+      "gemini-2.5-flash": ["none", "low", "medium", "high"],
+    },
+  },
   { id: "mistral", label: "Mistral", packageName: "@langchain/mistralai", envKey: "MISTRAL_API_KEY", models: ["mistral-large-latest", "codestral-latest", "mistral-small-latest"] },
   { id: "groq", label: "Groq", packageName: "@langchain/groq", envKey: "GROQ_API_KEY", models: ["openai/gpt-oss-120b", "llama-4-scout-17b-16e-instruct", "qwen/qwen3-32b"] },
   { id: "xai", label: "xAI", packageName: "@langchain/xai", envKey: "XAI_API_KEY", models: ["grok-4", "grok-4-fast", "grok-3-mini"] },
-  { id: "openrouter", label: "OpenRouter", packageName: "@langchain/openrouter", envKey: "OPENROUTER_API_KEY", models: ["anthropic/claude-sonnet-4.6", "openai/gpt-5.5", "google/gemini-3.7-pro"] },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    packageName: "@langchain/openrouter",
+    envKey: "OPENROUTER_API_KEY",
+    models: ["anthropic/claude-sonnet-4.6", "openai/gpt-5.5", "google/gemini-3.7-pro"],
+    modelEfforts: {
+      "openai/gpt-5.5": ["none", "low", "medium", "high"],
+      "google/gemini-3.7-pro": ["none", "low", "medium", "high"],
+      "anthropic/claude-sonnet-4.6": ["low", "medium", "high", "max"],
+    },
+  },
   { id: "ollama", label: "Ollama", packageName: "@langchain/ollama", envKey: "OLLAMA_BASE_URL", defaultBaseUrl: "http://127.0.0.1:11434", models: ["qwen3-coder", "devstral", "llama3.3"] },
-  { id: "deepseek", label: "DeepSeek", packageName: "@langchain/deepseek", envKey: "DEEPSEEK_API_KEY", models: ["deepseek-chat", "deepseek-reasoner"] },
-  { id: "opencode-zen", label: "OpenCode Zen", packageName: "@langchain/openai", envKey: "OPENCODE_API_KEY", defaultBaseUrl: "https://opencode.ai/zen/v1", models: ["kimi-k2.6", "kimi-k2.5", "deepseek-v4-pro", "deepseek-v4-flash", "glm-5.2", "qwen3.7-max", "claude-opus-4-6", "claude-sonnet-4-6", "gpt-5.5"] },
+  {
+    id: "deepseek",
+    label: "DeepSeek",
+    packageName: "@langchain/deepseek",
+    envKey: "DEEPSEEK_API_KEY",
+    models: ["deepseek-chat", "deepseek-reasoner"],
+    modelEfforts: {
+      "deepseek-reasoner": ["low", "medium", "high"],
+    },
+  },
+  {
+    id: "opencode-zen",
+    label: "OpenCode Zen",
+    packageName: "@langchain/openai",
+    envKey: "OPENCODE_API_KEY",
+    defaultBaseUrl: "https://opencode.ai/zen/v1",
+    models: ["kimi-k2.6", "kimi-k2.5", "deepseek-v4-pro", "deepseek-v4-flash", "glm-5.2", "qwen3.7-max", "claude-opus-4-6", "claude-sonnet-4-6", "gpt-5.5"],
+    modelEfforts: {
+      "gpt-5.5": ["none", "low", "medium", "high"],
+      "deepseek-v4-pro": ["low", "medium", "high"],
+      "claude-opus-4-6": ["low", "medium", "high", "max"],
+      "claude-sonnet-4-6": ["low", "medium", "high", "max"],
+    },
+  },
   { id: "together", label: "Together AI", packageName: "@langchain/community", envKey: "TOGETHER_AI_KEY", models: ["Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"] },
   { id: "fireworks", label: "Fireworks", packageName: "@langchain/community", envKey: "FIREWORKS_API_KEY", models: ["accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/qwen3-coder"] },
-  { id: "azure", label: "Azure OpenAI", packageName: "@langchain/openai", envKey: "AZURE_OPENAI_API_KEY", models: ["gpt-5.5", "gpt-4.1", "o3"] },
+  {
+    id: "azure",
+    label: "Azure OpenAI",
+    packageName: "@langchain/openai",
+    envKey: "AZURE_OPENAI_API_KEY",
+    models: ["gpt-5.5", "gpt-4.1", "o3"],
+    modelEfforts: {
+      "gpt-5.5": ["none", "low", "medium", "high"],
+      "o3": ["low", "medium", "high"],
+    },
+  },
   { id: "bedrock", label: "AWS Bedrock", packageName: "@langchain/aws", envKey: "AWS_ACCESS_KEY_ID", models: ["anthropic.claude-sonnet-4-6", "amazon.nova-pro-v1:0"] },
   { id: "custom", label: "Custom (OpenAI-compatible)", packageName: "@langchain/openai", envKey: "CUSTOM_API_KEY", models: [] },
 ];
@@ -52,6 +129,7 @@ export function useAppController() {
   const [providerDefinitions, setProviderDefinitions] = useState<ProviderDefinition[]>(FALLBACK_PROVIDERS);
   const [selectedProviderId, setSelectedProviderId] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
+  const [selectedEffort, setSelectedEffort] = useState("");
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [gitBranch, setGitBranch] = useState("No Git repository");
@@ -115,17 +193,17 @@ export function useAppController() {
   const currentMessages = (activeSession?.messages || []) as ChatItem[];
   const running = Boolean(activeSession && runningSessionIds.has(activeSession.id));
   const liveEventsForSession = activeSession ? liveEvents[activeSession.id] || [] : [];
-  // Nexus telemetry storage (.nexus/.forgepilot/.deepagents) is machinery,
+  // Nexus telemetry storage (.nexus/.deepagents) is machinery,
   // not project content — the explorer never shows it, matching how IDEs
   // hide their own metadata folders.
-  const TELEMETRY_DIRS = new Set([".nexus", ".forgepilot", ".deepagents"]);
+  const TELEMETRY_DIRS = new Set([".nexus", ".deepagents"]);
   const visibleFiles = files.filter((entry) => {
     if (TELEMETRY_DIRS.has(entry.path.split("/")[0])) return false;
     const parts = entry.path.split("/");
     return parts.length === 1 || parts.slice(0, -1).every((_, index) => expandedFolders.has(parts.slice(0, index + 1).join("/")));
   });
 
-  const api = window.nexus || window.forgepilot;
+  const api = window.nexus;
 
   useEffect(() => {
     void Promise.all([
@@ -140,6 +218,14 @@ export function useAppController() {
       setProjects(projectList);
       setProviders(providerList);
       if (definitions?.length) setProviderDefinitions(definitions);
+      // Auto-discover efforts in background for any existing models without efforts
+      for (const prov of providerList) {
+        for (const m of prov.models || []) {
+          if (!prov.modelEfforts || prov.modelEfforts[m] === undefined) {
+            void api.detectProviderModelEfforts(prov.id, m).catch(() => {});
+          }
+        }
+      }
       setRulesEnabled(rulesConfig?.enabled !== false);
       setSkillsEnabled(skillsConfig?.enabled !== false);
       if (cmds?.length) setCustomCommands(cmds as SlashCommand[]);
@@ -276,12 +362,15 @@ export function useAppController() {
     if (isValid && sessionModel) {
       setSelectedProviderId(sessionModel.providerId);
       setSelectedModel(sessionModel.model);
+      setSelectedEffort(sessionModel.effort || "");
     } else if (currentProviders.length > 0) {
       setSelectedProviderId(currentProviders[0].id);
       setSelectedModel(currentProviders[0].models[0] || "");
+      setSelectedEffort("");
     } else {
       setSelectedProviderId("");
       setSelectedModel("");
+      setSelectedEffort("");
     }
     void api.getProjectRules(projectId).then(setProjectRules).catch(() => setProjectRules(null));
     void api.listCustomCommands().then((c) => setCustomCommands(c as SlashCommand[])).catch(() => {});
@@ -387,12 +476,15 @@ export function useAppController() {
             if (p && m && p.models.includes(m.model)) {
               setSelectedProviderId(m.providerId);
               setSelectedModel(m.model);
+              setSelectedEffort(m.effort || "");
             } else if (providers.length > 0) {
               setSelectedProviderId(providers[0].id);
               setSelectedModel(providers[0].models[0] || "");
+              setSelectedEffort("");
             } else {
               setSelectedProviderId("");
               setSelectedModel("");
+              setSelectedEffort("");
             }
           }
         } catch (error) {
@@ -425,6 +517,7 @@ export function useAppController() {
     setSessions(sortSessionsByUpdatedAt(result.project.sessions));
     setSelectedProviderId(result.session.model?.providerId || "");
     setSelectedModel(result.session.model?.model || "");
+    setSelectedEffort(result.session.model?.effort || "");
     await loadWorkspace();
   }
 
@@ -433,6 +526,9 @@ export function useAppController() {
     const sess = await api.createSession(activeProject.id, "New coding task");
     setSessions((current) => sortSessionsByUpdatedAt([sess, ...current]));
     setActiveSession(sess);
+    setSelectedProviderId(sess.model?.providerId || "");
+    setSelectedModel(sess.model?.model || "");
+    setSelectedEffort(sess.model?.effort || "");
     setView("chat");
   }
 
@@ -470,12 +566,15 @@ export function useAppController() {
     if (isValid && sess.model) {
       setSelectedProviderId(sess.model.providerId);
       setSelectedModel(sess.model.model);
+      setSelectedEffort(sess.model.effort || "");
     } else if (providers.length > 0) {
       setSelectedProviderId(providers[0].id);
       setSelectedModel(providers[0].models[0] || "");
+      setSelectedEffort("");
     } else {
       setSelectedProviderId("");
       setSelectedModel("");
+      setSelectedEffort("");
     }
     setView("chat");
   }
@@ -575,6 +674,7 @@ export function useAppController() {
         attachments: attachmentsToSend,
         providerId: selectedProviderId || undefined,
         model: selectedModel || undefined,
+        effort: selectedEffort || undefined,
         sessionId: session.id,
         projectId: activeProject?.id,
         mode: mode.toLowerCase(),
@@ -759,10 +859,11 @@ export function useAppController() {
     });
   }
 
-  async function switchModel(providerId: string, model: string) {
+  async function switchModel(providerId: string, model: string, effort?: string) {
     if (!providerId || !model) {
       setSelectedProviderId("");
       setSelectedModel("");
+      setSelectedEffort("");
       if (activeProject && activeSession) {
         const updated = await api.updateSession(activeProject.id, activeSession.id, { model: undefined });
         setActiveSession(updated);
@@ -770,10 +871,37 @@ export function useAppController() {
       }
       return;
     }
+    const prov = providers.find((p) => p.id === providerId);
+    const def = providerDefinitions.find((d) => d.id === (prov?.provider || providerId));
+    const supported = resolveModelEfforts(providerId, model, prov, def);
+    const nextEffort = effort !== undefined
+      ? (supported.length > 0 ? (supported.includes(effort) ? effort : "") : effort)
+      : (selectedEffort && (supported.length === 0 || supported.includes(selectedEffort)) ? selectedEffort : "");
+
     setSelectedProviderId(providerId);
     setSelectedModel(model);
+    setSelectedEffort(nextEffort);
     if (activeProject && activeSession) {
-      const modelPayload = { providerId, model };
+      const modelPayload = { providerId, model, effort: nextEffort || undefined };
+      const updated = await api.updateSession(activeProject.id, activeSession.id, { model: modelPayload });
+      setActiveSession(updated);
+      setSessions((current) => sortSessionsByUpdatedAt(current.map((s) => (s.id === updated.id ? updated : s))));
+    }
+
+    if (prov && (!prov.modelEfforts || prov.modelEfforts[model] === undefined)) {
+      void api.detectProviderModelEfforts(providerId, model).then(async (detected) => {
+        if (detected && detected.length > 0) {
+          const fresh = await api.listProviders();
+          setProviders(fresh);
+        }
+      }).catch(() => {});
+    }
+  }
+
+  async function switchEffort(effort: string) {
+    setSelectedEffort(effort);
+    if (activeProject && activeSession && selectedProviderId && selectedModel) {
+      const modelPayload = { providerId: selectedProviderId, model: selectedModel, effort: effort || undefined };
       const updated = await api.updateSession(activeProject.id, activeSession.id, { model: modelPayload });
       setActiveSession(updated);
       setSessions((current) => sortSessionsByUpdatedAt(current.map((s) => (s.id === updated.id ? updated : s))));
@@ -789,10 +917,15 @@ export function useAppController() {
       const usable = nextProviders.filter((p) => p.enabled !== false);
       const fallbackId = usable[0]?.id || "";
       const fallbackModel = usable[0]?.models[0] || "";
+      const prov = usable[0];
+      const def = providerDefinitions.find((d) => d.id === (prov?.provider || fallbackId));
+      const supported = resolveModelEfforts(fallbackId, fallbackModel, prov, def);
+      const fallbackEffort = selectedEffort && supported.includes(selectedEffort) ? selectedEffort : "";
       setSelectedProviderId(fallbackId);
       setSelectedModel(fallbackModel);
+      setSelectedEffort(fallbackEffort);
       if (activeProject && activeSession) {
-        const modelPayload = fallbackId && fallbackModel ? { providerId: fallbackId, model: fallbackModel } : undefined;
+        const modelPayload = fallbackId && fallbackModel ? { providerId: fallbackId, model: fallbackModel, effort: fallbackEffort || undefined } : undefined;
         void api.updateSession(activeProject.id, activeSession.id, { model: modelPayload }).then((updated) => {
           setActiveSession(updated);
           setSessions((current) => sortSessionsByUpdatedAt(current.map((s) => (s.id === updated.id ? updated : s))));
@@ -830,6 +963,8 @@ export function useAppController() {
     providerDefinitions,
     selectedProviderId,
     selectedModel,
+    selectedEffort,
+    setSelectedEffort,
     files,
     expandedFolders,
     gitBranch,
@@ -917,6 +1052,7 @@ export function useAppController() {
     undoing,
     keepChanges,
     switchModel,
+    switchEffort,
     handleProvidersChange,
     removeProjectFact,
     clearSessionMemory,

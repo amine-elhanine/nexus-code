@@ -46,7 +46,7 @@ export function FilePreviewModal({
   onDownload: (path: string) => void;
   load?: () => Promise<{ name: string; path: string; size: number; base64: string }>;
 }) {
-  const api = window.nexus || window.forgepilot;
+  const api = window.nexus;
   const fileName = filePath.split("/").pop() || filePath;
   const kind = kindFor(fileName);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");

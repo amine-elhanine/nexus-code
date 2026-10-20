@@ -89,7 +89,7 @@ function getPluginThemeClass(plugin: Plugin): string {
 }
 
 export function PluginMarketplace({ hasProject }: { hasProject: boolean }) {
-  const api = window.nexus || window.forgepilot;
+  const api = window.nexus;
   const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);

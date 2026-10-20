@@ -1,3 +1,19 @@
+
+/**
+ * Calculates the auto-compaction threshold for a model's context window.
+ * Matches Claude Code & Codex behavior: triggers auto-compaction when context
+ * reaches ~80% capacity, leaving room for max completion output tokens and
+ * system prompt reserves.
+ */
+export function computeCompactionThreshold(contextWindow: number, maxOutput?: number): number {
+  const ctx = Math.max(4096, contextWindow || 128_000);
+  const outReserve = Math.max(2048, maxOutput || 8192);
+  const headroomReserve = outReserve + 4000;
+  const thresholdByRatio = Math.floor(ctx * 0.80); // 80% threshold like Claude Code / Codex
+  const thresholdByHeadroom = ctx - headroomReserve;
+  return Math.max(Math.floor(ctx * 0.40), Math.min(thresholdByRatio, thresholdByHeadroom));
+}
+
 export type CompactTurn = {
   role: "user" | "assistant";
   text: string;

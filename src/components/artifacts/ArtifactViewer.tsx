@@ -90,7 +90,7 @@ export const ArtifactViewer: React.FC<ArtifactViewerProps> = ({
         {/* Footer */}
         <div className="modal-card-foot artifact-footer-bar">
           <div className="artifact-meta-text">
-            <span>File: <code>.forgepilot/artifacts/{artifact.filename}</code></span>
+            <span>File: <code>.nexus/artifacts/{artifact.filename}</code></span>
             <span>• Updated: {new Date(artifact.updatedAt).toLocaleTimeString()}</span>
           </div>
 

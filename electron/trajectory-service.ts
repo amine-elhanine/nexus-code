@@ -49,9 +49,8 @@ export class TrajectoryLogger {
 export async function readSessionTrajectory(projectRoot: string, sessionId: string): Promise<TrajectoryStep[]> {
   const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
   const primaryPath = path.join(projectRoot, ".nexus", "trajectories", safeSessionId, "transcript.jsonl");
-  const fallbackPath = path.join(projectRoot, ".forgepilot", "trajectories", safeSessionId, "transcript.jsonl");
 
-  for (const logPath of [primaryPath, fallbackPath]) {
+  for (const logPath of [primaryPath]) {
     try {
       const content = await fs.readFile(logPath, "utf8");
       return content

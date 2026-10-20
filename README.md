@@ -55,7 +55,7 @@ Nexus features three dedicated operational surfaces accessible from the persiste
   - `Auto`: Full autonomous execution end-to-end with automated self-repair loops.
 - **Diff-First Verify & Repair Loop**: After file modifications, an autonomous supervisor reviews Git diffs and executes relevant verification cascades (typechecking, linters, unit tests). If failures occur, the supervisor extracts diagnostics and initiates repair cycles (up to 3 in *Ask*, 5 in *Auto*).
 - **Multi-Level Undo & Checkpoints**: File snapshots paired with 20-deep run checkpoints. One-click **Undo run**, per-hunk diff discard, and Nexus-specific commit resets that never alter your personal commit history.
-- **Isolated Git Worktrees**: Spin up ephemeral sessions inside isolated Git worktrees (`.forgepilot/worktrees/<session>`). Test, develop, and then select **Merge to Main**, **Discard**, or utilize the built-in 3-way conflict resolver.
+- **Isolated Git Worktrees**: Spin up ephemeral sessions inside isolated Git worktrees (`.nexus/worktrees/<session>`). Test, develop, and then select **Merge to Main**, **Discard**, or utilize the built-in 3-way conflict resolver.
 - **Code Intelligence & LSP**:
   - Out-of-process Language Server Protocol (LSP) integration for **TypeScript**, **Python**, **Go**, **Rust**, and **C++** providing definitions, references, document symbols, and diagnostics.
   - WebAssembly-backed **Tree-sitter** grammar warmup for instant syntactic outline extraction and symbol indexing.
@@ -285,7 +285,7 @@ Nexus operates with direct filesystem and shell access on your machine by design
 |---|---|---|
 | **App State** | `%APPDATA%/nexus/nexus-state.json` | Providers, settings, MCP configurations (keys encrypted) |
 | **Project Workspace** | `<project>/.nexus/` | Local index, checkpoints, trajectories, artifacts, hooks, plugins |
-| **Session Worktrees** | `<project>/.forgepilot/worktrees/` | Ephemeral Git worktree branches per session |
+| **Session Worktrees** | `<project>/.nexus/worktrees/` | Ephemeral Git worktree branches per session |
 | **Home Deliverables** | `Documents/Nexus/` | Validated office documents, spreadsheets, and presentations |
 | **Project Skills** | `<project>/.nexus/skills/` | Workspace-specific `SKILL.md` definitions |
 | **Notebook Libraries** | `%APPDATA%/nexus/notebooks/<id>/` | Ingested source files, passage chunks, and SQLite vector stores |

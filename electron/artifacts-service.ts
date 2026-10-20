@@ -20,12 +20,7 @@ export type ArtifactItem = {
 
 export function getArtifactsDir(projectRoot: string, sessionId: string): string {
   const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const nexusDir = path.join(projectRoot, ".nexus", "artifacts", safeSessionId);
-  const forgeDir = path.join(projectRoot, ".forgepilot", "artifacts", safeSessionId);
-  if (!existsSync(nexusDir) && existsSync(forgeDir)) {
-    return forgeDir;
-  }
-  return nexusDir;
+  return path.join(projectRoot, ".nexus", "artifacts", safeSessionId);
 }
 
 export async function saveArtifact(
@@ -163,7 +158,6 @@ export async function deleteSessionTelemetry(projectRoot: string, sessionId: str
     getArtifactsDir(projectRoot, sessionId),
     path.join(projectRoot, ".nexus", "run-checkpoints", `${safe}.json`),
     path.join(projectRoot, ".nexus", "trajectories", safe),
-    path.join(projectRoot, ".forgepilot", "trajectories", safe),
   ];
   for (const target of targets) {
     try {

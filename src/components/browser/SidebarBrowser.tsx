@@ -182,7 +182,7 @@ export const SidebarBrowser: React.FC<{
   }
 
   async function startDevServer() {
-    const api = window.forgepilot as unknown as {
+    const api = window.nexus as unknown as {
       startDaemon?: (name: string, command: string, cwd?: string) => Promise<unknown>;
     };
     if (typeof api.startDaemon !== "function") return;
@@ -202,7 +202,7 @@ export const SidebarBrowser: React.FC<{
 
   // Daemons + headless preference + agent activity subscription.
   useEffect(() => {
-    const api = window.forgepilot as unknown as {
+    const api = window.nexus as unknown as {
       listDaemons?: () => Promise<Array<{ id: string; name: string; status: string; port?: number; command: string }>>;
       getBrowserHeadless?: () => Promise<boolean>;
       onBrowserAgentActivity?: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean; sessionId?: string }) => void) => () => void;
@@ -514,7 +514,7 @@ function SideTabWebview({
 
   // Remounts (epoch bumps from user/agent navigations) arrive with a fresh
   // src on first render — no sync-back needed afterwards.
-  if (typeof window === "undefined" || (!window.nexus && !window.forgepilot)) {
+  if (typeof window === "undefined" || (!window.nexus)) {
     return (
       <div className="empty-pane" style={{ display: visible ? undefined : "none" }}>
         <Globe size={16} />

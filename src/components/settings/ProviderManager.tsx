@@ -1,5 +1,6 @@
 import React, { useState } from "react";
-import { Plus, Trash2, KeyRound, X, RefreshCw, Loader2, Check, Power, PowerOff } from "lucide-react";
+import { Plus, Trash2, KeyRound, X, RefreshCw, Loader2, Check, Power, PowerOff, Sparkles } from "lucide-react";
+import { formatEffortLabel, formatContextWindow, resolveModelContextWindow } from "../../utils/modelEfforts.js";
 import { ConfirmModal } from "../../modals/ConfirmModal.js";
 import type { ChatEndpointKind, ProviderConfig, ProviderDefinition } from "../../types.js";
 
@@ -55,7 +56,7 @@ export function ProviderManager({
   // Model add bar
   const [modelInput, setModelInput] = useState("");
 
-  const api = window.nexus || window.forgepilot;
+  const api = window.nexus;
   const selected = pane.kind === "detail" ? providers.find((p) => p.id === pane.providerId) : undefined;
   const createDef = definitions.find((d) => d.id === newDefId) || definitions[0];
   const isCustomCreate = newDefId === "custom";
@@ -152,12 +153,42 @@ export function ProviderManager({
     const items = modelInput.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
     if (!items.length) return;
     try {
+      setNote(`Adding ${items.join(", ")} and discovering reasoning efforts…`);
       const updated = await api.addProviderModels(selected.id, items);
       applyProvider(updated);
       setModelInput("");
       setError("");
+      setNote(`Added ${items.length} model${items.length === 1 ? "" : "s"}. Reasoning efforts automatically discovered and saved.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to add the model.");
+    }
+  }
+
+  async function detectEfforts(model: string) {
+    if (!selected) return;
+    try {
+      setNote(`Detecting efforts for ${model}…`);
+      const detected = await api.detectProviderModelEfforts(selected.id, model);
+      const all = await api.listProviders();
+      const fresh = all.find((p) => p.id === selected.id);
+      if (fresh) applyProvider(fresh);
+      setNote(detected.length ? `Efforts for ${model}: ${detected.join(", ")}` : `${model} is a standard model without reasoning effort.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to detect efforts.");
+    }
+  }
+
+  async function detectContext(model: string) {
+    if (!selected) return;
+    try {
+      setNote(`Detecting context window for ${model}…`);
+      const detected = await api.detectProviderModelContext(selected.id, model);
+      const all = await api.listProviders();
+      const fresh = all.find((p) => p.id === selected.id);
+      if (fresh) applyProvider(fresh);
+      setNote(detected?.contextWindow ? `Context limit for ${model}: ${formatContextWindow(detected.contextWindow)} (${detected.contextWindow.toLocaleString()} tokens)` : `Context limit for ${model} resolved.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to detect context window.");
     }
   }
 
@@ -186,6 +217,21 @@ export function ProviderManager({
     }
   }
 
+  async function setModelEfforts(model: string, effortsText: string) {
+    if (!selected) return;
+    try {
+      const parsed = effortsText
+        .split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean);
+      const updated = await api.updateProviderModel(selected.id, model, { efforts: parsed });
+      applyProvider(updated);
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to set model reasoning efforts.");
+    }
+  }
+
   async function removeModel(model: string) {
     if (!selected) return;
     try {
@@ -205,10 +251,12 @@ export function ProviderManager({
     try {
       // The renderer only holds a key mask — the server resolves the stored
       // key for this provider before calling the endpoint.
-      const found = await api.fetchProviderModels({ providerId: selected.id, baseUrl: baseUrlDraft || selected.baseUrl || "" });
+      const res = await api.fetchProviderModels({ providerId: selected.id, baseUrl: baseUrlDraft || selected.baseUrl || "" });
+      const found = Array.isArray(res) ? res : res?.models ?? [];
+      const foundEfforts = (!Array.isArray(res) && res?.modelEfforts) ? res.modelEfforts : undefined;
       const fresh = found.filter((m) => !(selected.models || []).includes(m));
-      if (fresh.length) {
-        const updated = await api.addProviderModels(selected.id, fresh);
+      if (fresh.length || (foundEfforts && Object.keys(foundEfforts).length)) {
+        const updated = await api.addProviderModels(selected.id, fresh, foundEfforts);
         applyProvider(updated);
       }
       setNote(`Fetched ${found.length} model${found.length === 1 ? "" : "s"}${fresh.length ? `, ${fresh.length} new` : " — all already added"}.`);
@@ -380,6 +428,10 @@ export function ProviderManager({
             <div className="model-list-editor">
               {(selected.models || []).map((model) => {
                 const override = (selected.modelEndpoints || {})[model];
+                const efforts = (selected.modelEfforts || {})[model];
+                const effortsStr = efforts ? efforts.join(", ") : "";
+                const ctxWindow = (selected.modelContextWindows || {})[model] || resolveModelContextWindow(selected.id, model, selected, definitions.find((d) => d.id === selected.provider));
+                const maxOutput = (selected.modelMaxOutputs || {})[model];
                 return (
                   <div className="model-row-item" key={model}>
                     <input
@@ -400,6 +452,55 @@ export function ProviderManager({
                       <option value="responses">/resp</option>
                       <option value="messages">/msg</option>
                     </select>
+                    <div className="model-efforts-badge-wrap">
+                      {efforts && efforts.length > 0 ? (
+                        <span
+                          className="model-effort-tag reasoning"
+                          title={`Auto-discovered reasoning efforts: ${efforts.map(formatEffortLabel).join(", ")}. Click to re-detect.`}
+                          onClick={() => void detectEfforts(model)}
+                        >
+                          <Sparkles size={10} />
+                          {efforts.join(", ")}
+                        </span>
+                      ) : efforts && efforts.length === 0 ? (
+                        <span
+                          className="model-effort-tag standard"
+                          title="Standard model (no reasoning effort). Click to re-check."
+                          onClick={() => void detectEfforts(model)}
+                        >
+                          standard
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="model-effort-detect-btn"
+                          title="Click to auto-detect reasoning efforts"
+                          onClick={() => void detectEfforts(model)}
+                        >
+                          <RefreshCw size={10} /> auto-detect
+                        </button>
+                      )}
+                    </div>
+                    <div className="model-context-badge-wrap">
+                      {ctxWindow ? (
+                        <span
+                          className="model-context-tag"
+                          title={`Context window: ${ctxWindow.toLocaleString()} tokens${maxOutput ? `, max output: ${maxOutput.toLocaleString()} tokens` : ""}. Click to re-detect.`}
+                          onClick={() => void detectContext(model)}
+                        >
+                          {formatContextWindow(ctxWindow)} ctx
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="model-context-tag none"
+                          title="Click to detect context window"
+                          onClick={() => void detectContext(model)}
+                        >
+                          detect ctx
+                        </button>
+                      )}
+                    </div>
                     <button type="button" onClick={() => void removeModel(model)} title="Remove model">
                       <X size={13} />
                     </button>

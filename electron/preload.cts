@@ -27,8 +27,11 @@ const nexusApi = {
   updateProviderMeta: (providerId: string, patch: { label?: string; baseUrl?: string }) => invoke("provider:updateMeta", providerId, patch),
   updateProviderKey: (providerId: string, apiKey: string) => invoke("provider:updateKey", providerId, apiKey),
   setProviderEnabled: (providerId: string, enabled: boolean) => invoke("provider:setEnabled", providerId, enabled),
-  addProviderModels: (providerId: string, models: string[]) => invoke("provider:models:add", providerId, models),
-  updateProviderModel: (providerId: string, model: string, patch: { newName?: string; endpoint?: "" | string }) => invoke("provider:models:update", providerId, model, patch),
+  addProviderModels: (providerId: string, models: string[], efforts?: Record<string, string[]>) => invoke("provider:models:add", providerId, models, efforts),
+  updateProviderModel: (providerId: string, model: string, patch: { newName?: string; endpoint?: "" | string; efforts?: string[] }) => invoke("provider:models:update", providerId, model, patch),
+  detectProviderModelEfforts: (providerId: string, model: string) => invoke("provider:model:detect-efforts", providerId, model),
+  detectProviderModelContext: (providerId: string, model: string) => invoke("provider:model:detect-context", providerId, model),
+  compactSession: (payload?: { sessionId?: string; projectId?: string }) => invoke("session:compact", payload),
   removeProviderModel: (providerId: string, model: string) => invoke("provider:models:remove", providerId, model),
   removeProvider: (providerId: string) => invoke("provider:remove", providerId),
   fetchProviderModels: (input: { providerId?: string; baseUrl?: string; apiKey?: string }) => invoke("providers:fetch-models", input),
@@ -197,7 +200,7 @@ const nexusApi = {
   activateHomeSession: (sessionId: string) => invoke("home:sessions:activate", sessionId),
   deleteHomeSession: (sessionId: string, options?: { deleteFiles?: boolean }) => invoke("home:sessions:delete", sessionId, options),
   updateHomeSession: (sessionId: string, patch: unknown) => invoke("home:sessions:update", sessionId, patch),
-  runHomeAgent: (payload: { sessionId: string; request: string; images?: string[]; attachments?: any[]; providerId?: string; model?: string }) => invoke("home:run", payload),
+  runHomeAgent: (payload: { sessionId: string; request: string; images?: string[]; attachments?: any[]; providerId?: string; model?: string; effort?: string }) => invoke("home:run", payload),
   cancelHomeAgent: (sessionId?: string) => invoke("home:cancel", sessionId),
   listHomeFiles: () => invoke("home:files"),
   listHomeSessionFiles: (sessionId: string) => invoke("home:sessionFiles", sessionId),
@@ -254,7 +257,7 @@ const nexusApi = {
   notebookCreateChat: (notebookId: string, title?: string) => invoke("notebook:createChat", notebookId, title),
   notebookDeleteChat: (notebookId: string, chatId: string) => invoke("notebook:deleteChat", notebookId, chatId),
   notebookRetrieve: (notebookId: string, query: string, topK?: number) => invoke("notebook:retrieve", notebookId, query, topK),
-  notebookAsk: (payload: { notebookId: string; chatId: string; question: string; providerId?: string; model?: string; topK?: number }) => invoke("notebook:ask", payload),
+  notebookAsk: (payload: { notebookId: string; chatId: string; question: string; fileIds?: string[]; providerId?: string; model?: string; effort?: string; topK?: number }) => invoke("notebook:ask", payload),
   getNotebookEmbedding: () => invoke("notebook:embedding:get"),
   saveNotebookEmbedding: (config: { providerId: string; model: string }) => invoke("notebook:embedding:save", config),
   listEmbeddingProviders: () => invoke("notebook:embedding-providers:list"),
@@ -262,7 +265,7 @@ const nexusApi = {
   removeEmbeddingProvider: (providerId: string) => invoke("notebook:embedding-provider:remove", providerId),
   testEmbeddingProvider: (input: { id?: string; kind: string; baseUrl?: string; apiKey?: string; model: string }) => invoke("notebook:embedding-provider:test", input),
 
-  runAgent: (payload: { request: string; images?: string[]; attachments?: Array<{ url: string; name: string; mimeType: string; size: number }>; providerId?: string; model?: string; mode?: string; sessionId?: string; projectId?: string }) => invoke("agent:run", payload),
+  runAgent: (payload: { request: string; images?: string[]; attachments?: Array<{ url: string; name: string; mimeType: string; size: number }>; providerId?: string; model?: string; effort?: string; mode?: string; sessionId?: string; projectId?: string }) => invoke("agent:run", payload),
   cancelAgent: (sessionId?: string) => invoke("agent:cancel", sessionId),
   resolveCommandApproval: (id: string, decision: "once" | "session" | "deny") => invoke("command:approval", { id, decision }),
   resolveUserQuestion: (id: string, answers?: Record<string, string> | null, cancelled?: boolean) => invoke("question:resolve", { id, answers, cancelled }),
@@ -289,4 +292,3 @@ const nexusApi = {
 };
 
 contextBridge.exposeInMainWorld("nexus", nexusApi);
-contextBridge.exposeInMainWorld("forgepilot", nexusApi);

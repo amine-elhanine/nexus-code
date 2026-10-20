@@ -55,9 +55,11 @@ export function HomeView({
   liveEvents,
   selectedProviderId,
   selectedModel,
+  selectedEffort,
   providers,
   definitions,
   switchModel,
+  switchEffort,
   onOpenProviders,
   sessionUsage,
   homeRoot,
@@ -85,9 +87,11 @@ export function HomeView({
   liveEvents: ChatItem[];
   selectedProviderId: string;
   selectedModel: string;
+  selectedEffort?: string;
   providers: ProviderConfig[];
   definitions: ProviderDefinition[];
-  switchModel: (providerId: string, model: string) => void;
+  switchModel: (providerId: string, model: string, effort?: string) => void;
+  switchEffort?: (effort: string) => void;
   onOpenProviders: () => void;
   sessionUsage?: AgentUsage | null;
   homeRoot: string;
@@ -105,7 +109,7 @@ export function HomeView({
   skills?: SkillInfo[];
   onRefreshSkills?: () => void;
 }) {
-  const api = window.nexus || window.forgepilot;
+  const api = window.nexus;
   const transcriptRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -545,10 +549,13 @@ export function HomeView({
               <ModelSelect
                 selectedProviderId={selectedProviderId}
                 selectedModel={selectedModel}
+                selectedEffort={selectedEffort}
                 providers={providers}
                 definitions={definitions}
                 switchModel={switchModel}
+                switchEffort={switchEffort}
                 onOpenProviders={onOpenProviders}
+                sessionUsage={sessionUsage}
               />
             </div>
             <button

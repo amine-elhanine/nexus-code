@@ -4,7 +4,7 @@ import type { NotebookChat, NotebookDocument, NotebookEmbeddingConfig, NotebookF
 const INTERMEDIATE_STATUSES = new Set(["uploaded", "parsing", "chunking", "indexing"]);
 
 export function useNotebookController(enabled: boolean) {
-  const api = window.nexus || window.forgepilot;
+  const api = window.nexus;
   const generationRunIds = useRef<Partial<Record<"document" | "quiz" | "flashcards" | "mindmap" | "summary", string>>>({});
   const [notebooks, setNotebooks] = useState<NotebookMeta[]>([]);
   const [activeNotebook, setActiveNotebook] = useState<NotebookMeta | null>(null);
@@ -717,17 +717,27 @@ export function useNotebookController(enabled: boolean) {
 
   const scopedIds = sources.filter((s) => !excludedIds.includes(s.id)).map((s) => s.id);
 
-  async function ask(providerId?: string, model?: string, topK = 8, questionOverride?: string): Promise<NotebookRagAnswer | null> {
-    if (!activeNotebook || !(questionOverride || draft).trim() || asking) return null;
+  async function ask(
+    providerId?: string,
+    model?: string,
+    effortOrTopK?: string | number,
+    topKOrOverride?: number | string,
+    questionOverride?: string
+  ): Promise<NotebookRagAnswer | null> {
+    const effort = typeof effortOrTopK === "string" ? effortOrTopK : undefined;
+    const topK = typeof effortOrTopK === "number" ? effortOrTopK : (typeof topKOrOverride === "number" ? topKOrOverride : 8);
+    const finalOverride = typeof effortOrTopK === "number" && typeof topKOrOverride === "string" ? topKOrOverride : questionOverride;
+
+    if (!activeNotebook || !(finalOverride || draft).trim() || asking) return null;
     let chat = activeChat;
     if (!chat) {
       const typed = api as unknown as { notebookCreateChat: (id: string) => Promise<NotebookChat> };
       chat = await typed.notebookCreateChat(activeNotebook.id);
       setChats((prev) => [chat!, ...prev]);
     }
-    const question = (questionOverride || draft).trim();
+    const question = (finalOverride || draft).trim();
     const scope = scopedIds.length === sources.length ? undefined : scopedIds;
-    if (!questionOverride) setDraft("");
+    if (!finalOverride) setDraft("");
     setAsking(true);
     setStreamByChat((prev) => ({ ...prev, [chat!.id]: "" }));
     setStepsByChat((prev) => ({ ...prev, [chat!.id]: ["Starting the notebook agent…"] }));
@@ -736,9 +746,9 @@ export function useNotebookController(enabled: boolean) {
     setActiveChat((prev) => (prev && chat && prev.id === chat.id ? { ...prev, messages: [...prev.messages, { role: "user", text: question, createdAt: new Date().toISOString() }] } : prev));
     try {
       const typed = api as unknown as {
-        notebookAsk: (p: { notebookId: string; chatId: string; question: string; fileIds?: string[]; providerId?: string; model?: string; topK?: number }) => Promise<{ result: NotebookRagAnswer; chat: NotebookChat }>;
+        notebookAsk: (p: { notebookId: string; chatId: string; question: string; fileIds?: string[]; providerId?: string; model?: string; effort?: string; topK?: number }) => Promise<{ result: NotebookRagAnswer; chat: NotebookChat }>;
       };
-      const { result, chat: updated } = await typed.notebookAsk({ notebookId: activeNotebook.id, chatId: chat.id, question, fileIds: scope, providerId, model, topK });
+      const { result, chat: updated } = await typed.notebookAsk({ notebookId: activeNotebook.id, chatId: chat.id, question, fileIds: scope, providerId, model, effort, topK });
       setActiveChat(updated);
       setChats((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
       setStreamByChat((prev) => {

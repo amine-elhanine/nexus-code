@@ -30,7 +30,7 @@ export const ProjectRulesModal: React.FC<ProjectRulesModalProps> = ({ ruleFiles,
               </span>
             </div>
             <p style={{ margin: "4px 0 0", fontSize: "11px", color: "#8a96a8" }}>
-              Discovered from <code>.cursorrules</code>, <code>AGENT.md</code>, <code>CLAUDE.md</code>, or <code>.forgepilot/rules/</code> and automatically injected into system prompt.
+              Discovered from <code>.cursorrules</code>, <code>AGENT.md</code>, <code>CLAUDE.md</code>, or <code>.nexus/rules/</code> and automatically injected into system prompt.
             </p>
           </div>
           <button className="icon-plain" onClick={onClose} title="Close">

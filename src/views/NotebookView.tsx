@@ -358,9 +358,11 @@ export function NotebookView({
   onExitToSessions,
   selectedProviderId,
   selectedModel,
+  selectedEffort,
   providers,
   definitions,
   switchModel,
+  switchEffort,
   onOpenProviders,
   hasProvider,
   customCommands,
@@ -439,9 +441,11 @@ export function NotebookView({
   onExitToSessions: () => void;
   selectedProviderId: string;
   selectedModel: string;
+  selectedEffort?: string;
   providers: ProviderConfig[];
   definitions: ProviderDefinition[];
-  switchModel: (providerId: string, model: string) => void;
+  switchModel: (providerId: string, model: string, effort?: string) => void;
+  switchEffort?: (effort: string) => void;
   onOpenProviders: () => void;
   hasProvider: boolean;
   customCommands?: SlashCommand[];
@@ -1303,7 +1307,16 @@ export function NotebookView({
               />
               <div className="input-footer">
                 <div className="input-left">
-                  <ModelSelect selectedProviderId={selectedProviderId} selectedModel={selectedModel} providers={providers} definitions={definitions} switchModel={switchModel} onOpenProviders={onOpenProviders} />
+                  <ModelSelect
+                    selectedProviderId={selectedProviderId}
+                    selectedModel={selectedModel}
+                    selectedEffort={selectedEffort}
+                    providers={providers}
+                    definitions={definitions}
+                    switchModel={switchModel}
+                    switchEffort={switchEffort}
+                    onOpenProviders={onOpenProviders}
+                  />
                 </div>
                 <button className={`send-button${asking ? " stop" : ""}`} disabled={(!asking && !draft.trim()) || (!hasProvider && !asking)} onClick={asking ? onStop : onAsk} title={asking ? "Stop" : "Ask notebook"}>
                   {asking ? <Square size={13} fill="currentColor" /> : <ArrowUp size={16} />}

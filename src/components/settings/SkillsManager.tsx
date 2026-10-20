@@ -106,7 +106,7 @@ export function SkillsManager({
   const [savingModesPath, setSavingModesPath] = useState("");
   const [changingScopePath, setChangingScopePath] = useState("");
 
-  const api = window.nexus || window.forgepilot;
+  const api = window.nexus;
 
   useEffect(() => {
     void reload();

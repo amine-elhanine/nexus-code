@@ -84,7 +84,7 @@ export function McpManager() {
   const [loading, setLoading] = useState(true);
   const [deleteServer, setDeleteServer] = useState<McpServerConfig | null>(null);
 
-  const api = window.nexus || window.forgepilot;
+  const api = window.nexus;
 
   useEffect(() => {
     void api.listMcpServers().then(setServers).finally(() => setLoading(false));

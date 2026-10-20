@@ -530,6 +530,70 @@ html[data-theme] .provider-dot {
   color: var(--nexus-green);
 }
 
+html[data-theme] .effort-select select {
+  background: var(--panel2);
+  color: var(--text);
+  border: 1px solid var(--line2);
+}
+
+html[data-theme] .effort-select select:hover:not(:disabled) {
+  border-color: var(--nexus-green);
+  color: var(--text);
+}
+
+html[data-theme] .effort-select select:focus {
+  border-color: var(--nexus-green);
+  box-shadow: 0 0 0 2px var(--nexus-glow);
+}
+
+html[data-theme] .effort-select svg {
+  color: var(--muted);
+}
+
+html[data-theme] .effort-select .effort-badge {
+  background: var(--accent-soft);
+  color: var(--nexus-green);
+  border: 1px solid var(--nexus-glow);
+}
+
+html[data-theme] .effort-select.disabled {
+  opacity: 0.45;
+}
+
+html[data-theme] .model-effort-tag.reasoning {
+  background: var(--accent-soft);
+  color: var(--nexus-green);
+  border: 1px solid var(--nexus-glow);
+}
+
+html[data-theme] .model-effort-tag.reasoning:hover {
+  background: var(--nexus-glow);
+  border-color: var(--nexus-bright);
+}
+
+html[data-theme] .model-effort-tag.standard {
+  background: var(--panel2);
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+
+html[data-theme] .model-effort-tag.standard:hover {
+  background: var(--panel);
+  color: var(--text);
+}
+
+html[data-theme] .model-effort-detect-btn {
+  background: transparent;
+  color: var(--muted);
+  border: 1px dashed var(--line2);
+}
+
+html[data-theme] .model-effort-detect-btn:hover {
+  background: var(--accent-soft);
+  color: var(--nexus-green);
+  border-color: var(--nexus-green);
+}
+
 html[data-theme] .mode-select {
   background: var(--panel2);
   border-color: var(--line2);
@@ -1784,3 +1848,175 @@ html[data-theme="dark-white"] .notebook-goal-save-btn:hover:not(:disabled) {
 
 
 
+
+html[data-theme] .model-context-line {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+}
+
+html[data-theme] .model-context-line:hover {
+  border-color: var(--nexus-green);
+  box-shadow: 0 0 0 1px var(--nexus-glow);
+}
+
+html[data-theme] .model-context-line .context-badge {
+  background: var(--accent-soft);
+  color: var(--nexus-green);
+  border: 1px solid var(--nexus-glow);
+}
+
+html[data-theme] .model-context-line .context-value {
+  color: var(--text);
+}
+
+html[data-theme] .model-context-line .context-meter-track {
+  background: var(--line);
+}
+
+html[data-theme] .model-context-line .context-meter-fill {
+  background: var(--nexus-green);
+}
+
+html[data-theme] .model-context-line .context-meter-fill.status-warning {
+  background: var(--orange);
+}
+
+html[data-theme] .model-context-line .context-meter-fill.status-critical {
+  background: var(--red);
+}
+
+html[data-theme] .context-info-tooltip {
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--nexus-glow);
+}
+
+html[data-theme] .context-info-tooltip::after {
+  border-color: var(--line2) transparent transparent transparent;
+}
+
+html[data-theme] .context-info-tooltip .ctx-tip-title {
+  color: var(--text);
+}
+
+html[data-theme] .context-info-tooltip .ctx-tip-badge {
+  color: var(--muted);
+}
+
+html[data-theme] .context-info-tooltip .ctx-status-pill.status-normal {
+  background: var(--accent-soft);
+  color: var(--nexus-green);
+  border: 1px solid var(--nexus-glow);
+}
+
+html[data-theme] .context-info-tooltip .ctx-status-pill.status-warning {
+  background: rgba(229, 170, 100, 0.15);
+  color: var(--orange);
+}
+
+html[data-theme] .context-info-tooltip .ctx-status-pill.status-critical {
+  background: rgba(235, 128, 138, 0.15);
+  color: var(--red);
+}
+
+html[data-theme] .context-info-tooltip .ctx-bar-track {
+  background: var(--line);
+}
+
+html[data-theme] .context-info-tooltip .ctx-bar-fill {
+  background: var(--nexus-green);
+}
+
+html[data-theme] .context-info-tooltip .ctx-bar-fill.status-warning {
+  background: var(--orange);
+}
+
+html[data-theme] .context-info-tooltip .ctx-bar-fill.status-critical {
+  background: var(--red);
+}
+
+html[data-theme] .context-info-tooltip .ctx-bar-stats {
+  color: var(--muted);
+}
+
+html[data-theme] .context-info-tooltip .ctx-details-grid {
+  border-top: 1px solid var(--line);
+}
+
+html[data-theme] .context-info-tooltip .ctx-detail-label {
+  color: var(--muted);
+}
+
+html[data-theme] .context-info-tooltip .ctx-detail-value {
+  color: var(--text);
+}
+
+html[data-theme] .context-info-tooltip .ctx-tip-footer {
+  color: var(--faint);
+  border-top: 1px dashed var(--line);
+}
+
+html[data-theme] .model-context-tag {
+  background: var(--accent-soft);
+  color: var(--nexus-green);
+  border: 1px solid var(--nexus-glow);
+}
+
+html[data-theme] .model-context-tag:hover {
+  background: var(--nexus-glow);
+  border-color: var(--nexus-bright);
+}
+
+html[data-theme] .model-context-tag.none {
+  background: var(--panel2);
+  color: var(--muted);
+  border: 1px dashed var(--line2);
+}
+
+html[data-theme] .model-context-line .context-meter-threshold {
+  background: var(--orange);
+}
+
+html[data-theme] .model-context-line .context-badge.warning {
+  background: rgba(229, 170, 100, 0.15);
+  color: var(--orange);
+  border: 1px solid rgba(229, 170, 100, 0.35);
+}
+
+html[data-theme] .model-context-line .context-badge.critical {
+  background: rgba(235, 128, 138, 0.18);
+  color: var(--red);
+  border: 1px solid rgba(235, 128, 138, 0.4);
+}
+
+html[data-theme] .context-info-tooltip .ctx-bar-threshold-mark {
+  background: var(--orange);
+}
+
+html[data-theme] .context-info-tooltip .ctx-threshold-stat {
+  color: var(--orange);
+}
+
+html[data-theme] .context-info-tooltip .ctx-detail-value.highlighted {
+  color: var(--orange);
+}
+
+html[data-theme] .context-info-tooltip .ctx-actions {
+  border-top: 1px solid var(--line);
+}
+
+html[data-theme] .context-info-tooltip .ctx-compact-btn {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  color: var(--text);
+}
+
+html[data-theme] .context-info-tooltip .ctx-compact-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--nexus-green);
+  color: var(--nexus-green);
+}
+
+html[data-theme] .context-info-tooltip .ctx-compact-notice {
+  color: var(--nexus-green);
+}
