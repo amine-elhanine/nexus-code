@@ -637,6 +637,18 @@ export async function executeSubagentTask(options: {
         }
         throw error;
       }
+
+      // Silent SSE failure (provider error payload inside HTTP 200): a stream
+      // that ends with an empty final AIMessage must be retried, not turned
+      // into a fabricated "completed without text output" report — an empty
+      // reviewer report would also silently pass the code-review gate.
+      const lastMsg = finalMessages[finalMessages.length - 1];
+      const lastIsAi = typeof lastMsg?.type === "string"
+        ? lastMsg.type === "ai"
+        : lastMsg?.constructor?.name === "AIMessage";
+      if (finalMessages.length > 0 && lastIsAi && !textFromMessage(lastMsg) && !(Array.isArray(lastMsg?.tool_calls) && lastMsg.tool_calls.length > 0)) {
+        throw new Error("Provider returned an empty response (silent stream failure): subagent final message has no text and no tool calls.");
+      }
     };
 
     await withRateLimitRetry(consumeStream, {

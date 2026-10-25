@@ -11,6 +11,7 @@ type ElectronShim = {
   safeStorage?: { isEncryptionAvailable?: () => boolean; encryptString: (value: string) => Buffer; decryptString: (buffer: Buffer) => string };
 };
 function electronMod(): ElectronShim {
+  if (electronShimForTesting) return electronShimForTesting;
   try {
     const mod = electronRequire("electron") as unknown;
     if (mod && typeof mod === "object") return mod as ElectronShim;
@@ -19,10 +20,15 @@ function electronMod(): ElectronShim {
     return {};
   }
 }
+let electronShimForTesting: ElectronShim | null = null;
+/** Unit-test hook: inject a fake electron module (e.g. a working safeStorage). */
+export function setElectronShimForTesting(shim: ElectronShim | null) {
+  electronShimForTesting = shim;
+}
 
 import type { SubagentItem } from "./subagent-service.js";
 
-export type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[]; modelEndpoints?: Partial<Record<string, ChatEndpointKind>>; modelEfforts?: Partial<Record<string, string[]>>; modelContextWindows?: Partial<Record<string, number>>; modelMaxOutputs?: Partial<Record<string, number>>; /** Disabled connections stay configured but disappear from the session model pickers. */ enabled?: boolean; /** Set at load when the stored ciphertext could not be decrypted on this machine. Never persisted. */ keyNeedsReentry?: boolean };
+export type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[]; modelEndpoints?: Partial<Record<string, ChatEndpointKind>>; modelEfforts?: Partial<Record<string, string[]>>; modelContextWindows?: Partial<Record<string, number>>; modelMaxOutputs?: Partial<Record<string, number>>; /** Disabled connections stay configured but disappear from the session model pickers. */ enabled?: boolean; /** Set when the stored key could not be read on this machine (ciphertext undecryptable or OS credential store missing). Never persisted. */ keyNeedsReentry?: boolean; /** Why the stored key could not be read: "cross-machine" (encrypted on another machine/profile) or "vault-unavailable" (no OS credential store here). Never persisted. */ keyNeedsReentryReason?: "cross-machine" | "vault-unavailable" };
 // Wire protocol a model speaks. Providers default to chat completions,
 // except Anthropic-native which defaults to messages. A per-model entry
 // overrides the default — e.g. gateways like OpenCode Zen serve different
@@ -84,7 +90,7 @@ export type NotebookParserConfig = {
 export type ProjectRecord = { id: string; name: string; root: string; createdAt: string; updatedAt: string; memory: string; /** Agent-recorded durable facts (home-memory markdown format). Optional so pre-facts snapshots load cleanly. */ facts?: string; sessions: SessionRecord[] };
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
 export type ChatAttachment = { url: string; name: string; mimeType: string; size: number };
-export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; checkpointIds?: string[]; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact" | "stream-reset"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; subagent?: SubagentItem; artifact?: unknown; detail?: string }>; model?: { providerId: string; model: string; effort?: string } };
+export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; checkpointIds?: string[]; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "context" | "subagent" | "artifact" | "stream-reset"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; context?: { usedTokens: number; contextWindow: number; compactionThreshold: number; estimated: boolean }; subagent?: SubagentItem; artifact?: unknown; detail?: string }>; model?: { providerId: string; model: string; effort?: string } };
 type PersistedState = { stateVersion?: number; projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; hooks?: HooksConfig; rules?: RulesConfig; appSettings?: AppSettings; pluginRegistry?: PluginRegistryConfig; notebookParser?: NotebookParserConfig; homeSessions?: SessionRecord[]; homeMemory?: string };
 
 let cache: PersistedState | null = null;
@@ -111,6 +117,10 @@ function uid(prefix: string) { return `${prefix}_${Date.now().toString(36)}_${Ma
 // Keychain on macOS, libsecret/kwallet on Linux) and only ever decrypted in memory.
 // Values without the prefix are legacy plaintext keys, transparently re-encrypted
 // the next time anything is persisted.
+// If the OS credential store is unavailable (broken/missing keyring, some Linux
+// setups), secret persistence is REFUSED: the key stays usable in memory for
+// the session but is written as empty, and the record is flagged keyNeedsReentry
+// so the UI can ask for it again. Plaintext never lands on disk by default.
 const ENCRYPTED_PREFIX = "safeStorage:v1:";
 // Values that could not be decrypted on this machine keep their original
 // ciphertext on disk (keyed by track id) instead of being overwritten with ""
@@ -136,18 +146,35 @@ export function isMaskedSecret(value: unknown): boolean {
 }
 function encryptSecret(value: string) {
   if (!value || value.startsWith(ENCRYPTED_PREFIX)) return value;
-  try { const ss = electronMod().safeStorage; if (ss?.isEncryptionAvailable?.()) return ENCRYPTED_PREFIX + ss.encryptString(value).toString("base64"); } catch { /* fall through to plaintext */ }
-  return value;
-}
-function decryptSecret(value: string, trackKey?: string) {
-  if (!value) { lastDecryptFailed = false; return ""; }
-  if (!value.startsWith(ENCRYPTED_PREFIX)) { lastDecryptFailed = false; return value; }
-  lastDecryptFailed = false;
   try {
     const ss = electronMod().safeStorage;
-    if (ss?.isEncryptionAvailable?.()) {
-      return ss.decryptString(Buffer.from(value.slice(ENCRYPTED_PREFIX.length), "base64"));
-    }
+    if (ss?.isEncryptionAvailable?.()) return ENCRYPTED_PREFIX + ss.encryptString(value).toString("base64");
+  } catch { /* fall through to refusal */ }
+  // No OS credential store: refuse plaintext persistence (never silently).
+  if (!plainSecretRefusalWarned) {
+    plainSecretRefusalWarned = true;
+    console.warn("[nexus] OS credential store unavailable — API keys are not saved to disk on this machine. They work for the current session only; re-enter them next launch.");
+  }
+  return "";
+}
+let plainSecretRefusalWarned = false;
+function decryptSecret(value: string, trackKey?: string) {
+  if (!value) { lastDecryptFailed = false; lastDecryptReason = undefined; return ""; }
+  if (!value.startsWith(ENCRYPTED_PREFIX)) { lastDecryptFailed = false; lastDecryptReason = undefined; return value; }
+  const ss = electronMod().safeStorage;
+  if (!ss?.isEncryptionAvailable?.()) {
+    // Vault unavailable on this machine: the ciphertext is unreadable here but
+    // must not be destroyed (it stays valid on the machine that encrypted it).
+    if (trackKey) failedCiphertext.set(trackKey, value);
+    lastDecryptFailed = true;
+    lastDecryptReason = "vault-unavailable";
+    console.warn("[nexus] OS credential store unavailable — encrypted API keys cannot be read on this machine. Re-enter the key in the relevant settings.");
+    return "";
+  }
+  lastDecryptFailed = false;
+  lastDecryptReason = undefined;
+  try {
+    return ss.decryptString(Buffer.from(value.slice(ENCRYPTED_PREFIX.length), "base64"));
   } catch {
     // Encrypted on a different machine/domain/user profile — the key is
     // unrecoverable here. Log loudly instead of failing silently so the user
@@ -155,6 +182,7 @@ function decryptSecret(value: string, trackKey?: string) {
     // machine cannot destroy it.
     if (trackKey) failedCiphertext.set(trackKey, value);
     lastDecryptFailed = true;
+    lastDecryptReason = "cross-machine";
     console.warn("[nexus] An API key could not be decrypted on this machine (it was encrypted elsewhere). Re-enter it in the relevant settings.");
   }
   return "";
@@ -162,6 +190,8 @@ function decryptSecret(value: string, trackKey?: string) {
 // Set by the most recent decryptSecret call: lets callers mark the record the
 // failed key belonged to (single-threaded, read immediately after the call).
 let lastDecryptFailed = false;
+type KeyReentryReason = "cross-machine" | "vault-unavailable";
+let lastDecryptReason: KeyReentryReason | undefined;
 
 export function calculateSessionUsage(messages: SessionRecord["messages"]): AgentUsage {
   let inputTokens = 0;
@@ -296,8 +326,12 @@ async function ensureLoaded(): Promise<PersistedState> {
     cache.homeSessions = cache.homeSessions || [];
     cache.providers.forEach((provider) => {
       delete provider.keyNeedsReentry;
+      provider.keyNeedsReentryReason = undefined;
       provider.apiKey = decryptSecret(provider.apiKey, `provider:${provider.id}`);
-      if (lastDecryptFailed) provider.keyNeedsReentry = true;
+      if (lastDecryptFailed) {
+        provider.keyNeedsReentry = true;
+        provider.keyNeedsReentryReason = lastDecryptReason;
+      }
     });
     cache.embeddingProviders.forEach((provider) => {
       provider.apiKey = decryptSecret(provider.apiKey, `emb:${provider.id}`);
@@ -358,8 +392,11 @@ async function ensureLoaded(): Promise<PersistedState> {
   // (messages: []) keep working for callers even if it never completes.
   if (cache.stateVersion !== STATE_VERSION) {
     try {
-      const backupTarget = `${statePath()}.pre-split`;
-      await fs.writeFile(backupTarget, JSON.stringify(cache, null, 2), { encoding: "utf8", mode: 0o600 }).catch(() => undefined);
+      // The backup must never serialize the in-memory cache directly: at this
+      // point every secret in it has already been decrypted to plaintext.
+      // Re-encrypt through the same pass doPersist uses, keeping transcripts
+      // embedded (the backup exists to recover the pre-split state).
+      await fs.writeFile(`${statePath()}.pre-split`, JSON.stringify(buildEncryptedSnapshot(false), null, 2), { encoding: "utf8", mode: 0o600 }).catch(() => undefined);
       for (const project of cache.projects) {
         for (const session of project.sessions) {
           if (session.messages.length) {
@@ -377,9 +414,40 @@ async function ensureLoaded(): Promise<PersistedState> {
       cache.stateVersion = STATE_VERSION;
       await persist();
     } catch { /* unversioned state retries next launch; index rows still work */ }
+  } else {
+    // The migration completed on an earlier launch: any leftover .pre-split
+    // backup is stale (and pre-fix backups hold secrets in PLAINTEXT), so
+    // rotate it away rather than leaving ciphertext-bypassing material on disk.
+    try { await fs.unlink(`${statePath()}.pre-split`); } catch { /* nothing to rotate */ }
   }
 
   return cache;
+}
+
+// Encrypted at-rest view of the cache. `stripMessages` mirrors the state-file
+// contract (stateVersion 2 keeps transcripts in per-session files), while the
+// pre-migration backup keeps them embedded.
+function buildEncryptedSnapshot(stripMessages: boolean): PersistedState {
+  if (!cache) throw new Error("store not loaded");
+  const keepOrEncrypt = (value: string, trackKey: string) => failedCiphertext.get(trackKey) ?? encryptSecret(value);
+  const stripSessions = (sessions: SessionRecord[]) => sessions.map((session) => ({ ...session, messages: stripMessages ? [] : session.messages }));
+  return {
+    ...cache,
+    projects: (cache.projects || []).map((project) => ({ ...project, sessions: stripSessions(project.sessions || []) })),
+    homeSessions: stripSessions(cache.homeSessions || []),
+    providers: (cache.providers || []).map((provider) => ({ ...provider, apiKey: keepOrEncrypt(provider.apiKey, `provider:${provider.id}`), keyNeedsReentry: undefined, keyNeedsReentryReason: undefined })),
+    embeddingProviders: (cache.embeddingProviders || []).map((provider) => ({ ...provider, apiKey: keepOrEncrypt(provider.apiKey, `emb:${provider.id}`) })),
+    notebookParser: cache.notebookParser ? { ...cache.notebookParser, apiKey: keepOrEncrypt(cache.notebookParser.apiKey, "parser") } : undefined,
+    mcpServers: (cache.mcpServers || []).map((server) => ({
+      ...server,
+      env: server.env
+        ? Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, keepOrEncrypt(value, `mcp:${server.id}:env:${key}`)]))
+        : undefined,
+      headers: server.headers
+        ? Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, keepOrEncrypt(value, `mcp:${server.id}:headers:${key}`)]))
+        : undefined,
+    })),
+  };
 }
 
 async function persist() {
@@ -402,29 +470,9 @@ async function doPersist() {
   if (cache.homeSessions) {
     sortSessionsInPlace(cache.homeSessions);
   }
-  const keepOrEncrypt = (value: string, trackKey: string) => failedCiphertext.get(trackKey) ?? encryptSecret(value);
-  const snapshot: PersistedState = {
-    ...cache,
-    // Transcripts live in per-session files (stateVersion 2) — the state file
-    // only ever carries empty index rows, however the in-memory cache looks.
-    projects: (cache.projects || []).map((project) => ({
-      ...project,
-      sessions: (project.sessions || []).map((session) => ({ ...session, messages: [] })),
-    })),
-    homeSessions: (cache.homeSessions || []).map((session) => ({ ...session, messages: [] })),
-    providers: (cache.providers || []).map((provider) => ({ ...provider, apiKey: keepOrEncrypt(provider.apiKey, `provider:${provider.id}`), keyNeedsReentry: undefined })),
-    embeddingProviders: (cache.embeddingProviders || []).map((provider) => ({ ...provider, apiKey: keepOrEncrypt(provider.apiKey, `emb:${provider.id}`) })),
-    notebookParser: cache.notebookParser ? { ...cache.notebookParser, apiKey: keepOrEncrypt(cache.notebookParser.apiKey, "parser") } : undefined,
-    mcpServers: (cache.mcpServers || []).map((server) => ({
-      ...server,
-      env: server.env
-        ? Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, keepOrEncrypt(value, `mcp:${server.id}:env:${key}`)]))
-        : undefined,
-      headers: server.headers
-        ? Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, keepOrEncrypt(value, `mcp:${server.id}:headers:${key}`)]))
-        : undefined,
-    })),
-  };
+  // Transcripts live in per-session files (stateVersion 2) — the state file
+  // only ever carries empty index rows, however the in-memory cache looks.
+  const snapshot = buildEncryptedSnapshot(true);
   // Never overwrite the live state file in place. A process termination or
   // power loss during writeFile could otherwise leave valid-looking but
   // truncated JSON and discard every project/session on the next launch.
@@ -755,6 +803,7 @@ export async function updateProviderKey(providerId: string, apiKey: string): Pro
   provider.apiKey = key;
   clearFailedSecrets(`provider:${providerId}`);
   delete provider.keyNeedsReentry;
+  provider.keyNeedsReentryReason = undefined;
   await persist();
   return provider;
 }

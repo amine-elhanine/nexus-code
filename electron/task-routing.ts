@@ -338,7 +338,8 @@ export function shouldSkipMcpForTask(request: string): boolean {
   if (/\b(research|search(ing)?|find|latest|compare|gather|lookup|investigate|github|repos?|issues?|pull request|prs?|gists?|jira|notion|slack|drive|gmail)\b/i.test(text)) return false;
   return true;
 }
-const WEB_TASK_PATTERN = /\b(localhost|127\.0\.0\.1|https?:\/\/|web ?(app|page|server)|browser|api .*(health|endpoint)|dev server)\b/i;
+const WEB_TASK_PATTERN = /\b(localhost|127\.0\.0\.1|https?:\/\/|web ?(app|page|server)|browser|api .*(health|endpoint)|dev server)\b|\b(?:run|start|launch|open|preview|show)\b.{0,35}\b(?:the\s+)?(?:project|app(?:lication)?|website|site|frontend|web\s*app)\b/i;
+const RUN_PROJECT_PATTERN = /\b(?:run|start|launch|open|preview|show)\b.{0,45}\b(?:the\s+)?(?:project|app(?:lication)?|website|site|frontend|web\s*app)\b/i;
 // Edit verbs: the request wants the code changed, not explained.
 const EDIT_VERB_PATTERN =
   /\b(fix|implement|add|change|update|create|delete|remove|write|move|rename|migrate|debug|resolve|handle|support|enable|wire|integrate|replace)\b/i;
@@ -395,6 +396,10 @@ export function classifyTaskComplexity(request: string): TaskComplexity {
 
 export function isWebTask(request: string): boolean {
   return WEB_TASK_PATTERN.test(request || "");
+}
+
+export function isProjectRunRequest(request: string): boolean {
+  return RUN_PROJECT_PATTERN.test(request || "");
 }
 
 /** True when the user wants a brand-new project scaffolded, not an edit. */

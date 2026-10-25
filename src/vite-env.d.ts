@@ -2,17 +2,18 @@
 
 type PlanItem = { content: string; status: "pending" | "in_progress" | "completed" };
 type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
+type AgentContextSnapshot = { usedTokens: number; contextWindow: number; compactionThreshold: number; estimated: boolean };
 type SubagentRole = string;
 type SubagentStep = { toolName: string; summary?: string; timestamp: string };
 type SubagentItem = { id: string; role: SubagentRole; task: string; status: "running" | "completed" | "failed"; steps: SubagentStep[]; output?: string; usage?: AgentUsage };
 type ArtifactStatus = "draft" | "pending_approval" | "approved" | "completed" | "rejected";
 type ArtifactItem = { id: string; sessionId: string; name: string; filename: string; path: string; content: string; status: ArtifactStatus; userFacing: boolean; requestFeedback: boolean; createdAt: string; updatedAt: string };
-type AgentEvent = { type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact"; sessionId: string; text: string; timestamp: string; items?: PlanItem[]; usage?: AgentUsage; subagent?: SubagentItem; artifact?: ArtifactItem; detail?: string };
+type AgentEvent = { type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "context" | "subagent" | "artifact"; sessionId: string; text: string; timestamp: string; items?: PlanItem[]; usage?: AgentUsage; context?: AgentContextSnapshot; subagent?: SubagentItem; artifact?: ArtifactItem; detail?: string };
 type ProviderDefinition = { id: string; label: string; packageName: string; envKey: string; defaultBaseUrl?: string; models: string[]; modelEfforts?: Record<string, string[]> };
 type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[]; modelEndpoints?: Partial<Record<string, ChatEndpointKind>>; modelEfforts?: Partial<Record<string, string[]>> };
 type ChatEndpointKind = "chat" | "responses" | "messages";
 type ChatAttachment = { url: string; name: string; mimeType: string; size: number };
-type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; checkpointIds?: string[]; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: AgentEvent["type"]; createdAt: string; plan?: PlanItem[]; usage?: AgentUsage; subagent?: SubagentItem }>; model?: { providerId: string; model: string; effort?: string } };
+type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; checkpointIds?: string[]; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: AgentEvent["type"]; createdAt: string; plan?: PlanItem[]; usage?: AgentUsage; context?: AgentContextSnapshot; subagent?: SubagentItem }>; model?: { providerId: string; model: string; effort?: string } };
 type ProjectRecord = { id: string; name: string; root: string; createdAt: string; updatedAt: string; memory: string; sessions: SessionRecord[] };
 type ActiveContext = { project: ProjectRecord; session: SessionRecord | null } | null;
 type WorkspaceDiffFile = { path: string; directory: string; name: string; additions: number; deletions: number; status: string; patch: string };
@@ -159,7 +160,7 @@ export interface NexusApi {
   // Agent browser (headless toggle + activity from the agent's window)
   getBrowserHeadless: () => Promise<boolean>;
   setBrowserHeadless: (value: boolean) => Promise<boolean>;
-  onBrowserAgentActivity: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean; sessionId?: string }) => void) => () => void;
+  onBrowserAgentActivity: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean; forceFollow?: boolean; sessionId?: string }) => void) => () => void;
   // Agent browser bridge: main asks the hidden in-app webviews to act.
   onAgentBrowserRequest: (
     handler: (request: { id: string; scope?: string; kind: string; url?: string; js?: string; keyCode?: string }) => Promise<unknown>
@@ -194,7 +195,7 @@ export interface NexusApi {
   activateHomeSession: (sessionId: string) => Promise<SessionRecord | null>;
   deleteHomeSession: (sessionId: string, options?: { deleteFiles?: boolean }) => Promise<{ success: boolean }>;
   updateHomeSession: (sessionId: string, patch: Partial<SessionRecord>) => Promise<SessionRecord>;
-  runHomeAgent: (payload: { sessionId: string; request: string; images?: string[]; attachments?: ChatAttachment[]; providerId?: string; model?: string; effort?: string }) => Promise<string>;
+  runHomeAgent: (payload: { sessionId: string; request: string; images?: string[]; attachments?: ChatAttachment[]; providerId?: string; model?: string; effort?: string; contextWindow?: number; maxOutput?: number }) => Promise<string>;
   cancelHomeAgent: (sessionId?: string) => Promise<boolean>;
   listHomeFiles: () => Promise<Array<{ path: string; name: string; size: number; modified: string }>>;
   listHomeSessionFiles: (sessionId: string) => Promise<Array<{ path: string; name: string; size: number; modified: string }>>;
@@ -246,7 +247,7 @@ export interface NexusApi {
   removeEmbeddingProvider: (providerId: string) => Promise<Array<{ id: string; name: string; kind: string; baseUrl?: string; apiKey: string; models: string[] }>>;
   testEmbeddingProvider: (input: { id?: string; kind: string; baseUrl?: string; apiKey?: string; model: string }) => Promise<{ dims: number }>;
 
-  runAgent: (payload: { request: string; images?: string[]; attachments?: ChatAttachment[]; providerId?: string; model?: string; effort?: string; mode?: string; sessionId?: string; projectId?: string }) => Promise<string>;
+  runAgent: (payload: { request: string; images?: string[]; attachments?: ChatAttachment[]; providerId?: string; model?: string; effort?: string; contextWindow?: number; maxOutput?: number; mode?: string; sessionId?: string; projectId?: string }) => Promise<string>;
   cancelAgent: (sessionId?: string) => Promise<boolean>;
   resolveUserQuestion: (id: string, answers?: Record<string, string> | null, cancelled?: boolean) => Promise<boolean>;
   onUserQuestionRequest: (listener: (request: { id: string; sessionId: string; questions: Array<{ header: string; question: string; options: string[] }> }) => void) => () => void;

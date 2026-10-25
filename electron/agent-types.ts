@@ -21,13 +21,15 @@ export type HistoryEventItem = {
 export type HistoryInput = AgentTurn | HistoryEventItem;
 export type AgentSettings = { provider?: ProviderConfig; model?: string; apiKey?: string; baseUrl?: string; effort?: string; reasoningEffort?: string; contextWindow?: number; maxOutput?: number };
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
+export type AgentContextSnapshot = { usedTokens: number; contextWindow: number; compactionThreshold: number; estimated: boolean };
 export type AgentEvent = {
-  type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact" | "stream-reset";
+  type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "context" | "subagent" | "artifact" | "stream-reset";
   sessionId: string;
   text: string;
   timestamp: string;
   items?: PlanItem[];
   usage?: AgentUsage;
+  context?: AgentContextSnapshot;
   subagent?: SubagentItem;
   artifact?: ArtifactItem;
   // Truncated tool-result excerpt for tool events. Persisted in the session

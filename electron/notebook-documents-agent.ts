@@ -106,17 +106,19 @@ async function findDeliverable(dirs: string[], exactAbs: string, ext: string, st
   return best?.abs || null;
 }
 
-/** Forward-slash path: safe inside single-quoted python strings on Windows. */
-function pyPath(abs: string): string {
-  return abs.split(path.sep).join("/");
-}
+// The counting snippets read the deliverable path from the environment — the
+// path is derived from the model-authored title (grounded in untrusted
+// documents), so it must NEVER be interpolated into the shell/python string:
+// one apostrophe would break out of the Python literal.
+const COUNT_SLIDES_SNIPPET = "import os;from pptx import Presentation;print(len(Presentation(os.environ['NEXUS_COUNT_PATH']).slides))";
+const COUNT_DOCX_SECTIONS_SNIPPET = "import os;from docx import Document;print(sum(1 for p in Document(os.environ['NEXUS_COUNT_PATH']).paragraphs if (p.style.name or '').startswith('Heading')))";
 
 async function countSlides(py: string, abs: string): Promise<number> {
   try {
     const res = await executeCommand(
       path.dirname(abs),
-      `${py} -c "from pptx import Presentation; print(len(Presentation('${pyPath(abs)}').slides))"`,
-      { timeoutSeconds: 60 }
+      `${py} -c "${COUNT_SLIDES_SNIPPET}"`,
+      { timeoutSeconds: 60, extraEnv: { NEXUS_COUNT_PATH: abs } }
     );
     const n = Number((res.output.match(/(\d+)/) || [])[1]);
     return Number.isFinite(n) ? n : 0;
@@ -129,8 +131,8 @@ async function countDocxSections(py: string, abs: string): Promise<number> {
   try {
     const res = await executeCommand(
       path.dirname(abs),
-      `${py} -c "from docx import Document; print(sum(1 for p in Document('${pyPath(abs)}').paragraphs if (p.style.name or '').startswith('Heading')))"`,
-      { timeoutSeconds: 60 }
+      `${py} -c "${COUNT_DOCX_SECTIONS_SNIPPET}"`,
+      { timeoutSeconds: 60, extraEnv: { NEXUS_COUNT_PATH: abs } }
     );
     const n = Number((res.output.match(/(\d+)/) || [])[1]);
     return Number.isFinite(n) ? n : 0;

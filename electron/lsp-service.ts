@@ -154,6 +154,7 @@ class LspServer {
       this.pending.clear();
     });
 
+    let initializeTimer: NodeJS.Timeout | undefined;
     try {
       const initResult = await Promise.race([
         this.request("initialize", {
@@ -171,7 +172,12 @@ class LspServer {
           initializationOptions: this.tsserverOptions(),
         }),
         dead.then(() => { throw new Error("server exited during initialize"); }),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${SERVER_LABEL[this.language]} initialize timed out after 30s`)), INIT_TIMEOUT_MS)),
+        new Promise<never>((_, reject) => {
+          initializeTimer = setTimeout(
+            () => reject(new Error(`${SERVER_LABEL[this.language]} initialize timed out after 30s`)),
+            INIT_TIMEOUT_MS,
+          );
+        }),
       ]);
       if (!initResult?.capabilities) return false;
       await this.notify("initialized", {});
@@ -180,6 +186,11 @@ class LspServer {
     } catch {
       this.shutdown();
       return false;
+    } finally {
+      // Promise.race does not cancel its losing promises. Without clearing this
+      // timer, every successful language-server startup keeps Node/Electron
+      // alive for another 30 seconds and can hold the test runner open.
+      if (initializeTimer) clearTimeout(initializeTimer);
     }
   }
 
@@ -362,7 +373,26 @@ class LspServer {
     if (!proc?.pid) return;
     try {
       if (process.platform === "win32") {
-        spawn("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+        let exited = false;
+        let fallbackTimer: NodeJS.Timeout | undefined;
+        proc.once("exit", () => {
+          exited = true;
+          if (fallbackTimer) clearTimeout(fallbackTimer);
+        });
+        const forceDirectCleanup = () => {
+          if (exited) return;
+          try { proc.kill(); } catch { /* process already gone */ }
+          // A failed taskkill can leave inherited pipe handles open even after
+          // the shell exits. Close our ends after the direct-child fallback.
+          proc.stdin?.destroy();
+          proc.stdout?.destroy();
+          proc.stderr?.destroy();
+        };
+        const killer = spawn("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+        killer.once("error", forceDirectCleanup);
+        killer.once("close", (code) => { if (code !== 0) forceDirectCleanup(); });
+        fallbackTimer = setTimeout(forceDirectCleanup, 2_000);
+        fallbackTimer.unref?.();
       } else {
         proc.kill("SIGKILL");
       }

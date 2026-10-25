@@ -93,6 +93,8 @@ export type BrowserActInput = {
   value?: string;
   /** URL for navigate. */
   url?: string;
+  /** Open the built-in Browser pane and follow this navigation immediately. */
+  openInBrowser?: boolean;
   /** Key name for press (Enter, Escape, Tab, ArrowUp, …). */
   key?: string;
   /** Scroll direction. */
@@ -111,6 +113,8 @@ export type BrowserCallMeta = {
   sessionId?: string;
   /** Which browser the run belongs to: home runs use the home partition. */
   scope?: "home" | "code";
+  /** Explicit user intent to surface this navigation even in headless mode. */
+  openInBrowser?: boolean;
 };
 
 export function createBrowserTools(_projectRoot?: string, opts?: { renderedInspect?: RenderedInspect; agentBrowser?: AgentBrowser; beforeRead?: (toolName: string) => string | null }) {
@@ -230,6 +234,14 @@ export function createBrowserTools(_projectRoot?: string, opts?: { renderedInspe
     async ({ url, method = "GET", headers = {}, body }: { url: string; method?: string; headers?: Record<string, string>; body?: string }) => {
       const guard = opts?.beforeRead?.("browser_fetch_api");
       if (guard) return guard;
+      const requested = (method || "GET").toUpperCase();
+      // Network policy: browser-side fetches are READ-ONLY (GET/HEAD), mirroring
+      // the shell rule that ordinary reads run without approval while network
+      // writes require one. Shell mutations go through command approval;
+      // out-of-band mutation fetches from a tool are refused.
+      if (requested !== "GET" && requested !== "HEAD") {
+        return `API Request to ${url} refused: only GET/HEAD are allowed from the browser API tool. HTTP writes must go through the terminal command with user approval.`;
+      }
       try {
         const targetUrl = normalizeUrl(url);
 
@@ -238,12 +250,12 @@ export function createBrowserTools(_projectRoot?: string, opts?: { renderedInspe
 
         const startTime = Date.now();
         const response = await fetchWithRedirectControl(targetUrl, {
-          method: method.toUpperCase(),
+          method: requested,
           headers: {
             "User-Agent": "Nexus-Agent/1.0",
             ...headers,
           },
-          body: body && method.toUpperCase() !== "GET" && method.toUpperCase() !== "HEAD" ? body : undefined,
+          body: body && requested !== "GET" && requested !== "HEAD" ? body : undefined,
           signal: controller.signal,
         });
         clearTimeout(timeoutId);
@@ -258,12 +270,12 @@ export function createBrowserTools(_projectRoot?: string, opts?: { renderedInspe
     },
     {
       name: "browser_fetch_api",
-      description: "Sends an HTTP request to test web APIs, backend endpoints, or healthchecks, returning response status, latency, headers, and body.",
+      description: "Sends a read-only HTTP request (GET/HEAD) to test web APIs, backend endpoints, or healthchecks, returning response status, latency, headers, and body. For POST/PUT/DELETE/PATCH requests use the terminal command instead.",
       schema: z.object({
         url: z.string().describe("API endpoint URL to request"),
-        method: z.enum(["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"]).default("GET").describe("HTTP method"),
+        method: z.enum(["GET", "HEAD"]).default("GET").describe("HTTP method (read-only: GET or HEAD; mutations go through the terminal)"),
         headers: z.record(z.string(), z.string()).optional().describe("Optional request headers"),
-        body: z.string().optional().describe("Optional request body for POST/PUT/PATCH"),
+        body: z.string().optional().describe("Not used for GET/HEAD requests"),
       }),
     }
   );
@@ -291,7 +303,7 @@ export function createBrowserTools(_projectRoot?: string, opts?: { renderedInspe
         {
           name: "browser_act",
           description:
-            "Drives the built-in browser (hidden in-app webview sharing the Browser tab session — no separate window). Workflow: snapshot first to get element refs (e3, e7…), then click/fill/type against refs. Actions: snapshot (list interactive elements), click (buttons/links/checkboxes), fill (set input/textarea/select value, React-safe), type (append keystrokes), press (Enter/Escape/Tab/arrows via key), scroll (direction up/down/top/bottom), navigate (open URL), back, reload, text (full rendered text), screenshot (saves PNG under .nexus/browser/ for the user + returns page title and rendered-text excerpt for agent verification). Refs expire after navigation or DOM changes — snapshot again when an action reports a missing ref.",
+            "Drives the built-in browser (hidden in-app webview sharing the Browser tab session — no separate window). Workflow: snapshot first to get element refs (e3, e7…), then click/fill/type against refs. Actions: snapshot (list interactive elements), click (buttons/links/checkboxes), fill (set input/textarea/select value, React-safe), type (append keystrokes), press (Enter/Escape/Tab/arrows via key), scroll (direction up/down/top/bottom), navigate (open URL), back, reload, text (full rendered text), screenshot (saves PNG under .nexus/browser/ for the user + returns page title and rendered-text excerpt for agent verification). Set openInBrowser=true when the user asked to see a running project so the Browser pane opens and follows even in headless mode. Refs expire after navigation or DOM changes — snapshot again when an action reports a missing ref.",
           schema: z.object({
             action: z
               .enum(["snapshot", "click", "fill", "type", "press", "scroll", "navigate", "back", "reload", "text", "screenshot"])
@@ -299,6 +311,7 @@ export function createBrowserTools(_projectRoot?: string, opts?: { renderedInspe
             target: z.string().optional().describe("Element ref (e3), CSS selector, or visible text for click/fill/type/scroll"),
             value: z.string().optional().describe("Text for fill/type"),
             url: z.string().optional().describe("URL for navigate"),
+            openInBrowser: z.boolean().optional().describe("Open/follow this page in the built-in Browser pane, even when headless mode is on; use when the user asks to see a running local app."),
             key: z.string().optional().describe("Key name for press (Enter, Escape, Tab, ArrowUp, ArrowDown, ArrowLeft, ArrowRight)"),
             direction: z.enum(["up", "down", "top", "bottom"]).optional().describe("Scroll direction"),
           }),

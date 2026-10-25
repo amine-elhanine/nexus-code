@@ -4,7 +4,7 @@ import path from "node:path";
 import { getAppSettings, saveAppSettings } from "./store.js";
 import type { BrowserActInput, BrowserCallMeta } from "./browser-tool.js";
 
-export type AgentBrowserActivity = { url: string; timestamp: string; autoFollow: boolean; sessionId?: string; scope: "home" | "code" };
+export type AgentBrowserActivity = { url: string; timestamp: string; autoFollow: boolean; forceFollow?: boolean; sessionId?: string; scope: "home" | "code" };
 
 // Requests the renderer part executes on the hidden agent webviews (see
 // AgentBrowserHost): one webview per browser — persist:browser-home and
@@ -132,10 +132,10 @@ class AgentBrowserService {
   // clicks/fills (re-navigating would wipe the agent's in-page state).
   // sessionId tags the originating run and scope tags the browser, so each
   // sidebar only ever mirrors its own mode + chat — never another's.
-  private report(url: string | null, autoFollow: boolean, sessionId: string | undefined, scope: BrowserScope) {
+  private report(url: string | null, autoFollow: boolean, sessionId: string | undefined, scope: BrowserScope, forceFollow = false) {
     if (!url) return;
     try {
-      this.onActivity?.({ url, timestamp: new Date().toISOString(), autoFollow, sessionId, scope });
+      this.onActivity?.({ url, timestamp: new Date().toISOString(), autoFollow, forceFollow, sessionId, scope });
     } catch { /* listener is best-effort */ }
   }
 
@@ -318,7 +318,7 @@ class AgentBrowserService {
         const loaded = await this.request({ kind: "load", url: targetUrl }, scope, 20000);
         if (!loaded.ok) throw new Error(loaded.error || `Could not load ${targetUrl}.`);
         this.lastUrl = loaded.url || targetUrl;
-        this.report(this.lastUrl, !this.headless, meta?.sessionId, scope);
+        this.report(this.lastUrl, !this.headless || Boolean(meta?.openInBrowser), meta?.sessionId, scope, Boolean(meta?.openInBrowser));
         return `Navigated to ${targetUrl}.\n${await this.snapshotNow(scope)}`;
       }
       case "click": {

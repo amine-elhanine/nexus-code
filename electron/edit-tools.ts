@@ -53,20 +53,28 @@ type PatchOp =
  *   *** Move to: src/renamed.ts  (follows an Update/Add block as source)
  *   *** Delete File: src/obsolete.ts
  */
+// "*** Update File: a.ts (sha256: <hash>)" — split the optional integrity
+// suffix off the header target.
+function splitShaSuffix(raw: string): { file: string; hash?: string } {
+  const hashMatch = raw.match(/^(.*?)\s*\(sha256:\s*([a-f0-9]{64})\)\s*$/i);
+  return hashMatch
+    ? { file: (hashMatch[1] || "").trim(), hash: hashMatch[2].toLowerCase() }
+    : { file: raw.trim() };
+}
+
 export function parsePatchText(patchText: string): PatchOp[] {
   const ops: PatchOp[] = [];
   const lines = patchText.split(/\r?\n/);
   let current: { header: string; file: string; body: string[] } | null = null;
   const flush = () => {
     if (!current) return;
-    const hashMatch = current.file.match(/^(.*?)\s*\(sha256:\s*([a-f0-9]{64})\)\s*$/i);
-    const file = (hashMatch?.[1] || current.file).trim();
+    const { file, hash } = splitShaSuffix(current.file);
     if (!file) {
       current = null;
       return;
     }
     if (current.header.startsWith("add")) ops.push({ kind: "add", file, body: current.body.join("\n") });
-    else ops.push({ kind: "update", file, body: current.body.join("\n"), ...(hashMatch ? { expectedHash: hashMatch[2].toLowerCase() } : {}) });
+    else ops.push({ kind: "update", file, body: current.body.join("\n"), ...(hash ? { expectedHash: hash } : {}) });
     current = null;
   };
   for (const line of lines) {
@@ -78,10 +86,17 @@ export function parsePatchText(patchText: string): PatchOp[] {
         flush();
         if (target) ops.push({ kind: "delete", file: target });
       } else if (kind.startsWith("move")) {
-        // Move applies to the pending block: rename its file to target.
+        // Move applies to the pending block: apply its body (if any) to the
+        // ORIGINAL path first, then rename. Dropping the body would silently
+        // lose the block's edits; the `from` must also carry no sha256 suffix.
         if (current && target) {
+          const { file, hash } = splitShaSuffix(current.file);
           const body = current.body.join("\n");
-          ops.push({ kind: "move", from: current.file.trim(), to: target });
+          if (file && body.trim()) {
+            if (current.header.startsWith("add")) ops.push({ kind: "add", file, body });
+            else ops.push({ kind: "update", file, body, ...(hash ? { expectedHash: hash } : {}) });
+          }
+          if (file) ops.push({ kind: "move", from: file, to: target });
           current = null;
         } else if (target) {
           flush();
@@ -235,6 +250,15 @@ export function applyUnifiedDiffHunks(original: string, updateBody: string): str
 
     if (expectedOldLines.length === 0 && newLines.length === 0) continue;
 
+    // Zero-context pure-insert hunks (`@@ -N,0 ...`, what `diff -U0` and many
+    // model-authored hunks produce) insert AFTER old line N — 0-based index N.
+    // The generic path would vacuously "match" at N-1 and insert one line early.
+    if (expectedOldLines.length === 0) {
+      const insertAt = Math.min(Math.max(0, parseInt(hunk[1], 10)), lines.length);
+      lines.splice(insertAt, 0, ...newLines);
+      continue;
+    }
+
     let matchIdx = -1;
     const searchRange = 50;
     const minStart = Math.max(0, origStart - searchRange);
@@ -273,12 +297,23 @@ export function applyUnifiedDiffHunks(original: string, updateBody: string): str
   return lines.join("\n").replace(/\s+$/, "") + "\n";
 }
 
+// A body carrying patch markers that failed structured parsing is a malformed
+// patch, not plain replacement content. (A bare `=======` setext underline is
+// deliberately NOT enough — only <>>>>>>>-style markers or diff headers count.)
+const PATCH_SHAPED_BODY = /<<<<<<<|>>>>>>>|\*{3}\s*(?:Add File|Update File|Delete File|Move to)|^@@\s*-\d+/im;
+
 export function applyUpdatedFileContent(original: string, updateBody: string): string {
   const fromSearchReplace = applySearchReplaceBlocks(original, updateBody);
   if (fromSearchReplace !== null) return fromSearchReplace;
 
   const fromUnifiedDiff = applyUnifiedDiffHunks(original, updateBody);
   if (fromUnifiedDiff !== null) return fromUnifiedDiff;
+
+  // Whole-file replacement is only valid for plain content. Writing a
+  // patch-shaped body verbatim would clobber the file with raw marker text.
+  if (PATCH_SHAPED_BODY.test(updateBody)) {
+    throw new Error("Update body contains patch markers but could not be parsed as SEARCH/REPLACE blocks or a unified diff (check for a missing ======= or >>>>>>> line). Rewrite the patch with exact markers instead of raw content.");
+  }
 
   return updateBody.replace(/\s+$/, "") + "\n";
 }

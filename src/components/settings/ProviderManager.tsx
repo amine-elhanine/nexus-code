@@ -296,7 +296,7 @@ export function ProviderManager({
                   <div>
                     <strong>{provider.label}</strong>
                     <small>
-                      {(provider.models || []).length} models · {provider.apiKey ? "key configured" : provider.keyNeedsReentry ? "key needs re-entry (could not be decrypted)" : provider.provider === "ollama" ? "local" : "no API key"}
+                      {(provider.models || []).length} models · {provider.apiKey ? "key configured" : provider.keyNeedsReentry ? (provider.keyNeedsReentryReason === "vault-unavailable" ? "key needs re-entry (no OS credential store here)" : "key needs re-entry (could not be decrypted)") : provider.provider === "ollama" ? "local" : "no API key"}
                       {!enabled ? " · disabled" : ""}
                     </small>
                   </div>
@@ -397,7 +397,7 @@ export function ProviderManager({
             </div>
 
             <label style={{ marginTop: "10px" }}>
-              Replace API key <small>{selected.apiKey ? "stored — leave empty to keep it" : selected.keyNeedsReentry ? "could not be decrypted — re-enter it" : selected.provider === "ollama" ? "optional" : "none stored"}</small>
+              Replace API key <small>{selected.apiKey ? "stored — leave empty to keep it" : selected.keyNeedsReentry ? (selected.keyNeedsReentryReason === "vault-unavailable" ? "no credential store here — re-enter it" : "could not be decrypted — re-enter it") : selected.provider === "ollama" ? "optional" : "none stored"}</small>
               <input
                 type="password"
                 value={keyInput}
@@ -407,7 +407,9 @@ export function ProviderManager({
             </label>
             {selected.keyNeedsReentry && (
               <div style={{ margin: "-2px 0 6px 0", color: "var(--red)", fontSize: "11px" }}>
-                The stored key could not be decrypted on this machine — re-enter it to use this provider.
+                {selected.keyNeedsReentryReason === "vault-unavailable"
+                  ? "This machine has no OS credential store, so keys are not saved to disk — re-enter it for this session."
+                  : "The stored key could not be decrypted on this machine — re-enter it to use this provider."}
               </div>
             )}
             {!selected.keyNeedsReentry && !selected.apiKey && selected.provider !== "ollama" && (

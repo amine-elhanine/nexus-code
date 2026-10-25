@@ -17,6 +17,14 @@ import {
   autoDiscoverModelContextWindow,
   computeCompactionThreshold,
 } from "../dist-electron/providers.js";
+import {
+  isContextWindowError,
+  estimateMessagesTokens,
+  trimRunMessages,
+  trimRunMessagesWithRecoveryBrief,
+  StreamUsageTracker,
+  estimateTokens,
+} from "../dist-electron/context-service.js";
 
 test("KNOWN_MODEL_EFFORTS defines supported efforts for reasoning models", () => {
   assert.deepEqual(KNOWN_MODEL_EFFORTS["o3"], ["low", "medium", "high"]);
@@ -329,4 +337,123 @@ test("computeCompactionThreshold calculates dynamic 80% auto-compaction boundari
   // 5. Minimal fallbacks
   const defaultThreshold = computeCompactionThreshold(128_000);
   assert.equal(defaultThreshold, 102_400);
+});
+
+test("isContextWindowError matches every provider shape and rejects transient/other errors", () => {
+  // OpenAI: "maximum context length" 400 invalid_request_error
+  assert.equal(isContextWindowError(new Error("This model's maximum context length is 16385 tokens. However, you requested 20000 tokens.")), true);
+  assert.equal(isContextWindowError(new Error("context_length_exceeded: reduce the length of the conversation")), true);
+  // Anthropic: prompt too long
+  assert.equal(isContextWindowError(new Error("prompt is too long: 200000 tokens > 128000 token maximum")), true);
+  assert.equal(isContextWindowError(new Error({ name: "APIError", code: "prompt_too_long" })), false); // non-Error object with plain string coercion
+  assert.equal(isContextWindowError({ name: "APIError", code: "prompt_too_long", status: 400 }), true);
+  // Gemini: input token count exceeds maximum
+  assert.equal(isContextWindowError(new Error("The input token count (300000) exceeds the maximum number of tokens allowed (200000)")), true);
+  // Gateway/status shapes
+  assert.equal(isContextWindowError({ status: 413 }), true);
+  assert.equal(isContextWindowError(new Error("payload too large")), true);
+  // Transient and unrelated errors must NOT be treated as context overflows
+  assert.equal(isContextWindowError(new Error("429 rate limit exceeded; please retry")), false);
+  assert.equal(isContextWindowError(new Error("socket hang up")), false);
+  assert.equal(isContextWindowError(new Error("ECONNRESET")), false);
+  assert.equal(isContextWindowError(null), false);
+  assert.equal(isContextWindowError(undefined), false);
+});
+
+test("estimateMessagesTokens counts content, tool-call args and image payloads", () => {
+  const human = { type: "human", content: "x".repeat(3800) };
+  const ai = { type: "ai", content: "hello world", tool_calls: [{ name: "read_file", args: { file_path: "a".repeat(190) } }] };
+  const multimodal = { type: "human", content: [{ type: "text", text: "desc" }, { type: "image_url", image_url: { url: "data:image/png;base64,iVBOR" } }] };
+  const humanEstimate = estimateMessagesTokens([human]);
+  assert.equal(humanEstimate, Math.ceil(3800 / 3.8));
+  // AI tokens = text content + serialized args + per-call overhead
+  const aiEstimate = estimateMessagesTokens([ai]);
+  assert.ok(aiEstimate >= Math.ceil(("hello world".length + "a".repeat(190).length) / 3.8));
+  const mmEstimate = estimateMessagesTokens([multimodal]);
+  assert.ok(mmEstimate >= estimateTokens("desc") + estimateTokens("data:image/png;base64,iVBOR"));
+  assert.equal(estimateMessagesTokens([null, { content: "" }]), 0);
+});
+
+test("trimRunMessages keeps the original request, preserves tool pairs and honors the budget", () => {
+  const small = (text) => ({ type: "human", content: `/build ${text}` });
+  const giant = (chars) => ({ type: "tool", content: "x".repeat(chars) });
+  // Pair: AI-with-calls must move together with its tool result.
+  const messages = [
+    { type: "human", content: "Build feature X with Y and Z constraints" },
+    { type: "ai", content: "Reading the repo", tool_calls: [{ name: "read_file", args: { file_path: "src/a.ts" } }] },
+    giant(20_000),
+    { type: "ai", content: "Now editing" },
+    { type: "ai", content: "second plan", tool_calls: [{ name: "execute", args: { command: "npm test" } }] },
+    giant(20_000),
+    { type: "human", content: "iterate further" },
+    { type: "ai", content: "more work", tool_calls: [{ name: "write_file", args: { file_path: "src/b.ts" } }] },
+    giant(8_000),
+    { type: "ai", content: "final check", tool_calls: [{ name: "read_file", args: { file_path: "src/b.ts" } }] },
+    giant(8_000),
+    { type: "ai", content: "done text" },
+  ];
+
+  const budget = 30_000;
+  const result = trimRunMessages(messages, budget);
+  // Under budget after condensation
+  assert.ok(estimateMessagesTokens(result) <= budget, "result should fit the budget");
+  // Never an orphan tool result at the start, and pairs stay adjacent
+  assert.equal(result[0].type, "human");
+  const summaryText = String(result[0].content);
+  assert.ok(summaryText.includes("Condensed earlier work"), "condensation digest must be present");
+  assert.ok(summaryText.includes("Build feature X"), "the original request must be preserved in the digest");
+  for (let i = 1; i < result.length; i++) {
+    if (result[i].type === "ai" && Array.isArray(result[i].tool_calls) && result[i].tool_calls.length) {
+      assert.equal(result[i + 1]?.type, "tool", "an AI message with tool calls must be followed by its tool result");
+    }
+    if (result[i].type === "tool") {
+      assert.ok(Array.isArray(result[i - 1]?.tool_calls), "a tool result must never appear without its AI call message");
+    }
+  }
+  // Condensation actually freed room (strictly smaller than the input)
+  assert.ok(estimateMessagesTokens(result) < estimateMessagesTokens(messages));
+});
+
+test("run compaction preserves the structured recovery brief and complete tool-call pairs", () => {
+  const messages = [
+    { type: "human", content: "Implement feature Q; preserve API compatibility and add tests" },
+    { type: "ai", content: "Inspecting files", tool_calls: [{ id: "call-1", name: "read_file", args: { path: "src/q.ts" } }] },
+    { type: "tool", tool_call_id: "call-1", content: "x".repeat(20_000) },
+    { type: "ai", content: "Implementing changes" },
+    { type: "ai", content: "Running checks", tool_calls: [{ id: "call-2", name: "execute", args: { command: "npm test" } }] },
+    { type: "tool", tool_call_id: "call-2", content: "y".repeat(20_000) },
+  ];
+  const brief = [
+    "[Durable Code Task Recovery Brief]",
+    "Original request/constraints: Implement feature Q; preserve API compatibility and add tests",
+    "Next step: Run the targeted test and inspect its result",
+    "Changed files: src/q.ts",
+    "Latest verification: npm test failed with assertion mismatch",
+  ].join("\n");
+  const compacted = trimRunMessagesWithRecoveryBrief(messages, brief, 5000);
+  const allText = compacted.map((message) => String(message.content ?? "")).join("\n");
+  assert.match(allText, /Durable Code Task Recovery Brief/);
+  assert.match(allText, /preserve API compatibility/);
+  assert.match(allText, /npm test failed with assertion mismatch/);
+  assert.ok(estimateMessagesTokens(compacted) <= 5000);
+  for (let i = 1; i < compacted.length; i++) {
+    if (compacted[i]?.type === "tool") {
+      assert.ok(Array.isArray(compacted[i - 1]?.tool_calls), "compaction must not orphan a tool result");
+    }
+  }
+});
+
+test("StreamUsageTracker.lastObservedInputTokens tracks the largest single-call input", () => {
+  const tracker = new StreamUsageTracker();
+  tracker.noteChunk({ usage_metadata: { input_tokens: 1200, output_tokens: 40 } });
+  assert.equal(tracker.lastObservedInputTokens, 1200);
+  tracker.noteChunk({ response_metadata: { tokenUsage: { promptTokens: 5000, completionTokens: 30 } } });
+  assert.equal(tracker.lastObservedInputTokens, 5000);
+  // Repeated cumulative chunks under one id must not inflate the max
+  tracker.noteChunk({ id: "msg-1", usage_metadata: { input_tokens: 6000, output_tokens: 10 } });
+  tracker.noteChunk({ id: "msg-1", usage_metadata: { input_tokens: 6100, output_tokens: 15 } });
+  assert.equal(tracker.lastObservedInputTokens, 6100);
+  // Empty usage payloads are ignored
+  tracker.noteChunk({ usage_metadata: {} });
+  assert.equal(tracker.lastObservedInputTokens, 6100);
 });

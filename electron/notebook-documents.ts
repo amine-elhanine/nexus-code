@@ -83,7 +83,10 @@ export function docsDir(notebookId: string) {
   return path.join(notebookSessionDir(notebookId), "documents");
 }
 export function safeStem(title: string, fallback: string) {
-  const stem = title.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "").replace(/\s+/g, " ").trim().slice(0, 60);
+  // Apostrophes, ampersands, and percent signs survive filesystem naming but
+  // are shell/python metacharacters — titles are model-authored (grounded in
+  // untrusted documents), so strip them too.
+  const stem = title.replace(/[<>:"/\\|?*`'$&%!^\u0000-\u001f]/g, "").replace(/\s+/g, " ").trim().slice(0, 60);
   return stem || fallback;
 }
 

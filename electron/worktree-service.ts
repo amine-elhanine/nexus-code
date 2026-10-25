@@ -1,10 +1,9 @@
 import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { boundedExecFile } from "./shell-subprocess.js";
 import { getWorkspaceDiffFiles, type WorkspaceDiffFile } from "./diff-service.js";
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = boundedExecFile;
 
 export type WorktreeInfo = {
   sessionId: string;

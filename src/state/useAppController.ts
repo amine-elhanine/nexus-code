@@ -260,10 +260,23 @@ export function useAppController() {
         kind: event.type,
         createdAt: event.timestamp,
         usage: event.usage,
+        context: event.context,
         subagent: event.subagent,
         plan: event.items,
         artifact: event.artifact,
+        detail: event.detail,
       };
+      if (event.type === "context") {
+        const targetSessionId = bucket;
+        setActiveSession((current) => current?.id === targetSessionId
+          ? { ...current, messages: [...current.messages, item] }
+          : current);
+        const existing = liveEventsRef.current[bucket] || [];
+        const nextLog = [...existing, item];
+        liveEventsRef.current = { ...liveEventsRef.current, [bucket]: nextLog };
+        setLiveEvents(liveEventsRef.current);
+        return;
+      }
       if (event.type === "artifact" && event.artifact) {
         if (event.artifact.filename === "implementation_plan.md" && event.artifact.status === "pending_approval") {
           setActiveArtifact(event.artifact);
@@ -289,7 +302,7 @@ export function useAppController() {
         setActiveSession((current) => {
           if (!current || current.id !== targetSessionId) return current;
           const base = current.messages;
-          const logItems = log.filter((entry) => !(entry.kind === "usage"));
+          const logItems = log.filter((entry) => entry.kind !== "usage" && entry.kind !== "context");
           const finalItem: ChatItem = event.type === "assistant"
             ? { role: "assistant", text: event.text, createdAt: event.timestamp || nowIso(), usage: event.usage }
             : { role: "event", kind: "error", text: event.text, createdAt: event.timestamp || nowIso() };
@@ -300,7 +313,17 @@ export function useAppController() {
           setSessions(sortSessionsByUpdatedAt(fresh as unknown as SessionRecord[]));
           const freshCurrent = (fresh as unknown as SessionRecord[]).find((s) => s.id === targetSessionId);
           if (freshCurrent) {
-            setActiveSession((prev) => (prev && prev.id === targetSessionId ? { ...prev, messages: freshCurrent.messages, usage: freshCurrent.usage, checkpointId: freshCurrent.checkpointId, checkpointIds: freshCurrent.checkpointIds } : prev));
+            setActiveSession((prev) => {
+              if (!prev || prev.id !== targetSessionId) return prev;
+              // The main process persists the final assistant message only
+              // after the run promise settles — this refetch can round-trip
+              // BEFORE that persist lands, and blindly adopting the shorter
+              // server copy would wipe the just-streamed answer (the Home
+              // controller hit exactly this and guards the same way).
+              const serverMessages = freshCurrent.messages || [];
+              if (serverMessages.length < prev.messages.length) return prev;
+              return { ...prev, messages: serverMessages, usage: freshCurrent.usage, checkpointId: freshCurrent.checkpointId, checkpointIds: freshCurrent.checkpointIds };
+            });
           }
         }).catch(() => { /* sidebar keeps its current list */ });
         return;

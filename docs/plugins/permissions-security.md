@@ -40,6 +40,24 @@ determined escape via a Node/V8 flaw cannot be ruled out. Treat executable
 installs like installing software: review the source. Deeper OS sandboxing
 can be added under this same SDK surface without plugin rewrites.
 
+Per-platform reality of that limitation (what plugin runner children and
+shell hooks can and cannot do on each OS Nexus ships today — no kernel-level
+confinement on any platform):
+
+| Platform | Runner child runs as | Kernel confinement available today | What the mitigation actually is |
+|---|---|---|---|
+| Windows | the logged-in user, full user profile access | Job objects (CPU/memory caps via `NODE_OPTIONS` + timeout kill only; no AppContainer/restricted token) | process tree kill on timeout, permission gate + per-call approval, host env scrub (`child-env.ts`) |
+| macOS | the logged-in user | none applied (no `sandbox-exec`/Seatbelt profile for children) | same as Windows: timeouts, kills, permission gate, approval |
+| Linux | the logged-in user | none applied (no seccomp, no namespaces, no bubblewrap) | same as above |
+
+This is stated deliberately without overclaiming: the OS does not isolate
+plugin children from the user's files on ANY platform — the security boundary
+is the permission model, the approval channel, and process-level containment
+(timeouts, kills, no-Node-globals vm). Anything stronger (AppContainer,
+Seatbelt, seccomp/bubblewrap) sits behind the same runner interface and can
+be shipped per-platform without plugin changes; until then, repo/flagship
+bundles should be treated like browser extensions: review before enable.
+
 Renderer stays `contextIsolation: true`, `nodeIntegration: false`
 (`electron/main.ts`). Preload exposes only narrow `invoke()` wrappers; new
 IPC (`plugins:enable/disable`, `capabilities:list`, …) validates payloads

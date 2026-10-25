@@ -30,6 +30,7 @@ import {
   replaceFileEntries,
   saveVectors,
   sectionIdFor,
+  sessionOutline,
   sessionSummary,
   upsertFileVectors,
   wipeFileDerivedData,
@@ -431,10 +432,18 @@ export async function maybeBuildDigest(notebookId: string, force = false): Promi
   if (!sources.length || sources.some((s) => s.status !== "ready")) return;
   const root = notebookSessionDir(notebookId);
   const summary = await sessionSummary(root, notebookId);
-  const outline = summary.files.flatMap((f) => {
-    const heads = summary.headings.filter(Boolean).slice(0, 12);
-    return [`${f}: ${heads.slice(0, 6).join(" · ") || "no headings"}`];
-  });
+  // Per-file outline: headings must come from THAT file's sections, not the
+  // notebook-wide list (which showed identical headings on every line).
+  const outlineByFile = await sessionOutline(root, notebookId).catch(() => []);
+  const outline = (outlineByFile.length ? outlineByFile.map((doc) => {
+    const heads: string[] = [];
+    for (const h of doc.headings) {
+      const title = h.path[h.path.length - 1];
+      if (title && !heads.includes(title)) heads.push(title);
+      if (heads.length >= 6) break;
+    }
+    return `${doc.filename}: ${heads.join(" · ") || "no headings"}`;
+  }) : summary.files.map((f) => `${f}: no headings`));
   await writeSessionDigest(notebookId, { outline, topics: summary.terms.slice(0, 15) });
   await touchNotebook(notebookId);
 }

@@ -67,7 +67,13 @@ test("evaluation project-command cases expand in their declared assistant scope"
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const evalCases = JSON.parse(await fs.readFile(path.join(repoRoot, "evals", "cases.json"), "utf8"));
   const commandCases = evalCases.filter((item) => item.requireCommandExpansion);
-  assert.deepEqual(commandCases.map((item) => item.id).sort(), ["code-project-command-expansion", "home-project-command-expansion"]);
+  assert.deepEqual(commandCases.map((item) => item.id).sort(), [
+    "code-project-command-expansion",
+    "code-project-command-log-prefix",
+    "code-project-command-slugify",
+    "home-project-command-expansion",
+    "home-project-command-standup",
+  ]);
 
   for (const benchmark of commandCases) {
     const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-command-eval-"));

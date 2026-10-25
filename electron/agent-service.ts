@@ -24,16 +24,16 @@ import { GLOBAL_SKILLS_ROUTE, PROJECT_SKILLS_DIR, SKILL_SOURCE_PRIORITY, SYSTEM_
 import { createPluginAgentTools } from "./tool-executor.js";
 import { collectDynamicPluginContext } from "./plugin-lifecycle.js";
 import type { PluginMode } from "./plugin-manifest.js";
-import { computeCompactionThreshold, compactHistory, compactHistoryWithModel, estimateTokens, StreamUsageTracker } from "./context-service.js";
+import { computeCompactionThreshold, compactHistory, compactHistoryWithModel, estimateTokens, estimateMessagesTokens, isContextWindowError, trimRunMessages, trimRunMessagesWithRecoveryBrief, StreamUsageTracker } from "./context-service.js";
 import { saveArtifact, type ArtifactItem } from "./artifacts-service.js";
 import { TrajectoryLogger } from "./trajectory-service.js";
 import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint } from "./rate-limit.js";
 import { RunCancelledError, getRunAbortSignal } from "./command-service.js";
 import { requestCommandApproval } from "./approval-service.js";
 import { createHomeMemoryTool, addMemoryFact, removeMemoryFactWithCount, selectRelevantHomeMemory, parseCandidateFacts, capMemoryItems, shouldExtractMemory, type MemoryCandidate } from "./home-memory-service.js";
-import { createHomeTaskJournal, finishHomeTaskJournal, recordHomeTaskAction, saveHomeTaskJournal, type HomeTaskJournal, type HomeTaskPhase } from "./home-task-service.js";
+import { buildHomeTaskContextSummary, createHomeTaskJournal, finishHomeTaskJournal, isHomeTaskContinuation, loadHomeTaskJournal, recordHomeTaskAction, saveHomeTaskJournal, updateHomeTaskContextSummary, type HomeTaskJournal, type HomeTaskPhase } from "./home-task-service.js";
 import { validateHomeArtifactContract } from "./home-artifact-service.js";
-import { codeVerificationOutcome, createCodeTaskJournal, finishCodeTaskJournal, inferCodeTaskContract, loadCodeTaskJournal, parseBlockingReviewFindings, recordCodeTaskAction, recordCodeTaskPlan, saveCodeTaskJournal, shouldRunCodeReview, type CodeTaskContract, type CodeTaskJournal, type CodeTaskPhase } from "./code-task-service.js";
+import { buildCodeTaskContextSummary, codeVerificationOutcome, createCodeTaskJournal, finishCodeTaskJournal, inferCodeTaskContract, loadCodeTaskJournal, parseBlockingReviewFindings, recordCodeTaskAction, recordCodeTaskPlan, saveCodeTaskJournal, shouldRunCodeReview, updateCodeTaskContextSummary, type CodeTaskContract, type CodeTaskJournal, type CodeTaskPhase } from "./code-task-service.js";
 import type { ProviderConfig } from "./store.js";
 
 import type { AgentEvent, AgentMemoryContext, AgentMode, AgentSettings, AgentTaskKind, AgentUsage, AttachmentDoc, HistoryInput, HomeTaskContract, PlanItem } from "./agent-types.js";
@@ -51,10 +51,21 @@ export type { AgentMode, PlanItem, AgentTurn, HistoryEventItem, HistoryInput, Ag
 export { inferHomeTaskContract, inferHomeOutputFormats, homeRequestNamesFileFormat } from "./agent-prompt.js";
 export { DoomLoopError, RESEARCH_BUDGET_BASE, RESEARCH_BUDGET_WITH_RESEARCH, resolveResearchBudget, toolParameterNormalizationMiddleware, loopPreventionMiddleware } from "./loop-prevention.js";
 export type { PackageManagerName, PackageManager, TaskComplexity } from "./task-routing.js";
-export { detectPackageManager, pickVerificationCommand, pickVerificationCommands, pickAffectedPackageCommands, pickFileScopedVerification, findTargetedTests, buildVerificationBatch, classifyTaskComplexity, shouldSkipMcpForTask, isWebTask, isNewProjectTask, isContinueRequest } from "./task-routing.js";
+export { detectPackageManager, pickVerificationCommand, pickVerificationCommands, pickAffectedPackageCommands, pickFileScopedVerification, findTargetedTests, buildVerificationBatch, classifyTaskComplexity, shouldSkipMcpForTask, isWebTask, isProjectRunRequest, isNewProjectTask, isContinueRequest } from "./task-routing.js";
 export { extractSkillNameFromPath, loadedSkillNamesFromMessages, describeToolCall, extractGithubLogin, toolResultExcerpt } from "./tool-describe.js";
 export type { TaskLedger, RunCheckpoint } from "./run-checkpoint.js";
 export { getLastRunCheckpoint, saveLastRunCheckpoint, persistLastRunCheckpoint, loadLastRunCheckpoint, clearLastRunCheckpoint, summarizeCompletedSteps } from "./run-checkpoint.js";
+
+// Internal-only marker: a superstep boundary was reached with real usage data
+// showing the NEXT model call would overfill the context window. Threading it
+// up lets streamDeepAgent condense the transcript and relaunch the stream
+// instead of losing the run to a provider context-length 4xx.
+class AgentContextRelaunch extends Error {
+  constructor(reason: string) {
+    super(`Agent context relaunch: ${reason}`);
+    this.name = "AgentContextRelaunch";
+  }
+}
 
 export { RunCancelledError };
 
@@ -241,6 +252,15 @@ class UsageAccumulator {
 
   noteChunk(chunk: any) {
     this.tracker.noteChunk(chunk);
+  }
+
+  /** Largest single model-call input seen so far — the live context size. */
+  get observedInputTokens(): number {
+    return this.tracker.lastObservedInputTokens;
+  }
+
+  get hasObservedInputTokens(): boolean {
+    return this.tracker.sawExactInput && this.tracker.lastObservedInputTokens > 0;
   }
 
   addSubagent(usage?: AgentUsage) {
@@ -432,11 +452,12 @@ export async function runProjectAgent(options: {
     ? await expandSlashCommand(rawRequest || "", projectRoot, isGeneral ? "home" : "code").catch(() => rawRequest || "")
     : rawRequest || "";
   const homeTaskContract = isGeneral ? inferHomeTaskContract(request) : null;
+  const homeTaskContinuation = isGeneral && isHomeTaskContinuation(request);
   const codeTaskContract = isGeneral ? null : inferCodeTaskContract(request);
   const targetTelemetryRoot = telemetryRoot || projectRoot;
   const signal = sessionId ? getRunAbortSignal(sessionId) : undefined;
-  const emit = (type: AgentEvent["type"], text: string, items?: PlanItem[], usage?: AgentUsage, subagent?: SubagentItem, artifact?: ArtifactItem, detail?: string) => {
-    if (text || items?.length || usage || subagent || artifact) onEvent({ type, sessionId: sessionId || "", text, timestamp: new Date().toISOString(), items, usage, subagent, artifact, detail });
+  const emit = (type: AgentEvent["type"], text: string, items?: PlanItem[], usage?: AgentUsage, subagent?: SubagentItem, artifact?: ArtifactItem, detail?: string, context?: AgentEvent["context"]) => {
+    if (text || items?.length || usage || subagent || artifact || context) onEvent({ type, sessionId: sessionId || "", text, timestamp: new Date().toISOString(), items, usage, subagent, artifact, detail, context });
   };
   if (request !== (rawRequest || "")) {
     const cmdName = (rawRequest || "").trimStart().slice(1).split(/\s/, 1)[0];
@@ -588,11 +609,44 @@ export async function runProjectAgent(options: {
     emit("status", `Loaded project instructions (${projectInstructions.files.map((f) => f.name).join(", ")})`);
   }
 
+  let codeJournal: CodeTaskJournal | null = null;
+  let codeJournalWrite = Promise.resolve();
+  const queueCodeJournalWrite = (next: CodeTaskJournal) => {
+    codeJournal = updateCodeTaskContextSummary(next);
+    if (isGeneral || !sessionId) return;
+    const snapshot = codeJournal;
+    codeJournalWrite = codeJournalWrite
+      .then(() => saveCodeTaskJournal(projectRoot, snapshot))
+      .catch(() => undefined);
+  };
   const runCommand = async (command: string) => {
     try {
-      return await Promise.resolve((agentBackend as any)?.execute?.(command));
+      const result = await Promise.resolve((agentBackend as any)?.execute?.(command));
+      if (!isGeneral && codeJournal?.phase === "verification") {
+        const exitCode = Number((result as any)?.exitCode);
+        queueCodeJournalWrite(recordCodeTaskAction(codeJournal, {
+          tool: "verification",
+          summary: `${exitCode === 0 ? "Passed" : (result as any)?.approvalDenied ? "Approval denied" : "Failed"}: ${command}`,
+          result: String((result as any)?.output ?? "").slice(-700) || undefined,
+          progressed: exitCode === 0,
+          phase: "verification",
+          verification: { command, passed: exitCode === 0, output: String((result as any)?.output ?? "").slice(-1200) || undefined },
+        }));
+      }
+      return result;
     } catch (error) {
-      return { output: error instanceof Error ? error.message : String(error), exitCode: 1, truncated: false };
+      const result = { output: error instanceof Error ? error.message : String(error), exitCode: 1, truncated: false };
+      if (!isGeneral && codeJournal?.phase === "verification") {
+        queueCodeJournalWrite(recordCodeTaskAction(codeJournal, {
+          tool: "verification",
+          summary: `Failed: ${command}`,
+          result: result.output.slice(-700),
+          progressed: false,
+          phase: "verification",
+          verification: { command, passed: false, output: result.output.slice(-1200) },
+        }));
+      }
+      return result;
     }
   };
 
@@ -733,7 +787,7 @@ export async function runProjectAgent(options: {
     ? createBrowserTools(projectRoot, {
         agentBrowser: {
           inspect: (url) => agentBrowserService.inspect(url, { sessionId, scope: isGeneral ? "home" : "code" }),
-          act: (input) => agentBrowserService.act(input, projectRoot, { sessionId, scope: isGeneral ? "home" : "code" }),
+          act: (input) => agentBrowserService.act(input, projectRoot, { sessionId, scope: isGeneral ? "home" : "code", openInBrowser: input.openInBrowser }),
         },
         beforeRead: beforeHomeResearch,
       })
@@ -887,6 +941,27 @@ export async function runProjectAgent(options: {
     projectRoot,
   }).catch(() => "");
 
+  const systemPromptText = buildSystemPrompt(
+    mode,
+    projectRoot,
+    provider.label,
+    modelName,
+    isGeneral && memory.projectMemory
+      ? { projectMemory: selectRelevantHomeMemory(memory.projectMemory, request, 4000), sessionMemory: memory.sessionMemory }
+      : memory,
+    rulesResult.combinedPromptSection,
+    effectiveComplexity,
+    isNewProject,
+    taskKind,
+    repoMapSection,
+    homeTaskContract,
+    // Full role catalog only where delegate_task is actually bound — simple
+    // runs drop the tool, Home runs never mention delegation.
+    assetsEnabled("agents") && !isGeneral && effectiveComplexity !== "simple" ? buildSubagentCatalog(projectRoot) : "",
+    projectInstructions.section,
+    dynamicPluginContext
+  );
+
   const deepAgent = await createDeepAgent({
     model: llm,
     backend: compositeBackend as any,
@@ -904,70 +979,65 @@ export async function runProjectAgent(options: {
     // facts and recent activity filtered to the current request so unrelated
     // history never crowds out working context. manage_memory above keeps
     // operating on the FULL memory — only the prompt copy is sliced.
-    systemPrompt: buildSystemPrompt(
-      mode,
-      projectRoot,
-      provider.label,
-      modelName,
-      isGeneral && memory.projectMemory
-        ? { projectMemory: selectRelevantHomeMemory(memory.projectMemory, request, 2000), sessionMemory: memory.sessionMemory }
-        : memory,
-      rulesResult.combinedPromptSection,
-      effectiveComplexity,
-      isNewProject,
-      taskKind,
-      repoMapSection,
-      homeTaskContract,
-      // Full role catalog only where delegate_task is actually bound — simple
-      // runs drop the tool, Home runs never mention delegation.
-      assetsEnabled("agents") && !isGeneral && effectiveComplexity !== "simple" ? buildSubagentCatalog(projectRoot) : "",
-      projectInstructions.section,
-      dynamicPluginContext
-    ),
+    systemPrompt: systemPromptText,
   });
 
-    const modelContextWindow =
+  // Basename fallback: stored windows are keyed by bare model names
+  // (e.g. "qwen3-coder") while OpenRouter-style ids carry a prefix
+  // ("openai/gpt-5.5"). resolveModelContextWindow already handles basename
+  // matching; the stored-config check must match that behavior too.
+  const modelBasename = (modelName || "").includes("/") ? modelName.split("/").pop()! : (modelName || "");
+  const modelContextWindow =
     settings.contextWindow ??
     provider.modelContextWindows?.[modelName] ??
+    provider.modelContextWindows?.[modelBasename] ??
     resolveModelContextWindow(provider.id, modelName, provider);
 
   const modelMaxOutput =
     settings.maxOutput ??
     provider.modelMaxOutputs?.[modelName] ??
+    provider.modelMaxOutputs?.[modelBasename] ??
     resolveModelMaxOutput(provider.id, modelName, provider);
 
   const compactionThreshold = computeCompactionThreshold(modelContextWindow, modelMaxOutput);
-  const targetBudget = Math.max(4000, Math.floor(compactionThreshold * 0.55));
-  const estimatedHistoryTokens = history.reduce((sum, t) => sum + estimateTokens(t.text), 0);
+  const outputReserve = Math.min(Math.max(modelMaxOutput || 8192, 2048), 32_000);
+  const systemPromptTokens = Math.ceil((systemPromptText || "").length / 3.8);
+  const targetBudget = Math.max(1500, Math.floor(compactionThreshold * 0.55 - systemPromptTokens - outputReserve));
+      const estimatedHistoryTokens = history.reduce((sum, t) => sum + estimateTokens(t.text), 0);
+  const historyBudget = targetBudget;
+  const projectedHistoryTokens = estimatedHistoryTokens + systemPromptTokens + outputReserve;
 
   // Auto context compaction (like Claude Code & Codex):
   // - If conversation history is within safe context bounds (< ~80%), keep full history verbatim
   // - If conversation history reaches or nears the model's context window limit (>= threshold),
   //   automatically compact older history down to targetBudget (~50%), preserving the last 4 turns verbatim.
   let compactedHistory;
-  if (estimatedHistoryTokens < compactionThreshold && !isSimple) {
+  if (projectedHistoryTokens < compactionThreshold && !isSimple) {
     compactedHistory = history
       .filter((t) => t.role === "user" || t.role === "assistant")
       .map((t) => ({ role: t.role as "user" | "assistant", text: t.text }));
   } else if (isSimple) {
-    compactedHistory = compactHistory(history, Math.min(3000, targetBudget));
+      compactedHistory = compactHistory(history, Math.min(3000, historyBudget));
   } else {
-    const pct = Math.round((estimatedHistoryTokens / modelContextWindow) * 100);
+    const pct = Math.round((projectedHistoryTokens / modelContextWindow) * 100);
     emit("status", `Auto-compacting context (${formatTokenCount(estimatedHistoryTokens)} / ${formatContextWindow(modelContextWindow)} tokens, ~${pct}% capacity) — summarizing history…`);
 
     compactedHistory = await compactHistoryWithModel(
       history,
       async (prompt) => {
         try {
-          const res: any = await llm.invoke(prompt);
+          const taskAwarePrompt = isGeneral
+            ? prompt.replace("coding-session history", "general Home task history").replace("files changed, errors seen", "research findings, decisions, outputs created, errors seen")
+            : prompt;
+          const res: any = await llm.invoke(taskAwarePrompt);
           const text = typeof res?.content === "string" ? res.content : Array.isArray(res?.content) ? res.content.map((p: any) => (typeof p === "string" ? p : p?.text || "")).join("\n") : String(res?.content || res?.text || "");
           return text;
         } catch {
           throw new Error("summarizer failed");
         }
       },
-      targetBudget
-    ).catch(() => compactHistory(history, targetBudget));
+      historyBudget
+    ).catch(() => compactHistory(history, historyBudget));
 
     const compactedTokens = compactedHistory.reduce((sum, t) => sum + estimateTokens(t.text), 0);
     const freedTokens = Math.max(0, estimatedHistoryTokens - compactedTokens);
@@ -1006,7 +1076,14 @@ export async function runProjectAgent(options: {
   const importNote = (attachmentDocs?.length || attachments?.length)
     ? `[Attachment imports: ${(attachmentDocs?.length || 0) + (attachments?.length || 0)} file(s) available via import_attachment (index 0..${(attachmentDocs?.length || 0) + (attachments?.length || 0) - 1}: ${[...(attachmentDocs || []).map((d) => d.name), ...(attachments || []).map((_, i) => `image-${i}`)].join(", ")}). Only import when the deliverable needs the actual file in the project; reference content above is already in context.]`
     : null;
-  const requestText = [request, identityNote, resumeNote, skillNote, imageNote, docNote, importNote].filter(Boolean).join("\n\n");
+  let homeRecoveryContext = "";
+  if (isGeneral && sessionId && homeTaskContinuation) {
+    const priorHomeTask = await loadHomeTaskJournal(projectRoot, sessionId);
+    if (priorHomeTask && priorHomeTask.status !== "completed") {
+      homeRecoveryContext = priorHomeTask.contextSummary || buildHomeTaskContextSummary(priorHomeTask);
+    }
+  }
+  const requestText = [request, homeRecoveryContext, identityNote, resumeNote, skillNote, imageNote, docNote, importNote].filter(Boolean).join("\n\n");
   let initialHumanMessage: HumanMessage;
   if (images && images.length > 0) {
     const contentParts: any[] = [{ type: "text", text: requestText }];
@@ -1047,6 +1124,49 @@ export async function runProjectAgent(options: {
     runMessages = [...clean, initialHumanMessage];
     if (hasResume) emit("status", `Resuming prior run · ${clean.length} checkpointed message(s) restored`);
   }
+
+  // Real run-start context budget: the old estimate only summed persisted
+  // turn texts and ignored the (large) system prompt, tool schemas, tool
+  // results and image/attachment payloads — so runs started over budget and
+  // 4xx'd at the first model call with no compaction. Estimate the ACTUAL
+  // payload (system prompt + every message, tool-call args included) and
+  // trim older history when it approaches the window.
+  const contextMessageBudget = Math.max(1500, compactionThreshold - systemPromptTokens - outputReserve);
+  const currentContext = (messages: any[]) => {
+    const estimatedTokens = systemPromptTokens + estimateMessagesTokens(messages) + outputReserve;
+    // Keep the session's context meter on the same retained-context scale the
+    // automatic trigger uses. Exact provider input belongs to this invocation
+    // only, while the next user request will also restore prior history.
+    const exactInputTokens = usage.hasObservedInputTokens ? usage.observedInputTokens : 0;
+    return {
+      usedTokens: Math.max(estimatedTokens, exactInputTokens),
+      contextWindow: modelContextWindow,
+      compactionThreshold,
+      estimated: exactInputTokens <= 0,
+    };
+  };
+  const emitContext = (messages: any[], compacted = false) => {
+    const snapshot = currentContext(messages);
+    if (compacted) snapshot.usedTokens = Math.max(estimateMessagesTokens(messages), Math.min(snapshot.usedTokens, compactionThreshold));
+    emit("context", "", undefined, undefined, undefined, undefined, undefined, snapshot);
+  };
+  if (!isSimple && runMessages.length > 0) {
+    const initialTokens = estimateMessagesTokens(runMessages);
+    if (systemPromptTokens + initialTokens + outputReserve >= compactionThreshold) {
+      const pct = Math.round(((systemPromptTokens + initialTokens) / Math.max(1, modelContextWindow)) * 100);
+      emit("status", `Context near limit at start (~${pct}% of ${formatContextWindow(modelContextWindow)}) — condensing earlier context…`);
+      if (contextMessageBudget <= 1500) {
+        throw new Error(
+          `Model context window (${formatContextWindow(modelContextWindow)}) is too small for this run even after compaction — the system prompt plus output reserve need more headroom. Pick a model with a larger context window or increase the context limit in Settings → Providers.`
+        );
+      }
+      runMessages = trimRunMessages(runMessages, contextMessageBudget);
+      const afterTokens = estimateMessagesTokens(runMessages);
+      const freedTokens = Math.max(0, initialTokens - afterTokens);
+      emit("status", `Context condensed: ~${formatTokenCount(initialTokens)} → ~${formatTokenCount(afterTokens)} tokens (${formatTokenCount(freedTokens)} freed)`);
+    }
+  }
+  emitContext(runMessages, estimatedHistoryTokens >= compactionThreshold);
   let lastPlanItems: PlanItem[] | null = resumePlanItems ?? null;
   if (hasResume && resumePlanItems && resumePlanItems.length > 0) {
     emit("plan", "Resumed working plan", resumePlanItems);
@@ -1075,30 +1195,33 @@ export async function runProjectAgent(options: {
   let homeJournal: HomeTaskJournal | null = null;
   let homeJournalWrite = Promise.resolve();
   const queueHomeJournalWrite = (next: HomeTaskJournal) => {
-    homeJournal = next;
+    homeJournal = updateHomeTaskContextSummary(next);
     if (!isGeneral) return;
+    const snapshot = homeJournal;
     homeJournalWrite = homeJournalWrite
-      .then(() => saveHomeTaskJournal(projectRoot, next))
+      .then(() => saveHomeTaskJournal(projectRoot, snapshot))
       .catch(() => undefined);
   };
   if (isGeneral && sessionId && homeTaskContract) {
-    homeJournal = createHomeTaskJournal({
-      sessionId,
-      goal: request,
-      expectsOutput: homeTaskContract.expectsOutput,
-      needsResearch: homeTaskContract.needsResearch,
-    });
+    const previous = homeTaskContinuation ? await loadHomeTaskJournal(projectRoot, sessionId) : null;
+    homeJournal = previous && previous.status !== "completed"
+      ? { ...previous, status: "active", completedAt: undefined }
+      : createHomeTaskJournal({
+          sessionId,
+          goal: request,
+          expectsOutput: homeTaskContract.expectsOutput,
+          needsResearch: homeTaskContract.needsResearch,
+        });
+    if (previous && previous.status !== "completed") {
+      homeJournal = {
+        ...homeJournal,
+        goal: previous.goal,
+        expectsOutput: previous.expectsOutput || homeTaskContract.expectsOutput,
+        needsResearch: previous.needsResearch || homeTaskContract.needsResearch,
+      };
+    }
     queueHomeJournalWrite(homeJournal);
   }
-  let codeJournal: CodeTaskJournal | null = null;
-  let codeJournalWrite = Promise.resolve();
-  const queueCodeJournalWrite = (next: CodeTaskJournal) => {
-    codeJournal = next;
-    if (isGeneral || !sessionId) return;
-    codeJournalWrite = codeJournalWrite
-      .then(() => saveCodeTaskJournal(projectRoot, next))
-      .catch(() => undefined);
-  };
   if (!isGeneral && sessionId) {
     const previous = hasResume ? await loadCodeTaskJournal(projectRoot, sessionId) : null;
     queueCodeJournalWrite(createCodeTaskJournal({ sessionId, goal: request, mode, resume: previous }));
@@ -1203,6 +1326,21 @@ export async function runProjectAgent(options: {
           finalMessages = payload.messages;
           runMessages = payload.messages;
           progress.noteSuperstep(payload.messages.length);
+          emitContext(payload.messages);
+          // Mid-run context pressure (Claude-Code-style): the run only grows,
+          // so when EITHER the provider-reported input of the last model call
+          // OR the projected next request crosses the threshold, the next call
+          // is expected to fail. Stop at this consistent superstep boundary,
+          // condense, and relaunch — tool results already committed are kept.
+          if (!isSimple) {
+            const projectedTokens = systemPromptTokens + estimateMessagesTokens(payload.messages) + outputReserve;
+            const measuredTokens = usage.observedInputTokens;
+            if (measuredTokens >= compactionThreshold || projectedTokens >= compactionThreshold) {
+              throw new AgentContextRelaunch(
+                `measured ${formatTokenCount(measuredTokens)}, projected ${formatTokenCount(projectedTokens)} ≥ threshold ${formatTokenCount(compactionThreshold)}`
+              );
+            }
+          }
           continue;
         }
         if (streamMode === "updates" && payload && typeof payload === "object") {
@@ -1362,7 +1500,21 @@ export async function runProjectAgent(options: {
     if (finalMessages.length > 0) {
       runMessages = finalMessages;
     }
-    const finalAnswer = textFromMessage(finalMessages[finalMessages.length - 1]);
+    const finalMessage = finalMessages[finalMessages.length - 1];
+    const finalAnswer = textFromMessage(finalMessage);
+    // Silent SSE failure (seen with OpenRouter): the provider can return an
+    // error payload INSIDE a 200 response and the stream simply ends — no
+    // exception, and the final AIMessage carries neither text nor tool calls.
+    // That must never be fabricated into a canned "success": raise it as a
+    // transient "empty response" error so withAgentRetry re-attempts the
+    // stream, and if retries exhaust, the run fails honestly instead.
+    const lastIsAi = typeof finalMessage?.type === "string"
+      ? finalMessage.type === "ai"
+      : finalMessage?.constructor?.name === "AIMessage";
+    const madeNoOutput = !finalAnswer && !(Array.isArray(finalMessage?.tool_calls) && finalMessage.tool_calls.length > 0);
+    if (finalMessages.length > 0 && lastIsAi && madeNoOutput) {
+      throw new Error(`Provider returned an empty response (silent stream failure): the final model message has no text and no tool calls after ${finalMessages.length} messages.`);
+    }
     return finalAnswer || (isGeneral ? "I have completed the requested task." : "Agent finished without a textual response.");
   };
 
@@ -1370,7 +1522,69 @@ export async function runProjectAgent(options: {
     if (extra.length > 0) {
       runMessages = [...runMessages, ...extra];
     }
-    return withAgentRetry(consumeStream);
+    // Context-window recovery loop. Context-length errors are not transient —
+    // the provider would reject the same payload forever — so instead of
+    // propagating them (or wastefully retrying via rate-limit backoff) the
+    // transcript is condensed and the stream relaunched with the condensation
+    // note. Real usage data from the previous attempt (AgentContextRelaunch)
+    // is the preferred trigger; message-shaped provider errors are the
+    // fallback for providers that never report usage mid-stream.
+    let relaunches = 0;
+    for (;;) {
+      try {
+        return await withAgentRetry(consumeStream);
+      } catch (error: any) {
+        const cancelled = error instanceof RunCancelledError || error?.name === "AbortError" || isCancelled() || signal?.aborted;
+        if (cancelled) throw error;
+        const relaunchRequested = error instanceof AgentContextRelaunch || isContextWindowError(error);
+        if (!relaunchRequested || isSimple || runMessages.length <= 2) throw error;
+        if (relaunches >= 3) {
+          throw new Error(
+            `Context window exhausted after ${relaunches} condensation passes. The current task leaves too little room for the model to keep working — try a model with a larger context window.`
+          );
+        }
+        relaunches++;
+        const preTokens = estimateMessagesTokens(runMessages);
+        if (contextMessageBudget <= 1500) {
+          throw new Error(
+            `Model context window (${formatContextWindow(modelContextWindow)}) is too small for this run even after context condensation — the system prompt plus output reserve need more headroom. Pick a model with a larger context window or adjust the context limit in Settings → Providers.`
+          );
+        }
+        emit(
+          "status",
+          `Context window reached${error instanceof AgentContextRelaunch ? "" : ` (${error?.message?.slice(0, 120) || "provider reported an over-limit payload"})`} — condensing earlier context and resuming…`
+        );
+        if (isGeneral && homeJournal) {
+          // Keep the task ledger in context after transcript condensation. It
+          // is runtime-generated from completed tool results and bounded, so
+          // the model can continue without trusting an earlier assistant claim.
+          runMessages = trimRunMessagesWithRecoveryBrief(
+            runMessages,
+            updateHomeTaskContextSummary(homeJournal).contextSummary,
+            contextMessageBudget,
+          );
+        } else if (!isGeneral && codeJournal) {
+          await codeJournalWrite;
+          runMessages = trimRunMessagesWithRecoveryBrief(
+            runMessages,
+            buildCodeTaskContextSummary(codeJournal),
+            contextMessageBudget,
+          );
+        } else {
+          runMessages = trimRunMessages(runMessages, contextMessageBudget);
+        }
+        const condensedTokens = estimateMessagesTokens(runMessages);
+        emitContext(runMessages);
+        const nextProjected = systemPromptTokens + condensedTokens + outputReserve;
+        if (nextProjected >= compactionThreshold) {
+          throw new Error(
+            `Context condensation could not free enough room (projected ~${formatTokenCount(nextProjected)} of ${formatContextWindow(modelContextWindow)} tokens). Use a model with a larger context window.`
+          );
+        }
+        emit("status", `Context condensed: ~${formatTokenCount(preTokens)} → ~${formatTokenCount(condensedTokens)} tokens — resuming the run from the condensed checkpoint`);
+        continue;
+      }
+    }
   };
 
   // Single-loop (opencode-style): the old "brief" node was a wasted superstep.
@@ -2063,7 +2277,8 @@ export async function runProjectAgent(options: {
   // estimates for the streamed text so token counts are never zero.
   const fallbackOutputTokens = unaccountedOutputChars > 0 ? Math.max(1, estimateTokens("x".repeat(unaccountedOutputChars))) : 0;
   const finalUsage = usage.finalize(modelName, estimatedFallbackInputTokens, fallbackOutputTokens);
-  emit("assistant", result.response, undefined, finalUsage);
+  const finalContext = currentContext(runMessages);
+  emit("assistant", result.response, undefined, finalUsage, undefined, undefined, undefined, finalContext);
   emit("usage", `Token usage · ${finalUsage.totalTokens} tokens${finalUsage.estimatedCost == null ? "" : ` (~$${finalUsage.estimatedCost})`}`, undefined, finalUsage);
 
   const hookEvent = result?.verification === "failed" ? "verify:fail" : "run:end";
@@ -2142,6 +2357,7 @@ export async function runProjectAgent(options: {
     // Session memory is a compact pointer, NOT a transcript copy: the full
     // answer lives in chat history. Tables/lists are never duplicated here.
     response: result.response as string,
+    context: finalContext,
     verification: (result.verification as string) || "none",
     memoryEntry: `Task: ${tail(request, 200)} | Result: ${firstMeaningfulLine(result.response as string, 160)} | Verification: ${(result.verification as string) || "none"} (details in chat transcript)`,
     usage: finalUsage,

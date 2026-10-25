@@ -1,7 +1,6 @@
 import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { boundedExecFile } from "./shell-subprocess.js";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { stripProjectRoot } from "./path-utils.js";
@@ -13,7 +12,7 @@ export type { SymbolEntry };
 // AST-backed (not regex fallback) by the time an agent run starts.
 startSymbolParserWarmup();
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = boundedExecFile;
 
 const IGNORED_DIRS = new Set([
   ".git",
@@ -308,8 +307,15 @@ export async function runDiagnostics(projectRoot: string, files: string[] = []):
     if (existsSync(pkgPath) || existsSync(path.join(root, "tsconfig.json"))) {
       // Prefer tsc; eslint is a lint fast-path handled by verify, not here.
       const tscArgs = ["--no-install", "tsc", "--noEmit", "--pretty", "false"];
+      // On Windows `npx` is a .cmd shim and Node refuses to spawn .cmd/.bat
+      // through execFile without a shell (EINVAL since 18.20) — route through
+      // cmd.exe like lsp-service does. The command is a fixed argv, so the
+      // shell hop adds no injection surface.
+      const spawnTsc = process.platform === "win32"
+        ? execFileAsync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `npx ${tscArgs.join(" ")}`], { cwd: root, timeout: 60000, maxBuffer: 8_000_000 })
+        : execFileAsync("npx", tscArgs, { cwd: root, timeout: 60000, maxBuffer: 8_000_000 });
       try {
-        await execFileAsync("npx", tscArgs, { cwd: root, timeout: 60000, maxBuffer: 8_000_000 });
+        await spawnTsc;
         return { items, summary: "No TypeScript errors." };
       } catch (error: any) {
         const output = String(error?.stdout || error?.output || error?.message || "");
@@ -320,7 +326,14 @@ export async function runDiagnostics(projectRoot: string, files: string[] = []):
           items.push(parsed);
           if (items.length >= 50) break;
         }
-        if (!items.length) return { items, summary: "TypeScript check passed (no parseable errors)." };
+        if (!items.length) {
+          // A spawn-level failure (never ran) must not be reported as a pass —
+          // the agent's verify loop would trust edits that never compiled.
+          if (!/error TS/i.test(output) && /\b(EINVAL|ENOENT|spawn|EACCES)\b/i.test(String(error?.message || ""))) {
+            return { items, summary: `TypeScript check could not run: ${String(error?.message || error).slice(0, 200)}` };
+          }
+          return { items, summary: "TypeScript check passed (no parseable errors)." };
+        }
         const summary = items.map((d) => `${d.file}:${d.line}:${d.col} ${d.code} ${d.message}`).join("\n");
         return { items, summary: `TypeScript diagnostics (${items.length}):\n${summary}`.slice(0, 4000) };
       }

@@ -2,6 +2,7 @@ import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { writeFileAtomic, withFileLock } from "./atomic-write.js";
+import { safePath } from "./project-tools.js";
 
 const electronRequire = createRequire(import.meta.url);
 type ElectronShim = {
@@ -320,10 +321,7 @@ export async function listHomeSessionFilesForDeletion(
 // when the user cancels.
 export async function downloadHomeFile(relativePath: string): Promise<string | null> {
   const root = await ensureHomeDir();
-  const source = path.resolve(root, relativePath);
-  if (source !== root && !source.startsWith(`${root}${path.sep}`)) {
-    throw new Error("Path escapes the Home folder.");
-  }
+  const source = safePath(root, relativePath);
   const dialog = electronMod().dialog;
   if (!dialog) return null;
   const { canceled, filePath } = await dialog.showSaveDialog({
@@ -394,10 +392,7 @@ const PREVIEW_SIZE_CAP = 30 * 1024 * 1024;
 
 export async function readHomeFile(relativePath: string): Promise<HomeFileContent> {
   const root = await ensureHomeDir();
-  const source = path.resolve(root, relativePath);
-  if (source !== root && !source.startsWith(`${root}${path.sep}`)) {
-    throw new Error("Path escapes the Home folder.");
-  }
+  const source = safePath(root, relativePath);
   const stat = await fs.stat(source);
   if (!stat.isFile()) throw new Error("Not a file.");
   if (stat.size > PREVIEW_SIZE_CAP) {

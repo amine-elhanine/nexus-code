@@ -103,3 +103,24 @@ export function getSessionUsage(session?: SessionRecord | null): AgentUsage | un
   }
   return session.usage;
 }
+
+/**
+ * Latest retained-context snapshot emitted by the agent. Unlike call input
+ * usage, this represents the context that a later turn will rebuild from.
+ */
+export function getSessionContextUsage(session?: SessionRecord | null): (AgentUsage & { contextWindow?: number; compactionThreshold?: number; usedTokens?: number }) | undefined {
+  if (!session) return undefined;
+  for (let i = (session.messages || []).length - 1; i >= 0; i--) {
+    const message = (session.messages || [])[i];
+    if (message.context) return {
+      inputTokens: message.context.usedTokens,
+      outputTokens: 0,
+      totalTokens: message.context.usedTokens,
+      estimatedCost: null,
+      contextWindow: message.context.contextWindow,
+      compactionThreshold: message.context.compactionThreshold,
+      usedTokens: message.context.usedTokens,
+    };
+  }
+  return undefined;
+}
