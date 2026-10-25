@@ -144,5 +144,34 @@ await test("empty/binary input throws a clear error", async () => {
   await assert.rejects(parseToMarkdown(Buffer.from([0, 1, 2, 3]), "x.bin"), /Unsupported|extract/i);
 });
 
+await test("docx tables keep their position between paragraphs (citation attribution)", async () => {
+  const zip = new JSZip();
+  const body = [
+    `<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Before</w:t></w:r></w:p>`,
+    `<w:tbl><w:tr><w:tc><w:p><w:r><w:t>metric</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>value</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`,
+    `<w:p><w:r><w:t>After the table</w:t></w:r></w:p>`,
+  ].join("");
+  zip.file(
+    "word/document.xml",
+    `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body}</w:body></w:document>`
+  );
+  const out = await parseToMarkdown(await zip.generateAsync({ type: "nodebuffer" }), "interleave.docx");
+  const before = out.markdown.indexOf("# Before");
+  const table = out.markdown.indexOf("| metric | value |");
+  const after = out.markdown.indexOf("After the table");
+  assert.ok(before !== -1 && table !== -1 && after !== -1, out.markdown.slice(0, 300));
+  assert.ok(before < table && table < after, `table must stay between paragraphs:\n${out.markdown.slice(0, 300)}`);
+});
+
+await test("html tables keep their position between blocks", async () => {
+  const html = `<html><body><h2>Top</h2><table><tr><th>k</th><th>v</th></tr><tr><td>a</td><td>1</td></tr></table><p>Below the table</p></body></html>`;
+  const out = await parseToMarkdown(Buffer.from(html, "utf8"), "interleave.html");
+  const top = out.markdown.indexOf("## Top");
+  const table = out.markdown.indexOf("| k | v |");
+  const below = out.markdown.indexOf("Below the table");
+  assert.ok(top !== -1 && table !== -1 && below !== -1, out.markdown.slice(0, 300));
+  assert.ok(top < table && table < below, `table must stay between blocks:\n${out.markdown.slice(0, 300)}`);
+});
+
 console.log(`\nnotebook-parse: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

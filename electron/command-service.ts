@@ -14,25 +14,32 @@ import type { ProjectRecord } from "./store.js";
 const DEFAULT_COMMAND_TIMEOUT_SECONDS = 180;
 
 export async function readCommandPolicy(projectRoot: string): Promise<CommandPolicy> {
+  return (await readCommandPolicyWithTrust(projectRoot)).policy;
+}
+
+// package.json policy is user-authored (committed, reviewable) — trusted to
+// override the built-in ask gates. `.nexus/permissions.json` sits inside the
+// workspace where the agent can write it, so its allow list is untrusted.
+export async function readCommandPolicyWithTrust(projectRoot: string): Promise<{ policy: CommandPolicy; trustedAllow: boolean }> {
   const candidates = [path.join(projectRoot, ".nexus", "permissions.json")];
   try {
     const packageJson = JSON.parse(await readFile(path.join(projectRoot, "package.json"), "utf8"));
-    if (packageJson?.nexus?.permissions) return packageJson.nexus.permissions;
+    if (packageJson?.nexus?.permissions) return { policy: packageJson.nexus.permissions, trustedAllow: true };
   } catch { /* optional config */ }
   for (const file of candidates) {
     try {
       const parsed = JSON.parse(await readFile(file, "utf8"));
-      if (parsed && typeof parsed === "object") return parsed;
+      if (parsed && typeof parsed === "object") return { policy: parsed, trustedAllow: false };
     } catch { /* optional config */ }
   }
-  return {};
+  return { policy: {}, trustedAllow: true };
 }
 
 function approvalKey(command: string): string {
   if (isHttpMutationCommand(command)) return "network-write";
-  if (/\bgit\s+push\b/i.test(command)) return "git-push";
-  if (/\bgit\s+(reset|clean|rebase)\b/i.test(command)) return "git-history";
-  if (/\b(?:npm|pnpm|yarn|pip|pip3|cargo|poetry|uv)\s+(?:install|add|remove|uninstall)\b/i.test(command)) return "dependency-change";
+  if (/\bgit\b[^|&;\n]*\bpush\b/i.test(command)) return "git-push";
+  if (/\bgit\b[^|&;\n]*\b(?:reset|clean|rebase)\b/i.test(command)) return "git-history";
+  if (/\b(?:npm|pnpm|yarn|pip|pip3|cargo|poetry|uv)\s+(?:i|ci|install|add|remove|uninstall|rm|un)\b/i.test(command)) return "dependency-change";
   if (/\bgo\s+get\b/i.test(command)) return "dependency-change";
   if (/\bmvn\s+(?:dependency|install)\b/i.test(command)) return "dependency-change";
   if (/\bdotnet\s+(?:add|remove|restore)\b/i.test(command)) return "dependency-change";
@@ -109,7 +116,7 @@ export function cancelCommandRun(runId?: string) {
 }
 export function endCommandRun(runId: string = DEFAULT_RUN_ID) { runStates.delete(runId); }
 
-function runProcess(shell: string, args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv; timeout?: number; maxBuffer?: number }, state: RunState) {
+function runProcess(shell: string, args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv; timeout?: number; maxBuffer?: number; onOutput?: (chunk: string) => void }, state: RunState) {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
     // windowsVerbatimArguments is required on Windows: Node would otherwise
     // backslash-escape the quotes inside the command string, and cmd.exe
@@ -127,6 +134,11 @@ function runProcess(shell: string, args: string[], options: { cwd: string; env?:
       if (error) { (error as any).stdout = stdout; (error as any).stderr = stderr; reject(error); }
       else resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
     });
+    const forwardOutput = (chunk: Buffer | string) => {
+      try { options.onOutput?.(chunk.toString()); } catch { /* output observers must not break the command */ }
+    };
+    child.stdout?.on("data", forwardOutput);
+    child.stderr?.on("data", forwardOutput);
     if (child.pid) state.children.add(child);
   });
 }
@@ -141,14 +153,31 @@ export const MODEL_OUTPUT_CAP = 8000;
 export function cleanTerminalOutput(raw: string): string {
   if (!raw) return "";
   let cleaned = raw.replace(/\r\n/g, "\n");
-  // Collapse carriage returns that overwrite current line (spinners/progress)
-  cleaned = cleaned.replace(/[^\n\r]*\r/g, "");
+  // Collapse carriage returns that overwrite current line (spinners/progress).
+  // Equivalent to a `[^\n\r]*\r` global strip (drop everything up to and
+  // including each CR, per newline-delimited line) but implemented as a
+  // linear scan — the regex variant backtracks quadratically on megabyte
+  // single-line outputs and can hang the renderer round-trip.
+  cleaned = cleaned
+    .split("\n")
+    .map((line) => {
+      const lastCr = line.lastIndexOf("\r");
+      return lastCr === -1 ? line : line.slice(lastCr + 1);
+    })
+    .join("\n");
   // Some verbose build tools print their full environment. Keep that noise
   // and credential-like assignments out of model context.
   cleaned = cleaned
     .split("\n")
     .filter((line) => !/^\s*[A-Z][A-Z0-9_]*(?:\s*:\s*|=\s*)['"]?(?:[A-Za-z]:\\|https?:\/\/|\\\\|[A-Za-z0-9_./-]{12,})/.test(line))
-    .map((line) => line.replace(/((?:api[_-]?key|token|secret|password|authorization)\s*[:=]\s*)[^,\s}\]]+/ig, "$1[REDACTED]"))
+    .map((line) => {
+      // Credential-style headers ("Authorization: Bearer …", "Bearer jwt…")
+      // must run BEFORE the key=value substitution, which would otherwise
+      // consume "bearer" as the value and leave the token in the clear.
+      let redacted = line.replace(/((?:bearer|basic)\s+)[A-Za-z0-9._~+/=-]{8,}/ig, "$1[REDACTED]");
+      redacted = redacted.replace(/((?:api[_-]?key|token|secret|password|authorization)\s*[:=]\s*)[^,\s}\]]+/ig, "$1[REDACTED]");
+      return redacted;
+    })
     .join("\n");
   // Collapse runs of 3+ blank lines
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
@@ -168,17 +197,22 @@ export function capModelOutput(output: string): { output: string; truncated: boo
 
 function commandLeavesProjectRoot(projectRoot: string, command: string): boolean {
   const root = path.resolve(projectRoot).toLowerCase();
-  const matches = [...command.matchAll(/(?:^|[&|])\s*(?:cd|pushd)\s+["']?([^"'&|]+)["']?/gi)];
+  const matches = [...command.matchAll(/(?:^|[&|;])\s*(?:cd|pushd)\s+["']?([^"'&|;]+)/gi)];
   for (const match of matches) {
     const target = match[1].trim();
-    if (!/^(?:[a-z]:[\\/]|\\\\|\/)/i.test(target)) continue;
-    const resolved = path.resolve(target).toLowerCase();
+    if (!target) continue;
+    // Shell-expandable forms (~, %VAR%, $VAR, `cd -`) resolve outside the
+    // workspace at runtime — the lexical check cannot follow them, so refuse.
+    if (target === "-" || /^~/.test(target) || /%[^%]+%/.test(target) || /\$\{?\w/.test(target)) return true;
+    // Absolute AND relative targets both resolve against the command cwd
+    // (= project root): `cd ../..` must trip the same guard as `cd c:\`.
+    const resolved = path.resolve(root, target).toLowerCase();
     if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) return true;
   }
   return false;
 }
 
-export async function executeCommand(projectRoot: string, command: string, options: { timeoutSeconds?: number; runId?: string; requireApproval?: boolean; policy?: CommandPolicy } = {}): Promise<CommandResult> {
+export async function executeCommand(projectRoot: string, command: string, options: { timeoutSeconds?: number; runId?: string; requireApproval?: boolean; policy?: CommandPolicy; policyTrusted?: boolean; onOutput?: (chunk: string) => void; extraEnv?: Record<string, string> } = {}): Promise<CommandResult> {
   const state = stateFor(options.runId);
   if (state.cancelled || state.abortController.signal.aborted) {
     throw new RunCancelledError();
@@ -189,9 +223,11 @@ export async function executeCommand(projectRoot: string, command: string, optio
   if (commandLeavesProjectRoot(projectRoot, normalized)) {
     return { output: "Command blocked: do not cd outside the selected project workspace. Commands already run with the correct project cwd; use relative paths instead.", exitCode: 1, truncated: false };
   }
-  const policy = options.policy ?? await readCommandPolicy(projectRoot);
-  if (isDeniedCommand(normalized) || classifyCommand(normalized, policy) === "deny") return { output: "Command blocked by permission policy (destructive pattern).", exitCode: 1, truncated: false };
-  if (options.requireApproval && classifyCommand(normalized, policy) === "ask") {
+  const { policy, trustedAllow } = options.policy !== undefined
+    ? { policy: options.policy, trustedAllow: options.policyTrusted !== false }
+    : await readCommandPolicyWithTrust(projectRoot);
+  if (isDeniedCommand(normalized) || classifyCommand(normalized, policy, { trustedAllow }) === "deny") return { output: "Command blocked by permission policy (destructive pattern).", exitCode: 1, truncated: false };
+  if (options.requireApproval && classifyCommand(normalized, policy, { trustedAllow }) === "ask") {
     const decision = await requestCommandApproval({ runId: options.runId, approvalKey: approvalKey(normalized), command: normalized, cwd: path.resolve(projectRoot), reason: "This command can change dependencies, Git history, remote state, execute downloaded code, or send data to a remote service." });
     if (state.cancelled || state.abortController.signal.aborted) throw new RunCancelledError();
     if (decision === "deny") return { output: "Command denied or approval timed out.", exitCode: 126, truncated: false, approvalDenied: true };
@@ -209,6 +245,10 @@ export async function executeCommand(projectRoot: string, command: string, optio
   // via the daemon allowlist mechanism or explicit configuration.
   const env = {
     ...scrubSecretEnv(),
+    // Caller-supplied additions are main-process-controlled values only
+    // (never model-controlled) — e.g. passing a file path to a script without
+    // shell/python string interpolation.
+    ...(options.extraEnv || {}),
     CI: "true",
     DEBIAN_FRONTEND: "noninteractive",
     NONINTERACTIVE: "1",
@@ -223,6 +263,7 @@ export async function executeCommand(projectRoot: string, command: string, optio
       env,
       timeout: Math.max(10, options.timeoutSeconds || DEFAULT_COMMAND_TIMEOUT_SECONDS) * 1000,
       maxBuffer: 8_000_000,
+      onOutput: options.onOutput,
     }, state);
     if (state.cancelled || state.abortController.signal.aborted) throw new RunCancelledError();
     const capped = capModelOutput([result.stdout, result.stderr].filter(Boolean).join("\n"));
@@ -239,7 +280,7 @@ export async function executeCommand(projectRoot: string, command: string, optio
 
 function backendId(project: ProjectRecord) { return `workspace-${project.id}`; }
 
-export async function getAgentBackend(project: ProjectRecord, options: { readOnly?: boolean; runId?: string; editPolicy?: "auto" | "ask" } = {}) {
+export async function getAgentBackend(project: ProjectRecord, options: { readOnly?: boolean; runId?: string; editPolicy?: "auto" | "ask"; onCommandOutput?: (command: string, chunk: string) => void } = {}) {
   const backend: any = new FilesystemBackend({ rootDir: path.resolve(project.root), virtualMode: true });
   backend.id = backendId(project);
 
@@ -280,8 +321,14 @@ export async function getAgentBackend(project: ProjectRecord, options: { readOnl
     guardAgainstLegacyStateDir(backend, project.root);
     // Pin policy at run start. Otherwise the agent could write an allow rule
     // into the workspace and use it to self-approve a later shell command.
-    const commandPolicy = await readCommandPolicy(project.root);
-    backend.execute = (command: string) => executeCommand(project.root, command, { runId: options.runId, requireApproval: true, policy: commandPolicy });
+    const { policy: commandPolicy, trustedAllow: commandPolicyTrusted } = await readCommandPolicyWithTrust(project.root);
+    backend.execute = (command: string) => executeCommand(project.root, command, {
+      runId: options.runId,
+      requireApproval: true,
+      policy: commandPolicy,
+      policyTrusted: commandPolicyTrusted,
+      onOutput: options.onCommandOutput ? (chunk) => options.onCommandOutput!(command, chunk) : undefined,
+    });
     if (options.editPolicy === "ask") {
       // Opt-in edit approval (AppSettings.editPolicy="ask"): backend file
       // mutations wait for the same approval UI shell commands use. A

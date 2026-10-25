@@ -1,7 +1,7 @@
 // Unit tests for loopPreventionMiddleware in agent-service
 import assert from "node:assert/strict";
 import { ToolMessage } from "@langchain/core/messages";
-import { loopPreventionMiddleware, resolveResearchBudget, RESEARCH_BUDGET_BASE, RESEARCH_BUDGET_WITH_RESEARCH, loadedSkillNamesFromMessages, shouldSkipMcpForTask } from "../dist-electron/agent-service.js";
+import { loopPreventionMiddleware, resolveResearchBudget, RESEARCH_BUDGET_BASE, RESEARCH_BUDGET_WITH_RESEARCH, loadedSkillNamesFromMessages, shouldSkipMcpForTask, isWebTask, isProjectRunRequest } from "../dist-electron/agent-service.js";
 
 let passed = 0;
 let failed = 0;
@@ -168,6 +168,16 @@ await test("shouldSkipMcpForTask drops MCP only for pure doc builds", () => {
   assert.equal(shouldSkipMcpForTask("Research the web for transformer papers and write a report"), false);
   assert.equal(shouldSkipMcpForTask("list me my github repos"), false);
   assert.equal(shouldSkipMcpForTask("Fix the login bug in src/auth.ts"), false);
+});
+
+await test("run or preview project requests bind built-in browser tools", () => {
+  assert.equal(isWebTask("Run the project"), true);
+  assert.equal(isWebTask("Start my app"), true);
+  assert.equal(isWebTask("Preview the website"), true);
+  assert.equal(isWebTask("Run unit tests"), false);
+  assert.equal(isWebTask("Explain the project structure"), false);
+  assert.equal(isProjectRunRequest("Run the project"), true);
+  assert.equal(isProjectRunRequest("Run unit tests"), false);
 });
 
 await test("research budget adapts to needsResearch; non-deliverables unbudgeted", async () => {

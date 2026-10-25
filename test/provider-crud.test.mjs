@@ -1,6 +1,8 @@
 // Granular provider CRUD: the key can only change through updateProviderKey,
 // and connection/model edits can never touch it (the whole-record save path
-// that lost keys is gone). Runs against a scratch APPDATA.
+// that lost keys is gone). Runs against a scratch APPDATA. A fake safeStorage
+// shim is injected so disk assertions prove keys are ENCRYPTED at rest, never
+// plaintext.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
@@ -13,7 +15,9 @@ test("provider CRUD: key survives every edit path except explicit key update", a
   const {
     createProviderConnection, updateProviderConnection, updateProviderKey, setProviderEnabled,
     addProviderModels, updateProviderModel, removeProviderModel, listProviders,
+    setElectronShimForTesting,
   } = await import("../dist-electron/store.js");
+  setElectronShimForTesting({ safeStorage: { isEncryptionAvailable: () => true, encryptString: (value) => Buffer.from(`enc:${value}`), decryptString: (buffer) => buffer.toString().slice(4) } });
   try {
     // Create: connection only, models start empty, enabled by default.
     const created = await createProviderConnection({ provider: "openai", label: "OpenAI", apiKey: "sk-live-123", baseUrl: "https://api.openai.com/v1" });
@@ -55,11 +59,12 @@ test("provider CRUD: key survives every edit path except explicit key update", a
     assert.equal(rekeyed.apiKey, "sk-rotated-456");
     await assert.rejects(() => updateProviderKey(created.id, "  "), "empty key replacement is rejected");
 
-    // Everything persisted to disk.
+    // Everything persisted to disk — encrypted, never plaintext.
     const stateFile = path.join(scratch, "nexus", "nexus-state.json");
     const onDisk = JSON.parse(await fs.readFile(stateFile, "utf8"));
     const diskProvider = onDisk.providers.find((p) => p.id === created.id);
-    assert.equal(diskProvider.apiKey, "sk-rotated-456");
+    assert.ok(diskProvider.apiKey.startsWith("safeStorage:v1:"), "persisted key must be encrypted, got plain text");
+    assert.ok(!JSON.stringify(onDisk).includes("sk-rotated-456"), "raw key must not appear anywhere in the state file");
     assert.deepEqual(diskProvider.models, ["gpt-5.5", "gpt-5.5-mini"]);
     assert.equal(diskProvider.enabled, true);
 

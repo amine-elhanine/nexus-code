@@ -1,10 +1,9 @@
 import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { boundedExecFile } from "./shell-subprocess.js";
 import { getHeadCommit, resetNexusCommitsOnly } from "./repo-service.js";
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = boundedExecFile;
 export type WorkspaceDiffFile = { path: string; directory: string; name: string; additions: number; deletions: number; status: string; patch: string };
 export type GitStatusCode = "U" | "A" | "M" | "D" | "R";
 export type WorkspaceGitStatusEntry = { path: string; code: GitStatusCode };
@@ -266,7 +265,10 @@ export async function revertWorkspaceHunk(projectRoot: string, relativePath: str
 // fidelity the in-memory snapshot had; binary files are not checkpointed.
 const MAX_CHECKPOINT_FILES = 2000;
 
-type CheckpointFileEntry = { path: string; content: string | null };
+// `content` is utf8 text; `binary` (base64 buffer) marks files that must be
+// restored byte-exact — reading binaries as utf8 round-trips to mojibake.
+// `content: null` with no `binary` means the file did not exist before the run.
+type CheckpointFileEntry = { path: string; content: string | null; binary?: string };
 // headCommit is the git HEAD at snapshot time (null = unborn/non-git).
 // It powers the durable undo layer: restore resets only Nexus-owned commits
 // made after this point, never user commits.
@@ -296,10 +298,21 @@ export async function createWorkspaceCheckpoint(projectRoot: string, checkpointI
   for (const file of diffs) {
     if (files.length >= MAX_CHECKPOINT_FILES) { truncated = true; break; }
     try {
-      const content = await fs.readFile(path.resolve(root, file.path), "utf8");
-      files.push({ path: file.path, content });
+      const buf = await fs.readFile(path.resolve(root, file.path));
+      // git's own binary heuristic: a NUL in the leading bytes means utf8
+      // round-tripping would corrupt the file on restore.
+      const sniffEnd = Math.min(buf.length, 8192);
+      let binary = false;
+      for (let i = 0; i < sniffEnd; i++) { if (buf[i] === 0) { binary = true; break; } }
+      if (binary) {
+        files.push({ path: file.path, content: null, binary: buf.toString("base64") });
+      } else {
+        files.push({ path: file.path, content: buf.toString("utf8") });
+      }
     } catch {
-      files.push({ path: file.path, content: null });
+      // Unreadable dirty file: no entry. Restore then falls back to
+      // revert-to-HEAD for it instead of deleting it (the old null marker
+      // was interpreted as "did not exist" and would have removed it).
     }
   }
   let headCommit: string | null = opts?.headCommit ?? null;
@@ -366,29 +379,35 @@ export async function restoreWorkspaceCheckpoint(projectRoot: string, checkpoint
   // The manifest's recorded root is the restore target: the snapshot was
   // taken there, so its relative paths only make sense against it.
   const root = checkpoint.projectRoot;
-  const snapshot = new Map(checkpoint.files.map((entry) => [entry.path, entry.content] as const));
+  const snapshot = new Map(checkpoint.files.map((entry) => [entry.path, entry] as const));
   const currentDiffs = await getWorkspaceDiffFiles(root);
   const unionPaths = new Set([...snapshot.keys(), ...currentDiffs.map((d) => d.path)]);
+  // Durable layer FIRST: if Nexus auto-committed on an isolated session branch
+  // since the snapshot, roll those commits back BEFORE restoring files —
+  // `git reset --hard` checks the preRunHead blob into the worktree for every
+  // tracked file and would otherwise overwrite the content restored below.
+  // Mixed/user commits are left untouched by resetNexusCommitsOnly.
+  try {
+    await resetNexusCommitsOnly(root, checkpoint.headCommit ?? null);
+  } catch { /* best effort — the file restore below still runs */ }
   for (const filePath of unionPaths) {
-    const priorContent = snapshot.get(filePath);
+    const prior = snapshot.get(filePath);
     const abs = path.resolve(root, filePath);
-    if (priorContent === undefined) {
+    if (prior === undefined) {
       // Clean before the run, changed since — back to HEAD.
       await revertWorkspaceFile(root, filePath);
-    } else if (priorContent === null) {
+    } else if (prior.binary !== undefined) {
+      // Byte-exact restore for binary snapshots (utf8 round-trip = mojibake).
+      await fs.mkdir(path.dirname(abs), { recursive: true });
+      await fs.writeFile(abs, Buffer.from(prior.binary, "base64"));
+    } else if (prior.content === null) {
       // Did not exist before the run — remove it (also no-op if already gone).
       await fs.rm(abs, { force: true, recursive: true });
     } else {
       await fs.mkdir(path.dirname(abs), { recursive: true });
-      await fs.writeFile(abs, priorContent, "utf8");
+      await fs.writeFile(abs, prior.content, "utf8");
     }
   }
-  // Durable layer: if Nexus auto-committed on an isolated session branch
-  // since the snapshot, roll those commits back. Mixed/user commits are left
-  // untouched by resetNexusCommitsOnly (file restore above still applies).
-  try {
-    await resetNexusCommitsOnly(root, checkpoint.headCommit ?? null);
-  } catch { /* file restore already succeeded — commit reset is best-effort */ }
   return true;
 }
 

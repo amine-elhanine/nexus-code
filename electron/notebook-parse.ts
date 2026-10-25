@@ -25,6 +25,10 @@ export type LlamaParseConfig = {
 
 const MAX_MARKDOWN_CHARS = 500_000;
 
+// Position marker substituted for extracted tables so they re-enter the
+// parsed markdown at their original document location.
+const TABLE_PLACEHOLDER = "@@NEXUS-TBL-";
+
 function cap(markdown: string): { markdown: string; truncated: boolean } {
   const text = (markdown || "").replace(/\r\n/g, "\n").trim();
   if (text.length > MAX_MARKDOWN_CHARS) return { markdown: text.slice(0, MAX_MARKDOWN_CHARS), truncated: true };
@@ -115,7 +119,10 @@ function parseHtml(buffer: Buffer): ParsedDocument {
     .replace(/<script[\s\S]*?<\/script\s*>/gi, " ")
     .replace(/<style[\s\S]*?<\/style\s*>/gi, " ")
     .replace(/<(nav|header|footer|aside)[\s\S]*?<\/\1\s*>/gi, " ");
-  // Tables first (atomic), then headings/paragraphs/items in document order.
+  // Tables first (atomic) — but each is replaced by a POSITION-PRESERVING
+  // placeholder paragraph so the document-order walk below emits the table at
+  // its original location (relocating tables to the end mis-attributes them
+  // to the last section and breaks citation mapping).
   const tableRe = /<table[\s\S]*?<\/table\s*>/gi;
   const tables: string[] = [];
   html = html.replace(tableRe, (m) => {
@@ -136,6 +143,7 @@ function parseHtml(buffer: Buffer): ParsedDocument {
       const norm = rows.map((r) => [...r, ...new Array(Math.max(0, width - r.length)).fill("")]);
       const esc = (c: string) => c.replace(/\|/g, "\\|");
       tables.push(`| ${norm[0].map(esc).join(" | ")} |\n| ${norm[0].map(() => "---").join(" | ")} |\n${norm.slice(1).map((r) => `| ${r.map(esc).join(" | ")} |`).join("\n")}`);
+      return `\n<p>${TABLE_PLACEHOLDER}${tables.length - 1}</p>\n`;
     }
     return "\n";
   });
@@ -156,8 +164,18 @@ function parseHtml(buffer: Buffer): ParsedDocument {
     else if (tag === "li") parts.push(`- ${text}`);
     else parts.push(text);
   }
-  for (const t of tables) parts.push(t);
-  const { markdown, truncated } = cap(parts.join("\n\n"));
+  // Substitute table placeholders back at their original document positions.
+  const expanded: string[] = [];
+  for (const part of parts) {
+    const token = part.match(new RegExp(`^${TABLE_PLACEHOLDER}(\\d+)$`));
+    if (token) {
+      const table = tables[Number(token[1])];
+      if (table) expanded.push(table);
+      continue;
+    }
+    expanded.push(part);
+  }
+  const { markdown, truncated } = cap(expanded.join("\n\n"));
   return { markdown, parser: "html", truncated };
 }
 
@@ -212,7 +230,10 @@ async function parseDocx(buffer: Buffer, describeImage?: ImageDescriber, onStatu
   if (!docFile) throw new Error("Not a valid .docx file (missing word/document.xml).");
   const xml = String(await docFile.async("string"));
   const lines: string[] = [];
-  // Tables first: w:tbl blocks -> markdown tables (atomic).
+  // Tables first: w:tbl blocks -> markdown tables (atomic). Each block is
+  // replaced by a POSITION-PRESERVING placeholder paragraph so the paragraph
+  // walk emits the table where it appeared in the document (relocating tables
+  // to the end mis-attributes them to the last heading and breaks citations).
   const tableRe = /<w:tbl[\s\S]*?<\/w:tbl>/g;
   const tables: string[] = [];
   let xmlNoTables = xml.replace(tableRe, (tbl) => {
@@ -237,10 +258,10 @@ async function parseDocx(buffer: Buffer, describeImage?: ImageDescriber, onStatu
       const norm = rows.map((r) => [...r, ...new Array(Math.max(0, width - r.length)).fill("")]);
       const esc = (c: string) => c.replace(/\|/g, "\\|");
       tables.push(`| ${norm[0].map(esc).join(" | ")} |\n| ${norm[0].map(() => "---").join(" | ")} |\n${norm.slice(1).map((r) => `| ${r.map(esc).join(" | ")} |`).join("\n")}`);
+      return `<w:p><w:r><w:t>${TABLE_PLACEHOLDER}${tables.length - 1}</w:t></w:r></w:p>`;
     }
     return "";
   });
-  const tablePlaceholders: string[] = tables;
   // Paragraphs in order, with heading styles.
   const pRe = /<w:p[\s>][\s\S]*?<\/w:p>/g;
   let pm: RegExpExecArray | null;
@@ -261,7 +282,17 @@ async function parseDocx(buffer: Buffer, describeImage?: ImageDescriber, onStatu
     else if (/^List(Bullet|Paragraph)/i.test(style)) paras.push(`- ${text}`);
     else paras.push(text);
   }
-  const all = [...paras, ...tablePlaceholders];
+  // Substitute table placeholders back at their original document positions.
+  const all: string[] = [];
+  for (const p of paras) {
+    const token = p.match(new RegExp(`^${TABLE_PLACEHOLDER}(\\d+)$`));
+    if (token) {
+      const table = tables[Number(token[1])];
+      if (table) all.push(table);
+      continue;
+    }
+    all.push(p);
+  }
   const visuals = await describeEmbeddedImages(zip, "word/media/", describeImage, onStatus);
   const { markdown, truncated } = cap([...all, ...visuals].join("\n\n"));
   return { markdown, parser: "docx", truncated };

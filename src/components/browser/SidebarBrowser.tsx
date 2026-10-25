@@ -205,7 +205,7 @@ export const SidebarBrowser: React.FC<{
     const api = window.nexus as unknown as {
       listDaemons?: () => Promise<Array<{ id: string; name: string; status: string; port?: number; command: string }>>;
       getBrowserHeadless?: () => Promise<boolean>;
-      onBrowserAgentActivity?: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean; sessionId?: string }) => void) => () => void;
+      onBrowserAgentActivity?: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean; forceFollow?: boolean; sessionId?: string }) => void) => () => void;
     };
     const loadServers = () => {
       if (typeof api.listDaemons !== "function") return;
@@ -249,8 +249,9 @@ export const SidebarBrowser: React.FC<{
             )
           );
         }
-        if (!headlessRef.current) {
-          // Watching: flip to the agent tab so you see it work.
+        if (payload.forceFollow || !headlessRef.current) {
+          // Watching mode follows all agent browsing. Explicit preview requests
+          // also open the Browser pane even when headless browsing is enabled.
           setActiveTabId(AGENT_TAB_ID);
           onAgentNavigateRef.current?.();
         } else {

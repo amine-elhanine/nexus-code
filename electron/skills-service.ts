@@ -1,4 +1,4 @@
-import { promises as fs, realpathSync } from "node:fs";
+import { promises as fs, realpathSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { tool } from "@langchain/core/tools";
@@ -590,10 +590,26 @@ function validateSkillPathAllowed(skillPath: string, projectRoot?: string | null
 
 export async function deleteSkill(skillPath: string, projectRoot?: string | null) {
   const validated = validateSkillPathAllowed(skillPath, projectRoot);
+  // A skill must live STRICTLY INSIDE an authorized root — validateSkillPathAllowed
+  // also admits the roots themselves, and `rm -rf` on a root would wipe the
+  // entire skills library in one call.
+  const authorizedRoots = [globalSkillsDir(), globalPluginsDir(), systemSkillsDir()];
+  if (projectRoot) authorizedRoots.push(projectSkillsDir(projectRoot), legacyProjectSkillsDir(projectRoot), pluginsDir(projectRoot));
+  const strictlyInside = authorizedRoots.some((root) => {
+    const resolvedRoot = canonicalPathExisting(root);
+    return resolvedRoot && validated.startsWith(`${resolvedRoot}${path.sep}`);
+  });
+  if (!strictlyInside) {
+    throw new Error(`Refusing to delete "${skillPath}": it is not a skill directory inside a skills library.`);
+  }
   const stat = await fs.stat(validated);
   let targetDir = validated;
   if (stat.isFile()) {
     targetDir = path.dirname(validated);
+  }
+  // Second guard: the target must actually be a skill (SKILL.md present).
+  if (!existsSync(path.join(targetDir, "SKILL.md"))) {
+    throw new Error(`Refusing to delete "${skillPath}": no SKILL.md found — not a skill directory.`);
   }
   await fs.rm(targetDir, { recursive: true, force: true });
 }

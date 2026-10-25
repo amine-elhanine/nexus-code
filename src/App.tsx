@@ -30,7 +30,7 @@ const DiffView = lazy(() => import("./views/DiffView.js").then((module) => ({ de
 import { MemoryView, ContextRow, MemoryRow } from "./views/MemoryView.js";
 import { useAppController, sortSessionsByUpdatedAt } from "./state/useAppController.js";
 import { applyTheme } from "./state/theme.js";
-import { getSessionUsage, fileIcon } from "./utils/format.js";
+import { getSessionUsage, getSessionContextUsage, fileIcon } from "./utils/format.js";
 import { timeLabel } from "./utils/format.js";
 import type { ChatAttachment, UpdaterState, SessionRecord } from "./types.js";
 import { formatCost, type FileEntry } from "./types.js";
@@ -397,6 +397,8 @@ function App() {
     ? (home.activeSession?.title || "Home")
     : (activeSession?.title || "No session selected");
   const currentSessionUsage = getSessionUsage(activeSession);
+  // Retained history size represents conversation context between requests.
+  const currentSessionContextUsage = getSessionContextUsage(activeSession);
   const [homePreviewPath, setHomePreviewPath] = useState<string | null>(null);
   // Delete-chat confirmation: fetches the high-confidence owned-file list so
   // the user can choose "delete chat" vs "delete chat + the files it created".
@@ -1075,6 +1077,7 @@ function App() {
                     setDraft((curr) => `${curr}${curr ? "\n" : ""}Review the current Git diff`);
                   }}
                   sessionUsage={currentSessionUsage}
+                  contextUsage={currentSessionContextUsage}
                   activeSessionId={activeSession?.id}
                   worktreeStatus={worktreeStatus}
                   onOpenArtifact={(art) => setActiveArtifact(art)}
@@ -1347,10 +1350,10 @@ function App() {
             {homeSideTab === "session" && (
             <div className="context-tab-body">
             <div className="context-summary">
-              <span className="status-ring">{running ? <Loader2 size={13} className="spin" /> : <Check size={13} />}</span>
+              <span className="status-ring">{home.running ? <Loader2 size={13} className="spin" /> : <Check size={13} />}</span>
               <div>
-                <strong>{running ? "Agent is working" : "Ready"}</strong>
-                <small>{running ? "Researching, writing files…" : "Ask, research, create documents"}</small>
+                <strong>{home.running ? "Agent is working" : "Ready"}</strong>
+                <small>{home.running ? "Researching, writing files…" : "Ask, research, create documents"}</small>
               </div>
             </div>
             {home.sessionUsage && (

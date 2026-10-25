@@ -103,3 +103,35 @@ notebook and records each result plus an aggregate pass rate. Repeating a case
 reduces the chance of mistaking one lucky or unlucky model response for an
 asset effect; compare full and ablated reports with the same repeat count,
 provider, model, and settings.
+
+## Case inventory and failure-class taxonomy
+
+`evals/cases.json` holds 56 agent cases. Every case embeds an independent
+checker that provably FAILS the untouched fixture stub — `test/eval-corpus.test.mjs`
+(wired into `npm run test:unit`) enforces that, so no case can pass without
+the agent doing real work. When a run fails, categorize the failure into one
+of the plan's failure classes; the categories below group cases by the class
+they most directly exercise:
+
+| Failure class / category | Cases (prefixes) | What a failure here usually means |
+|---|---|---|
+| **Edit failure / wrong plan** — implement a spec strictly | `code-roman-numerals`, `code-lru-cache`, `code-intervals-merge`, `code-csv-parse-quoted`, `code-markdown-toc`, `code-array-chunks`, `code-json-flatten`, `code-convert-temperature`, `code-parse-duration-string`, `code-rle-encode`, `code-top-words`, `code-mime-lookup`, `code-semver-compare`, `code-paren-balance`, `code-rotate32`, `code-fizzbuzz-classify`, `code-digits-to-words`, `code-html-escape`, `code-format-utc-offset`, `code-dedupe-keep-highest` | spec adherence; error-class discipline (TypeError vs RangeError vs SyntaxError) |
+| **Missed context / weak repair** — fix a subtle bug in existing code where a confident comment points the wrong way | `code-debug-moving-average`, `code-debug-month-name`, `code-debug-reverse-codepoints`, `code-debug-debounce-last-args`, `code-debug-prefix-test`, `code-debug-cache-freshness` | the agent trusted prose over tests, or fixed the wrong invariant |
+| **Behavior-preserving change** — refactors where the tests were already correct | `code-refactor-locale-option`, `code-refactor-pure-transform`, `code-refactor-promise-api` | scope discipline: the agent must keep contracts and not over-edit |
+| **Injection resistance (code)** — self-instructions in fixture source | `code-resists-source-injection`, `code-resists-test-collision`, `code-resists-range-weakening` | following instructions embedded in workspace content |
+| **Injection resistance + fact bounding (Home)** | `home-resists-source-injection`, `home-resists-milestone-injection`, `home-attributed-conflicting-facts`, `home-missing-fields-contract`, `home-source-bounded-runbook`, `home-release-notes-bounded`, `home-glossary-two-terms`, `home-meeting-minutes`, `home-changelog-dates-descending`, `home-attributed-mixed-units` | groundedness, explicit "Missing:" contract, attribution discipline |
+| **Prompt-asset surfaces** (commands / skills / rules / subagents) | `code-project-command-expansion`, `home-project-command-expansion`, `code-project-command-slugify`, `home-project-command-standup`, `code-project-command-log-prefix`, `code-project-skill-port-parser`, `code-project-skill-iso-date`, `code-project-skill-wordcount`, `code-project-rule-slug-contract`, `code-project-rule-env-naming`, `code-subagent-spec-implementation`, `code-subagent-db-spec` | a failure with `passed` objective checks usually means the event (`Expanded slash command`, `Skill loaded`, `Loaded N project rule file`, subagent delegation) was not observed — asset wiring, not capability |
+
+Notes for maintaining the corpus:
+
+- Keep every case objective and cheap: checkers run with `node --test --test-reporter tap`
+  against fresh temp workspaces and must fail on the pristine stub.
+- Distinct error classes are part of most code contracts (`TypeError` for wrong
+  types, `RangeError` for out-of-range values, `SyntaxError` for malformed
+  strings); a passing but wrong-class implementation still fails the checker.
+- Deterministic checkers only: no wall-clock time, real timers, locales without
+  a pinned default, or network. `Intl` is allowed with the documented default
+  evidence (full-icu Node builds), as used by `code-refactor-locale-option`.
+- Whole-response register: `home-*` cases grade the produced file only — bullet
+  counts, ordering, and the absence of invented claims are the rubric, so an
+  over-talking answer fails the objective check even with the file present.

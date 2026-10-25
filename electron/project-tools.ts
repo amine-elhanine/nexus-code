@@ -1,9 +1,9 @@
-import { execFile } from "node:child_process";
+import { boundedExecFile } from "./shell-subprocess.js";
 import { promises as fs } from "node:fs";
+import { realpathSync } from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = boundedExecFile;
 
 const IGNORED = new Set([
   ".git",
@@ -23,6 +23,35 @@ export function safePath(projectRoot: string, requested: string) {
   const candidate = path.resolve(root, requested || ".");
   if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
     throw new Error("Path escapes the selected project root.");
+  }
+  // Symlink containment: a link inside the workspace must not point the read
+  // outside of it. Lexical checks cannot see junctions/symlinks, so the real
+  // locations are compared. For not-yet-existing write targets, the deepest
+  // existing ancestor is resolved and must still be inside the (real) root.
+  // ENOENT/EXDEV style fs hiccups degrade quietly to the lexical check.
+  let escapesViaSymlink = false;
+  try {
+    const realRoot = realpathSync(root);
+    let probe = candidate;
+    let realProbe: string;
+    try {
+      realProbe = realpathSync(probe);
+    } catch {
+      // Missing target: walk up to the nearest existing ancestor.
+      while (true) {
+        const parent = path.dirname(probe);
+        if (parent === probe) { realProbe = realpathSync(parent); break; }
+        try { realProbe = realpathSync(parent); break; } catch { probe = parent; }
+      }
+    }
+    if (realProbe !== realRoot && !realProbe.startsWith(`${realRoot}${path.sep}`)) {
+      escapesViaSymlink = true;
+    }
+  } catch {
+    /* containment probe failed (fs quirk) — lexical check already passed */
+  }
+  if (escapesViaSymlink) {
+    throw new Error("Path escapes the selected project root via symlink redirection.");
   }
   return candidate;
 }

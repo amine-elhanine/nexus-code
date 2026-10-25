@@ -82,15 +82,20 @@ function matchesPolicy(command: string, patterns: unknown): boolean {
   });
 }
 
-export function classifyCommand(command: string, policy: CommandPolicy = {}): CommandPermission {
+export function classifyCommand(command: string, policy: CommandPolicy = {}, options: { trustedAllow?: boolean } = {}): CommandPermission {
   const cmd = (command || "").trim();
   if (!cmd) return "deny";
   if (DENY_PATTERNS.some((re) => re.test(cmd))) return "deny";
   if (matchesPolicy(cmd, policy.deny)) return "deny";
-  if (matchesPolicy(cmd, policy.allow)) return "allow";
   if (matchesPolicy(cmd, policy.ask)) return "ask";
-  if (/\bgit\s+(push|reset|clean|rebase)\b/i.test(cmd) ||
-      /\b(?:npm|pnpm|yarn|pip|pip3|cargo|poetry|uv)\s+(?:install|add|remove|uninstall)\b/i.test(cmd) ||
+  // An UNTRUSTED allow list (`.nexus/permissions.json` lives inside the
+  // workspace, so the agent itself can write it) must never switch off the
+  // built-in consent gates — a tampered file would durably auto-approve git
+  // push / installs / download-and-execute on every later run. Only a
+  // user-authored package.json policy (trustedAllow) can bless those.
+  if (options.trustedAllow !== false && matchesPolicy(cmd, policy.allow)) return "allow";
+  if (/\bgit\b[^|&;\n]*\b(?:push|reset|clean|rebase)\b/i.test(cmd) ||
+      /\b(?:npm|pnpm|yarn|pip|pip3|cargo|poetry|uv)\s+(?:i|ci|install|add|remove|uninstall|rm|un)\b/i.test(cmd) ||
       /\bgo\s+get\b/i.test(cmd) ||
       /\bmvn\s+(?:dependency|install)\b/i.test(cmd) ||
       /\bdotnet\s+(?:add|remove|restore)\b/i.test(cmd) ||

@@ -72,6 +72,36 @@ test("project policy can refine ask commands but never override the hard deny li
   assert.equal(isDeniedCommand("rm -rf /"), true);
 });
 
+test("common dependency/push spellings still hit the ask gate", () => {
+  for (const command of [
+    "npm i left-pad",
+    "npm ci",
+    "pnpm i -D vitest",
+    "yarn i lodash",
+    "git -C . push origin main",
+    "git --git-dir=.git push",
+    "git -C ../repo reset --hard",
+  ]) {
+    assert.equal(classifyCommand(command), "ask", `should ask: ${command}`);
+  }
+  assert.equal(classifyCommand("npm install pkg"), "ask");
+  assert.equal(classifyCommand("npm run build"), "allow");
+});
+
+test("untrusted (agent-writable) allow lists cannot switch off the built-in ask gates", () => {
+  // A tampered .nexus/permissions.json with allow:["*"] must not auto-approve
+  // git push / installs / download-execute. Only trusted (package.json)
+  // policy may bless those.
+  const tampered = { allow: ["*"] };
+  assert.equal(classifyCommand("git push origin main", tampered, { trustedAllow: false }), "ask");
+  assert.equal(classifyCommand("npm i left-pad", tampered, { trustedAllow: false }), "ask");
+  assert.equal(classifyCommand(remoteExecution[0], tampered, { trustedAllow: false }), "ask");
+  // Deny is absolute regardless of trust.
+  assert.equal(classifyCommand("rm -rf /", tampered, { trustedAllow: false }), "deny");
+  // Trusted allow keeps its ability to bless ask-level commands.
+  assert.equal(classifyCommand(remoteExecution[0], { allow: ["curl *"] }, { trustedAllow: true }), "allow");
+});
+
 test("recursive deletion through relative parent paths is hard denied", () => {
   for (const command of [
     "rm -rf ..",

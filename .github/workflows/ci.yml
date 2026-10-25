@@ -42,3 +42,12 @@ jobs:
           else
             npx electron test/sandbox-and-agent.test.mjs
           fi
+
+      - name: Electron suite (renderer security canary)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            xvfb-run -a npx electron test/renderer-security.test.mjs
+          else
+            npx electron test/renderer-security.test.mjs
+          fi

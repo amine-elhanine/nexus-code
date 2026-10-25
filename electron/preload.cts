@@ -141,8 +141,8 @@ const nexusApi = {
   // Agent browser (headless toggle + activity from the agent's window)
   getBrowserHeadless: () => invoke("browser:headless:get"),
   setBrowserHeadless: (value: boolean) => invoke("browser:headless:set", value),
-  onBrowserAgentActivity: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean; sessionId?: string }) => void) => {
-    const handler = (_event: IpcRendererEvent, payload: { url: string; timestamp: string; autoFollow?: boolean; sessionId?: string }) => listener(payload);
+  onBrowserAgentActivity: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean; forceFollow?: boolean; sessionId?: string }) => void) => {
+    const handler = (_event: IpcRendererEvent, payload: { url: string; timestamp: string; autoFollow?: boolean; forceFollow?: boolean; sessionId?: string }) => listener(payload);
     ipcRenderer.on("browser:agent-activity", handler);
     return () => ipcRenderer.removeListener("browser:agent-activity", handler);
   },
@@ -200,7 +200,7 @@ const nexusApi = {
   activateHomeSession: (sessionId: string) => invoke("home:sessions:activate", sessionId),
   deleteHomeSession: (sessionId: string, options?: { deleteFiles?: boolean }) => invoke("home:sessions:delete", sessionId, options),
   updateHomeSession: (sessionId: string, patch: unknown) => invoke("home:sessions:update", sessionId, patch),
-  runHomeAgent: (payload: { sessionId: string; request: string; images?: string[]; attachments?: any[]; providerId?: string; model?: string; effort?: string }) => invoke("home:run", payload),
+  runHomeAgent: (payload: { sessionId: string; request: string; images?: string[]; attachments?: any[]; providerId?: string; model?: string; effort?: string; contextWindow?: number; maxOutput?: number }) => invoke("home:run", payload),
   cancelHomeAgent: (sessionId?: string) => invoke("home:cancel", sessionId),
   listHomeFiles: () => invoke("home:files"),
   listHomeSessionFiles: (sessionId: string) => invoke("home:sessionFiles", sessionId),
@@ -265,7 +265,7 @@ const nexusApi = {
   removeEmbeddingProvider: (providerId: string) => invoke("notebook:embedding-provider:remove", providerId),
   testEmbeddingProvider: (input: { id?: string; kind: string; baseUrl?: string; apiKey?: string; model: string }) => invoke("notebook:embedding-provider:test", input),
 
-  runAgent: (payload: { request: string; images?: string[]; attachments?: Array<{ url: string; name: string; mimeType: string; size: number }>; providerId?: string; model?: string; effort?: string; mode?: string; sessionId?: string; projectId?: string }) => invoke("agent:run", payload),
+  runAgent: (payload: { request: string; images?: string[]; attachments?: Array<{ url: string; name: string; mimeType: string; size: number }>; providerId?: string; model?: string; effort?: string; contextWindow?: number; maxOutput?: number; mode?: string; sessionId?: string; projectId?: string }) => invoke("agent:run", payload),
   cancelAgent: (sessionId?: string) => invoke("agent:cancel", sessionId),
   resolveCommandApproval: (id: string, decision: "once" | "session" | "deny") => invoke("command:approval", { id, decision }),
   resolveUserQuestion: (id: string, answers?: Record<string, string> | null, cancelled?: boolean) => invoke("question:resolve", { id, answers, cancelled }),

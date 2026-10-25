@@ -1,9 +1,8 @@
 import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { boundedExecFile } from "./shell-subprocess.js";
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = boundedExecFile;
 
 const GITIGNORE_ENTRIES = [".nexus", ".deepagents", "node_modules", "dist", "dist-electron", "release", ".env"];
 

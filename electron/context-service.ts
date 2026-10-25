@@ -1,3 +1,4 @@
+import { HumanMessage } from "@langchain/core/messages";
 
 /**
  * Calculates the auto-compaction threshold for a model's context window.
@@ -23,6 +24,150 @@ export function estimateTokens(text: string | undefined): number {
   if (!text) return 0;
   // Standard approximation: ~4 characters per token for English/Code
   return Math.max(1, Math.round(text.length / 3.8));
+}
+
+/**
+ * Providers surface an exhausted context window under many shapes (OpenAI's
+ * "maximum context length", Anthropic's "prompt is too long", Gemini's input
+ * token count, gateway "payload too large" 413s). These errors are NOT
+ * transient — retrying unchanged would fail again — so callers must compact
+ * and resume instead.
+ */
+const CONTEXT_WINDOW_PATTERN =
+  /context[_\s-]?(length|window|limit)|maximum context length|prompt (is |exceeds|too )?(too |the )?long|prompt_too_long|too many tokens|input token count|token(s)? limit|exceed(ed|s)? the maximum|maximum number of tokens allowed|context_length_exceeded|reduce the (length|size)|conversation is too long|maximum request length|payload too large|\b413\b/i;
+
+export function isContextWindowError(error: unknown): boolean {
+  if (!error) return false;
+  const parts = [
+    error instanceof Error ? error.message : String(error),
+    String((error as any)?.name ?? ""),
+    String((error as any)?.code ?? ""),
+    String((error as any)?.status ?? ""),
+    (() => {
+      try { return JSON.stringify((error as any)?.error ?? (error as any)?.body ?? ""); } catch { return ""; }
+    })(),
+  ].join(" ");
+  return CONTEXT_WINDOW_PATTERN.test(parts);
+}
+
+/** Rough token estimate of a single LangChain message (content + tool-call args). */
+export function estimateMessageTokens(message: any): number {
+  if (!message) return 0;
+  const content = message.content ?? message.text ?? "";
+  let chars = 0;
+  if (typeof content === "string") chars = content.length;
+  else if (Array.isArray(content)) {
+    for (const part of content) {
+      if (typeof part === "string") chars += part.length;
+      else if (part?.text) chars += String(part.text).length;
+      else if (part?.image_url?.url) chars += String(part.image_url.url).length;
+      else chars += JSON.stringify(part).length;
+    }
+  }
+  let tokens = Math.ceil(chars / 3.8);
+  if (Array.isArray(message.tool_calls)) {
+    for (const call of message.tool_calls) {
+      try { tokens += Math.ceil(JSON.stringify(call?.args ?? {}).length / 3.8) + 8; } catch { tokens += 24; }
+    }
+  }
+  return tokens;
+}
+
+export function estimateMessagesTokens(messages: any[]): number {
+  return (messages || []).reduce((sum, m) => sum + estimateMessageTokens(m), 0);
+}
+
+const messageKind = (message: any): string => (
+  typeof message?._getType === "function" ? message._getType()
+    : typeof message?.type === "string" ? message.type
+      : message?.role || (Array.isArray(message?.tool_calls) && message.tool_calls.length ? "ai" : "")
+);
+
+/**
+ * Group boundaries of a run message list. Cutting the transcript at any of
+ * these indices keeps the Anthropic/OpenAI tool-calling contract intact:
+ * an AIMessage with tool_calls is never separated from its ToolMessages,
+ * and the remaining transcript never opens with an orphan tool result.
+ */
+function runMessageGroupStarts(messages: any[]): number[] {
+  const starts: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const kind = messageKind(messages[i]);
+    const extendsPrior = kind === "tool" || (kind === "ai" && Array.isArray(messages[i]?.tool_calls) && messages[i].tool_calls.length > 0);
+    if (!extendsPrior) starts.push(i);
+  }
+  if (starts[0] !== 0) starts.unshift(0);
+  return starts.length ? starts : [0];
+}
+
+function contentTextOf(message: any): string {
+  const content = message?.content ?? message?.text ?? "";
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((part) => (typeof part === "string" ? part : String(part?.text ?? "")).trim()).filter(Boolean).join("\n");
+  }
+  return "";
+}
+
+/**
+ * Deterministic run-history compaction. Always keeps the FIRST group (the
+ * original request), drops the oldest middle groups until the suffix fits the
+ * budget, and replaces what was dropped with a compact digest message. If a
+ * single huge message still overflows, its content is truncated from the front
+ * (results/answers end with the most relevant tail). Pure and synchronous —
+ * run it at every attempt boundary; the budget is measured in estimated
+ * message tokens and must already reserve room for the system prompt.
+ */
+export function trimRunMessages(messages: any[], budgetTokens: number): any[] {
+  const list = (messages || []).filter(Boolean);
+  if (list.length <= 2) return list;
+  const starts = runMessageGroupStarts(list);
+  if (starts.length === 1) {
+    // Whole transcript is one group — can't cut at a boundary; keep intact.
+    return list;
+  }
+
+  const suffixTokens = (idx: number) => estimateMessagesTokens(list.slice(idx));
+  // Smallest droppable start (s > 0) whose suffix fits keeps the most context.
+  let keepFrom = -1;
+  for (const s of starts) {
+    if (s === 0) continue;
+    if (suffixTokens(s) <= budgetTokens) { keepFrom = s; break; }
+  }
+  if (keepFrom === -1) keepFrom = starts[starts.length - 1];
+
+  // The digest must always carry the original request (group 0) verbatim.
+  const dropped = list.slice(0, keepFrom);
+  const digestParts = dropped.map((m) => contentTextOf(m).slice(0, 500)).filter(Boolean);
+  let digest = `[Condensed earlier work — the original request is included below in context]\n` + digestParts.join("\n").replace(/\n{3,}/g, "\n\n");
+  if (digest.length > 4000) digest = `${digest.slice(0, 3400)}\n… [${digestParts.length} earlier entries condensed]`;
+  const summary: any = new HumanMessage(digest);
+  summary.content = digest;
+  const result = [summary, ...list.slice(keepFrom)];
+
+  // Last resort: the remaining suffix itself overflows (one giant tool result).
+  let total = estimateMessagesTokens(result);
+  for (let i = 1; i < result.length && total > budgetTokens; i++) {
+    const tokens = estimateMessageTokens(result[i]);
+    if (!tokens) continue;
+    const text = contentTextOf(result[i]);
+    if (text && text.length > 4096) {
+      const capChars = Math.max(0, Math.floor((budgetTokens - estimateMessagesTokens(result.slice(i + 1))) * 3.8));
+      const truncated = text.length > capChars ? `…${text.slice(-capChars)}` : text;
+      result[i].content = truncated;
+      total = estimateMessagesTokens(result);
+    }
+  }
+  return result;
+}
+
+/** Compact a run transcript while carrying a bounded durable task brief forward. */
+export function trimRunMessagesWithRecoveryBrief(messages: any[], recoveryBrief: string, budgetTokens: number): any[] {
+  const compacted = trimRunMessages(messages, budgetTokens);
+  if (!recoveryBrief?.trim()) return compacted;
+  const brief = new HumanMessage(recoveryBrief.trim());
+  brief.content = recoveryBrief.trim();
+  return trimRunMessages([...compacted, brief], budgetTokens);
 }
 
 export type StreamUsage = { inputTokens: number; outputTokens: number; totalTokens: number };
@@ -73,13 +218,26 @@ export class StreamUsageTracker {
   private perMessage = new Map<string, { inputTokens: number; outputTokens: number }>();
   private incrementalInputTokens = 0;
   private incrementalOutputTokens = 0;
+  private maxObservedInputTokens = 0;
   sawExactInput = false;
   sawExactOutput = false;
+
+  /**
+   * Largest single-invocation input token count seen so far. Because context
+   * only grows during a run, this is the best available measurement of the
+   * CURRENT request size — the number that must fit the context window.
+   */
+  get lastObservedInputTokens(): number {
+    return this.maxObservedInputTokens;
+  }
 
   noteChunk(chunk: any): void {
     const usage = extractStreamUsage(chunk);
     if (!usage) return;
-    if (usage.inputTokens > 0) this.sawExactInput = true;
+    if (usage.inputTokens > 0) {
+      this.sawExactInput = true;
+      this.maxObservedInputTokens = Math.max(this.maxObservedInputTokens, usage.inputTokens);
+    }
     if (usage.outputTokens > 0) this.sawExactOutput = true;
     const id = typeof chunk?.id === "string" && chunk.id ? chunk.id : null;
     if (!id) {
@@ -224,8 +382,10 @@ export async function compactHistoryWithModel(
       .join("\n\n")
       .slice(0, 24000);
     const prompt =
-      `Summarize this coding-session history into short durable bullets (decisions, files changed, errors seen, current goal). ` +
-      `Omit verbatim code dumps and tool noise. Max 20 bullets, each one line.\n\n${input}`;
+      `Summarize this coding-session history into short recovery notes for a coding agent. Preserve the original request and constraints, ` +
+      `current goal, decisions and their reasons, important findings with file paths or source references, files changed, unfinished plan steps, ` +
+      `latest diagnostics and verification results, and the next action. Distinguish verified facts from assumptions; do not invent details. ` +
+      `Omit verbatim code dumps and repetitive tool noise. Max 20 bullets, each one line.\n\n${input}`;
     const timed = await Promise.race([
       Promise.resolve(summarize(prompt)),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 20000)),

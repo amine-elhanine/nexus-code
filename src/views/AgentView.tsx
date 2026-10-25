@@ -27,6 +27,7 @@ export function ModelContextLine({
   provider,
   definition,
   sessionUsage,
+  contextUsage,
   activeSessionId,
 }: {
   providerId: string;
@@ -34,6 +35,7 @@ export function ModelContextLine({
   provider?: ProviderConfig;
   definition?: ProviderDefinition;
   sessionUsage?: AgentUsage | null;
+  contextUsage?: (AgentUsage & { contextWindow?: number; compactionThreshold?: number; usedTokens?: number }) | null;
   activeSessionId?: string;
 }) {
   const [detectedContext, setDetectedContext] = useState<{ contextWindow?: number; maxOutput?: number } | null>(null);
@@ -41,22 +43,53 @@ export function ModelContextLine({
   const [isCompacting, setIsCompacting] = useState(false);
   const [compactNotice, setCompactNotice] = useState<string | null>(null);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lineRef = useRef<HTMLDivElement | null>(null);
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
 
-  const handleMouseEnter = () => {
+  const cancelPendingHide = () => {
     if (hoverTimerRef.current) {
       clearTimeout(hoverTimerRef.current);
       hoverTimerRef.current = null;
     }
+  };
+
+  // The hover card must track the real pointer position, not just enter/leave
+  // events: a stationary cursor never re-fires mouseenter, so any layout shift
+  // under it (composer re-flow, the badge label changing as usage streams in)
+  // or a 1px miss of the 23px-tall pill fired a mouseleave that closed the
+  // card while the cursor was still visibly on it.
+  const withinHoverRegion = (x: number, y: number) => {
+    const pad = 6;
+    const rects = [lineRef.current?.getBoundingClientRect(), tooltipRef.current?.getBoundingClientRect()];
+    return rects.some((rect) => rect && x >= rect.left - pad && x <= rect.right + pad && y >= rect.top - pad && y <= rect.bottom + pad);
+  };
+
+  const hideIfPointerLeft = () => {
+    hoverTimerRef.current = null;
+    const point = lastPointerRef.current;
+    if (point && withinHoverRegion(point.x, point.y)) {
+      // Still on the bar/card — the leave was spurious (layout moved under a
+      // stationary cursor). Re-check shortly instead of hiding.
+      hoverTimerRef.current = setTimeout(hideIfPointerLeft, 400);
+      return;
+    }
+    setIsHovered(false);
+  };
+
+  const scheduleHide = () => {
+    cancelPendingHide();
+    hoverTimerRef.current = setTimeout(hideIfPointerLeft, 220);
+  };
+
+  const handleMouseEnter = (event?: React.MouseEvent) => {
+    if (event) lastPointerRef.current = { x: event.clientX, y: event.clientY };
+    cancelPendingHide();
     setIsHovered(true);
   };
 
   const handleMouseLeave = () => {
-    if (hoverTimerRef.current) {
-      clearTimeout(hoverTimerRef.current);
-    }
-    hoverTimerRef.current = setTimeout(() => {
-      setIsHovered(false);
-    }, 220);
+    scheduleHide();
   };
 
   useEffect(() => {
@@ -66,6 +99,22 @@ export function ModelContextLine({
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!isHovered) return;
+    const onPointerMove = (event: PointerEvent) => {
+      lastPointerRef.current = { x: event.clientX, y: event.clientY };
+      if (withinHoverRegion(event.clientX, event.clientY)) {
+        cancelPendingHide();
+      } else if (!hoverTimerRef.current) {
+        // Pointer left without a matching mouseleave (enter/leave desynced
+        // after an earlier shift) — start the grace countdown ourselves.
+        hoverTimerRef.current = setTimeout(hideIfPointerLeft, 220);
+      }
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    return () => window.removeEventListener("pointermove", onPointerMove);
+  }, [isHovered]);
 
   useEffect(() => {
     setDetectedContext(null);
@@ -85,6 +134,7 @@ export function ModelContextLine({
   }, [providerId, model, provider?.id]);
 
   const contextWindow =
+    contextUsage?.contextWindow ??
     provider?.modelContextWindows?.[model] ??
     detectedContext?.contextWindow ??
     resolveModelContextWindow(providerId, model, provider, definition);
@@ -94,11 +144,13 @@ export function ModelContextLine({
     detectedContext?.maxOutput ??
     resolveModelMaxOutput(providerId, model, provider, definition);
 
-  const compactionThreshold = computeCompactionThreshold(contextWindow, maxOutput);
+  const compactionThreshold = contextUsage?.compactionThreshold ?? computeCompactionThreshold(contextWindow, maxOutput);
   const thresholdPct = Math.min(95, Math.max(50, (compactionThreshold / contextWindow) * 100));
 
   const ctxLabel = formatContextWindow(contextWindow);
-  const usedTokens = sessionUsage?.totalTokens || 0;
+  // Measure the retained context that future turns inherit, not per-call
+  // prompt tokens (which restart from the fixed system prompt every request).
+  const usedTokens = contextUsage?.usedTokens || contextUsage?.inputTokens || contextUsage?.totalTokens || 0;
   const pct = Math.min(100, Math.max(0, (usedTokens / contextWindow) * 100));
   const remainingTokens = Math.max(0, contextWindow - usedTokens);
   const tokensToThreshold = Math.max(0, compactionThreshold - usedTokens);
@@ -143,17 +195,18 @@ export function ModelContextLine({
 
   return (
     <div
+      ref={lineRef}
       className={`model-context-line status-${statusTone}`}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       role="group"
-      aria-label={`Context window ${ctxLabel}, ${usedTokens.toLocaleString()} of ${formatTokenCount(contextWindow)} tokens used. Auto-compacts at ${thresholdPct.toFixed(0)}%`}
+      aria-label={`Context window ${ctxLabel} — retained context ${usedTokens.toLocaleString()} of ${formatTokenCount(contextWindow)} tokens. Auto-compacts at ${thresholdPct.toFixed(0)}%`}
     >
       <span className={badgeClass}>{badgeLabel}</span>
       <span className="context-value">{ctxLabel}</span>
       <div
         className="context-meter-track"
-        title={`Session: ${usedTokens.toLocaleString()} / ${formatTokenCount(contextWindow)} tokens (${pct.toFixed(1)}%) • Auto-compacts at ${thresholdPct.toFixed(0)}% (${formatTokenCount(compactionThreshold)} tokens)`}
+        title={`Retained context: ${usedTokens.toLocaleString()} / ${formatTokenCount(contextWindow)} tokens (${pct.toFixed(1)}%) • Auto-compacts at ${thresholdPct.toFixed(0)}% (${formatTokenCount(compactionThreshold)} tokens)`}
       >
         <div
           className="context-meter-threshold"
@@ -168,6 +221,7 @@ export function ModelContextLine({
 
       {isHovered && (
         <div
+          ref={tooltipRef}
           className="context-info-tooltip"
           onMouseEnter={handleMouseEnter}
           onMouseLeave={handleMouseLeave}
@@ -278,6 +332,7 @@ export function ModelSelect({
   switchEffort,
   onOpenProviders,
   sessionUsage,
+  contextUsage,
   activeSessionId,
 }: {
   selectedProviderId: string;
@@ -289,6 +344,7 @@ export function ModelSelect({
   switchEffort?: (effort: string) => void;
   onOpenProviders: () => void;
   sessionUsage?: AgentUsage | null;
+  contextUsage?: (AgentUsage & { contextWindow?: number; compactionThreshold?: number; usedTokens?: number }) | null;
   activeSessionId?: string;
 }) {
   const provider = providers.find((item) => item.id === selectedProviderId);
@@ -394,6 +450,7 @@ export function ModelSelect({
           provider={provider}
           definition={def}
           sessionUsage={sessionUsage}
+          contextUsage={contextUsage}
           activeSessionId={activeSessionId}
         />
       )}
@@ -431,6 +488,7 @@ export function AgentView({
   onAttachFile,
   onAttachDiff,
   sessionUsage,
+  contextUsage,
   activeSessionId,
   worktreeStatus,
   onOpenArtifact,
@@ -476,6 +534,7 @@ export function AgentView({
   onAttachFile: () => void;
   onAttachDiff: () => void;
   sessionUsage?: AgentUsage;
+  contextUsage?: AgentUsage | null;
   activeSessionId?: string;
   worktreeStatus?: { isGit: boolean; worktree: { worktreePath: string; branch: string } | null } | null;
   onOpenArtifact?: (artifact: ArtifactItem) => void;
@@ -1125,6 +1184,7 @@ export function AgentView({
                 switchEffort={switchEffort}
                 onOpenProviders={onOpenProviders}
                 sessionUsage={sessionUsage}
+                contextUsage={contextUsage}
                 activeSessionId={activeSessionId}
               />
             </div>

@@ -175,11 +175,23 @@ export function useHomeController(enabled = true) {
         kind: event.type,
         createdAt: event.timestamp,
         usage: event.usage,
+        context: event.context,
         subagent: event.subagent,
         plan: event.items,
         artifact: event.artifact,
         detail: event.detail,
       };
+      if (event.type === "context") {
+        const targetSessionId = bucket;
+        setActiveSession((current) => current?.id === targetSessionId
+          ? { ...current, messages: [...current.messages, item] }
+          : current);
+        const nextLog = [...(liveEventsRef.current[bucket] || []), item];
+        const next = { ...liveEventsRef.current, [bucket]: nextLog };
+        liveEventsRef.current = next;
+        setLiveEvents(next);
+        return;
+      }
 
       if (event.type === "assistant" || event.type === "error") {
         const log = liveEventsRef.current[bucket] || [];
@@ -201,7 +213,7 @@ export function useHomeController(enabled = true) {
         const targetSessionId = bucket;
         setActiveSession((current) => {
           if (!current || current.id !== targetSessionId) return current;
-          const logItems = log.filter((entry) => !(entry.kind === "usage"));
+          const logItems = log.filter((entry) => entry.kind !== "usage" && entry.kind !== "context");
           const finalItem: ChatItem = event.type === "assistant"
             ? { role: "assistant", text: event.text, createdAt: event.timestamp || new Date().toISOString(), usage: event.usage }
             : { role: "event", kind: "error", text: event.text, createdAt: event.timestamp || new Date().toISOString() };
