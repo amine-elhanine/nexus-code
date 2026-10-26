@@ -11,7 +11,7 @@ import { createBrowserTools } from "./browser-tool.js";
 import { agentBrowserService } from "./browser-service.js";
 import { getRepoMapSection } from "./repo-map-service.js";
 import { getProjectIndexSection } from "./project-index-service.js";
-import { createWebSearchTools } from "./websearch-tool.js";
+import { createWebImageSearchTools, createWebSearchTools } from "./websearch-tool.js";
 import { discoverAllRules, discoverProjectRules } from "./rules-service.js";
 import { discoverProjectInstructions } from "./project-instructions.js";
 import { expandSlashCommand } from "./custom-commands-service.js";
@@ -810,6 +810,9 @@ export async function runProjectAgent(options: {
       void agentBrowserService.visit(url, { sessionId, scope: isGeneral ? "home" : "code" }).catch(() => {});
     },
   });
+  // Home can search for illustrative image results and embed selected ones
+  // in its Markdown response. Charge image lookups to the same research cap.
+  const webImageSearchTools = isGeneral ? createWebImageSearchTools({ beforeSearch: beforeHomeResearch }) : [];
   const usage = new UsageAccumulator();
   let recursionLimit = isSimple ? SIMPLE_TASK_LIMIT : MODE_LIMITS[mode];
   // Opencode core: ripgrep-like grep + range-read only for simple tasks.
@@ -972,8 +975,8 @@ export async function runProjectAgent(options: {
       ...(hooksMiddleware ? [hooksMiddleware] : []),
     ],
     tools: isSimple
-      ? [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...homeMemoryTool, ...projectMemoryTool, ...mcpTools, ...pluginTools]
-      : [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...homeMemoryTool, ...projectMemoryTool, ...(assetsEnabled("agents") ? [subagentTool] : []), ...mcpTools, ...pluginTools],
+      ? [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...webImageSearchTools, ...homeMemoryTool, ...projectMemoryTool, ...mcpTools, ...pluginTools]
+      : [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...webImageSearchTools, ...homeMemoryTool, ...projectMemoryTool, ...(assetsEnabled("agents") ? [subagentTool] : []), ...mcpTools, ...pluginTools],
     skills: skillDirs,
     // Relevance-ranked memory for the prompt: profile/preferences always in,
     // facts and recent activity filtered to the current request so unrelated

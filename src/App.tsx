@@ -20,6 +20,7 @@ const AttachmentPreviewModal = lazy(() => import("./components/home/AttachmentPr
 import { SidebarBrowser } from "./components/browser/SidebarBrowser.js";
 const XTermView = lazy(() => import("./components/terminal/XTermView.js").then((module) => ({ default: module.XTermView })));
 import { AgentBrowserHost } from "./components/browser/AgentBrowserHost.js";
+import { VisualFullscreenLayer } from "./components/common/VisualFullscreen.js";
 import { AgentView } from "./views/AgentView.js";
 const HomeView = lazy(() => import("./views/HomeView.js").then((module) => ({ default: module.HomeView })));
 const NotebookView = lazy(() => import("./views/NotebookView.js").then((module) => ({ default: module.NotebookView })));
@@ -1024,6 +1025,8 @@ function App() {
                 switchEffort={(effort) => void switchEffort(effort)}
                 onOpenProviders={() => setShowProviders(true)}
                 sessionUsage={home.sessionUsage}
+                contextUsage={getSessionContextUsage(home.activeSession)}
+                activeSessionId={home.activeSession?.id}
                 homeRoot={home.homeRoot}
                 onDownloadFile={(relPath) => void api.downloadHomeFile(relPath)}
                 onOpenFolder={() => void api.openHomeFolder()}
@@ -1708,6 +1711,8 @@ function App() {
       {attachmentPreview && <Suspense fallback={null}><AttachmentPreviewModal attachment={attachmentPreview} onClose={() => setAttachmentPreview(null)} /></Suspense>}
       {/* Hidden executor for the agent's browsing — same session as the tabs. */}
       <AgentBrowserHost />
+      {/* Shared fullscreen viewer for chat visuals (charts/diagrams/widgets). */}
+      <VisualFullscreenLayer />
     </div>
   );
 }
