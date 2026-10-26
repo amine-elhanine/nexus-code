@@ -2,7 +2,8 @@
 
 type PlanItem = { content: string; status: "pending" | "in_progress" | "completed" };
 type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
-type AgentContextSnapshot = { usedTokens: number; contextWindow: number; compactionThreshold: number; estimated: boolean };
+type AgentContextSnapshot = { usedTokens: number; contextWindow: number; compactionThreshold: number; estimated: boolean; breakdown?: AgentContextBreakdownEntry[] };
+type AgentContextBreakdownEntry = { label: string; tokens: number };
 type SubagentRole = string;
 type SubagentStep = { toolName: string; summary?: string; timestamp: string };
 type SubagentItem = { id: string; role: SubagentRole; task: string; status: "running" | "completed" | "failed"; steps: SubagentStep[]; output?: string; usage?: AgentUsage };

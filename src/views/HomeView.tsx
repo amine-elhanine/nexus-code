@@ -8,7 +8,7 @@ import { ChatItemView, ActivityGroupView, StreamingAssistantMessage } from "../c
 import { SlashCommandPopup, filterSlashCommands, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
 import { formatCost } from "../types.js";
 import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
-import type { ChatItem, ProviderConfig, ProviderDefinition, AgentUsage, ChatAttachment, SkillInfo } from "../types.js";
+import type { ChatItem, ProviderConfig, ProviderDefinition, AgentUsage, AgentContextUsageSnapshot, ChatAttachment, SkillInfo } from "../types.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
 
 export type HomeFile = { path: string; name: string; size: number; modified: string };
@@ -96,7 +96,7 @@ export function HomeView({
   switchEffort?: (effort: string) => void;
   onOpenProviders: () => void;
   sessionUsage?: AgentUsage | null;
-  contextUsage?: (AgentUsage & { contextWindow?: number; compactionThreshold?: number; usedTokens?: number }) | null;
+  contextUsage?: AgentContextUsageSnapshot | null;
   activeSessionId?: string;
   homeRoot: string;
   onDownloadFile: (path: string) => void;

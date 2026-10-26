@@ -21,7 +21,8 @@ export type HistoryEventItem = {
 export type HistoryInput = AgentTurn | HistoryEventItem;
 export type AgentSettings = { provider?: ProviderConfig; model?: string; apiKey?: string; baseUrl?: string; effort?: string; reasoningEffort?: string; contextWindow?: number; maxOutput?: number };
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
-export type AgentContextSnapshot = { usedTokens: number; contextWindow: number; compactionThreshold: number; estimated: boolean };
+export type AgentContextBreakdownEntry = { label: string; tokens: number };
+export type AgentContextSnapshot = { usedTokens: number; contextWindow: number; compactionThreshold: number; estimated: boolean; breakdown?: AgentContextBreakdownEntry[] };
 export type AgentEvent = {
   type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "context" | "subagent" | "artifact" | "stream-reset";
   sessionId: string;
