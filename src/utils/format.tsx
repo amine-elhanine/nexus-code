@@ -1,6 +1,6 @@
 import React from "react";
 import { FileJson, FileCode, FileCode2, FileText, FileImage, FileSpreadsheet, FileArchive, Presentation, File } from "lucide-react";
-import type { AgentUsage, SessionRecord, ChatItem } from "../types.js";
+import type { AgentUsage, AgentContextUsageSnapshot, SessionRecord, ChatItem } from "../types.js";
 
 export function nowIso(): string {
   return new Date().toISOString();
@@ -108,7 +108,7 @@ export function getSessionUsage(session?: SessionRecord | null): AgentUsage | un
  * Latest retained-context snapshot emitted by the agent. Unlike call input
  * usage, this represents the context that a later turn will rebuild from.
  */
-export function getSessionContextUsage(session?: SessionRecord | null): (AgentUsage & { contextWindow?: number; compactionThreshold?: number; usedTokens?: number }) | undefined {
+export function getSessionContextUsage(session?: SessionRecord | null): AgentContextUsageSnapshot | undefined {
   if (!session) return undefined;
   for (let i = (session.messages || []).length - 1; i >= 0; i--) {
     const message = (session.messages || [])[i];
@@ -120,6 +120,7 @@ export function getSessionContextUsage(session?: SessionRecord | null): (AgentUs
       contextWindow: message.context.contextWindow,
       compactionThreshold: message.context.compactionThreshold,
       usedTokens: message.context.usedTokens,
+      breakdown: message.context.breakdown,
     };
   }
   return undefined;

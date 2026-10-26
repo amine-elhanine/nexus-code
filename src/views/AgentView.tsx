@@ -10,7 +10,7 @@ import { ChatItemView, ActivityGroupView, StreamingAssistantMessage } from "../c
 import { fileIcon } from "../utils/format.js";
 import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
 import { formatCost } from "../types.js";
-import type { ChatItem, FileEntry, ProviderConfig, ProviderDefinition, AgentUsage, ArtifactItem, ChatAttachment, SkillInfo } from "../types.js";
+import type { ChatItem, FileEntry, ProviderConfig, ProviderDefinition, AgentUsage, AgentContextUsageSnapshot, ArtifactItem, ChatAttachment, SkillInfo } from "../types.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
 import { resolveModelEfforts, formatEffortLabel, resolveModelContextWindow, resolveModelMaxOutput, formatContextWindow, formatTokenCount, computeCompactionThreshold } from "../utils/modelEfforts.js";
 
@@ -35,7 +35,7 @@ export function ModelContextLine({
   provider?: ProviderConfig;
   definition?: ProviderDefinition;
   sessionUsage?: AgentUsage | null;
-  contextUsage?: (AgentUsage & { contextWindow?: number; compactionThreshold?: number; usedTokens?: number }) | null;
+  contextUsage?: AgentContextUsageSnapshot | null;
   activeSessionId?: string;
 }) {
   const [detectedContext, setDetectedContext] = useState<{ contextWindow?: number; maxOutput?: number } | null>(null);
@@ -155,6 +155,11 @@ export function ModelContextLine({
   const remainingTokens = Math.max(0, contextWindow - usedTokens);
   const tokensToThreshold = Math.max(0, compactionThreshold - usedTokens);
 
+  // Per-category prompt composition (System tools / MCP tools / System prompt /
+  // Skills / Meta context / Messages) — shares of the estimated prompt payload.
+  const breakdownRows = contextUsage?.breakdown?.length ? contextUsage.breakdown : null;
+  const breakdownTotal = breakdownRows ? breakdownRows.reduce((sum, entry) => sum + entry.tokens, 0) : 0;
+
   const isNearThreshold = usedTokens >= compactionThreshold * 0.85;
   const isAtThreshold = usedTokens >= compactionThreshold;
 
@@ -227,12 +232,13 @@ export function ModelContextLine({
           onMouseLeave={handleMouseLeave}
         >
           <div className="ctx-tip-header">
-            <div className="ctx-tip-title-wrap">
-              <span className="ctx-tip-title" title={model}>{model}</span>
-              <span className="ctx-tip-badge">{ctxLabel} limit</span>
-            </div>
-            <span className={`ctx-status-pill status-${statusTone}`}>
-              {isAtThreshold ? "Auto-Compacting" : isNearThreshold ? "Near Auto-Compact" : usedTokens > 0 ? "Active" : "Ready"}
+            <span className="ctx-tip-title">Context window</span>
+            <span
+              className="ctx-total"
+              title={`${usedTokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (${pct.toFixed(1)}%)`}
+            >
+              {formatTokenCount(usedTokens)}
+              <span className="ctx-total-dim"> / {ctxLabel} ({pct.toFixed(1)}%)</span>
             </span>
           </div>
 
@@ -248,14 +254,31 @@ export function ModelContextLine({
                 style={{ width: `${usedTokens > 0 ? Math.max(pct, 3) : 0}%` }}
               />
             </div>
-            <div className="ctx-bar-stats">
-              <span>{usedTokens.toLocaleString()} used</span>
-              <span className="ctx-threshold-stat">Auto-compact @ {thresholdPct.toFixed(0)}%</span>
-              <span>{pct.toFixed(1)}%</span>
-            </div>
           </div>
 
+          {breakdownRows && (
+            <div className="ctx-breakdown">
+              {breakdownRows.map((entry, index) => (
+                <div
+                  key={entry.label}
+                  className="ctx-breakdown-row"
+                  title={`${entry.label}: ~${entry.tokens.toLocaleString()} tokens`}
+                >
+                  <span className="ctx-breakdown-dot" style={{ opacity: Math.max(0.35, 1 - index * 0.12) }} />
+                  <span className="ctx-breakdown-label">{entry.label}</span>
+                  <span className="ctx-breakdown-pct">
+                    {breakdownTotal > 0 ? ((entry.tokens / breakdownTotal) * 100).toFixed(1) : "0.0"}%
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
           <div className="ctx-details-grid">
+            <div className="ctx-detail-item">
+              <span className="ctx-detail-label">Model</span>
+              <span className="ctx-detail-value ctx-model-value" title={model}>{model}</span>
+            </div>
             <div className="ctx-detail-item">
               <span className="ctx-detail-label">Context Window</span>
               <span className="ctx-detail-value">{formatTokenCount(contextWindow)}</span>
@@ -344,7 +367,7 @@ export function ModelSelect({
   switchEffort?: (effort: string) => void;
   onOpenProviders: () => void;
   sessionUsage?: AgentUsage | null;
-  contextUsage?: (AgentUsage & { contextWindow?: number; compactionThreshold?: number; usedTokens?: number }) | null;
+  contextUsage?: AgentContextUsageSnapshot | null;
   activeSessionId?: string;
 }) {
   const provider = providers.find((item) => item.id === selectedProviderId);

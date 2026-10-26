@@ -24,7 +24,7 @@ import { GLOBAL_SKILLS_ROUTE, PROJECT_SKILLS_DIR, SKILL_SOURCE_PRIORITY, SYSTEM_
 import { createPluginAgentTools } from "./tool-executor.js";
 import { collectDynamicPluginContext } from "./plugin-lifecycle.js";
 import type { PluginMode } from "./plugin-manifest.js";
-import { computeCompactionThreshold, compactHistory, compactHistoryWithModel, estimateTokens, estimateMessagesTokens, isContextWindowError, trimRunMessages, trimRunMessagesWithRecoveryBrief, StreamUsageTracker } from "./context-service.js";
+import { computeCompactionThreshold, compactHistory, compactHistoryWithModel, estimateTokens, estimateMessagesTokens, estimateToolSchemaTokens, isContextWindowError, trimRunMessages, trimRunMessagesWithRecoveryBrief, StreamUsageTracker } from "./context-service.js";
 import { saveArtifact, type ArtifactItem } from "./artifacts-service.js";
 import { TrajectoryLogger } from "./trajectory-service.js";
 import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint } from "./rate-limit.js";
@@ -36,7 +36,7 @@ import { validateHomeArtifactContract } from "./home-artifact-service.js";
 import { buildCodeTaskContextSummary, codeVerificationOutcome, createCodeTaskJournal, finishCodeTaskJournal, inferCodeTaskContract, loadCodeTaskJournal, parseBlockingReviewFindings, recordCodeTaskAction, recordCodeTaskPlan, saveCodeTaskJournal, shouldRunCodeReview, updateCodeTaskContextSummary, type CodeTaskContract, type CodeTaskJournal, type CodeTaskPhase } from "./code-task-service.js";
 import type { ProviderConfig } from "./store.js";
 
-import type { AgentEvent, AgentMemoryContext, AgentMode, AgentSettings, AgentTaskKind, AgentUsage, AttachmentDoc, HistoryInput, HomeTaskContract, PlanItem } from "./agent-types.js";
+import type { AgentContextBreakdownEntry, AgentEvent, AgentMemoryContext, AgentMode, AgentSettings, AgentTaskKind, AgentUsage, AttachmentDoc, HistoryInput, HomeTaskContract, PlanItem } from "./agent-types.js";
 import type { TaskComplexity } from "./task-routing.js";
 import { buildSystemPrompt, homeRequestNamesFileFormat, inferHomeOutputFormats, inferHomeTaskContract } from "./agent-prompt.js";
 import { DoomLoopError, RESEARCH_BUDGET_BASE, RESEARCH_BUDGET_WITH_RESEARCH, loopPreventionMiddleware, resolveResearchBudget, toolParameterNormalizationMiddleware } from "./loop-prevention.js";
@@ -508,10 +508,16 @@ export async function runProjectAgent(options: {
   // Classified BEFORE the parallel setup: the rules loader needs it to skip
   // the bundled standards corpus on trivial tasks.
   const complexity = classifyTaskComplexity(request);
+  // Home is a presentation-oriented agent. A substantive question needs room
+  // to research, collect visual evidence, and compose the full answer rather
+  // than being routed through the text-only quick-lookup path. Greetings and
+  // short acknowledgements remain lightweight.
+  const homeNeedsVisualResponse = isGeneral && Boolean(request.trim()) &&
+    !/^(?:hi|hello|hey|thanks?|thank you|ok(?:ay)?|yes|no|good morning|good evening)[!.\s]*$/i.test(request.trim());
   // A "continue" that resumes prior tool state is never a simple task: it
   // needs the full budget, todo tracking and delegation to finish the job.
   const hasResume = Boolean((resumeMessages && resumeMessages.length) || resumeNote);
-  let effectiveComplexity: TaskComplexity = hasResume ? "complex" : complexity;
+  let effectiveComplexity: TaskComplexity = hasResume || homeNeedsVisualResponse ? "complex" : complexity;
   let isSimple = effectiveComplexity === "simple";
   const isNewProject = isNewProjectTask(request);
   // Setup I/O (MCP servers, project rules, skills config, repo map) is
@@ -944,26 +950,33 @@ export async function runProjectAgent(options: {
     projectRoot,
   }).catch(() => "");
 
+  // Hoisted so the context breakdown can measure the meta-context share (the
+  // memory/rules/repo-map sections embedded inside the system prompt).
+  const promptMemory = isGeneral && memory.projectMemory
+    ? { projectMemory: selectRelevantHomeMemory(memory.projectMemory, request, 4000), sessionMemory: memory.sessionMemory, facts: memory.facts }
+    : memory;
+  // Full role catalog only where delegate_task is actually bound — simple
+  // runs drop the tool, Home runs never mention delegation.
+  const subagentCatalogText = assetsEnabled("agents") && !isGeneral && effectiveComplexity !== "simple" ? buildSubagentCatalog(projectRoot) : "";
   const systemPromptText = buildSystemPrompt(
     mode,
     projectRoot,
     provider.label,
     modelName,
-    isGeneral && memory.projectMemory
-      ? { projectMemory: selectRelevantHomeMemory(memory.projectMemory, request, 4000), sessionMemory: memory.sessionMemory }
-      : memory,
+    promptMemory,
     rulesResult.combinedPromptSection,
     effectiveComplexity,
     isNewProject,
     taskKind,
     repoMapSection,
     homeTaskContract,
-    // Full role catalog only where delegate_task is actually bound — simple
-    // runs drop the tool, Home runs never mention delegation.
-    assetsEnabled("agents") && !isGeneral && effectiveComplexity !== "simple" ? buildSubagentCatalog(projectRoot) : "",
+    subagentCatalogText,
     projectInstructions.section,
     dynamicPluginContext
   );
+
+  const builtinTools = [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...webImageSearchTools, ...homeMemoryTool, ...projectMemoryTool];
+  const boundTools = [...builtinTools, ...(assetsEnabled("agents") && !isSimple ? [subagentTool] : []), ...mcpTools, ...pluginTools];
 
   const deepAgent = await createDeepAgent({
     model: llm,
@@ -974,9 +987,7 @@ export async function runProjectAgent(options: {
       ...(isSimple ? [] : [todoListMiddleware()]),
       ...(hooksMiddleware ? [hooksMiddleware] : []),
     ],
-    tools: isSimple
-      ? [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...webImageSearchTools, ...homeMemoryTool, ...projectMemoryTool, ...mcpTools, ...pluginTools]
-      : [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...webImageSearchTools, ...homeMemoryTool, ...projectMemoryTool, ...(assetsEnabled("agents") ? [subagentTool] : []), ...mcpTools, ...pluginTools],
+    tools: boundTools,
     skills: skillDirs,
     // Relevance-ranked memory for the prompt: profile/preferences always in,
     // facts and recent activity filtered to the current request so unrelated
@@ -1005,10 +1016,35 @@ export async function runProjectAgent(options: {
   const compactionThreshold = computeCompactionThreshold(modelContextWindow, modelMaxOutput);
   const outputReserve = Math.min(Math.max(modelMaxOutput || 8192, 2048), 32_000);
   const systemPromptTokens = Math.ceil((systemPromptText || "").length / 3.8);
-  const targetBudget = Math.max(1500, Math.floor(compactionThreshold * 0.55 - systemPromptTokens - outputReserve));
+  // Prompt composition for the context breakdown (hover card) and budget math:
+  // tool schemas and the skill manifest ride along with every model call but
+  // live outside the system prompt text, so estimate them separately. Meta
+  // context (memory, rules, repo map, project instructions, plugin context) is
+  // embedded INSIDE the system prompt — estimate it from its inputs and
+  // subtract, so breakdown rows never double-count.
+  const mcpToolsTokens = estimateToolSchemaTokens(mcpTools);
+  const pluginToolsTokens = estimateToolSchemaTokens(pluginTools);
+  const mcpToolSet = new Set<any>(mcpTools);
+  const pluginToolSet = new Set<any>(pluginTools);
+  const systemToolsTokens = estimateToolSchemaTokens(boundTools.filter((t) => !mcpToolSet.has(t) && !pluginToolSet.has(t)));
+  const skillsTokens = mountedSkillCatalog.length
+    ? estimateTokens(mountedSkillCatalog.map((s) => `${s.name}\n${s.description}\n${skillDirVirtualPath(s)}`).join("\n")) + mountedSkillCatalog.length * 24
+    : 0;
+  const metaContextTokens = estimateTokens([
+    promptMemory.projectMemory,
+    promptMemory.sessionMemory,
+    promptMemory.facts,
+    rulesResult.combinedPromptSection,
+    repoMapSection,
+    projectInstructions.section,
+    subagentCatalogText,
+    dynamicPluginContext,
+  ].filter(Boolean).join("\n"));
+  const promptOverheadTokens = systemPromptTokens + systemToolsTokens + mcpToolsTokens + pluginToolsTokens + skillsTokens;
+  const targetBudget = Math.max(1500, Math.floor(compactionThreshold * 0.55 - promptOverheadTokens - outputReserve));
       const estimatedHistoryTokens = history.reduce((sum, t) => sum + estimateTokens(t.text), 0);
   const historyBudget = targetBudget;
-  const projectedHistoryTokens = estimatedHistoryTokens + systemPromptTokens + outputReserve;
+  const projectedHistoryTokens = estimatedHistoryTokens + promptOverheadTokens + outputReserve;
 
   // Auto context compaction (like Claude Code & Codex):
   // - If conversation history is within safe context bounds (< ~80%), keep full history verbatim
@@ -1134,9 +1170,25 @@ export async function runProjectAgent(options: {
   // 4xx'd at the first model call with no compaction. Estimate the ACTUAL
   // payload (system prompt + every message, tool-call args included) and
   // trim older history when it approaches the window.
-  const contextMessageBudget = Math.max(1500, compactionThreshold - systemPromptTokens - outputReserve);
+  const contextMessageBudget = Math.max(1500, compactionThreshold - promptOverheadTokens - outputReserve);
+  // Composition of the outgoing prompt payload, largest category first with
+  // Messages pinned last (even at 0) — the hover-card breakdown. Shares are
+  // computed against the row total in the renderer.
+  const contextBreakdown = (messages: any[]): AgentContextBreakdownEntry[] => {
+    const rows = [
+      { label: "System tools", tokens: systemToolsTokens },
+      ...(mcpTools.length ? [{ label: "MCP tools", tokens: mcpToolsTokens }] : []),
+      ...(pluginTools.length ? [{ label: "Plugin tools", tokens: pluginToolsTokens }] : []),
+      { label: "System prompt", tokens: Math.max(0, systemPromptTokens - metaContextTokens) },
+      ...(mountedSkillCatalog.length ? [{ label: "Skills", tokens: skillsTokens }] : []),
+      ...(metaContextTokens > 0 ? [{ label: "Meta context", tokens: metaContextTokens }] : []),
+    ].filter((row) => row.tokens > 0);
+    rows.sort((a, b) => b.tokens - a.tokens);
+    rows.push({ label: "Messages", tokens: estimateMessagesTokens(messages) });
+    return rows;
+  };
   const currentContext = (messages: any[]) => {
-    const estimatedTokens = systemPromptTokens + estimateMessagesTokens(messages) + outputReserve;
+    const estimatedTokens = promptOverheadTokens + estimateMessagesTokens(messages) + outputReserve;
     // Keep the session's context meter on the same retained-context scale the
     // automatic trigger uses. Exact provider input belongs to this invocation
     // only, while the next user request will also restore prior history.
@@ -1146,6 +1198,7 @@ export async function runProjectAgent(options: {
       contextWindow: modelContextWindow,
       compactionThreshold,
       estimated: exactInputTokens <= 0,
+      breakdown: contextBreakdown(messages),
     };
   };
   const emitContext = (messages: any[], compacted = false) => {
@@ -1155,8 +1208,8 @@ export async function runProjectAgent(options: {
   };
   if (!isSimple && runMessages.length > 0) {
     const initialTokens = estimateMessagesTokens(runMessages);
-    if (systemPromptTokens + initialTokens + outputReserve >= compactionThreshold) {
-      const pct = Math.round(((systemPromptTokens + initialTokens) / Math.max(1, modelContextWindow)) * 100);
+    if (promptOverheadTokens + initialTokens + outputReserve >= compactionThreshold) {
+      const pct = Math.round(((promptOverheadTokens + initialTokens) / Math.max(1, modelContextWindow)) * 100);
       emit("status", `Context near limit at start (~${pct}% of ${formatContextWindow(modelContextWindow)}) — condensing earlier context…`);
       if (contextMessageBudget <= 1500) {
         throw new Error(
@@ -1336,7 +1389,7 @@ export async function runProjectAgent(options: {
           // is expected to fail. Stop at this consistent superstep boundary,
           // condense, and relaunch — tool results already committed are kept.
           if (!isSimple) {
-            const projectedTokens = systemPromptTokens + estimateMessagesTokens(payload.messages) + outputReserve;
+            const projectedTokens = promptOverheadTokens + estimateMessagesTokens(payload.messages) + outputReserve;
             const measuredTokens = usage.observedInputTokens;
             if (measuredTokens >= compactionThreshold || projectedTokens >= compactionThreshold) {
               throw new AgentContextRelaunch(
@@ -1578,7 +1631,7 @@ export async function runProjectAgent(options: {
         }
         const condensedTokens = estimateMessagesTokens(runMessages);
         emitContext(runMessages);
-        const nextProjected = systemPromptTokens + condensedTokens + outputReserve;
+        const nextProjected = promptOverheadTokens + condensedTokens + outputReserve;
         if (nextProjected >= compactionThreshold) {
           throw new Error(
             `Context condensation could not free enough room (projected ~${formatTokenCount(nextProjected)} of ${formatContextWindow(modelContextWindow)} tokens). Use a model with a larger context window.`

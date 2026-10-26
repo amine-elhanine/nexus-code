@@ -1,6 +1,10 @@
 export type PlanItem = { content: string; status: "pending" | "in_progress" | "completed" };
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
-export type AgentContextSnapshot = { usedTokens: number; contextWindow: number; compactionThreshold: number; estimated: boolean };
+export type AgentContextBreakdownEntry = { label: string; tokens: number };
+export type AgentContextSnapshot = { usedTokens: number; contextWindow: number; compactionThreshold: number; estimated: boolean; breakdown?: AgentContextBreakdownEntry[] };
+/** Renderer-facing context meter snapshot: the last persisted AgentContextSnapshot
+ *  flattened onto the usage shape the model/context line components consume. */
+export type AgentContextUsageSnapshot = AgentUsage & { contextWindow?: number; compactionThreshold?: number; usedTokens?: number; breakdown?: AgentContextBreakdownEntry[] };
 export function formatCost(cost: number | null | undefined): string {
   return cost == null ? "—" : `~$${cost.toFixed(4)}`;
 }

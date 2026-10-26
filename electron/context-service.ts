@@ -1,4 +1,5 @@
 import { HumanMessage } from "@langchain/core/messages";
+import { z as zodV4 } from "zod";
 
 /**
  * Calculates the auto-compaction threshold for a model's context window.
@@ -75,6 +76,38 @@ export function estimateMessageTokens(message: any): number {
 
 export function estimateMessagesTokens(messages: any[]): number {
   return (messages || []).reduce((sum, m) => sum + estimateMessageTokens(m), 0);
+}
+
+// Zod v4 first (the project's pinned zod), then a v3-style _def walk, then raw
+// stringify for plain JSON-Schema inputs (MCP tools arrive pre-serialized).
+function schemaToText(schema: any, depth = 0): string {
+  if (!schema || depth > 8) return "";
+  if (typeof schema === "string") return schema;
+  try {
+    const json = zodV4.toJSONSchema(schema, { io: "input", unrepresentable: "any" });
+    if (json && typeof json === "object") return JSON.stringify(json);
+  } catch { /* not a zod v4 schema */ }
+  try {
+    if (typeof schema.shape === "object" && schema.shape) {
+      return `{${Object.entries(schema.shape).map(([key, value]) => `${key}:${schemaToText(value, depth + 1)}`).join(",")}}`;
+    }
+    const def = schema._def ?? {};
+    const inner = def.innerType ?? def.schema ?? def.element ?? def.wrappedValue;
+    const description = schema.description ?? def.description ?? "";
+    return `${def.typeName ?? schema.type ?? ""}${inner ? `<${schemaToText(inner, depth + 1)}>` : ""}${description ? `(${description})` : ""}`;
+  } catch { /* fall through */ }
+  try { return JSON.stringify(schema) || ""; } catch { return ""; }
+}
+
+/** Rough token estimate of tool DEFINITIONS as providers receive them with
+ *  every model call (name + description + parameter schema). */
+export function estimateToolSchemaTokens(tools: any[]): number {
+  return (tools || []).reduce((sum, tool) => {
+    if (!tool) return sum;
+    const schema = tool?.schema ?? tool?.parameters ?? tool?.lc_kwargs?.schema ?? null;
+    const chars = String(tool?.name ?? "").length + String(tool?.description ?? "").length + schemaToText(schema).length + 24;
+    return sum + Math.max(8, Math.ceil(chars / 3.8));
+  }, 0);
 }
 
 const messageKind = (message: any): string => (
