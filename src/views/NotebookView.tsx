@@ -457,6 +457,19 @@ export function NotebookView({
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
 
+  // Widget "ask" buttons (interactive tools inside answers) prefill the composer.
+  useEffect(() => {
+    const onWidgetAsk = (event: Event) => {
+      const prompt = (event as CustomEvent<string>).detail;
+      if (typeof prompt === "string" && prompt.trim()) {
+        setDraft(prompt);
+        setTimeout(() => askTextareaRef.current?.focus(), 10);
+      }
+    };
+    window.addEventListener("nexus:widget-ask", onWidgetAsk);
+    return () => window.removeEventListener("nexus:widget-ask", onWidgetAsk);
+  }, [setDraft]);
+
   const matchingCommands = useMemo(() => {
     if (slashQuery === null) return [];
     return filterSlashCommands(slashQuery, customCommands, []);

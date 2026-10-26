@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
-import { Copy, Download, Check, Maximize2, X, Image as ImageIcon, ZoomIn, AlertCircle, RefreshCw } from "lucide-react";
+import { Copy, Download, Check, Maximize2, X, Image as ImageIcon, ZoomIn, ZoomOut, AlertCircle, RefreshCw } from "lucide-react";
 import { renderMarkdown } from "../../markdown.js";
+import { openVisualFullscreen } from "./VisualFullscreen.js";
 import {
   parseBarChart,
   parseHBarChart,
@@ -11,6 +12,7 @@ import {
   parseRadarChart,
   type CategoryChartSpec,
 } from "../../utils/chart-blocks.js";
+import { WidgetBlock } from "../chat/WidgetBlock.js";
 
 let mermaidSequence = 0;
 let mermaidConfigured = false;
@@ -71,8 +73,23 @@ function ChartActions({
     } catch { /* best effort */ }
   };
 
+  const handleFullscreen = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const svg = svgRef.current?.outerHTML;
+    if (svg) openVisualFullscreen({ kind: "svg", svg, title: title || "Chart" });
+  };
+
   return (
     <div className="rich-chart-actions" onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        className="rich-chart-btn"
+        onClick={handleFullscreen}
+        title="Open fullscreen with zoom"
+      >
+        <Maximize2 size={11} />
+        <span>Full</span>
+      </button>
       {dataText && (
         <button
           type="button"
@@ -152,6 +169,9 @@ function SvgTooltip({
 function MermaidBlock({ source }: { source: string }) {
   const [svg, setSvg] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  // Ref on the diagram host itself: a container-wide querySelector("svg")
+  // would return the Full button's lucide icon (it precedes the diagram).
+  const diagramRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     let alive = true;
     const id = `nexus-mermaid-${++mermaidSequence}`;
@@ -172,7 +192,26 @@ function MermaidBlock({ source }: { source: string }) {
     return () => { alive = false; };
   }, [source]);
 
-  if (svg) return <div className="rich-mermaid" dangerouslySetInnerHTML={{ __html: svg }} />;
+  if (svg) {
+    return (
+      <div className="rich-mermaid">
+        <button
+          type="button"
+          className="rich-mermaid-fullscreen"
+          title="Open fullscreen with zoom"
+          onClick={(event) => {
+            event.stopPropagation();
+            const inner = diagramRef.current?.querySelector("svg")?.outerHTML;
+            if (inner) openVisualFullscreen({ kind: "svg", svg: inner, title: "Diagram" });
+          }}
+        >
+          <Maximize2 size={11} />
+          <span>Full</span>
+        </button>
+        <div ref={diagramRef} dangerouslySetInnerHTML={{ __html: svg }} />
+      </div>
+    );
+  }
   if (failed) return <pre className="rich-mermaid-fallback"><code>{source}</code></pre>;
   return <div className="rich-mermaid-loading">Rendering diagram…</div>;
 }
@@ -671,6 +710,7 @@ function RadarBlock({ source }: { source: string }) {
 
 function ChatImageBlock({ alt, src }: { alt: string; src: string }) {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [lightboxScale, setLightboxScale] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [downloaded, setDownloaded] = useState(false);
@@ -830,10 +870,10 @@ function ChatImageBlock({ alt, src }: { alt: string; src: string }) {
         </div>
         <div className="rich-chart-actions" style={{ position: "static", opacity: 1 }}>
           {dataUrl && (
-            <button
+              <button
               type="button"
               className="rich-chart-btn"
-              onClick={() => setZoomed(true)}
+              onClick={() => { setZoomed(true); setLightboxScale(1); }}
               title="Expand / Zoom image"
             >
               <Maximize2 size={11} />
@@ -872,7 +912,7 @@ function ChatImageBlock({ alt, src }: { alt: string; src: string }) {
         ) : (
           <div
             className="chat-inline-image-preview-wrap"
-            onClick={() => setZoomed(true)}
+            onClick={() => { setZoomed(true); setLightboxScale(1); }}
             title="Click to view full size"
           >
             <img
@@ -907,6 +947,23 @@ function ChatImageBlock({ alt, src }: { alt: string; src: string }) {
                 <button
                   type="button"
                   className="rich-chart-btn"
+                  onClick={() => setLightboxScale((s) => Math.max(0.25, s / 1.25))}
+                  title="Zoom out"
+                >
+                  <ZoomOut size={12} />
+                </button>
+                <span className="visual-fullscreen-zoom-label">{Math.round(lightboxScale * 100)}%</span>
+                <button
+                  type="button"
+                  className="rich-chart-btn"
+                  onClick={() => setLightboxScale((s) => Math.min(8, s * 1.25))}
+                  title="Zoom in"
+                >
+                  <ZoomIn size={12} />
+                </button>
+                <button
+                  type="button"
+                  className="rich-chart-btn"
                   onClick={handleDownload}
                   title="Download image"
                 >
@@ -924,11 +981,20 @@ function ChatImageBlock({ alt, src }: { alt: string; src: string }) {
                 </button>
               </div>
             </div>
-            <div className="chat-image-lightbox-body">
+            <div
+              className="chat-image-lightbox-body"
+              onWheel={(event) => {
+                event.preventDefault();
+                setLightboxScale((s) => Math.min(8, Math.max(0.25, event.deltaY < 0 ? s * 1.15 : s / 1.15)));
+              }}
+              onDoubleClick={() => setLightboxScale(1)}
+            >
               <img
                 src={dataUrl}
                 alt={displayTitle}
                 className="chat-image-lightbox-img"
+                style={{ transform: `scale(${lightboxScale})`, cursor: lightboxScale > 1 ? "zoom-out" : "default" }}
+                onClick={() => (lightboxScale > 1 ? setLightboxScale(1) : setZoomed(false))}
               />
             </div>
             {alt && (
@@ -943,18 +1009,92 @@ function ChatImageBlock({ alt, src }: { alt: string; src: string }) {
   );
 }
 
+type SearchImageItem = { alt: string; src: string; sourceUrl?: string };
+
+function isSearchImageUrl(value: string): boolean {
+  try {
+    const { hostname, protocol } = new URL(value);
+    const host = hostname.toLowerCase();
+    return protocol === "https:" && (host === "external-content.duckduckgo.com" || host === "mm.bing.net" || host.endsWith(".mm.bing.net"));
+  } catch {
+    return false;
+  }
+}
+
+function SearchImageGallery({ items }: { items: SearchImageItem[] }) {
+  const [failed, setFailed] = useState<Set<number>>(() => new Set());
+  const rowCount = Math.max(1, Math.ceil((items.length - 1) / 2));
+  return (
+    <div
+      className={`search-image-gallery${items.length === 2 ? " two-images" : ""}`}
+      style={{ gridTemplateRows: `repeat(${rowCount}, minmax(90px, 1fr))` }}
+      role="group"
+      aria-label="Web image results"
+    >
+      {items.map((item, index) => failed.has(index) ? null : (
+        <a
+          className={`search-image-tile${index === 0 ? " featured" : ""}`}
+          href={item.sourceUrl || item.src}
+          target="_blank"
+          rel="noreferrer"
+          key={`${item.src}-${index}`}
+          title={item.alt || "Open image source"}
+        >
+          <img
+            src={item.src}
+            alt={item.alt || "Web image result"}
+            loading={index > 2 ? "lazy" : "eager"}
+            onError={() => setFailed((current) => new Set(current).add(index))}
+          />
+          <span className="search-image-caption">{item.alt || "View source"}</span>
+        </a>
+      ))}
+    </div>
+  );
+}
+
 const CHART_KINDS = new Set(["mermaid", "scatter", "bar", "hbar", "line", "area", "pie", "donut", "radar"]);
 const BLOCK_PATTERN = /(```([\w-]*)\s*\n([\s\S]*?)```)|(!\[([^\]]*)\]\(([^)]+)\))/gi;
 
 export function RichMarkdown({ source, className = "" }: { source: string; className?: string }) {
   const pieces: React.ReactNode[] = [];
+  let renderSource = source || "";
+  const imagePattern = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g;
+  const searchImageMatches = [...renderSource.matchAll(imagePattern)]
+    .filter((match) => isSearchImageUrl(match[2] || ""));
+  const searchImages: SearchImageItem[] = searchImageMatches.map((match, index) => {
+    const nextStart = searchImageMatches[index + 1]?.index ?? Math.min(renderSource.length, (match.index || 0) + match[0].length + 500);
+    const nearbyText = renderSource.slice((match.index || 0) + match[0].length, nextStart);
+    const sourceUrl = nearbyText.match(/(?:Source:\s*)?\[[^\]]+\]\((https?:\/\/[^)\s]+)\)/i)?.[1];
+    return { alt: match[1] || "", src: match[2] || "", sourceUrl };
+  });
+
+  // Search images may be separated by source citations or short explanations.
+  // Gather them once per answer so they form a single gallery like a search
+  // result set. Keep the surrounding answer text and remove the citations
+  // that are now represented by clickable source-linked tiles.
+  if (searchImages.length > 1) {
+    const sourceUrls = searchImages.map((item) => item.sourceUrl).filter((url): url is string => Boolean(url));
+    for (const url of sourceUrls) {
+      const escaped = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      renderSource = renderSource.replace(new RegExp(`^[^\\n]*\\(${escaped}\\)[^\\n]*\\n?`, "gim"), "");
+    }
+    const laterMatches = [...renderSource.matchAll(imagePattern)]
+      .filter((match) => isSearchImageUrl(match[2] || ""))
+      .slice(1)
+      .reverse();
+    for (const match of laterMatches) {
+      const start = match.index || 0;
+      renderSource = `${renderSource.slice(0, start)}${renderSource.slice(start + match[0].length)}`;
+    }
+  }
   const pattern = new RegExp(BLOCK_PATTERN.source, "gi");
   let cursor = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = pattern.exec(source || ""))) {
+  while ((match = pattern.exec(renderSource))) {
     if (match.index > cursor) {
-      const textChunk = source.slice(cursor, match.index);
+      const textChunk = renderSource.slice(cursor, match.index);
       if (textChunk.trim()) {
         pieces.push(
           <div key={`md-${cursor}`} dangerouslySetInnerHTML={{ __html: renderMarkdown(textChunk) }} />
@@ -966,7 +1106,9 @@ export function RichMarkdown({ source, className = "" }: { source: string; class
       const kind = (match[2] || "").toLowerCase();
       const blockSource = match[3];
 
-      if (CHART_KINDS.has(kind)) {
+      if (kind === "widget") {
+        pieces.push(<WidgetBlock key={`widget-${match.index}`} source={blockSource} />);
+      } else if (CHART_KINDS.has(kind)) {
         if (kind === "scatter") pieces.push(<ScatterBlock key={`scatter-${match.index}`} source={blockSource} />);
         else if (kind === "bar") pieces.push(<CategoryChartBlock key={`bar-${match.index}`} source={blockSource} kind="bar" />);
         else if (kind === "hbar") pieces.push(<HBarBlock key={`hbar-${match.index}`} source={blockSource} />);
@@ -984,16 +1126,22 @@ export function RichMarkdown({ source, className = "" }: { source: string; class
     } else if (match[4]) {
       const altText = match[5] || "";
       const imgSrc = match[6] || "";
-      pieces.push(
-        <ChatImageBlock key={`img-${match.index}`} alt={altText} src={imgSrc} />
-      );
+      if (isSearchImageUrl(imgSrc)) {
+        if (searchImages.length > 1) {
+          pieces.push(<SearchImageGallery key={`gallery-${match.index}`} items={searchImages} />);
+        } else {
+          pieces.push(<ChatImageBlock key={`img-${match.index}`} alt={altText} src={imgSrc} />);
+        }
+      } else {
+        pieces.push(<ChatImageBlock key={`img-${match.index}`} alt={altText} src={imgSrc} />);
+      }
     }
 
     cursor = match.index + match[0].length;
   }
 
-  if (cursor < (source || "").length || !pieces.length) {
-    const remaining = (source || "").slice(cursor);
+  if (cursor < renderSource.length || !pieces.length) {
+    const remaining = renderSource.slice(cursor);
     if (remaining.trim() || !pieces.length) {
       pieces.push(
         <div key={`md-${cursor}`} dangerouslySetInnerHTML={{ __html: renderMarkdown(remaining) }} />

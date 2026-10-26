@@ -35,6 +35,93 @@ function stripTags(html: string): string {
 }
 
 export type WebSearchResult = { title: string; url: string; snippet: string };
+export type WebImageResult = { title: string; imageUrl: string; sourceUrl: string };
+
+function safeHttpUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function isAllowedSearchImageHost(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "external-content.duckduckgo.com" || host === "mm.bing.net" || host.endsWith(".mm.bing.net");
+  } catch {
+    return false;
+  }
+}
+
+/** Decode DuckDuckGo's image API response into safe, directly displayable URLs. */
+export function parseDuckDuckGoImages(payload: unknown, limit = 5): WebImageResult[] {
+  const results = (payload as { results?: unknown })?.results;
+  if (!Array.isArray(results)) return [];
+  const images: WebImageResult[] = [];
+  for (const item of results) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const imageUrl = safeHttpUrl(row.thumbnail || row.image);
+    const sourceUrl = safeHttpUrl(row.url);
+    if (!imageUrl || !isAllowedSearchImageHost(imageUrl) || !sourceUrl) continue;
+    images.push({ title: String(row.title || "Relevant image").slice(0, 160), imageUrl, sourceUrl });
+    if (images.length >= limit) break;
+  }
+  return images;
+}
+
+async function duckDuckGoImageSearch(query: string, limit = 5): Promise<WebImageResult[]> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DDG_TIMEOUT_MS);
+  try {
+    const page = await fetch(`https://duckduckgo.com/?q=${encodeURIComponent(query)}&iax=images&ia=images`, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36" },
+      signal: controller.signal,
+    });
+    if (!page.ok) throw new Error(`DuckDuckGo returned HTTP ${page.status}`);
+    const html = await page.text();
+    const token = html.match(/(?:vqd\s*=\s*['"]|\"vqd\"\s*:\s*\")([^'"\\]+)/i)?.[1];
+    if (!token) return [];
+    const params = new URLSearchParams({ l: "us-en", o: "json", q: query, vqd: token, f: "", p: "1" });
+    const response = await fetch(`https://duckduckgo.com/i.js?${params}`, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36", Referer: "https://duckduckgo.com/" },
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`DuckDuckGo image search returned HTTP ${response.status}`);
+    return parseDuckDuckGoImages(await response.json(), limit);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+export function createWebImageSearchTools(opts?: { beforeSearch?: () => string | null }) {
+  return [tool(
+    async ({ query, maxResults = 5 }: { query: string; maxResults?: number }) => {
+      const guard = opts?.beforeSearch?.();
+      if (guard) return guard;
+      const cleanQuery = query.trim();
+      if (!cleanQuery) return "An image search query is required.";
+      try {
+        const results = await duckDuckGoImageSearch(cleanQuery, Math.min(Math.max(maxResults, 1), 5));
+        if (!results.length) return `No web images found for "${cleanQuery}". Continue with the text search results.`;
+        return `Image results for "${cleanQuery}". Include only images that materially help the answer. To show one inline, use exactly this Markdown pattern with its direct image URL and caption, then link the caption to its source page:\n\n${results.map((r, i) => `${i + 1}. ![${r.title.replace(/[\\[\\]]/g, "")}](${r.imageUrl}) ([Source](${r.sourceUrl}))`).join("\n")}\n\nUse a relevant image only when it adds useful visual evidence; keep its source link beside it.`;
+      } catch (error) {
+        return `Web image search failed: ${error instanceof Error ? error.message : String(error)}. Continue with the text search results.`;
+      }
+    },
+    {
+      name: "web_image_search",
+      description: "Find relevant web images for a Home answer that would benefit from visual evidence (places, products, people, landmarks, diagrams, events). Returns direct image URLs and source pages; embed selected useful images in the chat using Markdown image syntax and cite the source link. Skip it when images would add little.",
+      schema: z.object({
+        query: z.string().describe("Specific subject to find useful visual references for."),
+        maxResults: z.number().optional().describe("How many image results to return (1-5, default 5)."),
+      }),
+    }
+  )];
+}
 
 // DuckDuckGo Lite date filter: recency bias for time-sensitive queries
 // ("latest", "current", prices, releases, rankings). Verified live: df=y

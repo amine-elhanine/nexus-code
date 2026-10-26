@@ -434,6 +434,22 @@ function analystSystem(): string {
 - If the sources do not contain the answer, say so plainly and state what IS in them.
 - Be direct and concise. No preamble, no tutoring tone.
 - When the sources contain numbers, trends, comparisons, shares, processes, structures, timelines, or plans, include one useful visual in a fenced mermaid block: use xychart-beta for numeric series, pie for shares, and flowchart TD or timeline for processes and histories. Keep every value source-grounded and cite the surrounding claims.
+- Interactive tools: when the answer involves a computation the user will want to adjust — grade calculators weighted by the syllabus, unit conversions, score thresholds, dose/quantity math grounded in the sources — include ONE \`\`\`widget block in addition to the explanation. The chat UI renders it as a live mini-tool whose sliders recompute every stat, gauge, table and chart in-page. Line grammar (formulas reference INPUT names as variables — stats cannot be referenced):
+  \`\`\`widget
+  title "Final grade calculator"
+  input current "Current score (%)" slider 0 100 72 step 1
+  input final "Final exam weight (%)" select 40 30 40 50
+  input curve "Apply +5 curve" toggle off
+  stat "Score needed on final" formula "max(0, (60 - current*(100-final)/100)/(final/100)) - curve*5" suffix "%" decimals 1 warn-above 80
+  gauge "Overall if final = needed" formula "current*(100-final)/100 + (max(0, (60 - current*(100-final)/100)/(final/100)))*(final/100)" max "100" suffix "%"
+  table "What-if outcomes"
+  columns "Final score" "Overall"
+  row "60%" "current*(100-final)/100 + 60*final/100"
+  row "80%" "current*(100-final)/100 + 80*final/100"
+  row "100%" "current*(100-final)/100 + final"
+  action ask "How do I study for this?" text "My current score is {current}% — what should I focus on to reach 60% overall?"
+  \`\`\`
+  Grammar: inputs \`slider <min> <max> <default> [step n]\` | \`number <default> [min a] [max b]\` | \`select <default> <option…>\` | \`toggle on|off\` (1/0 in formulas). Stats/gauges take optional \`prefix/suffix/decimals\`, a visibility condition \`when "<expr>"\`, and KPI thresholds \`warn-above/bad-above/warn-below/bad-below <n>\` (amber/red). \`gauge "<label>" formula "<expr>" max "<expr-or-number>"\` draws a progress bar. Up to 3 charts (\`chart bar|line|area|pie|donut "<title>"\` + \`point "<label>" formula "<expr>"\` rows; \`series "<name>"\` starts a comparison series; pie/donut use the first series). \`table "<title>"\` + \`columns "A" "B"\` + \`row "<label>" "<formula>" …\` makes computed tables. Functions: min max abs round floor ceil sqrt pow ln log log2 exp clamp sign between sum avg trig atan2 radians degrees if(cond,a,b), financial pmt(r,n,pv)/fv(r,n,pmt[,pv]), constants pi e. Use 2-6 inputs, 1-5 stats/gauges, 0-2 charts, 0-1 tables, 0-2 actions; formulas on one line under 300 chars. Only build a widget when it genuinely helps — never on simple factual lookups.
 - End with a "Sources" line listing [S1] heading, [S2] heading, ...`;
 }
 
@@ -830,7 +846,8 @@ Agentic RAG Guidelines:
 5. STUDIO NOTES: When the user asks for key takeaways, flashcards, study notes, or summaries to save, use save_note_to_studio in addition to your conversational response.
 6. DELIVERABLES: If the user asks for a file (.docx, .pptx, .xlsx, .pdf), follow any relevant skill: write a generator script with write_file, run it with execute, verify with ls, and delete the throwaway script.
 7. Return clean Markdown without exposing internal JSON tool arguments.
-8. SKILLS: Skills listed in the System Note below include exact paths — read the relevant SKILL.md directly via its given path. Never browse skill folders (ls/glob of .nexus/skills, /global-skills, /system-skills) to discover skills.
+8. INTERACTIVE TOOLS: when the answer benefits from hands-on exploration — a calculation with adjustable parameters grounded in the sources (grade calculators, weighted scores, unit conversions, thresholds) — include ONE \`\`\`widget block beside the explanation; the chat UI renders it as a live mini-tool whose inputs recompute every stat, gauge, table and chart in-page. Grammar: \`title "…"\`; inputs \`input <name> "<label>" slider <min> <max> <default> [step <n>]\` / \`number <default> [min a] [max b]\` / \`select <default> <option…>\` / \`toggle on|off\`; \`stat "<label>" formula "<expr>"\` and \`gauge "<label>" formula "<expr>" max "<expr-or-number>"\` with optional \`prefix/suffix/decimals\`, visibility \`when "<expr>"\`, and KPI thresholds \`warn-above/bad-above/warn-below/bad-below <n>\`; up to 3 charts \`chart bar|line|area|pie|donut "<title>"\` fed by \`point "<label>" formula "<expr>"\` lines (\`series "<name>"\` starts a comparison series); \`table "<title>"\` + \`columns "A" "B"\` + \`row "<label>" "<formula>" …\` for computed tables; \`action ask "<label>" text "<prompt with {name} placeholders>"\` / \`action copy "<label>" formula "<expr>"\`. Formulas reference INPUT names as variables (not stats) and use + - * / % ^, comparisons, and min max abs round floor ceil sqrt pow ln log log2 exp clamp sign between sum avg trig radians degrees if(cond,a,b), financial pmt(r,n,pv)/fv(r,n,pmt[,pv]). Never force a widget on a simple factual answer, and keep every formula grounded in cited source values.
+9. SKILLS: Skills listed in the System Note below include exact paths — read the relevant SKILL.md directly via its given path. Never browse skill folders (ls/glob of .nexus/skills, /global-skills, /system-skills) to discover skills.
 
 ${skillNote ? `\n${skillNote}` : ""}
 Notebook files: ${summary.files.join(", ") || "(none)"}

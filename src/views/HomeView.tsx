@@ -62,6 +62,8 @@ export function HomeView({
   switchEffort,
   onOpenProviders,
   sessionUsage,
+  contextUsage,
+  activeSessionId,
   homeRoot,
   onDownloadFile,
   onOpenFolder,
@@ -94,6 +96,8 @@ export function HomeView({
   switchEffort?: (effort: string) => void;
   onOpenProviders: () => void;
   sessionUsage?: AgentUsage | null;
+  contextUsage?: (AgentUsage & { contextWindow?: number; compactionThreshold?: number; usedTokens?: number }) | null;
+  activeSessionId?: string;
   homeRoot: string;
   onDownloadFile: (path: string) => void;
   onOpenFolder: () => void;
@@ -114,6 +118,19 @@ export function HomeView({
   const stickToBottomRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+
+  // Widget "ask" buttons (interactive tools inside answers) prefill the composer.
+  useEffect(() => {
+    const onWidgetAsk = (event: Event) => {
+      const prompt = (event as CustomEvent<string>).detail;
+      if (typeof prompt === "string" && prompt.trim()) {
+        setDraft(prompt);
+        setTimeout(() => textareaRef.current?.focus(), 10);
+      }
+    };
+    window.addEventListener("nexus:widget-ask", onWidgetAsk);
+    return () => window.removeEventListener("nexus:widget-ask", onWidgetAsk);
+  }, [setDraft]);
 
   useEffect(() => {
     const el = transcriptRef.current;
@@ -556,6 +573,8 @@ export function HomeView({
                 switchEffort={switchEffort}
                 onOpenProviders={onOpenProviders}
                 sessionUsage={sessionUsage}
+                contextUsage={contextUsage}
+                activeSessionId={activeSessionId}
               />
             </div>
             <button
