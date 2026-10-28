@@ -1044,10 +1044,10 @@ export async function runProjectAgent(options: {
   const targetBudget = Math.max(1500, Math.floor(compactionThreshold * 0.55 - promptOverheadTokens - outputReserve));
       const estimatedHistoryTokens = history.reduce((sum, t) => sum + estimateTokens(t.text), 0);
   const historyBudget = targetBudget;
-  const projectedHistoryTokens = estimatedHistoryTokens + promptOverheadTokens + outputReserve;
+  const projectedHistoryTokens = estimatedHistoryTokens + promptOverheadTokens;
 
   // Auto context compaction (like Claude Code & Codex):
-  // - If conversation history is within safe context bounds (< ~80%), keep full history verbatim
+  // - If conversation history is within safe context bounds (< ~85%), keep full history verbatim
   // - If conversation history reaches or nears the model's context window limit (>= threshold),
   //   automatically compact older history down to targetBudget (~50%), preserving the last 4 turns verbatim.
   let compactedHistory;
@@ -1188,10 +1188,12 @@ export async function runProjectAgent(options: {
     return rows;
   };
   const currentContext = (messages: any[]) => {
-    const estimatedTokens = promptOverheadTokens + estimateMessagesTokens(messages) + outputReserve;
+    const estimatedTokens = promptOverheadTokens + estimateMessagesTokens(messages);
     // Keep the session's context meter on the same retained-context scale the
-    // automatic trigger uses. Exact provider input belongs to this invocation
-    // only, while the next user request will also restore prior history.
+    // automatic trigger uses (no output reserve on either side), so compaction
+    // fires exactly when the meter reads the threshold. Exact provider input
+    // belongs to this invocation only, while the next user request will also
+    // restore prior history.
     const exactInputTokens = usage.hasObservedInputTokens ? usage.observedInputTokens : 0;
     return {
       usedTokens: Math.max(estimatedTokens, exactInputTokens),
@@ -1208,7 +1210,7 @@ export async function runProjectAgent(options: {
   };
   if (!isSimple && runMessages.length > 0) {
     const initialTokens = estimateMessagesTokens(runMessages);
-    if (promptOverheadTokens + initialTokens + outputReserve >= compactionThreshold) {
+    if (promptOverheadTokens + initialTokens >= compactionThreshold) {
       const pct = Math.round(((promptOverheadTokens + initialTokens) / Math.max(1, modelContextWindow)) * 100);
       emit("status", `Context near limit at start (~${pct}% of ${formatContextWindow(modelContextWindow)}) — condensing earlier context…`);
       if (contextMessageBudget <= 1500) {
@@ -1389,7 +1391,7 @@ export async function runProjectAgent(options: {
           // is expected to fail. Stop at this consistent superstep boundary,
           // condense, and relaunch — tool results already committed are kept.
           if (!isSimple) {
-            const projectedTokens = promptOverheadTokens + estimateMessagesTokens(payload.messages) + outputReserve;
+            const projectedTokens = promptOverheadTokens + estimateMessagesTokens(payload.messages);
             const measuredTokens = usage.observedInputTokens;
             if (measuredTokens >= compactionThreshold || projectedTokens >= compactionThreshold) {
               throw new AgentContextRelaunch(
@@ -1631,7 +1633,7 @@ export async function runProjectAgent(options: {
         }
         const condensedTokens = estimateMessagesTokens(runMessages);
         emitContext(runMessages);
-        const nextProjected = promptOverheadTokens + condensedTokens + outputReserve;
+        const nextProjected = promptOverheadTokens + condensedTokens;
         if (nextProjected >= compactionThreshold) {
           throw new Error(
             `Context condensation could not free enough room (projected ~${formatTokenCount(nextProjected)} of ${formatContextWindow(modelContextWindow)} tokens). Use a model with a larger context window.`

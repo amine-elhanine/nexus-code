@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import {
-  ArrowLeft, ArrowUp, BookOpen, Check, ChevronRight, Clapperboard, Download, FileText, Globe, HelpCircle,
-  Layers, Loader2, Network, PanelLeft, PanelRight, Pencil, Plus, Presentation, RefreshCw, Sparkles, Square, Trash2, Upload, X,
-  FolderArchive, Workflow, Compass, AlertCircle, Clock, Cpu, UploadCloud,
+  ArrowLeft, ArrowUp, BookOpen, Check, Clapperboard, Download, FileText, Globe, HelpCircle,
+  Layers, Loader2, Network, PanelLeft, PanelRight, Plus, Presentation, RefreshCw, Search, Sparkles, Square, Trash2, Upload, X,
+  FolderArchive, MoreVertical, Workflow, Compass, AlertCircle, Clock, Cpu, UploadCloud,
 } from "lucide-react";
 import { ModelSelect } from "./AgentView.js";
 import { ActivityGroupView, CopyTextButton } from "../components/chat/ChatMessageItem.js";
@@ -23,6 +23,28 @@ function verdictColor(verdict?: string) {
   if (verdict === "partial") return "#d29922";
   if (verdict === "ungrounded") return "#f85149";
   return "#8b949e";
+}
+
+/** Deterministic hue for a notebook's card icon tint. */
+function hueFor(id: string): number {
+  let h = 0;
+  for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return h;
+}
+
+/** Compact relative time for studio output rows ("3 min ago", "2 mo ago"). */
+function relTime(iso?: string): string {
+  if (!iso) return "";
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.round(days / 30);
+  if (months < 12) return `${months} mo ago`;
+  return `${Math.round(months / 12)}y ago`;
 }
 
 function sourceProgressPercent(status: NotebookSource["status"]): number {
@@ -146,7 +168,6 @@ function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generat
             >
               <span className="studio-card-icon">{tile.icon}</span>
               <span className="studio-card-label">{tile.label}</span>
-              <ChevronRight size={13} className="studio-card-chevron" />
             </button>
           );
         })}
@@ -291,6 +312,7 @@ function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generat
 
 export function NotebookView({
   notebooks,
+  sourceCounts,
   activeNotebook,
   setActiveNotebook,
   sources,
@@ -345,6 +367,7 @@ export function NotebookView({
   onReindexSource,
   onReindexAll,
   onToggleScope,
+  onSetScopeExcluded,
   onResetScope,
   onOpenPassage,
   onClosePassage,
@@ -371,6 +394,7 @@ export function NotebookView({
   ingestDetail,
 }: {
   notebooks: NotebookMeta[];
+  sourceCounts: Record<string, number>;
   activeNotebook: NotebookMeta | null;
   setActiveNotebook: (nb: NotebookMeta) => void;
   sources: NotebookSource[];
@@ -428,6 +452,7 @@ export function NotebookView({
   onReindexSource: (sourceId: string) => void;
   onReindexAll: () => void;
   onToggleScope: (sourceId: string) => void;
+  onSetScopeExcluded: (ids: string[]) => void;
   onResetScope: () => void;
   onOpenPassage: (chunkId: string) => void;
   onClosePassage: () => void;
@@ -550,6 +575,7 @@ export function NotebookView({
 
   const [editingName, setEditingName] = useState<string | null>(null);
   const [instructionDraft, setInstructionDraft] = useState(settings.instructions);
+  const [notebookSearch, setNotebookSearch] = useState("");
 
   const [showSources, setShowSources] = useState(() => {
     try {
@@ -676,6 +702,17 @@ export function NotebookView({
     setLinkUrl("");
   }
 
+  // Sources "Select all": checked = everything in scope. Unchecking keeps the
+  // first source selected (the scope must never be empty).
+  const allSourcesSelected = excludedIds.length === 0 && sources.length > 0;
+  function toggleSelectAll() {
+    if (allSourcesSelected) {
+      onSetScopeExcluded(sources.slice(1).map((s) => s.id));
+    } else {
+      onResetScope();
+    }
+  }
+
   useEffect(() => setInstructionDraft(settings.instructions), [settings.instructions]);
 
   function submitRename() {
@@ -726,48 +763,71 @@ export function NotebookView({
 
   // ---- Sessions overview: pick a session to enter ----
   if (!activeNotebook) {
+    const query = notebookSearch.trim().toLowerCase();
+    const filtered = query ? notebooks.filter((nb) => nb.name.toLowerCase().includes(query)) : notebooks;
     return (
-      <div className="agent-view notebook-view">
-        <div className="agent-view-head">
-          <div>
-            <span className="view-kicker">NOTEBOOK · SESSIONS</span>
-            <h1>Notebook sessions</h1>
-            <p>Each session is isolated — its own sources, index, and chat. Click one to enter it.</p>
-          </div>
-          <div className="agent-view-meta">
-            <button className="top-link" onClick={() => onCreateNotebook("")} title="Create a new notebook session">
-              <Plus size={12} /> New session
+      <div className="agent-view notebook-view nb-home">
+        <div className="nb-home-top">
+          <h1 className="nb-home-title">Notebooks</h1>
+          <div className="nb-home-actions">
+            <label className="nb-home-search">
+              <Search size={13} />
+              <input
+                value={notebookSearch}
+                onChange={(e) => setNotebookSearch(e.target.value)}
+                placeholder="Search notebooks"
+                spellCheck={false}
+              />
+            </label>
+            <button className="nb-new-pill" onClick={() => onCreateNotebook("")} title="Create a new notebook">
+              <Plus size={14} /> New notebook
             </button>
           </div>
         </div>
-        {!!notice && <div className="input-note" style={{ margin: "0 0 8px", padding: "0 30px" }}>{notice}</div>}
-        <div className="notebook-sessions-grid">
-          {notebooks.map((nb) => (
-            <div key={nb.id} className="notebook-card" onClick={() => setActiveNotebook(nb)} title={`Enter ${nb.name}`}>
-              <div className="notebook-card-icon"><BookOpen size={18} /></div>
-              <div className="notebook-card-name">{nb.name}</div>
-              {!!nb.description && <div className="notebook-card-desc">{nb.description}</div>}
-              <div className="notebook-card-meta">Updated {new Date(nb.updatedAt).toLocaleDateString()}</div>
-              <button
-                className="pane-action notebook-card-delete"
-                title="Delete session"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDeleteNotebook(nb);
-                }}
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ))}
-          <div className="notebook-card notebook-card-new" onClick={() => onCreateNotebook("")} title="Create a new notebook session">
-            <Plus size={18} />
-            <span>New session</span>
+        {!!notice && <div className="input-note" style={{ margin: "0 0 8px" }}>{notice}</div>}
+        <div className="nb-home-grid">
+          {filtered.map((nb) => {
+            const hue = hueFor(nb.id);
+            const count = sourceCounts[nb.id] ?? 0;
+            return (
+              <div key={nb.id} className="nb-home-card" onClick={() => setActiveNotebook(nb)} title={`Open ${nb.name}`}>
+                <div className="nb-home-card-top">
+                  <span
+                    className="nb-home-card-icon"
+                    style={{ background: `hsl(${hue} 45% 20%)`, color: `hsl(${hue} 80% 70%)` }}
+                  >
+                    <BookOpen size={16} />
+                  </span>
+                  <button
+                    className="nb-home-card-menu"
+                    title="Delete notebook"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDeleteNotebook(nb);
+                    }}
+                  >
+                    <MoreVertical size={14} />
+                  </button>
+                </div>
+                <div className="nb-home-card-name">{nb.name}</div>
+                <div className="nb-home-card-meta">
+                  {new Date(nb.updatedAt).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}
+                  {" · "}
+                  {count} source{count === 1 ? "" : "s"}
+                </div>
+              </div>
+            );
+          })}
+          <div className="nb-home-card nb-home-card-new" onClick={() => onCreateNotebook("")} title="Create a new notebook">
+            <span className="nb-home-card-new-icon"><Plus size={20} /></span>
+            <span>New notebook</span>
           </div>
-          {!notebooks.length && (
-            <div className="empty-pane">No sessions yet — create one to start uploading documents.</div>
-          )}
         </div>
+        {!filtered.length && (
+          <div className="empty-pane" style={{ padding: "4px 26px" }}>
+            {notebooks.length ? "No notebooks match your search." : "No notebooks yet — create one to start uploading documents."}
+          </div>
+        )}
       </div>
     );
   }
@@ -789,47 +849,44 @@ export function NotebookView({
 
   return (
     <div className="agent-view notebook-view">
-      <div className="agent-view-head">
-        <div className="notebook-enter-head">
-          <button className="top-link" onClick={onExitToSessions} title="Back to all sessions">
-            <ArrowLeft size={12} /> Sessions
-          </button>
-          <div>
-            <span className="view-kicker">NOTEBOOK · DISCUSSION</span>
-            {editingName !== null ? (
-              <input
-                autoFocus
-                value={editingName}
-                onChange={(e) => setEditingName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    submitRename();
-                  } else if (e.key === "Escape") {
-                    setEditingName(null);
-                  }
-                }}
-                onBlur={submitRename}
-                className="text-field notebook-rename-field"
-              />
-            ) : (
-              <h1>
-                {activeNotebook.name}
-                <button className="pane-action" onClick={() => setEditingName(activeNotebook.name)} title="Rename session" style={{ display: "inline-grid", marginLeft: 6, verticalAlign: "middle" }}>
-                  <Pencil size={12} />
-                </button>
-              </h1>
-            )}
-            <p>
-              {stats
-                ? `${stats.readySources}/${stats.sources} sources ready · ${stats.chunks} chunks · ${stats.sections} sections · ${stats.embeddingModel || "no index yet"}`
-                : "Upload documents on the left, then ask in the middle."}
-            </p>
-          </div>
+      <div className="nb-topbar">
+        <button className="nb-topbar-back" onClick={onExitToSessions} title="Back to all notebooks">
+          <ArrowLeft size={16} />
+        </button>
+        <div className="nb-topbar-center">
+          {editingName !== null ? (
+            <input
+              autoFocus
+              value={editingName}
+              onChange={(e) => setEditingName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submitRename();
+                } else if (e.key === "Escape") {
+                  setEditingName(null);
+                }
+              }}
+              onBlur={submitRename}
+              className="text-field notebook-rename-field"
+            />
+          ) : (
+            <button className="nb-topbar-title" onClick={() => setEditingName(activeNotebook.name)} title="Click to rename">
+              {activeNotebook.name}
+            </button>
+          )}
+          <span className="nb-topbar-sub">
+            {stats
+              ? `${stats.readySources}/${stats.sources} sources ready · ${stats.chunks} chunks · ${stats.embeddingModel || "no index yet"}`
+              : "Upload sources on the left, then ask below."}
+          </span>
         </div>
-        <div className="agent-view-meta">
-          <button className="top-link" onClick={onRefresh} title="Refresh sources and stats">
-            <RefreshCw size={12} /> Refresh
+        <div className="nb-topbar-actions">
+          <button className="nb-icon-btn" onClick={onRefresh} title="Refresh sources and stats">
+            <RefreshCw size={14} />
+          </button>
+          <button className="nb-icon-btn" onClick={exportTranscript} disabled={!activeChat?.messages.length} title="Export this chat as Markdown">
+            <Download size={14} />
           </button>
         </div>
       </div>
@@ -839,25 +896,15 @@ export function NotebookView({
         {showSources ? (
           <aside className="notebook-side notebook-side-sources" style={{ width: sourcesWidth }}>
             <div className="notebook-side-head">
-              <div className="notebook-side-head-left">
-                <span className="notebook-side-head-badge">
-                  <FolderArchive size={13} />
-                </span>
-                <div className="notebook-side-head-text">
-                  <div className="notebook-side-head-top">
-                    <span className="context-kicker">SOURCES</span>
-                    <span className="notebook-head-count-pill">{scopedCount}/{sources.length}</span>
-                  </div>
-                  <strong className="notebook-side-title">Session Library</strong>
-                </div>
-              </div>
+              <strong className="nb-panel-title">Sources</strong>
               <div className="notebook-side-head-actions">
+                <span className="nb-panel-count">{scopedCount}/{sources.length}</span>
                 {excludedIds.length > 0 && (
                   <button className="pane-action" onClick={onResetScope} title="Include all sources in questions">
                     <RefreshCw size={11} />
                   </button>
                 )}
-                <button className="context-panel-icon" onClick={() => setShowSources(false)} title="Collapse sources sidebar">
+                <button className="context-panel-icon" onClick={() => setShowSources(false)} title="Collapse sources panel">
                   <PanelLeft size={14} />
                 </button>
               </div>
@@ -865,7 +912,7 @@ export function NotebookView({
             <div className="notebook-side-body">
               <div className="notebook-sources-toolbar">
                 <button className="notebook-add-btn primary-add" onClick={onPickFiles} title="Upload documents, PDFs, PPTX, or notes">
-                  <Plus size={13} /> Add files
+                  <Plus size={14} /> Add sources
                 </button>
                 <div className="notebook-quick-add-group">
                   <button
@@ -940,6 +987,19 @@ export function NotebookView({
                   e.target.value = "";
                 }}
               />
+
+              {sources.length > 0 && (
+                <div className="nb-select-all">
+                  <input
+                    type="checkbox"
+                    checked={allSourcesSelected}
+                    onChange={toggleSelectAll}
+                    title={allSourcesSelected ? "Deselect all but the first source" : "Select all sources"}
+                  />
+                  <span>Select all</span>
+                  <small>{scopedCount}/{sources.length} selected</small>
+                </div>
+              )}
 
               {showIngestionCard && (
                 <div className="notebook-ingestion-card">
@@ -1204,8 +1264,15 @@ export function NotebookView({
                   </div>
                 )}
                 {message.role === "assistant" && Boolean(message.text?.trim()) && (
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
+                  <div className="nb-answer-actions">
                     <CopyTextButton text={message.text} />
+                    <button
+                      className="nb-save-note-btn"
+                      onClick={() => onSaveNote({ title: message.text.slice(0, 60), content: message.text, citations: message.citations || [] })}
+                      title="Save this answer as a cited note"
+                    >
+                      <FileText size={11} /> Save to notes
+                    </button>
                   </div>
                 )}
                 {message.role === "assistant" && message.metadata?.refused && (
@@ -1320,6 +1387,12 @@ export function NotebookView({
               />
               <div className="input-footer">
                 <div className="input-left">
+                  <span
+                    className="nb-source-chip"
+                    title={excludedIds.length ? `${scopedCount} of ${sources.length} sources in scope` : `All ${sources.length} sources in scope`}
+                  >
+                    <FileText size={10} /> {scopedCount}/{sources.length} sources
+                  </span>
                   <ModelSelect
                     selectedProviderId={selectedProviderId}
                     selectedModel={selectedModel}
@@ -1337,6 +1410,7 @@ export function NotebookView({
               </div>
             </div>
             {!!notice && <div className="input-note">{notice}</div>}
+            {!notice && <div className="input-note nb-disclaimer">Notebook answers are grounded in your sources — verify the citations.</div>}
             {!hasProvider && <div className="input-note">Configure a provider (top right) to chat.</div>}
           </div>
         </div>
@@ -1346,22 +1420,9 @@ export function NotebookView({
           <aside className="notebook-side notebook-side-studio" style={{ width: studioWidth }}>
             <div className="context-resize" onPointerDown={startStudioResize} title="Drag to resize studio sidebar" />
             <div className="notebook-side-head">
-              <div className="notebook-side-head-left">
-                <span className="notebook-side-head-badge studio-badge">
-                  <Sparkles size={13} />
-                </span>
-                <div className="notebook-side-head-text">
-                  <div className="notebook-side-head-top">
-                    <span className="context-kicker">STUDIO</span>
-                    <span className="notebook-head-count-pill">
-                      {documents.length + notes.length + quizzes.length + flashcards.length + mindmaps.length + summaries.length}
-                    </span>
-                  </div>
-                  <strong className="notebook-side-title">Creation Studio</strong>
-                </div>
-              </div>
+              <strong className="nb-panel-title">Studio</strong>
               <div className="notebook-side-head-actions">
-                <button className="context-panel-icon" onClick={() => setShowStudio(false)} title="Collapse studio sidebar">
+                <button className="context-panel-icon" onClick={() => setShowStudio(false)} title="Collapse studio panel">
                   <PanelRight size={14} />
                 </button>
               </div>
@@ -1390,74 +1451,66 @@ export function NotebookView({
               <div className="context-section-title" style={{ marginTop: 12 }}>
                 <span>OUTPUTS</span><small>{documents.length + notes.length + quizzes.length + flashcards.length + mindmaps.length + summaries.length}</small>
               </div>
-              <div className="artifact-list">
+              <div className="nb-output-list">
                 {summaries.map((summary) => (
-                  <div className="notebook-artifact-card clickable" key={summary.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewQuizId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(summary.id); }} title="Read this summary">
-                    <div className="notebook-artifact-top">
-                      <span className="notebook-artifact-type-pill tone-summary"><Sparkles size={10} /> Summary</span>
-                      <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteSummary(summary); }} title="Delete summary"><Trash2 size={11} /></button>
+                  <div className="nb-output-row clickable" key={summary.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewQuizId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(summary.id); }} title="Read this summary">
+                    <span className="nb-output-icon tone-summary"><Sparkles size={13} /></span>
+                    <div className="nb-output-main">
+                      <strong className="nb-output-title">{summary.title}</strong>
+                      <span className="nb-output-meta">{summary.citations.length} sources · {relTime(summary.createdAt)}</span>
                     </div>
-                    <strong className="notebook-artifact-title">{summary.title}</strong>
-                    <div className="notebook-artifact-excerpt">{summary.sections.length} sections · {summary.length} · {summary.citations.length} cited passages</div>
-                    {summary.topic && <small style={{ color: 'var(--muted)', fontSize: '9.5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>“{summary.topic}”</small>}
+                    <button className="nb-output-menu" onClick={(e) => { e.stopPropagation(); onDeleteSummary(summary); }} title="Delete summary"><MoreVertical size={13} /></button>
                   </div>
                 ))}
                 {mindmaps.map((map) => (
-                  <div className="notebook-artifact-card clickable" key={map.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewQuizId(null); setViewFichesId(null); setViewSummaryId(null); setViewMapId(map.id); }} title="Open this mind map">
-                    <div className="notebook-artifact-top">
-                      <span className="notebook-artifact-type-pill tone-mindmap"><Network size={10} /> Mind map</span>
-                      <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteMindmap(map); }} title="Delete mind map"><Trash2 size={11} /></button>
+                  <div className="nb-output-row clickable" key={map.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewQuizId(null); setViewFichesId(null); setViewSummaryId(null); setViewMapId(map.id); }} title="Open this mind map">
+                    <span className="nb-output-icon tone-mindmap"><Network size={13} /></span>
+                    <div className="nb-output-main">
+                      <strong className="nb-output-title">{map.title}</strong>
+                      <span className="nb-output-meta">{map.citations.length} sources · {relTime(map.createdAt)}</span>
                     </div>
-                    <strong className="notebook-artifact-title">{map.title}</strong>
-                    <div className="notebook-artifact-excerpt">{map.nodeCount} nodes · {map.citations.length} cited passages</div>
-                    {map.topic && <small style={{ color: 'var(--muted)', fontSize: '9.5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>“{map.topic}”</small>}
+                    <button className="nb-output-menu" onClick={(e) => { e.stopPropagation(); onDeleteMindmap(map); }} title="Delete mind map"><MoreVertical size={13} /></button>
                   </div>
                 ))}
                 {flashcards.map((set) => (
-                  <div className="notebook-artifact-card clickable" key={set.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewQuizId(null); setViewMapId(null); setViewSummaryId(null); setViewFichesId(set.id); }} title="Study these flashcards">
-                    <div className="notebook-artifact-top">
-                      <span className="notebook-artifact-type-pill tone-flashcards"><Layers size={10} /> Flashcards</span>
-                      <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteFlashcards(set); }} title="Delete flashcards"><Trash2 size={11} /></button>
+                  <div className="nb-output-row clickable" key={set.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewQuizId(null); setViewMapId(null); setViewSummaryId(null); setViewFichesId(set.id); }} title="Study these flashcards">
+                    <span className="nb-output-icon tone-flashcards"><Layers size={13} /></span>
+                    <div className="nb-output-main">
+                      <strong className="nb-output-title">{set.title}</strong>
+                      <span className="nb-output-meta">{set.citations.length} sources · {relTime(set.createdAt)}</span>
                     </div>
-                    <strong className="notebook-artifact-title">{set.title}</strong>
-                    <div className="notebook-artifact-excerpt">{set.cards.length} cards · {set.citations.length} cited passages</div>
-                    {set.topic && <small style={{ color: 'var(--muted)', fontSize: '9.5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>“{set.topic}”</small>}
+                    <button className="nb-output-menu" onClick={(e) => { e.stopPropagation(); onDeleteFlashcards(set); }} title="Delete flashcards"><MoreVertical size={13} /></button>
                   </div>
                 ))}
                 {quizzes.map((quiz) => (
-                  <div className="notebook-artifact-card clickable" key={quiz.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(null); setViewQuizId(quiz.id); }} title="Take this quiz">
-                    <div className="notebook-artifact-top">
-                      <span className="notebook-artifact-type-pill tone-quiz"><HelpCircle size={10} /> Quiz</span>
-                      <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDeleteQuiz(quiz); }} title="Delete quiz"><Trash2 size={11} /></button>
+                  <div className="nb-output-row clickable" key={quiz.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(null); setViewQuizId(quiz.id); }} title="Take this quiz">
+                    <span className="nb-output-icon tone-quiz"><HelpCircle size={13} /></span>
+                    <div className="nb-output-main">
+                      <strong className="nb-output-title">{quiz.title}</strong>
+                      <span className="nb-output-meta">{quiz.citations.length} sources · {relTime(quiz.createdAt)}</span>
                     </div>
-                    <strong className="notebook-artifact-title">{quiz.title}</strong>
-                    <div className="notebook-artifact-excerpt">{quiz.questions.length} questions · {quiz.quizType === "mcq" ? "MCQ" : quiz.quizType === "truefalse" ? "True/False" : "Mixed"} · {quiz.citations.length} cited passages</div>
-                    {quiz.topic && <small style={{ color: 'var(--muted)', fontSize: '9.5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>“{quiz.topic}”</small>}
+                    <button className="nb-output-menu" onClick={(e) => { e.stopPropagation(); onDeleteQuiz(quiz); }} title="Delete quiz"><MoreVertical size={13} /></button>
                   </div>
                 ))}
                 {documents.map((doc) => (
-                  <div className="notebook-artifact-card clickable" key={doc.id} onClick={() => { setViewNoteId(null); setViewQuizId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(null); setViewDocId(doc.id); }} title="Open in window">
-                    <div className="notebook-artifact-top">
-                      <span className="notebook-artifact-type-pill tone-doc"><FileText size={10} /> {doc.kind === "slides" ? "Slides" : "Report"} ({doc.format.toUpperCase()})</span>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                        <button className="pane-action" onClick={(e) => { e.stopPropagation(); onDownloadDocument(doc.id); }} title={`Download ${doc.filename}`}><Download size={11} /></button>
-                        <button className="pane-action danger" onClick={(e) => { e.stopPropagation(); onDeleteDocument(doc); }} title="Delete document"><Trash2 size={11} /></button>
-                      </div>
+                  <div className="nb-output-row clickable" key={doc.id} onClick={() => { setViewNoteId(null); setViewQuizId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(null); setViewDocId(doc.id); }} title="Open in window">
+                    <span className="nb-output-icon tone-doc"><FileText size={13} /></span>
+                    <div className="nb-output-main">
+                      <strong className="nb-output-title">{doc.title}</strong>
+                      <span className="nb-output-meta">{doc.citations.length} sources · {relTime(doc.createdAt)}</span>
                     </div>
-                    <strong className="notebook-artifact-title">{doc.title}</strong>
-                    <div className="notebook-artifact-excerpt">{doc.kind === "slides" ? `${doc.slideCount} slides` : `${doc.sectionCount} sections`} · {Math.round(doc.size / 1024)} KB · {doc.citations.length} cited passages{doc.engine === "skill-agent" ? " · skill" : ""}</div>
-                    {doc.prompt && <small style={{ color: 'var(--muted)', fontSize: '9.5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>“{doc.prompt}”</small>}
+                    <button className="nb-output-menu" onClick={(e) => { e.stopPropagation(); onDownloadDocument(doc.id); }} title={`Download ${doc.filename}`}><Download size={13} /></button>
+                    <button className="nb-output-menu" onClick={(e) => { e.stopPropagation(); onDeleteDocument(doc); }} title="Delete document"><MoreVertical size={13} /></button>
                   </div>
                 ))}
                 {notes.map((note) => (
-                  <div className="notebook-artifact-card clickable" key={note.id} onClick={() => { setViewDocId(null); setViewQuizId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(null); setViewNoteId(note.id); }} title="Open in window">
-                    <div className="notebook-artifact-top">
-                      <span className="notebook-artifact-type-pill tone-note"><FileText size={10} /> Note</span>
-                      <button className="pane-action danger" onClick={(e) => { e.stopPropagation(); onDeleteNote(note); }} title="Delete note"><Trash2 size={11} /></button>
+                  <div className="nb-output-row clickable" key={note.id} onClick={() => { setViewDocId(null); setViewQuizId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(null); setViewNoteId(note.id); }} title="Open in window">
+                    <span className="nb-output-icon tone-note"><FileText size={13} /></span>
+                    <div className="nb-output-main">
+                      <strong className="nb-output-title">{note.title}</strong>
+                      <span className="nb-output-meta">{note.citations.length} sources · {relTime(note.createdAt)}</span>
                     </div>
-                    <strong className="notebook-artifact-title">{note.title}</strong>
-                    <div className="notebook-artifact-excerpt">{note.content.slice(0, 160)}</div>
-                    {note.citations.length > 0 && <small style={{ color: 'var(--muted)', fontSize: '9.5px' }}>{note.citations.length} cited passage{note.citations.length === 1 ? "" : "s"}</small>}
+                    <button className="nb-output-menu" onClick={(e) => { e.stopPropagation(); onDeleteNote(note); }} title="Delete note"><MoreVertical size={13} /></button>
                   </div>
                 ))}
                 {!documents.length && !notes.length && !quizzes.length && !flashcards.length && !mindmaps.length && !summaries.length && (
@@ -1470,12 +1523,12 @@ export function NotebookView({
               </div>
               {latestAnswer && (
                 <button
-                  className="new-session-btn"
+                  className="new-session-btn nb-add-note-btn"
                   onClick={() => onSaveNote({ title: latestAnswer.text.slice(0, 60), content: latestAnswer.text, citations: latestAnswer.citations || [] })}
                   title="Save the latest grounded answer as a cited note"
                   style={{ marginTop: 8 }}
                 >
-                  <Plus size={12} /> Save latest answer as note
+                  <Plus size={13} /> Add note
                 </button>
               )}
 

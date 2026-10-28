@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
-  Coins, Sparkles, GitBranch, RotateCcw, Check, FileCode2, FileDown,
+  Sparkles, GitBranch, RotateCcw, Check, FileCode2,
   Paperclip, FileText, Plus, Square, ArrowUp, ShieldCheck, ChevronDown, X,
   Bug, Code2, CheckCircle2,
 } from "lucide-react";
@@ -10,7 +10,7 @@ import { ChatItemView, ActivityGroupView, StreamingAssistantMessage } from "../c
 import { fileIcon } from "../utils/format.js";
 import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
 import { formatCost } from "../types.js";
-import type { ChatItem, FileEntry, ProviderConfig, ProviderDefinition, AgentUsage, AgentContextUsageSnapshot, ArtifactItem, ChatAttachment, SkillInfo } from "../types.js";
+import type { ChatItem, FileEntry, ProviderConfig, ProviderDefinition, AgentUsage, AgentContextUsageSnapshot, ArtifactItem, ChatAttachment, SkillInfo, WorkspaceDiffFile } from "../types.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
 import { resolveModelEfforts, formatEffortLabel, resolveModelContextWindow, resolveModelMaxOutput, formatContextWindow, formatTokenCount, computeCompactionThreshold } from "../utils/modelEfforts.js";
 
@@ -145,7 +145,7 @@ export function ModelContextLine({
     resolveModelMaxOutput(providerId, model, provider, definition);
 
   const compactionThreshold = contextUsage?.compactionThreshold ?? computeCompactionThreshold(contextWindow, maxOutput);
-  const thresholdPct = Math.min(95, Math.max(50, (compactionThreshold / contextWindow) * 100));
+  const thresholdPct = Math.min(95, Math.max(5, (compactionThreshold / contextWindow) * 100));
 
   const ctxLabel = formatContextWindow(contextWindow);
   // Measure the retained context that future turns inherit, not per-call
@@ -502,6 +502,7 @@ export function AgentView({
   files,
   checkpointId,
   diffCount,
+  diffFiles,
   undoLevels,
   onUndoRun,
   onKeepChanges,
@@ -548,6 +549,7 @@ export function AgentView({
   files: FileEntry[];
   checkpointId?: string;
   diffCount: number;
+  diffFiles?: WorkspaceDiffFile[];
   undoLevels?: number;
   onUndoRun: (id: string) => void;
   onKeepChanges: () => void;
@@ -583,6 +585,18 @@ export function AgentView({
 
   const api = window.nexus;
   const [showComposerMenu, setShowComposerMenu] = useState(false);
+
+  // ZCode-style change summary: collapsed "N files changed +a −d" row whose
+  // file list expands underneath.
+  const [showDiffList, setShowDiffList] = useState(false);
+  const diffTotals = useMemo(
+    () =>
+      (diffFiles || []).reduce(
+        (acc, file) => ({ add: acc.add + (file.additions || 0), del: acc.del + (file.deletions || 0) }),
+        { add: 0, del: 0 }
+      ),
+    [diffFiles]
+  );
 
   useEffect(() => {
     const el = transcriptRef.current;
@@ -926,43 +940,6 @@ export function AgentView({
               : "Create or open a local project. Nothing is preloaded."}
           </p>
         </div>
-        <div className="agent-view-meta">
-          {sessionUsage && sessionUsage.totalTokens > 0 && (
-            <span
-              className="session-usage-pill"
-              title={`${sessionUsage.inputTokens.toLocaleString()} in / ${sessionUsage.outputTokens.toLocaleString()} out`}
-            >
-              <Coins size={12} />
-              <span>
-                Session:{" "}
-                <b>
-                  {sessionUsage.totalTokens >= 1000
-                    ? `${(sessionUsage.totalTokens / 1000).toFixed(1)}k`
-                    : sessionUsage.totalTokens.toLocaleString()}
-                </b>{" "}
-                tokens
-              </span>
-              <span className="cost">{formatCost(sessionUsage.estimatedCost)}</span>
-            </span>
-          )}
-          {activeSessionId && typeof (api as unknown as { exportSession?: unknown })?.exportSession === "function" && (
-            <button
-              type="button"
-              className="session-usage-pill"
-              title="Export this session as a standalone HTML file"
-              onClick={() => {
-                void ((api as unknown as { exportSession: (id: string) => Promise<string> }).exportSession(activeSessionId)).catch(() => undefined);
-              }}
-            >
-              <FileDown size={12} />
-              <span>Export</span>
-            </button>
-          )}
-          <span className="local-badge">
-            <span /> Local
-          </span>
-          <span className="mode-badge">{mode} mode</span>
-        </div>
       </div>
       <div
         className="agent-transcript"
@@ -1001,33 +978,6 @@ export function AgentView({
           </div>
         )}
         {transcriptNodes}
-        {checkpointId && !running && (diffCount > 0 || (undoLevels || 0) > 0) && (
-          <div className="rollback-card">
-            <div className="rollback-info">
-              <GitBranch size={14} />
-              <span>
-                {diffCount > 0 ? (
-                  <>Agent made changes in <strong>{diffCount} file{diffCount === 1 ? "" : "s"}</strong></>
-                ) : (
-                  <>Session has committed work ready to undo</>
-                )}
-                {(undoLevels || 0) > 1 && <> · <strong>{undoLevels} levels</strong></>}
-              </span>
-            </div>
-            <div className="rollback-actions">
-              <button
-                className="secondary"
-                onClick={() => onUndoRun(checkpointId)}
-                title="Restore pre-run files and roll back Nexus-only session commits"
-              >
-                <RotateCcw size={12} /> {(undoLevels || 0) > 1 ? `Undo (${undoLevels})` : "Undo run"}
-              </button>
-              <button className="primary" onClick={onKeepChanges} title="Accept and clear all undo history for this session">
-                <Check size={12} /> Keep changes
-              </button>
-            </div>
-          </div>
-        )}
         {running && liveEvents.length > 0 && (
           <ActivityGroupView
             events={liveEvents}
@@ -1052,6 +1002,56 @@ export function AgentView({
           <StreamingAssistantMessage text={streamingText} />
         )}
       </div>
+      {checkpointId && !running && (diffCount > 0 || (undoLevels || 0) > 0) && (
+        <div className="rollback-anchor">
+          <div className="rollback-card">
+            <button
+              className="rollback-summary"
+              onClick={() => setShowDiffList((v) => !v)}
+              disabled={!diffFiles?.length}
+              title={diffFiles?.length ? "Show the changed files" : undefined}
+            >
+              <ChevronDown size={14} className={`rollback-chev${showDiffList ? " open" : ""}`} />
+              <GitBranch size={14} />
+              <span>
+                <strong>{diffCount} file{diffCount === 1 ? "" : "s"} changed</strong>
+                {diffTotals.add > 0 && <b className="diff-stat add"> +{diffTotals.add.toLocaleString()}</b>}
+                {diffTotals.del > 0 && <b className="diff-stat del"> −{diffTotals.del.toLocaleString()}</b>}
+                {(undoLevels || 0) > 1 && <span> · {undoLevels} levels</span>}
+              </span>
+            </button>
+            <div className="rollback-actions">
+              <button
+                className="secondary"
+                onClick={() => onUndoRun(checkpointId)}
+                title="Restore pre-run files and roll back Nexus-only session commits"
+              >
+                <RotateCcw size={12} /> {(undoLevels || 0) > 1 ? `Undo (${undoLevels})` : "Undo"}
+              </button>
+              <button className="primary" onClick={onKeepChanges} title="Accept and clear all undo history for this session">
+                <Check size={12} /> Keep changes
+              </button>
+            </div>
+          </div>
+          {showDiffList && diffFiles?.length ? (
+            <div className="rollback-files">
+              {diffFiles.map((file) => (
+                <button
+                  key={file.path}
+                  className="rollback-file-row"
+                  onClick={() => onOpenDiff?.()}
+                  title={`${file.path} — open the diff panel`}
+                >
+                  {fileIcon(file.name)}
+                  <span className="rollback-file-path">{file.directory ? `${file.directory}/${file.name}` : file.name}</span>
+                  <b className="diff-stat add">+{file.additions || 0}</b>
+                  <b className="diff-stat del">−{file.deletions || 0}</b>
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      )}
       <div className="agent-input-area">
         <input
           type="file"

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
-import { Copy, Download, Check, Maximize2, X, Image as ImageIcon, ZoomIn, ZoomOut, AlertCircle, RefreshCw } from "lucide-react";
+import { Copy, Download, Check, Maximize2, X, Image as ImageIcon, ZoomIn, ZoomOut, AlertCircle, RefreshCw, ExternalLink } from "lucide-react";
 import { renderMarkdown } from "../../markdown.js";
 import { openVisualFullscreen } from "./VisualFullscreen.js";
 import {
@@ -10,6 +10,7 @@ import {
   parseScatterChart,
   parsePieChart,
   parseRadarChart,
+  detectFenceKind,
   type CategoryChartSpec,
 } from "../../utils/chart-blocks.js";
 import { WidgetBlock } from "../chat/WidgetBlock.js";
@@ -166,6 +167,99 @@ function SvgTooltip({
   );
 }
 
+/** Y offset of a group's `translate(x, y)` transform, or null if it isn't a plain translate. */
+function groupTranslateY(group: SVGGraphicsElement): number | null {
+  const match = /translate\(\s*[-+]?[\d.eE]+\s*[ ,]\s*[-+]?[\d.eE]+/.exec(group.getAttribute("transform") || "");
+  if (!match) return null;
+  const y = Number(match[0].replace(/^translate\(\s*[-+]?[\d.eE]+\s*[ ,]\s*/, ""));
+  return Number.isFinite(y) ? y : null;
+}
+
+/**
+ * Mermaid's timeline renderer stretches EVERY period→events connector to the
+ * GLOBAL maximum event-stack height plus a hardcoded 200px of padding
+ * (y2 = masterY + maxTaskHeight + 100 + maxEventLineLength + 100), so tasks
+ * with short events get dotted arrows dangling far below their event boxes.
+ * No config knob controls this, so after render we re-measure each task's own
+ * event boxes and snap its vertical dashed connector to end just below the
+ * last one. The horizontal axis line and the (already-correct) vertical-layout
+ * connectors are skipped: they don't match the vertical+dashed signature.
+ */
+function tightenTimelineConnectors(rootSvg: SVGSVGElement) {
+  if (!rootSvg.querySelector("g.lineWrapper")) return;
+  for (const wrapper of Array.from(rootSvg.querySelectorAll<SVGGElement>("g.lineWrapper"))) {
+    const line = wrapper.querySelector("line");
+    if (!line) continue;
+    const x1 = Number(line.getAttribute("x1"));
+    const x2 = Number(line.getAttribute("x2"));
+    const y1 = Number(line.getAttribute("y1"));
+    if (!line.getAttribute("stroke-dasharray") || x2 !== x1 || !Number.isFinite(x1)) continue;
+
+    // This task's events are the eventWrapper siblings that follow its
+    // lineWrapper, up to the next task/line wrapper (start of another task).
+    const parent = wrapper.parentElement;
+    if (!parent) continue;
+    const siblings = Array.from(parent.children);
+    const start = siblings.indexOf(wrapper);
+    if (start < 0) continue;
+    let bottom = -Infinity;
+    for (let i = start + 1; i < siblings.length; i++) {
+      const sibling = siblings[i];
+      if (!(sibling instanceof SVGGElement)) continue;
+      const cls = sibling.getAttribute("class") || "";
+      if (/eventWrapper/.test(cls)) {
+        const ty = groupTranslateY(sibling);
+        if (ty === null) continue;
+        let box: DOMRect;
+        try {
+          box = sibling.getBBox();
+        } catch {
+          continue;
+        }
+        bottom = Math.max(bottom, ty + box.y + box.height);
+      } else if (/taskWrapper|lineWrapper|section/.test(cls)) {
+        break;
+      }
+    }
+    if (!Number.isFinite(bottom) || bottom <= 0) continue;
+    const end = Math.max(bottom, Number.isFinite(y1) ? y1 : -Infinity) + 6;
+    const current = Number(line.getAttribute("y2"));
+    if (Number.isFinite(current) && Math.abs(end - current) < 2) continue;
+    line.setAttribute("y2", String(end));
+  }
+}
+
+/**
+ * Mermaid SVGs can be injected at any moment (settled message, streaming
+ * answer, fullscreen clone), and component-level effects are not guaranteed
+ * to see every one — so the connector fix is applied by a document-wide
+ * MutationObserver whenever a new mermaid <svg> lands in the DOM. Idempotent:
+ * already-tightened lines are within 2px of the target and are skipped.
+ */
+let timelineObserver: MutationObserver | null = null;
+function ensureTimelineFixObserver() {
+  if (typeof MutationObserver === "undefined" || timelineObserver) return;
+  timelineObserver = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of Array.from(mutation.addedNodes)) {
+        if (!(node instanceof Element)) continue;
+        const svg = node.matches?.("svg") ? node : node.querySelector?.("svg");
+        if (svg instanceof SVGSVGElement) {
+          // Synchronous on purpose: requestAnimationFrame doesn't run in
+          // occluded windows, and getBBox works on freshly-inserted geometry.
+          try {
+            tightenTimelineConnectors(svg);
+          } catch {
+            /* a broken diagram must never throw into the observer */
+          }
+        }
+      }
+    }
+  });
+  timelineObserver.observe(document.body, { childList: true, subtree: true });
+}
+ensureTimelineFixObserver();
+
 function MermaidBlock({ source }: { source: string }) {
   const [svg, setSvg] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
@@ -191,6 +285,18 @@ function MermaidBlock({ source }: { source: string }) {
     })();
     return () => { alive = false; };
   }, [source]);
+
+  // Post-render cleanup: snap timeline connectors to their own events (runs on
+  // the live DOM so getBBox measures actual laid-out geometry).
+  useEffect(() => {
+    if (!svg) return;
+    try {
+      const rootSvg = diagramRef.current?.querySelector("svg");
+      if (rootSvg instanceof SVGSVGElement) tightenTimelineConnectors(rootSvg);
+    } catch {
+      /* layout oddities in a malformed diagram must never break rendering */
+    }
+  }, [svg]);
 
   if (svg) {
     return (
@@ -620,6 +726,7 @@ function PieBlock({ source, donut = false }: { source: string; donut?: boolean }
 function RadarBlock({ source }: { source: string }) {
   const spec = parseRadarChart(source);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const [hoveredSeries, setHoveredSeries] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
   if (!spec) return <pre className="rich-mermaid-fallback"><code>{source}</code></pre>;
@@ -627,6 +734,9 @@ function RadarBlock({ source }: { source: string }) {
   const cx = 380, cy = 225, radius = 135;
   const n = spec.axes.length;
   const angle = (i: number) => -Math.PI / 2 + (2 * Math.PI * i) / n;
+  // One polyline/polygon + color per series; single-value charts are series of one.
+  const seriesCount = Math.max(1, spec.axes[0]?.values.length || 1);
+  const colors = ["#7aa8d1", "#e0915e", "#b58fd6", "#6dc287", "#d17a9e"];
 
   const rings = [0.25, 0.5, 0.75, 1.0];
   const ringPolygons = rings.map((factor) => {
@@ -634,21 +744,26 @@ function RadarBlock({ source }: { source: string }) {
     return spec.axes.map((_, i) => `${cx + r * Math.cos(angle(i))},${cy + r * Math.sin(angle(i))}`).join(" ");
   });
 
-  const dataPoints = spec.axes.map((axis, i) => {
-    const r = (Math.min(spec.max, Math.max(0, axis.value)) / spec.max) * radius;
-    return {
-      x: cx + r * Math.cos(angle(i)),
-      y: cy + r * Math.sin(angle(i)),
-      label: axis.label,
-      value: axis.value,
-    };
-  });
-  const dataPolyStr = dataPoints.map((p) => `${p.x},${p.y}`).join(" ");
-  const activeAxis = hoveredIndex !== null ? dataPoints[hoveredIndex] : null;
+  const seriesPoints = (s: number) =>
+    spec.axes.map((axis, i) => {
+      const value = Math.min(spec.max, Math.max(0, axis.values[s] ?? 0));
+      const r = (value / spec.max) * radius;
+      return {
+        x: cx + r * Math.cos(angle(i)),
+        y: cy + r * Math.sin(angle(i)),
+        label: axis.label,
+        value: axis.values[s] ?? 0,
+      };
+    });
+  const activeAxis = hoveredIndex !== null ? spec.axes[hoveredIndex] : null;
 
+  const header =
+    "Metric," +
+    spec.seriesNames.slice(0, seriesCount).map((nm) => `"${nm}"`).join(",") +
+    ",Max\n";
   const csv =
-    "Metric,Value,Max\n" +
-    spec.axes.map((a) => `"${a.label}",${a.value},${spec.max}`).join("\n");
+    header +
+    spec.axes.map((a) => `"${a.label}",${a.values.slice(0, seriesCount).join(",")},${spec.max}`).join("\n");
 
   return (
     <div className="rich-chart" role="img" aria-label={spec.title || "Radar chart"}>
@@ -663,20 +778,46 @@ function RadarBlock({ source }: { source: string }) {
           const ey = cy + radius * Math.sin(angle(i));
           return <line key={i} x1={cx} y1={cy} x2={ex} y2={ey} className="rich-chart-axis" style={{ strokeOpacity: 0.2 }} />;
         })}
-        <polygon points={dataPolyStr} className="rich-radar-poly" />
-        {dataPoints.map((p, i) => {
-          const isHovered = hoveredIndex === i;
+        {Array.from({ length: seriesCount }, (_, s) => {
+          const points = seriesPoints(s);
+          const polyStr = points.map((p) => `${p.x},${p.y}`).join(" ");
+          const dimmed = hoveredSeries !== null && hoveredSeries !== s;
           return (
-            <g
-              key={i}
-              onMouseEnter={() => setHoveredIndex(i)}
-              onMouseLeave={() => setHoveredIndex(null)}
-            >
-              {isHovered && <circle cx={p.x} cy={p.y} r={12} fill="none" stroke="#7aa8d1" strokeWidth={2} opacity={0.6} className="rich-halo-ring" />}
-              <circle cx={p.x} cy={p.y} r={isHovered ? 7 : 4} className={`rich-scatter-point ${isHovered ? "active" : ""}`} />
+            <g key={s} opacity={dimmed ? 0.25 : 1}
+               onMouseEnter={() => setHoveredSeries(s)}
+               onMouseLeave={() => setHoveredSeries(null)}
+               style={{ cursor: "default" }}>
+              <polygon points={polyStr} className="rich-radar-poly" style={{ fill: colors[s % colors.length], stroke: colors[s % colors.length] }} />
+              {points.map((p, i) => {
+                const isHovered = hoveredIndex === i;
+                return (
+                  <g
+                    key={i}
+                    onMouseEnter={() => setHoveredIndex(i)}
+                    onMouseLeave={() => setHoveredIndex(null)}
+                  >
+                    {isHovered && <circle cx={p.x} cy={p.y} r={12} fill="none" stroke={colors[s % colors.length]} strokeWidth={2} opacity={0.6} className="rich-halo-ring" />}
+                    <circle cx={p.x} cy={p.y} r={isHovered ? 7 : 4} className={`rich-scatter-point ${isHovered ? "active" : ""}`} style={{ fill: colors[s % colors.length] }} />
+                  </g>
+                );
+              })}
             </g>
           );
         })}
+        {/* Series legend (multi-series radar only), top-right under the title. */}
+        {seriesCount > 1 && (
+          <g>
+            {spec.seriesNames.slice(0, seriesCount).map((name, s) => {
+              const swatchX = width - 34 - spec.seriesNames.slice(0, seriesCount).length * 118 + s * 118;
+              return (
+                <g key={s}>
+                  <circle cx={swatchX} cy={44} r={6} fill={colors[s % colors.length]} />
+                  <text x={swatchX + 12} y={48} className="rich-chart-label">{name}</text>
+                </g>
+              );
+            })}
+          </g>
+        )}
         {spec.axes.map((axis, i) => {
           const a = angle(i);
           const isHovered = hoveredIndex === i;
@@ -691,16 +832,17 @@ function RadarBlock({ source }: { source: string }) {
               style={{ cursor: "pointer" }}
             >
               <text x={lx} y={ly} textAnchor={anchor} className="rich-chart-label" fontWeight={isHovered ? "700" : "normal"}>{axis.label}</text>
-              <text x={lx} y={ly + 12} textAnchor={anchor} className="rich-chart-tick" fontWeight={isHovered ? "700" : "normal"}>{fmt(axis.value)}</text>
+              <text x={lx} y={ly + 12} textAnchor={anchor} className="rich-chart-tick" fontWeight={isHovered ? "700" : "normal"}>{axis.values.slice(0, seriesCount).map(fmt).join(" / ")}</text>
             </g>
           );
         })}
         {activeAxis && (
           <SvgTooltip
-            x={activeAxis.x}
-            y={activeAxis.y}
+            x={seriesPoints(hoveredSeries ?? 0)[hoveredIndex ?? 0].x}
+            y={seriesPoints(hoveredSeries ?? 0)[hoveredIndex ?? 0].y}
             title={activeAxis.label}
-            value={`${fmt(activeAxis.value)} / ${fmt(spec.max)}`}
+            value={activeAxis.values.slice(0, seriesCount).map((v, s) => `${spec.seriesNames[s]} ${fmt(v)}`).join("  ·  ")}
+            secondary={`max ${fmt(spec.max)}`}
           />
         )}
       </svg>
@@ -1021,40 +1163,170 @@ function isSearchImageUrl(value: string): boolean {
   }
 }
 
-function SearchImageGallery({ items }: { items: SearchImageItem[] }) {
-  const [failed, setFailed] = useState<Set<number>>(() => new Set());
-  const rowCount = Math.max(1, Math.ceil((items.length - 1) / 2));
+/**
+ * Zoomable popup for web image results. Unlike the ChatImageBlock lightbox
+ * this one never downloads — images are served straight from the web — and it
+ * can step through every result of the gallery (←/→) plus hand out the
+ * original web page via the Source button.
+ */
+function SearchImageLightbox({
+  items,
+  index,
+  onClose,
+  onNavigate,
+}: {
+  items: SearchImageItem[];
+  index: number;
+  onClose: () => void;
+  onNavigate: (nextIndex: number) => void;
+}) {
+  const [scale, setScale] = useState(1);
+  const item = items[index];
+
+  useEffect(() => {
+    setScale(1);
+  }, [index]);
+
+  useEffect(() => {
+    function handleKey(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+      else if (items.length > 1 && event.key === "ArrowRight") onNavigate((index + 1) % items.length);
+      else if (items.length > 1 && event.key === "ArrowLeft") onNavigate((index - 1 + items.length) % items.length);
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [index, items.length, onClose, onNavigate]);
+
+  if (!item) return null;
+
   return (
-    <div
-      className={`search-image-gallery${items.length === 2 ? " two-images" : ""}`}
-      style={{ gridTemplateRows: `repeat(${rowCount}, minmax(90px, 1fr))` }}
-      role="group"
-      aria-label="Web image results"
-    >
-      {items.map((item, index) => failed.has(index) ? null : (
-        <a
-          className={`search-image-tile${index === 0 ? " featured" : ""}`}
-          href={item.sourceUrl || item.src}
-          target="_blank"
-          rel="noreferrer"
-          key={`${item.src}-${index}`}
-          title={item.alt || "Open image source"}
+    <div className="chat-image-lightbox-overlay" onClick={onClose}>
+      <div className="chat-image-lightbox-content web-image-lightbox" onClick={(e) => e.stopPropagation()}>
+        <div className="chat-image-lightbox-header">
+          <div className="chat-image-lightbox-title-wrap">
+            <ImageIcon size={14} />
+            <span className="chat-image-lightbox-title">{item.alt || "Web image"}</span>
+          </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <button
+              type="button"
+              className="rich-chart-btn"
+              onClick={() => setScale((s) => Math.max(0.25, s / 1.25))}
+              title="Zoom out"
+            >
+              <ZoomOut size={12} />
+            </button>
+            <span className="visual-fullscreen-zoom-label">{Math.round(scale * 100)}%</span>
+            <button
+              type="button"
+              className="rich-chart-btn"
+              onClick={() => setScale((s) => Math.min(8, s * 1.25))}
+              title="Zoom in"
+            >
+              <ZoomIn size={12} />
+            </button>
+            {item.sourceUrl && (
+              <a
+                className="rich-chart-btn"
+                href={item.sourceUrl}
+                target="_blank"
+                rel="noreferrer"
+                title={`Open the source page: ${item.sourceUrl}`}
+              >
+                <ExternalLink size={11} />
+                <span>Source</span>
+              </a>
+            )}
+            <button type="button" className="rich-chart-btn" onClick={onClose} title="Close preview">
+              <X size={12} />
+              <span>Close</span>
+            </button>
+          </div>
+        </div>
+        <div
+          className="chat-image-lightbox-body"
+          onWheel={(event) => {
+            event.preventDefault();
+            setScale((s) => Math.min(8, Math.max(0.25, event.deltaY < 0 ? s * 1.15 : s / 1.15)));
+          }}
+          onDoubleClick={() => setScale(1)}
         >
           <img
             src={item.src}
             alt={item.alt || "Web image result"}
-            loading={index > 2 ? "lazy" : "eager"}
-            onError={() => setFailed((current) => new Set(current).add(index))}
+            className="chat-image-lightbox-img"
+            style={{ transform: `scale(${scale})`, cursor: scale > 1 ? "zoom-out" : "default" }}
+            onClick={() => (scale > 1 ? setScale(1) : onClose())}
           />
-          <span className="search-image-caption">{item.alt || "View source"}</span>
-        </a>
-      ))}
+        </div>
+        <div className="chat-image-lightbox-caption">
+          {items.length > 1 ? `${index + 1} / ${items.length} — use ←/→ to browse` : "Scroll to zoom"}
+        </div>
+      </div>
     </div>
+  );
+}
+
+function SearchImageGallery({ items }: { items: SearchImageItem[] }) {
+  const [failed, setFailed] = useState<Set<number>>(() => new Set());
+  const [openIndex, setOpenIndex] = useState<number | null>(null);
+  const rowCount = Math.max(1, Math.ceil((items.length - 1) / 2));
+  return (
+    <>
+      <div
+        className={`search-image-gallery${items.length === 2 ? " two-images" : ""}`}
+        style={{ gridTemplateRows: `repeat(${rowCount}, minmax(90px, 1fr))` }}
+        role="group"
+        aria-label="Web image results"
+      >
+        {items.map((item, index) => failed.has(index) ? null : (
+          <button
+            type="button"
+            className={`search-image-tile${index === 0 ? " featured" : ""}`}
+            key={`${item.src}-${index}`}
+            onClick={() => setOpenIndex(index)}
+            title={item.alt || "View image in a popup (use the Source button to open the web page)"}
+          >
+            <img
+              src={item.src}
+              alt={item.alt || "Web image result"}
+              loading={index > 2 ? "lazy" : "eager"}
+              onError={() => setFailed((current) => new Set(current).add(index))}
+            />
+            <span className="search-image-caption">{item.alt || "View image"}</span>
+          </button>
+        ))}
+      </div>
+      {openIndex !== null && (
+        <SearchImageLightbox
+          items={items}
+          index={openIndex}
+          onClose={() => setOpenIndex(null)}
+          onNavigate={setOpenIndex}
+        />
+      )}
+    </>
   );
 }
 
 const CHART_KINDS = new Set(["mermaid", "scatter", "bar", "hbar", "line", "area", "pie", "donut", "radar"]);
 const BLOCK_PATTERN = /(```([\w-]*)\s*\n([\s\S]*?)```)|(!\[([^\]]*)\]\(([^)]+)\))/gi;
+
+/** Shared fence-kind → component mapping, used by known-language fences and by
+ * untagged fences whose content was sniffed via detectFenceKind. */
+function chartPiece(kind: string, blockSource: string, key: string): React.ReactNode {
+  switch (kind) {
+    case "scatter": return <ScatterBlock key={key} source={blockSource} />;
+    case "bar": return <CategoryChartBlock key={key} source={blockSource} kind="bar" />;
+    case "hbar": return <HBarBlock key={key} source={blockSource} />;
+    case "line": return <CategoryChartBlock key={key} source={blockSource} kind="line" />;
+    case "area": return <CategoryChartBlock key={key} source={blockSource} kind="area" />;
+    case "pie": return <PieBlock key={key} source={blockSource} donut={false} />;
+    case "donut": return <PieBlock key={key} source={blockSource} donut={true} />;
+    case "radar": return <RadarBlock key={key} source={blockSource} />;
+    default: return <MermaidBlock key={key} source={blockSource} />;
+  }
+}
 
 export function RichMarkdown({ source, className = "" }: { source: string; className?: string }) {
   const pieces: React.ReactNode[] = [];
@@ -1108,20 +1380,19 @@ export function RichMarkdown({ source, className = "" }: { source: string; class
 
       if (kind === "widget") {
         pieces.push(<WidgetBlock key={`widget-${match.index}`} source={blockSource} />);
-      } else if (CHART_KINDS.has(kind)) {
-        if (kind === "scatter") pieces.push(<ScatterBlock key={`scatter-${match.index}`} source={blockSource} />);
-        else if (kind === "bar") pieces.push(<CategoryChartBlock key={`bar-${match.index}`} source={blockSource} kind="bar" />);
-        else if (kind === "hbar") pieces.push(<HBarBlock key={`hbar-${match.index}`} source={blockSource} />);
-        else if (kind === "line") pieces.push(<CategoryChartBlock key={`line-${match.index}`} source={blockSource} kind="line" />);
-        else if (kind === "area") pieces.push(<CategoryChartBlock key={`area-${match.index}`} source={blockSource} kind="area" />);
-        else if (kind === "pie") pieces.push(<PieBlock key={`pie-${match.index}`} source={blockSource} donut={false} />);
-        else if (kind === "donut") pieces.push(<PieBlock key={`donut-${match.index}`} source={blockSource} donut={true} />);
-        else if (kind === "radar") pieces.push(<RadarBlock key={`radar-${match.index}`} source={blockSource} />);
-        else pieces.push(<MermaidBlock key={`mermaid-${match.index}`} source={blockSource} />);
       } else {
-        pieces.push(
-          <div key={`code-${match.index}`} dangerouslySetInnerHTML={{ __html: renderMarkdown(match[1]) }} />
-        );
+        // Known kind renders directly; a missing or unrecognized language tag
+        // gets sniffed against the chart spec / mermaid grammar — the model
+        // sometimes forgets the tag and the content would end up as a code
+        // box. Anything the sniff doesn't recognize stays a code block.
+        const resolved = CHART_KINDS.has(kind) ? kind : detectFenceKind(blockSource);
+        if (resolved) {
+          pieces.push(chartPiece(resolved, blockSource, `${resolved}-${match.index}`));
+        } else {
+          pieces.push(
+            <div key={`code-${match.index}`} dangerouslySetInnerHTML={{ __html: renderMarkdown(match[1]) }} />
+          );
+        }
       }
     } else if (match[4]) {
       const altText = match[5] || "";
