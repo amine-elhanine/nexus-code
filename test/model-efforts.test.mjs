@@ -314,29 +314,28 @@ test("store CRUD persists model reasoning efforts and context windows, and prese
   }
 });
 
-test("computeCompactionThreshold calculates dynamic 80% auto-compaction boundaries like Claude Code & Codex", () => {
-  // 1. Claude 3.7 Sonnet (200k context, 64k max output)
-  // Reserves 64k output + 4k headroom = 68k reserve -> 132k threshold
+test("computeCompactionThreshold triggers auto-compaction at a flat 85% of the context window", () => {
+  // 1. Claude 3.7 Sonnet (200k context) — max output no longer moves the threshold
   const claudeThreshold = computeCompactionThreshold(200_000, 64_000);
-  assert.equal(claudeThreshold, 132_000);
+  assert.equal(claudeThreshold, 170_000);
 
-  // 2. GPT-4o / GPT-4.1 (128k context, 16k max output)
-  // 80% of 128k = 102,400 tokens
+  // 2. GPT-4o / GPT-4.1 (128k context)
+  // 85% of 128k = 108,800 tokens
   const gptThreshold = computeCompactionThreshold(128_000, 16_384);
-  assert.equal(gptThreshold, 102_400);
+  assert.equal(gptThreshold, 108_800);
 
   // 3. Gemini 2.5 Flash / Pro (1M context)
-  // 80% of 1,048,576 = 838,860 tokens
+  // 85% of 1,048,576 = 891,289 tokens
   const geminiThreshold = computeCompactionThreshold(1_048_576, 65_536);
-  assert.equal(geminiThreshold, 838_860);
+  assert.equal(geminiThreshold, 891_289);
 
-  // 4. Smaller local models (32k context, 4k max output)
+  // 4. Smaller local models (32k context)
   const smallThreshold = computeCompactionThreshold(32_768, 4_096);
-  assert.equal(smallThreshold, 24_672);
+  assert.equal(smallThreshold, 27_852);
 
   // 5. Minimal fallbacks
   const defaultThreshold = computeCompactionThreshold(128_000);
-  assert.equal(defaultThreshold, 102_400);
+  assert.equal(defaultThreshold, 108_800);
 });
 
 test("isContextWindowError matches every provider shape and rejects transient/other errors", () => {

@@ -1,9 +1,9 @@
 import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   Brain, BookOpen, Check, ChevronDown, ChevronRight, Code2, Coins, Download, FileCode2, FileText,
-  Folder, FolderOpen, GitBranch, Globe, Home, Info, Loader2, Menu, Sparkles, X,
-  MessageSquare, PanelRight, Pencil, Plus, RefreshCw, Undo2,
-  Settings2, Terminal, Trash2, TriangleAlert, Activity
+  Folder, FolderOpen, GitBranch, Home, Menu, Sparkles, X,
+  MessageSquare, MoreHorizontal, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Search,
+  Terminal, Trash2, TriangleAlert, Activity
 } from "lucide-react";
 import { WindowControls } from "./components/common/WindowControls.js";
 import { ConfirmModal } from "./modals/ConfirmModal.js";
@@ -28,7 +28,7 @@ const MonacoEditorView = lazy(() => import("./components/editor/MonacoEditorView
 import { useNotebookController } from "./state/useNotebookController.js";
 import { useHomeController } from "./state/useHomeController.js";
 const DiffView = lazy(() => import("./views/DiffView.js").then((module) => ({ default: module.DiffView })));
-import { MemoryView, ContextRow, MemoryRow } from "./views/MemoryView.js";
+import { MemoryView, MemoryRow } from "./views/MemoryView.js";
 import { useAppController, sortSessionsByUpdatedAt } from "./state/useAppController.js";
 import { applyTheme } from "./state/theme.js";
 import { getSessionUsage, getSessionContextUsage, fileIcon } from "./utils/format.js";
@@ -282,6 +282,71 @@ function HomeMemoryPanel({
   );
 }
 
+/** DeepSeek-style date buckets for the home chat history (Today / Yesterday / Previous 7 days / Previous 30 days / month). */
+function groupHomeSessions(sessions: SessionRecord[]): Array<{ label: string; sessions: SessionRecord[] }> {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const day = 86_400_000;
+  const buckets: Array<{ label: string; sessions: SessionRecord[] }> = [
+    { label: "Today", sessions: [] },
+    { label: "Yesterday", sessions: [] },
+    { label: "Previous 7 days", sessions: [] },
+    { label: "Previous 30 days", sessions: [] },
+  ];
+  const months = new Map<string, SessionRecord[]>();
+  for (const session of [...sessions].sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""))) {
+    const t = Date.parse(session.updatedAt || session.createdAt || "") || 0;
+    if (t >= startOfToday) buckets[0].sessions.push(session);
+    else if (t >= startOfToday - day) buckets[1].sessions.push(session);
+    else if (t >= startOfToday - 7 * day) buckets[2].sessions.push(session);
+    else if (t >= startOfToday - 30 * day) buckets[3].sessions.push(session);
+    else {
+      const label = new Date(t).toLocaleString(undefined, { month: "long", year: "numeric" });
+      const month = months.get(label);
+      if (month) month.push(session);
+      else months.set(label, [session]);
+    }
+  }
+  return [...buckets.filter((b) => b.sessions.length), ...[...months.entries()].map(([label, list]) => ({ label, sessions: list }))];
+}
+
+/** Three-dots picker for the right-side panels; the chosen panel slides in from the right. */
+function PanelMenuButton({ items, onPick, title }: { items: Array<{ key: string; label: string; hint?: string }>; onPick: (key: string) => void; title?: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="panel-menu-wrap">
+      <button
+        className={`icon-plain panel-menu-btn${open ? " active" : ""}`}
+        onClick={() => setOpen((v) => !v)}
+        title={title || "Open a side panel"}
+      >
+        <MoreHorizontal size={16} />
+      </button>
+      {open && (
+        <>
+          <div className="panel-menu-backdrop" onClick={() => setOpen(false)} />
+          <div className="panel-menu" role="menu">
+            {items.map((item) => (
+              <button
+                key={item.key}
+                className="panel-menu-item"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  onPick(item.key);
+                }}
+              >
+                <span>{item.label}</span>
+                {item.hint && <small>{item.hint}</small>}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function App() {
   const {
     projects,
@@ -404,6 +469,18 @@ function App() {
   // Delete-chat confirmation: fetches the high-confidence owned-file list so
   // the user can choose "delete chat" vs "delete chat + the files it created".
   const [homeDeleteDialog, setHomeDeleteDialog] = useState<{ session: SessionRecord; ownedFiles: Array<{ path: string; name: string; size: number; modified: string }> } | null>(null);
+  const [homeSearch, setHomeSearch] = useState("");
+  // Keep the left sidebar mounted briefly while its close animation plays.
+  const [leftSidebarClosing, setLeftSidebarClosing] = useState(false);
+  const showLeftSidebar = showSessions || leftSidebarClosing;
+  useEffect(() => {
+    if (!showSessions) {
+      setLeftSidebarClosing(true);
+      const timer = setTimeout(() => setLeftSidebarClosing(false), 250);
+      return () => clearTimeout(timer);
+    }
+    setLeftSidebarClosing(false);
+  }, [showSessions]);
   function openHomeDeleteDialog(session: SessionRecord) {
     const api = window.nexus;
     api.listHomeSessionFilesForDeletion(session.id)
@@ -455,8 +532,8 @@ function App() {
     };
   }, [showProjectDropdown]);
 
-  const [homeSideTab, setHomeSideTab] = useState<"session" | "artifacts" | "browser" | "memory">("session");
-  const [codeSideTab, setCodeSideTab] = useState<"session" | "files" | "browser" | "terminal" | "diff" | "memory">("session");
+  const [homeSideTab, setHomeSideTab] = useState<"artifacts" | "browser" | "memory">("artifacts");
+  const [codeSideTab, setCodeSideTab] = useState<"browser" | "terminal" | "diff" | "memory">("diff");
   const [terminalOpened, setTerminalOpened] = useState(false);
   const [updater, setUpdater] = useState<UpdaterState>({ status: "idle" });
   const [appVersion, setAppVersion] = useState("");
@@ -491,6 +568,37 @@ function App() {
       }
     }).catch(() => {});
   }, [api]);
+
+  // Auto-open the Browser panel while the agent is on the web: every web
+  // search and browser navigation is mirrored as browser agent activity, so
+  // the first one of a run slides the sidebar open on the Browser tab. Once
+  // per run — closing it mid-run keeps it closed.
+  const browserAutoOpenedRef = useRef(false);
+  const homeRunning = home.running;
+  const activeHomeSessionId = home.activeSession?.id;
+  const activeCodeSessionId = activeSession?.id;
+  useEffect(() => {
+    browserAutoOpenedRef.current = false;
+  }, [running, homeRunning, activeHomeSessionId, activeCodeSessionId]);
+  useEffect(() => {
+    if (typeof api.onBrowserAgentActivity !== "function") return;
+    const unsubscribe = api.onBrowserAgentActivity((payload) => {
+      if (!payload?.url || !payload.sessionId) return;
+      if (area === "home") {
+        if (!homeRunning || payload.sessionId !== activeHomeSessionId) return;
+      } else if (area === "code") {
+        if (!running || payload.sessionId !== activeCodeSessionId) return;
+      } else {
+        return;
+      }
+      if (browserAutoOpenedRef.current) return;
+      browserAutoOpenedRef.current = true;
+      if (area === "home") setHomeSideTab("browser");
+      else setCodeSideTab("browser");
+      setShowContext(true);
+    });
+    return unsubscribe;
+  }, [api, area, running, homeRunning, activeHomeSessionId, activeCodeSessionId]);
 
   async function answerApproval(decision: "once" | "session" | "deny") {
     const request = approvalRequest;
@@ -537,7 +645,7 @@ function App() {
     <div className="product-shell">
       <header className="product-topbar">
         <div className="product-left">
-          <button className="icon-plain" onClick={() => setShowSessions((v) => !v)} title="Toggle project and session navigation">
+          <button className="icon-plain" onClick={() => setShowSettings(true)} title="Settings">
             <Menu size={15} />
           </button>
           <div className="product-logo">
@@ -644,9 +752,6 @@ function App() {
               <Terminal size={13} /> Services
             </button>
           )}
-          <button className="icon-plain" onClick={() => setShowSettings(true)} title="Settings">
-            <Settings2 size={15} />
-          </button>
           {(updater.status === "available" || updater.status === "downloading") && (
             <span
               className="update-pill"
@@ -674,50 +779,83 @@ function App() {
               <TriangleAlert size={11} /> Update failed — retry
             </button>
           )}
-          <span className="user-chip">ME</span>
           <div className="top-separator window-ctrl-sep" />
           <WindowControls />
         </div>
       </header>
 
       <div className="product-body">
-        {showSessions && area === "home" && (
-          <aside className="session-pane">
-            <div className="pane-top">
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span className="context-kicker">CHATS</span>
-                <span className="notebook-head-count-pill">{home.sessions.length}</span>
-              </div>
-              <button className="pane-action" onClick={() => void home.createChat()} title="New chat"><Plus size={14} /></button>
+        {showLeftSidebar && area === "home" && (
+          <aside className={`session-pane home-ds-sidebar${!showSessions ? " closing" : ""}`}>
+            <div className="ds-sidebar-top">
+              <span className="ds-brand">Nexus</span>
+              <button className="pane-action" onClick={() => setShowSessions(false)} title="Collapse sidebar">
+                <PanelLeft size={14} />
+              </button>
             </div>
-            <div className="session-list">
-              {home.sessions.map((session) => (
-                <SessionRow
-                  key={session.id}
-                  session={session}
-                  active={session.id === home.activeSession?.id}
-                  editing={session.id === home.editingSessionId}
-                  draftTitle={home.editingSessionTitle}
-                  onActivate={() => void home.selectChat(session.id)}
-                  onStartEdit={() => home.startRename(session)}
-                  onDraftChange={home.setEditingSessionTitle}
-                  onCommit={home.commitRename}
-                  onCancel={home.cancelRename}
-                  onDelete={() => openHomeDeleteDialog(session)}
-                />
-              ))}
+            <button className="ds-new-chat" onClick={() => void home.createChat()} title="Start a new home chat">
+              <Plus size={15} />
+              <span>New conversation</span>
+            </button>
+            <div className="ds-search">
+              <Search size={12} />
+              <input
+                value={homeSearch}
+                onChange={(event) => setHomeSearch(event.target.value)}
+                placeholder="Search chats…"
+                aria-label="Search home chats"
+              />
+            </div>
+            <div className="session-list ds-session-list">
+              {groupHomeSessions(home.sessions)
+                .map((group) => ({
+                  label: group.label,
+                  sessions: homeSearch.trim()
+                    ? group.sessions.filter((s) => (s.title || "").toLowerCase().includes(homeSearch.trim().toLowerCase()))
+                    : group.sessions,
+                }))
+                .filter((group) => group.sessions.length)
+                .map((group) => (
+                  <div key={group.label} className="ds-group">
+                    <div className="ds-group-label">{group.label}</div>
+                    {group.sessions.map((session) => (
+                      <SessionRow
+                        key={session.id}
+                        session={session}
+                        active={session.id === home.activeSession?.id}
+                        editing={session.id === home.editingSessionId}
+                        draftTitle={home.editingSessionTitle}
+                        onActivate={() => void home.selectChat(session.id)}
+                        onStartEdit={() => home.startRename(session)}
+                        onDraftChange={home.setEditingSessionTitle}
+                        onCommit={home.commitRename}
+                        onCancel={home.cancelRename}
+                        onDelete={() => openHomeDeleteDialog(session)}
+                      />
+                    ))}
+                  </div>
+                ))}
               {!home.sessions.length && <div className="empty-pane">Start a new chat to begin.</div>}
+              {Boolean(home.sessions.length) && !groupHomeSessions(home.sessions).some((g) => !homeSearch.trim() || g.sessions.some((s) => (s.title || "").toLowerCase().includes(homeSearch.trim().toLowerCase()))) && (
+                <div className="empty-pane">No chats match “{homeSearch.trim()}”.</div>
+              )}
+            </div>
+            <div className="ds-profile">
+              <span className="ds-profile-name">You</span>
             </div>
           </aside>
         )}
-        {showSessions && area === "code" && (
-          <aside className="session-pane">
+        {showLeftSidebar && area === "code" && (
+          <aside className={`session-pane${!showSessions ? " closing" : ""}`}>
             <div className="pane-top">
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span className="context-kicker">PROJECTS</span>
                 <span className="notebook-head-count-pill">{projects.length}</span>
               </div>
-              <button className="pane-action" onClick={() => void openProjectFromDialog()} title="New project"><Plus size={14} /></button>
+              <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                <button className="pane-action" onClick={() => void openProjectFromDialog()} title="New project"><Plus size={14} /></button>
+                <button className="pane-action" onClick={() => setShowSessions(false)} title="Hide sidebar"><PanelLeft size={14} /></button>
+              </div>
             </div>
             <div className="project-list">
               {projects.map((project) => (
@@ -773,35 +911,91 @@ function App() {
           </aside>
         )}
 
+        {area === "code" && view === "files" && (
+          <aside className="file-pane explorer-pane">
+            <div className="file-pane-header">
+              <span>EXPLORER</span>
+              <div>
+                <button className="pane-action" onClick={() => void loadWorkspace()} title="Refresh project files">
+                  <RefreshCw size={13} />
+                </button>
+              </div>
+            </div>
+            <div className="root-label">
+              <ChevronDown size={13} /> {activeProject?.name?.toUpperCase() || "NO WORKSPACE"}
+            </div>
+            <div className="file-tree">
+              {visibleFiles.map((entry) => (
+                <FileRow
+                  key={entry.path}
+                  entry={entry}
+                  active={entry.path === activeFile}
+                  expanded={expandedFolders.has(entry.path)}
+                  status={gitStatus[entry.path]}
+                  onClick={() => {
+                    if (entry.kind === "folder") toggleFolder(entry.path);
+                    else void openFile(entry.path);
+                  }}
+                />
+              ))}
+            </div>
+            {!activeProject && <div className="empty-pane">Open a project to browse its files.</div>}
+            <div className="file-pane-footer">
+              <span>{files.filter((entry) => entry.kind === "file").length} files</span>
+              <span>LOCAL</span>
+            </div>
+          </aside>
+        )}
         <main className="coding-workspace">
           {area === "code" && (
           <div className="workspace-bar">
             <div className="workspace-breadcrumb">
+              {!showSessions && (
+                <button className="icon-plain topbar-reopen" onClick={() => setShowSessions(true)} title="Show sidebar">
+                  <PanelLeft size={15} />
+                </button>
+              )}
               <span>{activeProject?.name || "No project"}</span>
               <i>/</i>
               <strong>{view === "chat" ? "Agent session" : activeFile || "Editor"}</strong>
             </div>
             <div className="workspace-actions">
-              <button
-                onClick={() => void undoLatest()}
-                disabled={!canUndo || running || undoing}
-                title={
-                  undoLevels > 0
-                    ? `Undo latest run — ${undoLevels} undo level${undoLevels === 1 ? "" : "s"} (files + session-branch commits)`
-                    : diff.length
-                      ? "Undo latest changes — discard current uncommitted changes"
-                      : "Nothing to undo — working tree is clean"
-                }
-              >
-                <Undo2 size={13} /> {undoing ? "Undoing…" : undoLevels > 1 ? `Undo (${undoLevels})` : "Undo"}
-                {undoLevels <= 1 && diff.length > 0 ? ` (${diff.length})` : ""}
-              </button>
               <button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}>
                 <MessageSquare size={13} /> Agent
               </button>
               <button className={view === "files" ? "active" : ""} onClick={() => setView("files")}>
                 <Code2 size={13} /> Editor
               </button>
+              <PanelMenuButton
+                title="Open a side panel"
+                items={[
+                  { key: "browser", label: "Browser", hint: "Built-in browser" },
+                  { key: "terminal", label: "Terminal", hint: "Interactive shell" },
+                  { key: "diff", label: "Diff", hint: diff.length ? `${diff.length} changed file${diff.length === 1 ? "" : "s"}` : "Git changes" },
+                  { key: "memory", label: "Memory", hint: "Project & session memory" },
+                  ...(activeSession ? [{ key: "export", label: "Export chat", hint: "Standalone HTML file" }] : []),
+                ]}
+                onPick={(key) => {
+                  if (key === "terminal") setTerminalOpened(true);
+                  if (key === "diff") void refreshDiff();
+                  if (key === "export") {
+                    const sessionId = activeSession?.id;
+                    if (!sessionId) return;
+                    setConfirmDialog({
+                      title: "Export this chat?",
+                      message: "This saves the whole session — messages, agent steps and outcomes — as a standalone HTML file you can open in any browser.",
+                      confirmLabel: "Export",
+                      danger: false,
+                      onConfirm: () => {
+                        void (api as unknown as { exportSession: (id: string) => Promise<string> }).exportSession(sessionId).catch(() => undefined);
+                      },
+                    });
+                    return;
+                  }
+                  setCodeSideTab(key as "browser" | "terminal" | "diff" | "memory");
+                  setShowContext(true);
+                }}
+              />
             </div>
           </div>
           )}
@@ -812,6 +1006,7 @@ function App() {
               <section className="center-pane">
                 <NotebookView
                   notebooks={notebook.notebooks}
+                  sourceCounts={notebook.sourceCounts}
                   activeNotebook={notebook.activeNotebook}
                   setActiveNotebook={(nb) => notebook.enterNotebook(nb)}
                   sources={notebook.sources}
@@ -922,6 +1117,7 @@ function App() {
                     if (notebook.activeNotebook) void notebook.refreshNotebookDetail(notebook.activeNotebook.id);
                   }}
                   onToggleScope={(id) => notebook.toggleScope(id)}
+                  onSetScopeExcluded={(ids) => notebook.setScopeExcluded(ids)}
                   onResetScope={() => notebook.resetScope()}
                   onOpenPassage={(chunkId) => void notebook.openPassage(chunkId)}
                   onClosePassage={() => notebook.closePassage()}
@@ -1027,10 +1223,30 @@ function App() {
                 sessionUsage={home.sessionUsage}
                 contextUsage={getSessionContextUsage(home.activeSession)}
                 activeSessionId={home.activeSession?.id}
-                homeRoot={home.homeRoot}
+                sessionTitle={home.activeSession?.title}
+                topbarLeading={
+                  !showSessions ? (
+                    <button className="icon-plain topbar-reopen" onClick={() => setShowSessions(true)} title="Show sidebar">
+                      <PanelLeft size={15} />
+                    </button>
+                  ) : undefined
+                }
+                panelMenu={
+                  <PanelMenuButton
+                    title="Open a side panel"
+                    items={[
+                      { key: "artifacts", label: "Artifacts", hint: home.homeSessionFiles.length ? `${home.homeSessionFiles.length} file${home.homeSessionFiles.length === 1 ? "" : "s"}` : "Chat files" },
+                      { key: "browser", label: "Browser", hint: "Built-in browser" },
+                      { key: "memory", label: "Memory", hint: "Long-term memory" },
+                    ]}
+                    onPick={(key) => {
+                      if (key === "memory") void home.refreshHomeMemory();
+                      setHomeSideTab(key as "artifacts" | "browser" | "memory");
+                      setShowContext(true);
+                    }}
+                  />
+                }
                 onDownloadFile={(relPath) => void api.downloadHomeFile(relPath)}
-                onOpenFolder={() => void api.openHomeFolder()}
-                onNewChat={() => void home.createChat()}
                 attachedImages={home.attachedImages}
                 setAttachedImages={home.setAttachedImages}
                 attachments={home.attachments}
@@ -1067,6 +1283,7 @@ function App() {
                   files={files}
                   checkpointId={activeSession?.checkpointId}
                   diffCount={diff.length}
+                  diffFiles={diff}
                   undoLevels={undoLevels}
                   onUndoRun={(id) => void undoRun(id)}
                   onKeepChanges={() => void keepChanges()}
@@ -1148,106 +1365,6 @@ function App() {
                 </button>
               </div>
             </div>
-            <div className="context-tabs" role="tablist" aria-label="Code sidebar">
-              <button type="button" role="tab" aria-selected={codeSideTab === "session"} className={codeSideTab === "session" ? "active" : ""} onClick={() => setCodeSideTab("session")} title="Session status and tools">
-                <Info size={12} /> <span className="context-tab-label">Session</span>
-              </button>
-              <button type="button" role="tab" aria-selected={codeSideTab === "files"} className={codeSideTab === "files" ? "active" : ""} onClick={() => setCodeSideTab("files")} title="Project files">
-                <FolderOpen size={12} /> <span className="context-tab-label">Files</span>
-              </button>
-              <button type="button" role="tab" aria-selected={codeSideTab === "browser"} className={codeSideTab === "browser" ? "active" : ""} onClick={() => setCodeSideTab("browser")} title="Built-in browser">
-                <Globe size={12} /> <span className="context-tab-label">Browser</span>
-              </button>
-              <button type="button" role="tab" aria-selected={codeSideTab === "terminal"} className={codeSideTab === "terminal" ? "active" : ""} onClick={() => { setTerminalOpened(true); setCodeSideTab("terminal"); }} title="Interactive terminal">
-                <Terminal size={12} /> <span className="context-tab-label">Term</span>
-              </button>
-              <button type="button" role="tab" aria-selected={codeSideTab === "diff"} className={codeSideTab === "diff" ? "active" : ""} onClick={() => { setCodeSideTab("diff"); void refreshDiff(); }} title="Git diff">
-                <GitBranch size={12} /> <span className="context-tab-label">Diff{diff.length > 0 ? ` (${diff.length})` : ""}</span>
-              </button>
-              <button type="button" role="tab" aria-selected={codeSideTab === "memory"} className={codeSideTab === "memory" ? "active" : ""} onClick={() => setCodeSideTab("memory")} title="Persistent memory">
-                <Brain size={12} /> <span className="context-tab-label">Memory</span>
-              </button>
-            </div>
-            <div className={`context-tab-panel${codeSideTab === "session" ? "" : " hidden"}`}>
-              <div className="context-tab-body">
-                <div className="context-summary">
-                  <span className="status-ring">{running ? <Loader2 size={13} className="spin" /> : <Check size={13} />}</span>
-                  <div>
-                    <strong>{running ? "Agent is working" : "Ready to code"}</strong>
-                    <small>{running ? "Inspecting and changing your project" : "Plan, implement, review"}</small>
-                  </div>
-                </div>
-                <div className="context-section">
-                  <div className="context-section-title">
-                    <span>SESSION TOOLS</span>
-                    <small>{running ? "ACTIVE" : "READY"}</small>
-                  </div>
-                  <ContextRow icon={<FileCode2 size={14} />} label="File inspection" detail="Read, search, edit" active={Boolean(activeProject)} />
-                  <ContextRow icon={<Terminal size={14} />} label="Terminal" detail="Interactive live shell" active={Boolean(activeProject)} />
-                  <ContextRow icon={<GitBranch size={14} />} label="Git diff" detail={diff.length ? `${diff.length} changes to review` : "Clean working tree"} active={Boolean(diff.length)} />
-                </div>
-                {currentSessionUsage && currentSessionUsage.totalTokens > 0 && (
-                  <div className="context-section">
-                    <div className="context-section-title">
-                      <span>SESSION TOTAL TOKENS</span>
-                      <small>CUMULATIVE</small>
-                    </div>
-                    <MemoryRow label="Total tokens" value={`${currentSessionUsage.totalTokens.toLocaleString()} tokens`} />
-                    <MemoryRow label="In / Out" value={`${currentSessionUsage.inputTokens.toLocaleString()} in / ${currentSessionUsage.outputTokens.toLocaleString()} out`} />
-                    <MemoryRow label="Est. cost" value={formatCost(currentSessionUsage.estimatedCost)} />
-                  </div>
-                )}
-                {projectRules && projectRules.hasRules && (
-                  <div className="context-section">
-                    <div className="context-section-title">
-                      <span>PROJECT RULES</span>
-                      <button onClick={() => setShowRulesModal(true)}><ChevronRight size={13} /></button>
-                    </div>
-                    <MemoryRow label="Active rule files" value={`${projectRules.ruleFiles.length} file${projectRules.ruleFiles.length === 1 ? "" : "s"}`} />
-                  </div>
-                )}
-                <div className="context-section">
-                  <div className="context-section-title">
-                    <span>MEMORY</span>
-                    <button onClick={() => setCodeSideTab("memory")}><ChevronRight size={13} /></button>
-                  </div>
-                  <MemoryRow label="Project facts" value={activeProject?.facts ? "Updated" : "Empty"} />
-                  <MemoryRow label="Project memory" value={activeProject?.memory ? "Updated" : "Empty"} />
-                  <MemoryRow label="Session memory" value={activeSession?.memory ? "Updated" : "Empty"} />
-                </div>
-              </div>
-            </div>
-            <div className={`context-tab-panel${codeSideTab === "files" ? "" : " hidden"}`}>
-              <div className="file-pane-header">
-                <span>EXPLORER</span>
-                <div>
-                  <button className="pane-action" onClick={() => void loadWorkspace()}>
-                    <RefreshCw size={13} />
-                  </button>
-                </div>
-              </div>
-              <div className="root-label">
-                <ChevronDown size={13} /> {activeProject?.name?.toUpperCase() || "NO WORKSPACE"}
-              </div>
-              <div className="file-tree">
-                {visibleFiles.map((entry) => (
-                  <FileRow
-                    key={entry.path}
-                    entry={entry}
-                    active={entry.path === activeFile}
-                    expanded={expandedFolders.has(entry.path)}
-                    status={gitStatus[entry.path]}
-                    onClick={() =>
-                      entry.kind === "folder" ? toggleFolder(entry.path) : void openFile(entry.path)
-                    }
-                  />
-                ))}
-              </div>
-              <div className="file-pane-footer">
-                <span>{files.filter((entry) => entry.kind === "file").length} files</span>
-                <span>LOCAL</span>
-              </div>
-            </div>
             <div className={`context-tab-panel${codeSideTab === "browser" ? "" : " hidden"}`}>
               <SidebarBrowser
                 key="code-browser"
@@ -1308,85 +1425,6 @@ function App() {
                 </button>
               </div>
             </div>
-            <div className="context-tabs" role="tablist" aria-label="Home sidebar">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={homeSideTab === "session"}
-                className={homeSideTab === "session" ? "active" : ""}
-                onClick={() => setHomeSideTab("session")}
-                title="Session status, usage and memory"
-              >
-                <Info size={12} /> <span className="context-tab-label">Session</span>
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={homeSideTab === "artifacts"}
-                className={homeSideTab === "artifacts" ? "active" : ""}
-                onClick={() => setHomeSideTab("artifacts")}
-                title="Files generated in this chat"
-              >
-                <FileText size={12} /> Artifacts{home.homeSessionFiles.length > 0 ? ` (${home.homeSessionFiles.length})` : ""}
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={homeSideTab === "browser"}
-                className={homeSideTab === "browser" ? "active" : ""}
-                onClick={() => setHomeSideTab("browser")}
-                title="Built-in browser"
-              >
-                <Globe size={12} /> <span className="context-tab-label">Browser</span>
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={homeSideTab === "memory"}
-                className={homeSideTab === "memory" ? "active" : ""}
-                onClick={() => { setHomeSideTab("memory"); void home.refreshHomeMemory(); }}
-                title="Long-term memory shared across all Home chats"
-              >
-                <Brain size={12} /> <span className="context-tab-label">Memory</span>
-              </button>
-            </div>
-            {homeSideTab === "session" && (
-            <div className="context-tab-body">
-            <div className="context-summary">
-              <span className="status-ring">{home.running ? <Loader2 size={13} className="spin" /> : <Check size={13} />}</span>
-              <div>
-                <strong>{home.running ? "Agent is working" : "Ready"}</strong>
-                <small>{home.running ? "Researching, writing files…" : "Ask, research, create documents"}</small>
-              </div>
-            </div>
-            {home.sessionUsage && (
-              <div className="context-section">
-                <div className="context-section-title">
-                  <span>SESSION TOTAL TOKENS</span>
-                  <small>CUMULATIVE</small>
-                </div>
-                <MemoryRow label="Total tokens" value={`${home.sessionUsage.totalTokens.toLocaleString()} tokens`} />
-                <MemoryRow label="In / Out" value={`${home.sessionUsage.inputTokens.toLocaleString()} in / ${home.sessionUsage.outputTokens.toLocaleString()} out`} />
-                <MemoryRow label="Est. cost" value={formatCost(home.sessionUsage.estimatedCost)} />
-              </div>
-            )}
-            <div className="context-section">
-              <div className="context-section-title">
-                <span>MEMORY</span>
-                <button onClick={() => { setHomeSideTab("memory"); void home.refreshHomeMemory(); }}><ChevronRight size={13} /></button>
-              </div>
-              <MemoryRow label="Remembered" value={String(home.homeStructure.profile.length + home.homeStructure.preferences.length + home.homeStructure.facts.length + home.homeStructure.context.length)} />
-              <MemoryRow label="Session notes" value={home.activeSession?.memory ? "Updated" : "Empty"} />
-            </div>
-            <div className="context-section">
-              <div className="context-section-title">
-                <span>NEXUS FOLDER</span>
-                <small>{home.homeFiles.length} TOTAL</small>
-              </div>
-              <MemoryRow label="Location" value={home.homeRoot ? home.homeRoot.split(/[\\/]/).pop() || "Nexus" : "Nexus"} />
-            </div>
-            </div>
-            )}
             {homeSideTab === "artifacts" && (
             <div className="context-tab-body">
             <div className="context-section">
@@ -1460,10 +1498,6 @@ function App() {
             )}
           </aside>
           )
-        ) : area !== "notebook" ? (
-          <button className="context-restore" onClick={() => setShowContext(true)} title="Open context panel">
-            <PanelRight size={15} />
-          </button>
         ) : null}
       </div>
 

@@ -1,7 +1,6 @@
 import React, { useRef, useState, useMemo } from "react";
 import {
   Bot,
-  Coins,
   Terminal,
   Activity,
   X,
@@ -482,8 +481,8 @@ function normalizeActivityEvents(
 
       if (matches) {
         prev.status = "completed";
-        if (event.detail && !prev.detail) {
-          prev.detail = event.detail;
+        if (!prev.detail && (event.detail || event.text)) {
+          prev.detail = event.detail || event.text;
         }
         continue;
       }
@@ -521,7 +520,10 @@ function normalizeActivityEvents(
       command: parsed.command,
       query: parsed.query,
       skill: parsed.skill,
-      detail: event.detail,
+      // Content for the expandable sub-view: the structured tool output when
+      // the backend provides it, otherwise the raw event text itself — so
+      // every step's thinking/output is inspectable, never a dead-end row.
+      detail: event.detail || event.text || undefined,
       status,
       timestamp: event.createdAt,
       plan: event.plan,
@@ -726,6 +728,20 @@ export function ActivityGroupView({
 
   const activeStep = steps.find((s) => s.status === "running") || steps[steps.length - 1];
 
+  // ZCode-style collapsed summary: "Worked for 2m 36s" computed from the
+  // first to last step timestamps. Detailed counts stay in the tooltip.
+  const workedLabel = useMemo(() => {
+    if (running || !steps.length) return null;
+    const start = Date.parse(steps[0].timestamp);
+    const end = Date.parse(steps[steps.length - 1].timestamp);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+    const totalSeconds = Math.max(0, Math.round((end - start) / 1000));
+    if (totalSeconds < 8) return "Worked for a few seconds";
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return minutes > 0 ? `Worked for ${minutes}m ${seconds}s` : `Worked for ${seconds}s`;
+  }, [running, steps]);
+
   let headerTitle = "Completed agent activity";
   if (running) {
     if (currentText) {
@@ -737,6 +753,8 @@ export function ActivityGroupView({
     } else {
       headerTitle = "Agent working on task…";
     }
+  } else if (workedLabel) {
+    headerTitle = workedLabel;
   } else if (hasError) {
     headerTitle = "Agent encountered an issue";
   } else {
@@ -758,7 +776,14 @@ export function ActivityGroupView({
       <button
         className="activity-group-summary"
         onClick={() => setUserExpanded(!isGroupExpanded)}
-        title={isGroupExpanded ? "Click to collapse agent steps" : "Click to expand agent steps"}
+        title={
+          running
+            ? undefined
+            : (() => {
+                const summarySuffix = computeStepsSummary(steps);
+                return summarySuffix ? `${steps.length} steps — ${summarySuffix}` : `${steps.length} steps`;
+              })()
+        }
       >
         <span className="activity-group-icon">
           {running ? (
@@ -777,10 +802,12 @@ export function ActivityGroupView({
           <span className={running ? "running-label" : ""}>{headerTitle}</span>
         </span>
 
-        <span className="activity-group-count">
-          {running && <span className="beacon-live-dot" />}
-          {steps.length ? `${steps.length} step${steps.length === 1 ? "" : "s"}` : "Working"}
-        </span>
+        {running && (
+          <span className="activity-group-count">
+            <span className="beacon-live-dot" />
+            {steps.length ? `${steps.length} step${steps.length === 1 ? "" : "s"}` : "Working"}
+          </span>
+        )}
 
         <span className={`activity-group-chevron ${isGroupExpanded ? "open" : ""}`}>
           <ChevronDown size={14} />
@@ -791,9 +818,16 @@ export function ActivityGroupView({
         <div className="activity-group-body">
           <div className="agent-stepper-timeline">
             {steps.map((step, index) => {
+              // Every step with content opens by default — thinking and
+              // output are visible at a glance; individual steps can still
+              // be collapsed by hand.
               const defaultStepExpanded =
                 expandedStepIds[step.id] ??
-                (step.status === "error" || (running && index === steps.length - 1 && Boolean(step.detail)));
+                (Boolean(step.detail) ||
+                  step.status === "error" ||
+                  Boolean(step.artifact) ||
+                  Boolean(step.subagent) ||
+                  Boolean(step.plan && step.plan.length > 0));
 
               return (
                 <StepItemView
@@ -912,19 +946,6 @@ export function ChatItemView({
       {message.role === "assistant" && Boolean(message.text?.trim()) && (
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
           <CopyTextButton text={message.text} />
-        </div>
-      )}
-      {message.role === "assistant" && message.usage && message.usage.totalTokens > 0 && (
-        <div
-          className="message-usage-footer"
-          title={`${message.usage.inputTokens.toLocaleString()} input tokens, ${message.usage.outputTokens.toLocaleString()} output tokens`}
-        >
-          <Coins size={11} />
-          <span>
-            <b>{message.usage.totalTokens.toLocaleString()}</b> tokens (
-            {message.usage.inputTokens.toLocaleString()} in / {message.usage.outputTokens.toLocaleString()} out)
-          </span>
-          <span className="message-usage-cost">{message.usage.estimatedCost == null ? "—" : `~$${message.usage.estimatedCost.toFixed(4)}`}</span>
         </div>
       )}
     </div>

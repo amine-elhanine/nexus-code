@@ -161,7 +161,7 @@ export function useAppController() {
   const [view, setView] = useState<AppView>("chat");
   const [mode, setMode] = useState("Ask");
   const [showSessions, setShowSessions] = useState(true);
-  const [showContext, setShowContext] = useState(true);
+  const [showContext, setShowContext] = useState(false);
   const [showProviders, setShowProviders] = useState(false);
   const [skillsEnabled, setSkillsEnabled] = useState(true);
   const [installedSkills, setInstalledSkills] = useState<SkillInfo[]>([]);

@@ -26,6 +26,24 @@ function mathHtml(expression: string, displayMode: boolean): string {
   }
 }
 
+/**
+ * Single-$ spans are ambiguous with currency ("$852B … $122B"), so a span
+ * from one line only becomes math when it cannot plausibly be money or prose:
+ * it must not start with a digit (money), contain markdown emphasis leaked in
+ * from the surrounding text, or contain long English words between the
+ * dollars. LaTeX commands (\\alpha…) are unambiguous math anywhere.
+ */
+function looksLikeInlineMath(expression: string): boolean {
+  const value = expression.trim();
+  if (!value || value.length > 140) return false;
+  if (/^\d/.test(value)) return false;
+  if (/\*\*|__/.test(value)) return false;
+  if (/\\[a-zA-Z]+/.test(value)) return true;
+  // Math never contains 4+ letter English words; prose does ("post-money", "March", "capital").
+  if (/\b[a-zA-Z]{4,}\b/.test(value)) return false;
+  return /[0-9+\-*/=^_\\<>]/.test(value) || /^[a-zA-Z]$/.test(value);
+}
+
 function looksLikeMath(expression: string): boolean {
   const value = expression.trim();
   if (!value) return false;
@@ -80,10 +98,28 @@ function protectMath(source: string): { source: string; math: Array<{ expression
   protectedSource = protectedSource
     .replace(/\$\$([\s\S]*?)\$\$/g, (_m, expression: string) => add(expression, true))
     .replace(/\\\[([\s\S]*?)\\\]/g, (_m, expression: string) => add(expression, true))
-    .replace(/\\\(([^\n]*?)\\\)/g, (_m, expression: string) => add(expression, false))
-    // Avoid treating currency such as "$5" as math; inline math must contain
-    // a closing dollar on the same line and at least one non-space character.
-    .replace(/(?<!\$)\$([^$\n]+?)\$(?!\$)/g, (_m, expression: string) => add(expression, false));
+    .replace(/\\\(([^\n]*?)\\\)/g, (_m, expression: string) => add(expression, false));
+  // Inline single-$ spans need a money/prose guard (see looksLikeInlineMath):
+  // "$852B post-money (March 2026, $122B" is currency, not a formula. When a
+  // span is rejected, resume scanning at its CLOSING dollar so real math later
+  // on the same line ("costs $120B for $a + b$") is still picked up.
+  {
+    const singleDollar = /(?<!\$)\$([^$\n]+?)\$(?!\$)/g;
+    let kept = "";
+    let cursor = 0;
+    let match: RegExpExecArray | null;
+    while ((match = singleDollar.exec(protectedSource))) {
+      if (looksLikeInlineMath(match[1])) {
+        kept += protectedSource.slice(cursor, match.index) + add(match[1], false);
+        cursor = match.index + match[0].length;
+      } else {
+        kept += protectedSource.slice(cursor, match.index + 1);
+        cursor = match.index + 1;
+        singleDollar.lastIndex = match.index + 1;
+      }
+    }
+    protectedSource = kept + protectedSource.slice(cursor);
+  }
   protectedSource = protectedSource.replace(/\u0000F(\d+)\u0000/g, (_m, index: string) => fences[Number(index)] || "");
   return { source: protectedSource, math };
 }

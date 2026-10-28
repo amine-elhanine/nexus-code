@@ -7,6 +7,9 @@ export function useNotebookController(enabled: boolean) {
   const api = window.nexus;
   const generationRunIds = useRef<Partial<Record<"document" | "quiz" | "flashcards" | "mindmap" | "summary", string>>>({});
   const [notebooks, setNotebooks] = useState<NotebookMeta[]>([]);
+  // Source counts per notebook id — powers the "N sources" meta on the
+  // sessions-overview cards without entering each notebook.
+  const [sourceCounts, setSourceCounts] = useState<Record<string, number>>({});
   const [activeNotebook, setActiveNotebook] = useState<NotebookMeta | null>(null);
   const [sources, setSources] = useState<NotebookSource[]>([]);
   const [chats, setChats] = useState<NotebookChat[]>([]);
@@ -53,6 +56,21 @@ export function useNotebookController(enabled: boolean) {
     try {
       const all = await typed.listNotebooks();
       setNotebooks(all);
+      // Best-effort counts for the overview cards; failures just render "0".
+      const countTyped = api as unknown as { notebookStats?: (id: string) => Promise<NotebookStats> };
+      if (typeof countTyped.notebookStats === "function" && all.length) {
+        const entries = await Promise.all(
+          all.map(async (nb) => {
+            try {
+              const st = await countTyped.notebookStats!(nb.id);
+              return [nb.id, st.sources] as const;
+            } catch {
+              return [nb.id, 0] as const;
+            }
+          })
+        );
+        setSourceCounts(Object.fromEntries(entries));
+      }
       // Sessions-first: never auto-enter. The user clicks a session to enter it.
       return all;
     } catch (error) {
@@ -259,6 +277,9 @@ export function useNotebookController(enabled: boolean) {
     setFlashcards([]);
     setMindmaps([]);
     setSummaries([]);
+    // Counts may have changed while inside (uploads, deletions) — refresh the
+    // overview cards.
+    void refreshNotebooks();
   }
 
   async function renameCurrentNotebook(name: string) {
@@ -286,6 +307,13 @@ export function useNotebookController(enabled: boolean) {
       return;
     }
     setExcludedIds([...excludedIds, sourceId]);
+  }
+
+  // Bulk scope setter for the sources "Select all" checkbox — still honors the
+  // keep-one-in-scope rule by clamping.
+  function setScopeExcluded(ids: string[]) {
+    const maxExcluded = Math.max(0, sources.length - 1);
+    setExcludedIds(ids.slice(0, maxExcluded));
   }
 
   function resetScope() {
@@ -808,6 +836,7 @@ export function useNotebookController(enabled: boolean) {
 
   return {
     notebooks,
+    sourceCounts,
     activeNotebook,
     setActiveNotebook,
     enterNotebook,
@@ -825,6 +854,7 @@ export function useNotebookController(enabled: boolean) {
     excludedIds,
     scopedIds,
     toggleScope,
+    setScopeExcluded,
     resetScope,
     streamByChat,
     stepsByChat,

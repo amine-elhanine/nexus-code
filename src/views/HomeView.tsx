@@ -1,12 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
-  Coins, Sparkles, FolderOpen, Plus, Square, ArrowUp,
+  Sparkles, Square, ArrowUp,
   Paperclip, FileText, Search, Presentation, Table2, Mic,
 } from "lucide-react";
 import { ModelSelect } from "./AgentView.js";
 import { ChatItemView, ActivityGroupView, StreamingAssistantMessage } from "../components/chat/ChatMessageItem.js";
 import { SlashCommandPopup, filterSlashCommands, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
-import { formatCost } from "../types.js";
 import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
 import type { ChatItem, ProviderConfig, ProviderDefinition, AgentUsage, AgentContextUsageSnapshot, ChatAttachment, SkillInfo } from "../types.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
@@ -64,10 +63,10 @@ export function HomeView({
   sessionUsage,
   contextUsage,
   activeSessionId,
-  homeRoot,
+  sessionTitle,
+  panelMenu,
+  topbarLeading,
   onDownloadFile,
-  onOpenFolder,
-  onNewChat,
   attachedImages,
   setAttachedImages,
   attachments,
@@ -98,10 +97,10 @@ export function HomeView({
   sessionUsage?: AgentUsage | null;
   contextUsage?: AgentContextUsageSnapshot | null;
   activeSessionId?: string;
-  homeRoot: string;
+  sessionTitle?: string;
+  panelMenu?: ReactNode;
+  topbarLeading?: ReactNode;
   onDownloadFile: (path: string) => void;
-  onOpenFolder: () => void;
-  onNewChat: () => void;
   attachedImages: string[];
   setAttachedImages: (updater: (current: string[]) => string[]) => void;
   attachments: ChatAttachment[];
@@ -362,237 +361,224 @@ export function HomeView({
     event.target.value = "";
   }
 
-  return (
-    <div className="agent-view">
-      <div className="agent-view-head">
-        <div>
-          <span className="view-kicker">NEXUS HOME</span>
-          <h1>{running ? "Working on it" : "What can I do for you?"}</h1>
-          <p>
-            {running
-              ? "Researching, writing files, running commands…"
-              : "Chat, research the web, create Word, Excel, PowerPoint, LaTeX and Markdown files."}
-          </p>
-        </div>
-        <div className="agent-view-meta">
-          {sessionUsage && sessionUsage.totalTokens > 0 && (
-            <span
-              className="session-usage-pill"
-              title={`${sessionUsage.inputTokens.toLocaleString()} in / ${sessionUsage.outputTokens.toLocaleString()} out`}
-            >
-              <Coins size={12} />
-              <span>
-                Session:{" "}
-                <b>
-                  {sessionUsage.totalTokens >= 1000
-                    ? `${(sessionUsage.totalTokens / 1000).toFixed(1)}k`
-                    : sessionUsage.totalTokens.toLocaleString()}
-                </b>{" "}
-                tokens
-              </span>
-              <span className="cost">{formatCost(sessionUsage.estimatedCost)}</span>
-            </span>
-          )}
-          <button className="top-link" onClick={onOpenFolder} title={homeRoot || "Open the Nexus folder"}>
-            <FolderOpen size={12} /> Files
-          </button>
-          <button className="top-link" onClick={onNewChat} title="Start a new home chat">
-            <Plus size={12} /> New chat
-          </button>
-        </div>
-      </div>
+  // ChatGPT-style hero landing: greeting + centered composer + starter chips.
+  const isEmpty = !messages.length && !running;
 
-      <div className="home-body">
-        <div
-          className="agent-transcript home-transcript"
-          ref={transcriptRef}
-          onScroll={() => {
-            const el = transcriptRef.current;
-            if (!el) return;
-            stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-          }}
-        >
-          {!messages.length && !running && (
-            <div className="empty-agent">
-              <div className="empty-agent-icon">
-                <Sparkles size={20} />
-              </div>
-              <h2>Your everyday assistant</h2>
-              <p>Ask anything, or pick a starting point. Created files land in your Nexus folder, ready to download.</p>
-              <div className="home-suggestions">
-                {SUGGESTIONS.map((s) => (
-                  <button
-                    key={s.label}
-                    className={`home-suggestion suggestion-${s.tone}`}
-                    onClick={() => setDraft(s.prompt)}
-                  >
-                    <div className="home-suggestion-icon">{s.icon}</div>
-                    <div className="home-suggestion-text">
-                      <strong className="home-suggestion-title">{s.label}</strong>
-                      <span className="home-suggestion-desc">{s.desc}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-          {transcriptNodes}
-          {running && liveEvents.length > 0 && (
-            <ActivityGroupView
-              events={liveEvents}
-              running
-              onOpenImage={onOpenImage}
-              onOpenAttachment={onOpenAttachment}
-              currentText={streamingText ? "Writing response…" : undefined}
-            />
-          )}
-          {running && !liveEvents.length && !streamingText && (
-            <ActivityGroupView
-              events={[]}
-              running
-              onOpenImage={onOpenImage}
-              onOpenAttachment={onOpenAttachment}
-              currentText="Starting the agent… the first step can take a while."
-            />
-          )}
-          {running && streamingText && (
-            <StreamingAssistantMessage text={streamingText} />
-          )}
-        </div>
-      </div>
+  useEffect(() => {
+    if (isEmpty) textareaRef.current?.focus();
+  }, [isEmpty]);
 
-      <div className="agent-input-area">
-        <input
-          type="file"
-          ref={imageInputRef}
-          style={{ display: "none" }}
-          accept={ATTACHMENT_ACCEPT}
-          multiple
-          onChange={handleImageFileSelect}
-        />
-        <SlidingPlanDrawer
-          plan={latestPlan?.plan}
-          running={running}
-          isInterrupted={latestPlan?.isInterrupted}
-          onContinue={() => submit("continue")}
-        />
-        <div className="agent-input" style={{ position: "relative" }}>
-          {attachments.length > 0 && (
-            <div className="image-attachments-bar">
-              {attachments.map((attachment, idx) => (
-                <div className="image-preview-chip" key={`${attachment.url}-${idx}`}>
-                  <button
-                    className="attachment-chip-main"
-                    onClick={() => openAttachment(attachment)}
-                    title={`${attachment.name} — click to preview`}
-                  >
-                    {isImageAttachment(attachment)
-                      ? <img src={attachment.url} alt={attachment.name} className="image-preview-thumb" />
-                      : <FileText size={14} />}
-                    <span className="attachment-file-chip">
-                      <span className="attachment-file-name">{attachment.name}</span>
-                      <small>{formatAttachmentSize(attachment.size)}</small>
-                    </span>
-                  </button>
-                  <button
-                    className="image-preview-remove"
-                    onClick={() => { setAttachments((current) => current.filter((_, i) => i !== idx)); setAttachedImages((current) => current.filter((image) => image !== attachment.url)); }}
-                    title={`Remove ${attachment.name}`}
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          {mentionQuery !== null && matchingSkills.length > 0 && (
-            <div className="mention-dropdown">
-              {matchingSkills.map((skill, idx) => (
+  const nowHour = new Date().getHours();
+  const greeting =
+    nowHour < 5 ? "Still up?" : nowHour < 12 ? "Good morning." : nowHour < 18 ? "Good afternoon." : "Good evening.";
+
+  const composer = (
+    <div className="agent-input-area">
+      <input
+        type="file"
+        ref={imageInputRef}
+        style={{ display: "none" }}
+        accept={ATTACHMENT_ACCEPT}
+        multiple
+        onChange={handleImageFileSelect}
+      />
+      <SlidingPlanDrawer
+        plan={latestPlan?.plan}
+        running={running}
+        isInterrupted={latestPlan?.isInterrupted}
+        onContinue={() => submit("continue")}
+      />
+      <div className="agent-input" style={{ position: "relative" }}>
+        {attachments.length > 0 && (
+          <div className="image-attachments-bar">
+            {attachments.map((attachment, idx) => (
+              <div className="image-preview-chip" key={`${attachment.url}-${idx}`}>
                 <button
-                  key={skill.name}
-                  className={`mention-item ${idx === mentionIndex ? "active" : ""}`}
-                  onClick={() => insertSkillMention(skill.name)}
+                  className="attachment-chip-main"
+                  onClick={() => openAttachment(attachment)}
+                  title={`${attachment.name} — click to preview`}
                 >
-                  <Sparkles size={12} style={{ color: "#a496ff", flexShrink: 0 }} />
-                  <span style={{ fontWeight: 600, color: "#e1dbff" }}>@{skill.name}</span>
-                  <span className="mention-badge">Skill</span>
-                  {skill.description && <span className="mention-desc">— {skill.description}</span>}
+                  {isImageAttachment(attachment)
+                    ? <img src={attachment.url} alt={attachment.name} className="image-preview-thumb" />
+                    : <FileText size={14} />}
+                  <span className="attachment-file-chip">
+                    <span className="attachment-file-name">{attachment.name}</span>
+                    <small>{formatAttachmentSize(attachment.size)}</small>
+                  </span>
                 </button>
-              ))}
-            </div>
-          )}
-          {slashQuery !== null && matchingCommands.length > 0 && (
-            <SlashCommandPopup
-              filter={slashQuery}
-              items={matchingCommands}
-              customCommands={customCommands}
-              defaults={[]}
-              onSelect={handleSlashSelect}
-              selectedIndex={slashIndex}
-            />
-          )}
-          <textarea
-            ref={textareaRef}
-            value={draft}
-            onFocus={() => {
-              onRefreshSkills?.();
-              api?.listSkills?.().then((list) => {
-                if (Array.isArray(list)) setLocalSkills(list);
-              }).catch(() => {});
-            }}
-            onChange={(event) =>
-              handleDraftChange(
-                event.target.value,
-                event.target.selectionStart || event.target.value.length
-              )
-            }
-            onSelect={(event) => {
-              const target = event.currentTarget;
-              updateCursorTriggers(target.value, target.selectionStart || target.value.length);
-            }}
-            onKeyDown={handleKeyDown}
-            placeholder="Ask anything, or request a document… (Enter to send)"
-            rows={3}
-          />
-          <div className="input-footer">
-            <div className="input-left">
-              <button
-                className="attach-button"
-                onClick={() => imageInputRef.current?.click()}
-                title="Attach files (images, PDF, Word, Excel, PowerPoint, TeX, text)"
-              >
-                <Paperclip size={14} />
-              </button>
-              <ModelSelect
-                selectedProviderId={selectedProviderId}
-                selectedModel={selectedModel}
-                selectedEffort={selectedEffort}
-                providers={providers}
-                definitions={definitions}
-                switchModel={switchModel}
-                switchEffort={switchEffort}
-                onOpenProviders={onOpenProviders}
-                sessionUsage={sessionUsage}
-                contextUsage={contextUsage}
-                activeSessionId={activeSessionId}
-              />
-            </div>
-            <button
-              className={`send-button${running ? " stop" : ""}`}
-              disabled={(!running && !draft.trim() && attachments.length === 0) || (!hasProvider && !running)}
-              onClick={running ? onStop : () => submit()}
-              title={running ? "Stop" : hasProvider ? "Send" : "Configure a provider first"}
-            >
-              {running ? <Square size={13} fill="currentColor" /> : <ArrowUp size={16} />}
-            </button>
-          </div>
-        </div>
-        {!hasProvider && (
-          <div className="input-note">
-            <Mic size={12} /> Configure a provider (Providers button, top right) to start chatting
+                <button
+                  className="image-preview-remove"
+                  onClick={() => { setAttachments((current) => current.filter((_, i) => i !== idx)); setAttachedImages((current) => current.filter((image) => image !== attachment.url)); }}
+                  title={`Remove ${attachment.name}`}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
           </div>
         )}
+        {mentionQuery !== null && matchingSkills.length > 0 && (
+          <div className="mention-dropdown">
+            {matchingSkills.map((skill, idx) => (
+              <button
+                key={skill.name}
+                className={`mention-item ${idx === mentionIndex ? "active" : ""}`}
+                onClick={() => insertSkillMention(skill.name)}
+              >
+                <Sparkles size={12} style={{ color: "#a496ff", flexShrink: 0 }} />
+                <span style={{ fontWeight: 600, color: "#e1dbff" }}>@{skill.name}</span>
+                <span className="mention-badge">Skill</span>
+                {skill.description && <span className="mention-desc">— {skill.description}</span>}
+              </button>
+            ))}
+          </div>
+        )}
+        {slashQuery !== null && matchingCommands.length > 0 && (
+          <SlashCommandPopup
+            filter={slashQuery}
+            items={matchingCommands}
+            customCommands={customCommands}
+            defaults={[]}
+            onSelect={handleSlashSelect}
+            selectedIndex={slashIndex}
+          />
+        )}
+        <textarea
+          ref={textareaRef}
+          value={draft}
+          onFocus={() => {
+            onRefreshSkills?.();
+            api?.listSkills?.().then((list) => {
+              if (Array.isArray(list)) setLocalSkills(list);
+            }).catch(() => {});
+          }}
+          onChange={(event) =>
+            handleDraftChange(
+              event.target.value,
+              event.target.selectionStart || event.target.value.length
+            )
+          }
+          onSelect={(event) => {
+            const target = event.currentTarget;
+            updateCursorTriggers(target.value, target.selectionStart || target.value.length);
+          }}
+          onKeyDown={handleKeyDown}
+          placeholder={isEmpty ? "Ask anything, or request a document…" : "Ask anything, or request a document… (Enter to send)"}
+          rows={3}
+        />
+        <div className="input-footer">
+          <div className="input-left">
+            <button
+              className="attach-button"
+              onClick={() => imageInputRef.current?.click()}
+              title="Attach files (images, PDF, Word, Excel, PowerPoint, TeX, text)"
+            >
+              <Paperclip size={14} />
+            </button>
+            <ModelSelect
+              selectedProviderId={selectedProviderId}
+              selectedModel={selectedModel}
+              selectedEffort={selectedEffort}
+              providers={providers}
+              definitions={definitions}
+              switchModel={switchModel}
+              switchEffort={switchEffort}
+              onOpenProviders={onOpenProviders}
+              sessionUsage={sessionUsage}
+              contextUsage={contextUsage}
+              activeSessionId={activeSessionId}
+            />
+          </div>
+          <button
+            className={`send-button${running ? " stop" : ""}`}
+            disabled={(!running && !draft.trim() && attachments.length === 0) || (!hasProvider && !running)}
+            onClick={running ? onStop : () => submit()}
+            title={running ? "Stop" : hasProvider ? "Send" : "Configure a provider first"}
+          >
+            {running ? <Square size={13} fill="currentColor" /> : <ArrowUp size={16} />}
+          </button>
+        </div>
       </div>
+      {!hasProvider && (
+        <div className="input-note">
+          <Mic size={12} /> Configure a provider (Providers button, top right) to start chatting
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className={`agent-view home-ds-main${isEmpty ? " home-hero-mode" : ""}`}>
+      <div className="home-topbar">
+        {topbarLeading}
+        <div className="home-topbar-title" title={sessionTitle || "New conversation"}>
+          {sessionTitle || (running ? "Working on it…" : "New conversation")}
+        </div>
+        <div className="agent-view-meta">
+          {panelMenu}
+        </div>
+      </div>
+
+      {isEmpty ? (
+        <div className="home-hero">
+          <h1 className="home-hero-greeting">{greeting}</h1>
+          {composer}
+          <div className="home-hero-chips">
+            {SUGGESTIONS.map((s) => (
+              <button
+                key={s.label}
+                className={`hero-chip hero-chip-${s.tone}`}
+                onClick={() => {
+                  setDraft(s.prompt);
+                  textareaRef.current?.focus();
+                }}
+                title={s.desc}
+              >
+                {s.icon}
+                <span>{s.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="home-body">
+            <div
+              className="agent-transcript home-transcript"
+              ref={transcriptRef}
+              onScroll={() => {
+                const el = transcriptRef.current;
+                if (!el) return;
+                stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+              }}
+            >
+              {transcriptNodes}
+              {running && liveEvents.length > 0 && (
+                <ActivityGroupView
+                  events={liveEvents}
+                  running
+                  onOpenImage={onOpenImage}
+                  onOpenAttachment={onOpenAttachment}
+                  currentText={streamingText ? "Writing response…" : undefined}
+                />
+              )}
+              {running && !liveEvents.length && !streamingText && (
+                <ActivityGroupView
+                  events={[]}
+                  running
+                  onOpenImage={onOpenImage}
+                  onOpenAttachment={onOpenAttachment}
+                  currentText="Starting the agent… the first step can take a while."
+                />
+              )}
+              {running && streamingText && (
+                <StreamingAssistantMessage text={streamingText} />
+              )}
+            </div>
+          </div>
+          {composer}
+        </>
+      )}
     </div>
   );
 }

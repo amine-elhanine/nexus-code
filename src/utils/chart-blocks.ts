@@ -12,6 +12,7 @@
  *   bar:    bar "Label" value
  *   line:   point "Label" value     — ordered series
  *   scatter: point "Name" x y
+ *   radar:  axis "Label" value...]  — one value per series; see parseRadarChart
  */
 
 export type ScatterSpec = {
@@ -156,33 +157,74 @@ export function parsePieChart(source: string, forceDonut = false): PieSpec | nul
   return spec;
 }
 
-export type RadarAxis = { label: string; value: number };
+export type RadarAxis = { label: string; values: number[] };
 export type RadarSpec = {
   title: string;
   max: number;
+  seriesNames: string[];
   axes: RadarAxis[];
 };
 
-/** ```radar fence: multivariate spider web with `axis "Dimension" value`. */
+const RADAR_DATA = /^(?:axis|point|metric|item)\s+"([\s\S]*)"\s+([-+\d.]+(?:\s+[-+\d.]+)*)$/i;
+
+/** ```radar fence: multivariate spider web with `axis "Dimension" value`.
+ * Notes two-series comparisons: an axis line may carry ONE value per series
+ * (`axis "ARR ($B)" 65 60`); every axis line must then carry the same count,
+ * which turns the chart into an N-series radar with a legend. */
 export function parseRadarChart(source: string): RadarSpec | null {
-  const spec: RadarSpec = { title: "", max: 0, axes: [] };
+  const spec: RadarSpec = { title: "", max: 0, seriesNames: [], axes: [] };
   let explicitMax: number | null = null;
   for (const line of lines(source)) {
     let match: RegExpMatchArray | null;
     if ((match = line.match(TITLE))) {
       spec.title = match[1];
+    } else if ((match = line.match(/^series(\s+"[^"]*")*$/i))) {
+      const names = line.match(/"([^"]*)"/g);
+      if (names && names.length) spec.seriesNames = names.map((n) => n.slice(1, -1).trim()).filter(Boolean);
     } else if ((match = line.match(/^max\s+([-+\d.]+)$/i))) {
       const m = Number(match[1]);
       if (Number.isFinite(m) && m > 0) explicitMax = m;
-    } else if ((match = line.match(/^(?:axis|point|metric|item)\s+"([\s\S]*)"\s+([-+\d.]+)$/i))) {
-      const val = Number(match[2]);
-      if (Number.isFinite(val) && val >= 0) {
-        spec.axes.push({ label: match[1], value: val });
-      }
+    } else if ((match = line.match(RADAR_DATA))) {
+      const values = match[2].split(/\s+/).map(Number);
+      if (!values.every((v) => Number.isFinite(v) && v >= 0)) continue;
+      // Single-value axes keep the classic one-polygon radar; the series count
+      // locks on the FIRST value and every following axis must match it.
+      if (spec.axes.length && values.length !== spec.axes[0].values.length) continue;
+      spec.axes.push({ label: match[1], values });
     }
   }
   if (spec.axes.length < 3) return null;
-  spec.max = explicitMax ?? niceMax(Math.max(...spec.axes.map((a) => a.value), 0));
+  spec.max = explicitMax ?? niceMax(Math.max(...spec.axes.flatMap((a) => a.values), 0));
   if (spec.max <= 0) return null;
+  const seriesCount = spec.axes[0].values.length;
+  if (!spec.seriesNames.length) {
+    spec.seriesNames = Array.from({ length: seriesCount }, (_, i) => (seriesCount > 1 ? `Series ${i + 1}` : "Value"));
+  }
   return spec;
+}
+
+/**
+ * Sniffs a fence body for the chart-spec / mermaid grammar the model sometimes
+ * emits without a language tag. Parses strictly enough that readable prose or
+ * code can only match by accident (each parser needs well-formed data lines),
+ * and is checked per kind so a ```radar-style comparison renders as a radar,
+ * ```bar-style lists as bars, etc. Returns null when nothing recognizes it.
+ */
+export function detectFenceKind(source: string): string | null {
+  // Radar is checked only when it uses its canonical data keywords: `point` is
+  // also valid radar data (alias) but is the line chart's keyword, so ranks
+  // there first. Likewise bar/hbar outrank pie, whose slice pattern accepts
+  // `bar "Label" value` lines too.
+  if (parseRadarChart(source) && /\b(?:axis|metric|item)\b/i.test(source)) return "radar";
+  if (parseScatterChart(source)) return "scatter";
+  if (parseBarChart(source)) return "bar";
+  if (parseHBarChart(source)) return "hbar";
+  if (parseLineChart(source)) return "line";
+  if (parseAreaChart(source)) return "area";
+  if (parsePieChart(source)) return "pie";
+  const firstLine = lines(source)[0] || "";
+  if (/^(?:graph|flowchart|sequenceDiagram|classDiagram|stateDiagram(?:-v\d+)?|erDiagram|journey|gantt|pie|timeline|mindmap|gitGraph|quadrantChart|block-beta|C4Context)\b/i.test(firstLine)) {
+    return "mermaid";
+  }
+  return null;
 }
