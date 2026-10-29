@@ -1,14 +1,14 @@
 import React, { useEffect, useRef } from "react";
 import {
   Sparkles, Terminal, FileText, CheckCircle2, GitBranch, RotateCcw,
-  HelpCircle, ShieldCheck, Wrench, BookOpen, Code2, Cpu
+  HelpCircle, ShieldCheck, Wrench, BookOpen, Code2, Cpu, Zap
 } from "lucide-react";
 
 export type SlashCommand = {
   command: string;
   name?: string;
   description: string;
-  mode?: "plan" | "auto" | "ask";
+  mode?: "plan" | "auto" | "ask" | "full";
   promptTemplate?: string;
   source?: "builtin" | "project";
   scope?: "all" | "home" | "code" | "notebook";
@@ -19,6 +19,7 @@ export const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
   { command: "/plan", name: "Plan", description: "Plan changes read-only & generate implementation plan", mode: "plan", icon: <FileText size={14} className="text-amber-400" /> },
   { command: "/auto", name: "Auto", description: "Autonomous end-to-end implementation with auto-repair", mode: "auto", icon: <Sparkles size={14} className="text-purple-400" /> },
   { command: "/ask", name: "Ask", description: "Standard interactive coding assistance & verification", mode: "ask", icon: <CheckCircle2 size={14} className="text-blue-400" /> },
+  { command: "/full", name: "Full Access", description: "Run every command without approval prompts (destructive guardrails enforced)", mode: "full", icon: <Zap size={14} className="text-rose-400" /> },
   { command: "/review", name: "Review", description: "Perform deep code & security review of active file/diff", mode: "ask", icon: <ShieldCheck size={14} className="text-emerald-400" /> },
   { command: "/test", name: "Test", description: "Run project verification and targeted unit tests", mode: "auto", icon: <Terminal size={14} className="text-emerald-400" /> },
   { command: "/refactor", name: "Refactor", description: "Refactor logic for cleanliness, speed & readability", mode: "auto", icon: <Wrench size={14} className="text-cyan-400" /> },

@@ -25,7 +25,7 @@ import { selectConfiguredProvider } from "./provider-selection.mjs";
 
 const usage = () => {
   process.stderr.write(
-    "Usage: nexus-agent --project <root> --request <task> [--mode plan|ask|auto] [--without-assets skills,rules,agents,commands] [--provider <id|label>] [--model <name>] [--api-key <key>] [--base-url <url>]\n"
+    "Usage: nexus-agent --project <root> --request <task> [--mode plan|ask|auto|full] [--without-assets skills,rules,agents,commands] [--provider <id|label>] [--model <name>] [--api-key <key>] [--base-url <url>]\n"
   );
 };
 
@@ -51,7 +51,7 @@ try {
   process.exit(3);
 }
 
-const mode = ["plan", "ask", "auto"].includes(String(values.mode)) ? values.mode : "auto";
+const mode = ["plan", "ask", "auto", "full"].includes(String(values.mode)) ? values.mode : "auto";
 const taskKind = String(values["task-kind"] || "code");
 if (!["code", "general"].includes(taskKind)) {
   process.stderr.write(`Unknown task kind "${taskKind}". Choose code or general.\n`);

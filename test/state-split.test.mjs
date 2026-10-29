@@ -33,7 +33,7 @@ function runScenario(scenario) {
   });
 }
 
-const scenarios = ['basic-split', 'cold-hydration', 'migration'];
+const scenarios = ['basic-split', 'cold-hydration', 'migration', 'model-switch-context'];
 for (const scenario of scenarios) {
   try {
     await runScenario(scenario);

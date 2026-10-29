@@ -727,7 +727,7 @@ export function AgentView({
 
   function handleSlashSelect(cmd: SlashCommand) {
     if (cmd.mode) {
-      setMode(cmd.mode === "plan" ? "Plan" : cmd.mode === "auto" ? "Auto" : "Ask");
+      setMode(cmd.mode === "plan" ? "Plan" : cmd.mode === "auto" ? "Auto" : cmd.mode === "full" ? "Full" : "Ask");
     }
     if (!textareaRef.current) return;
     const cursor = textareaRef.current.selectionStart || draft.length;
@@ -1187,11 +1187,12 @@ export function AgentView({
                 )}
               </div>
               <div className="mode-select">
-                {["Plan", "Ask", "Auto"].map((item) => (
+                {["Plan", "Ask", "Auto", "Full"].map((item) => (
                   <button
                     key={item}
-                    className={mode === item ? "active" : ""}
+                    className={`${mode === item ? "active" : ""}${item === "Full" ? " mode-full" : ""}`}
                     onClick={() => setMode(item)}
+                    title={item === "Full" ? "Full Access: every command runs without approval prompts (destructive guardrails still enforced)" : undefined}
                   >
                     {item}
                   </button>

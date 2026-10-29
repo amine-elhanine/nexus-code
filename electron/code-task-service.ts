@@ -11,12 +11,13 @@ export type CodeTaskContract = {
 
 export function shouldRunCodeReview(input: {
   agentsEnabled: boolean;
-  mode: "plan" | "ask" | "auto";
+  mode: "plan" | "ask" | "auto" | "full";
   expectsChanges: boolean;
   currentRepairs: number;
   maxRepairs: number;
 }): boolean {
-  return input.agentsEnabled && input.mode === "auto" && input.expectsChanges && input.currentRepairs < input.maxRepairs;
+  // Full Access shares Auto's self-healing review/repair loop.
+  return input.agentsEnabled && (input.mode === "auto" || input.mode === "full") && input.expectsChanges && input.currentRepairs < input.maxRepairs;
 }
 
 /** A skipped required check prevents the run from claiming full verification. */
@@ -45,7 +46,7 @@ export type CodeTaskJournal = {
   version: 2;
   sessionId: string;
   goal: string;
-  mode: "plan" | "ask" | "auto";
+  mode: "plan" | "ask" | "auto" | "full";
   phase: CodeTaskPhase;
   status: CodeTaskStatus;
   plan: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>;
@@ -81,7 +82,7 @@ export function codeTaskJournalPath(root: string, sessionId: string): string {
 export function createCodeTaskJournal(input: {
   sessionId: string;
   goal: string;
-  mode: "plan" | "ask" | "auto";
+  mode: "plan" | "ask" | "auto" | "full";
   resume?: CodeTaskJournal | null;
 }): CodeTaskJournal {
   if (input.resume) {

@@ -50,6 +50,9 @@ export function useHomeController(enabled = true) {
   const [editingSessionTitle, setEditingSessionTitle] = useState("");
 
   const liveEventsRef = useRef<Record<string, ChatItem[]>>({});
+  // Reasoning deltas accumulate per session into a single live "thinking"
+  // step (Claude-Code-style) — cleared when a tool event or run end closes it.
+  const thinkingAccRef = useRef<Record<string, string>>({});
   liveEventsRef.current = liveEvents;
   // Guards re-submits within the same tick (before runningSessionIds state
   // propagates) — see submit below.
@@ -155,6 +158,25 @@ export function useHomeController(enabled = true) {
       const isHomeSession = sessionsRef.current.some((s) => s.id === bucket) || (activeSessionRef.current?.id === bucket);
       if (!isHomeSession && event.sessionId) return;
 
+      if (event.type === "thinking") {
+        // Reasoning deltas fold into ONE live thinking step per session
+        // (Claude-Code-style), capped to a tail so long reasoning stays sane.
+        const THINKING_DISPLAY_CAP = 8000;
+        const combined = (thinkingAccRef.current[bucket] || "") + event.text;
+        thinkingAccRef.current[bucket] = combined.length > THINKING_DISPLAY_CAP
+          ? combined.slice(combined.length - THINKING_DISPLAY_CAP)
+          : combined;
+        const text = thinkingAccRef.current[bucket];
+        const log = liveEventsRef.current[bucket] || [];
+        const last = log[log.length - 1];
+        const nextLog = last?.kind === "thinking"
+          ? [...log.slice(0, -1), { ...last, text, detail: text }]
+          : [...log, { role: "event", kind: "thinking", text, detail: text, createdAt: event.timestamp } as ChatItem];
+        liveEventsRef.current = { ...liveEventsRef.current, [bucket]: nextLog };
+        setLiveEvents(liveEventsRef.current);
+        return;
+      }
+
       if (event.type === "token") {
         if (activeSessionRef.current?.id && event.sessionId === activeSessionRef.current.id) {
           setStreamingText((curr) => curr + event.text);
@@ -167,6 +189,9 @@ export function useHomeController(enabled = true) {
         if (activeSessionRef.current?.id && event.sessionId === activeSessionRef.current.id) {
           setStreamingText("");
         }
+        // A tool call closes the current thinking burst — the next reasoning
+        // delta starts a fresh thinking step instead of appending to the old one.
+        delete thinkingAccRef.current[bucket];
       }
 
       const item: ChatItem = {
@@ -197,6 +222,7 @@ export function useHomeController(enabled = true) {
         const log = liveEventsRef.current[bucket] || [];
         const { [bucket]: _dropped, ...rest } = liveEventsRef.current;
         liveEventsRef.current = rest;
+        delete thinkingAccRef.current[bucket];
         setLiveEvents(rest);
         setStreamingText("");
         setRunningSessionIds((curr) => {

@@ -82,11 +82,15 @@ function matchesPolicy(command: string, patterns: unknown): boolean {
   });
 }
 
-export function classifyCommand(command: string, policy: CommandPolicy = {}, options: { trustedAllow?: boolean } = {}): CommandPermission {
+export function classifyCommand(command: string, policy: CommandPolicy = {}, options: { trustedAllow?: boolean; /** Full Access mode: every non-denied command runs WITHOUT the approval prompt. The built-in destructive deny list and user deny rules still apply — they are guardrails, not consent gates. */ fullAccess?: boolean } = {}): CommandPermission {
   const cmd = (command || "").trim();
   if (!cmd) return "deny";
   if (DENY_PATTERNS.some((re) => re.test(cmd))) return "deny";
   if (matchesPolicy(cmd, policy.deny)) return "deny";
+  // Full Access mode: skip ALL ask gates (user policy ask rules, installs,
+  // git push, download-and-execute, HTTP mutations) — only the deny
+  // guardrails above remain.
+  if (options.fullAccess) return "allow";
   if (matchesPolicy(cmd, policy.ask)) return "ask";
   // An UNTRUSTED allow list (`.nexus/permissions.json` lives inside the
   // workspace, so the agent itself can write it) must never switch off the

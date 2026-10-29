@@ -311,7 +311,7 @@ function groupHomeSessions(sessions: SessionRecord[]): Array<{ label: string; se
 }
 
 /** Three-dots picker for the right-side panels; the chosen panel slides in from the right. */
-function PanelMenuButton({ items, onPick, title }: { items: Array<{ key: string; label: string; hint?: string }>; onPick: (key: string) => void; title?: string }) {
+function PanelMenuButton({ items, onPick, title, icon }: { items: Array<{ key: string; label: string; hint?: string; open?: boolean }>; onPick: (key: string) => void; title?: string; icon?: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="panel-menu-wrap">
@@ -320,7 +320,7 @@ function PanelMenuButton({ items, onPick, title }: { items: Array<{ key: string;
         onClick={() => setOpen((v) => !v)}
         title={title || "Open a side panel"}
       >
-        <MoreHorizontal size={16} />
+        {icon || <MoreHorizontal size={16} />}
       </button>
       {open && (
         <>
@@ -336,6 +336,7 @@ function PanelMenuButton({ items, onPick, title }: { items: Array<{ key: string;
                   onPick(item.key);
                 }}
               >
+                {item.open && <span className="panel-menu-dot" title="Open" />}
                 <span>{item.label}</span>
                 {item.hint && <small>{item.hint}</small>}
               </button>
@@ -533,8 +534,36 @@ function App() {
   }, [showProjectDropdown]);
 
   const [homeSideTab, setHomeSideTab] = useState<"artifacts" | "browser" | "memory">("artifacts");
+  const [homeSideTabs, setHomeSideTabs] = useState<Array<"artifacts" | "browser" | "memory">>(["artifacts"]);
   const [codeSideTab, setCodeSideTab] = useState<"browser" | "terminal" | "diff" | "memory">("diff");
+  const [codeSideTabs, setCodeSideTabs] = useState<Array<"browser" | "terminal" | "diff" | "memory">>(["diff"]);
   const [terminalOpened, setTerminalOpened] = useState(false);
+  // Multi-panel right sidebar: several panels can be open at once, each shown
+  // as a tab with its own close (X) button. openSidePanel adds a tab (or just
+  // activates it), closeSidePanel removes it — hiding the pane when the last
+  // tab closes, and activating a neighbor when the active one closes.
+  function openHomeSidePanel(key: "artifacts" | "browser" | "memory") {
+    setHomeSideTabs((tabs) => (tabs.includes(key) ? tabs : [...tabs, key]));
+    setHomeSideTab(key);
+    setShowContext(true);
+  }
+  function closeHomeSidePanel(key: "artifacts" | "browser" | "memory") {
+    const next = homeSideTabs.filter((tab) => tab !== key);
+    setHomeSideTabs(next);
+    if (next.length === 0) setShowContext(false);
+    else if (homeSideTab === key) setHomeSideTab(next[next.length - 1]);
+  }
+  function openCodeSidePanel(key: "browser" | "terminal" | "diff" | "memory") {
+    setCodeSideTabs((tabs) => (tabs.includes(key) ? tabs : [...tabs, key]));
+    setCodeSideTab(key);
+    setShowContext(true);
+  }
+  function closeCodeSidePanel(key: "browser" | "terminal" | "diff" | "memory") {
+    const next = codeSideTabs.filter((tab) => tab !== key);
+    setCodeSideTabs(next);
+    if (next.length === 0) setShowContext(false);
+    else if (codeSideTab === key) setCodeSideTab(next[next.length - 1]);
+  }
   const [updater, setUpdater] = useState<UpdaterState>({ status: "idle" });
   const [appVersion, setAppVersion] = useState("");
   const [approvalRequest, setApprovalRequest] = useState<{ id: string; runId?: string; command: string; cwd: string; reason: string; approvalKey?: string } | null>(null);
@@ -593,8 +622,13 @@ function App() {
       }
       if (browserAutoOpenedRef.current) return;
       browserAutoOpenedRef.current = true;
-      if (area === "home") setHomeSideTab("browser");
-      else setCodeSideTab("browser");
+      if (area === "home") {
+        setHomeSideTabs((tabs) => (tabs.includes("browser") ? tabs : [...tabs, "browser"]));
+        setHomeSideTab("browser");
+      } else {
+        setCodeSideTabs((tabs) => (tabs.includes("browser") ? tabs : [...tabs, "browser"]));
+        setCodeSideTab("browser");
+      }
       setShowContext(true);
     });
     return unsubscribe;
@@ -969,10 +1003,10 @@ function App() {
               <PanelMenuButton
                 title="Open a side panel"
                 items={[
-                  { key: "browser", label: "Browser", hint: "Built-in browser" },
-                  { key: "terminal", label: "Terminal", hint: "Interactive shell" },
-                  { key: "diff", label: "Diff", hint: diff.length ? `${diff.length} changed file${diff.length === 1 ? "" : "s"}` : "Git changes" },
-                  { key: "memory", label: "Memory", hint: "Project & session memory" },
+                  { key: "browser", label: "Browser", hint: "Built-in browser", open: codeSideTabs.includes("browser") },
+                  { key: "terminal", label: "Terminal", hint: "Interactive shell", open: codeSideTabs.includes("terminal") },
+                  { key: "diff", label: "Diff", hint: diff.length ? `${diff.length} changed file${diff.length === 1 ? "" : "s"}` : "Git changes", open: codeSideTabs.includes("diff") },
+                  { key: "memory", label: "Memory", hint: "Project & session memory", open: codeSideTabs.includes("memory") },
                   ...(activeSession ? [{ key: "export", label: "Export chat", hint: "Standalone HTML file" }] : []),
                 ]}
                 onPick={(key) => {
@@ -992,8 +1026,7 @@ function App() {
                     });
                     return;
                   }
-                  setCodeSideTab(key as "browser" | "terminal" | "diff" | "memory");
-                  setShowContext(true);
+                  openCodeSidePanel(key as "browser" | "terminal" | "diff" | "memory");
                 }}
               />
             </div>
@@ -1020,6 +1053,7 @@ function App() {
                   scopedIds={notebook.scopedIds}
                   streaming={notebook.activeChat ? notebook.streamByChat[notebook.activeChat.id] || "" : ""}
                   workingSteps={notebook.activeChat ? notebook.stepsByChat[notebook.activeChat.id] || [] : []}
+                  agentThinking={notebook.activeChat ? notebook.thinkingByChat[notebook.activeChat.id] || "" : ""}
                   passage={notebook.passage}
                   settings={notebook.settings}
                   notes={notebook.notes}
@@ -1235,14 +1269,13 @@ function App() {
                   <PanelMenuButton
                     title="Open a side panel"
                     items={[
-                      { key: "artifacts", label: "Artifacts", hint: home.homeSessionFiles.length ? `${home.homeSessionFiles.length} file${home.homeSessionFiles.length === 1 ? "" : "s"}` : "Chat files" },
-                      { key: "browser", label: "Browser", hint: "Built-in browser" },
-                      { key: "memory", label: "Memory", hint: "Long-term memory" },
+                      { key: "artifacts", label: "Artifacts", hint: home.homeSessionFiles.length ? `${home.homeSessionFiles.length} file${home.homeSessionFiles.length === 1 ? "" : "s"}` : "Chat files", open: homeSideTabs.includes("artifacts") },
+                      { key: "browser", label: "Browser", hint: "Built-in browser", open: homeSideTabs.includes("browser") },
+                      { key: "memory", label: "Memory", hint: "Long-term memory", open: homeSideTabs.includes("memory") },
                     ]}
                     onPick={(key) => {
                       if (key === "memory") void home.refreshHomeMemory();
-                      setHomeSideTab(key as "artifacts" | "browser" | "memory");
-                      setShowContext(true);
+                      openHomeSidePanel(key as "artifacts" | "browser" | "memory");
                     }}
                   />
                 }
@@ -1365,25 +1398,56 @@ function App() {
                 </button>
               </div>
             </div>
-            <div className={`context-tab-panel${codeSideTab === "browser" ? "" : " hidden"}`}>
-              <SidebarBrowser
-                key="code-browser"
-                sessionId={activeSession?.id}
-                browserScope="code"
-                projectRoot={activeProject?.root}
-                files={files}
-                onSendToAgent={(p) => {
-                  setDraft(p);
-                  setView("chat");
+            <div className="context-tab-strip">
+              {codeSideTabs.map((tab) => (
+                <div key={tab} className={`context-tab-pill${codeSideTab === tab ? " active" : ""}`}>
+                  <button className="context-tab-label" onClick={() => setCodeSideTab(tab)}>
+                    {tab === "browser" ? "Browser" : tab === "terminal" ? "Terminal" : tab === "diff" ? "Diff" : "Memory"}
+                  </button>
+                  <button className="context-tab-close" onClick={() => closeCodeSidePanel(tab)} title="Close this panel">
+                    <X size={11} />
+                  </button>
+                </div>
+              ))}
+              <PanelMenuButton
+                icon={<Plus size={13} />}
+                title="Open another side panel"
+                items={[
+                  { key: "browser", label: "Browser", hint: "Built-in browser", open: codeSideTabs.includes("browser") },
+                  { key: "terminal", label: "Terminal", hint: "Interactive shell", open: codeSideTabs.includes("terminal") },
+                  { key: "diff", label: "Diff", hint: "Git changes", open: codeSideTabs.includes("diff") },
+                  { key: "memory", label: "Memory", hint: "Project & session memory", open: codeSideTabs.includes("memory") },
+                ]}
+                onPick={(key) => {
+                  if (key === "terminal") setTerminalOpened(true);
+                  if (key === "diff") void refreshDiff();
+                  openCodeSidePanel(key as "browser" | "terminal" | "diff" | "memory");
                 }}
-                onAgentNavigate={() => setCodeSideTab("browser")}
               />
             </div>
-            {terminalOpened && <div className={`context-tab-panel${codeSideTab === "terminal" ? "" : " hidden"}`}>
-              <Suspense fallback={<div className="context-tab-body">Loading terminal…</div>}>
-                <XTermView projectRoot={activeProject?.root} files={files} />
-              </Suspense>
-            </div>}
+            {codeSideTab === "browser" && (
+              <div className="context-tab-panel">
+                <SidebarBrowser
+                  key="code-browser"
+                  sessionId={activeSession?.id}
+                  browserScope="code"
+                  projectRoot={activeProject?.root}
+                  files={files}
+                  onSendToAgent={(p) => {
+                    setDraft(p);
+                    setView("chat");
+                  }}
+                  onAgentNavigate={() => setCodeSideTab("browser")}
+                />
+              </div>
+            )}
+            {terminalOpened && codeSideTab === "terminal" && (
+              <div className="context-tab-panel">
+                <Suspense fallback={<div className="context-tab-body">Loading terminal…</div>}>
+                  <XTermView projectRoot={activeProject?.root} files={files} />
+                </Suspense>
+              </div>
+            )}
             {codeSideTab === "diff" && <div className="context-tab-panel">
               <DiffView
                 diff={diff}
@@ -1397,9 +1461,11 @@ function App() {
                 onInspectFile={(f) => setInspectDiffFile(f)}
               />
             </div>}
-            <div className={`context-tab-panel${codeSideTab === "memory" ? "" : " hidden"}`}>
-              <MemoryView project={activeProject} session={activeSession} onRemoveFact={(fact) => void removeProjectFact(fact)} onClearSessionMemory={() => void clearSessionMemory()} />
-            </div>
+            {codeSideTab === "memory" && (
+              <div className="context-tab-panel">
+                <MemoryView project={activeProject} session={activeSession} onRemoveFact={(fact) => void removeProjectFact(fact)} onClearSessionMemory={() => void clearSessionMemory()} />
+              </div>
+            )}
           </aside>
           ) : (
             // Notebook owns its own 3-pane layout (sources / chat / artifacts)
@@ -1424,6 +1490,31 @@ function App() {
                   <PanelRight size={14} />
                 </button>
               </div>
+            </div>
+            <div className="context-tab-strip">
+              {homeSideTabs.map((tab) => (
+                <div key={tab} className={`context-tab-pill${homeSideTab === tab ? " active" : ""}`}>
+                  <button className="context-tab-label" onClick={() => setHomeSideTab(tab)}>
+                    {tab === "artifacts" ? "Artifacts" : tab === "browser" ? "Browser" : "Memory"}
+                  </button>
+                  <button className="context-tab-close" onClick={() => closeHomeSidePanel(tab)} title="Close this panel">
+                    <X size={11} />
+                  </button>
+                </div>
+              ))}
+              <PanelMenuButton
+                icon={<Plus size={13} />}
+                title="Open another side panel"
+                items={[
+                  { key: "artifacts", label: "Artifacts", hint: "Chat files", open: homeSideTabs.includes("artifacts") },
+                  { key: "browser", label: "Browser", hint: "Built-in browser", open: homeSideTabs.includes("browser") },
+                  { key: "memory", label: "Memory", hint: "Long-term memory", open: homeSideTabs.includes("memory") },
+                ]}
+                onPick={(key) => {
+                  if (key === "memory") void home.refreshHomeMemory();
+                  openHomeSidePanel(key as "artifacts" | "browser" | "memory");
+                }}
+              />
             </div>
             {homeSideTab === "artifacts" && (
             <div className="context-tab-body">
@@ -1483,9 +1574,11 @@ function App() {
             </div>
             </div>
             )}
-            <div className={`context-tab-panel${homeSideTab === "browser" ? "" : " hidden"}`}>
-              <SidebarBrowser key="home-browser" sessionId={home.activeSession?.id} browserScope="home" onAgentNavigate={() => setHomeSideTab("browser")} />
-            </div>
+            {homeSideTab === "browser" && (
+              <div className="context-tab-panel">
+                <SidebarBrowser key="home-browser" sessionId={home.activeSession?.id} browserScope="home" onAgentNavigate={() => setHomeSideTab("browser")} />
+              </div>
+            )}
             {homeSideTab === "memory" && (
               <HomeMemoryPanel
                 structure={home.homeStructure}

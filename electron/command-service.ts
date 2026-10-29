@@ -212,7 +212,7 @@ function commandLeavesProjectRoot(projectRoot: string, command: string): boolean
   return false;
 }
 
-export async function executeCommand(projectRoot: string, command: string, options: { timeoutSeconds?: number; runId?: string; requireApproval?: boolean; policy?: CommandPolicy; policyTrusted?: boolean; onOutput?: (chunk: string) => void; extraEnv?: Record<string, string> } = {}): Promise<CommandResult> {
+export async function executeCommand(projectRoot: string, command: string, options: { timeoutSeconds?: number; runId?: string; requireApproval?: boolean; policy?: CommandPolicy; policyTrusted?: boolean; onOutput?: (chunk: string) => void; extraEnv?: Record<string, string>; /** Full Access mode: run every non-denied command without the approval prompt. */ fullAccess?: boolean } = {}): Promise<CommandResult> {
   const state = stateFor(options.runId);
   if (state.cancelled || state.abortController.signal.aborted) {
     throw new RunCancelledError();
@@ -226,8 +226,9 @@ export async function executeCommand(projectRoot: string, command: string, optio
   const { policy, trustedAllow } = options.policy !== undefined
     ? { policy: options.policy, trustedAllow: options.policyTrusted !== false }
     : await readCommandPolicyWithTrust(projectRoot);
-  if (isDeniedCommand(normalized) || classifyCommand(normalized, policy, { trustedAllow }) === "deny") return { output: "Command blocked by permission policy (destructive pattern).", exitCode: 1, truncated: false };
-  if (options.requireApproval && classifyCommand(normalized, policy, { trustedAllow }) === "ask") {
+  const classifyOptions = { trustedAllow, fullAccess: options.fullAccess };
+  if (isDeniedCommand(normalized) || classifyCommand(normalized, policy, classifyOptions) === "deny") return { output: "Command blocked by permission policy (destructive pattern).", exitCode: 1, truncated: false };
+  if (options.requireApproval && !options.fullAccess && classifyCommand(normalized, policy, classifyOptions) === "ask") {
     const decision = await requestCommandApproval({ runId: options.runId, approvalKey: approvalKey(normalized), command: normalized, cwd: path.resolve(projectRoot), reason: "This command can change dependencies, Git history, remote state, execute downloaded code, or send data to a remote service." });
     if (state.cancelled || state.abortController.signal.aborted) throw new RunCancelledError();
     if (decision === "deny") return { output: "Command denied or approval timed out.", exitCode: 126, truncated: false, approvalDenied: true };
@@ -280,7 +281,7 @@ export async function executeCommand(projectRoot: string, command: string, optio
 
 function backendId(project: ProjectRecord) { return `workspace-${project.id}`; }
 
-export async function getAgentBackend(project: ProjectRecord, options: { readOnly?: boolean; runId?: string; editPolicy?: "auto" | "ask"; onCommandOutput?: (command: string, chunk: string) => void } = {}) {
+export async function getAgentBackend(project: ProjectRecord, options: { readOnly?: boolean; runId?: string; editPolicy?: "auto" | "ask"; onCommandOutput?: (command: string, chunk: string) => void; /** Full Access mode: shell commands skip approval prompts and the edit-approval gate is bypassed. */ fullAccess?: boolean } = {}) {
   const backend: any = new FilesystemBackend({ rootDir: path.resolve(project.root), virtualMode: true });
   backend.id = backendId(project);
 
@@ -325,11 +326,12 @@ export async function getAgentBackend(project: ProjectRecord, options: { readOnl
     backend.execute = (command: string) => executeCommand(project.root, command, {
       runId: options.runId,
       requireApproval: true,
+      fullAccess: options.fullAccess,
       policy: commandPolicy,
       policyTrusted: commandPolicyTrusted,
       onOutput: options.onCommandOutput ? (chunk) => options.onCommandOutput!(command, chunk) : undefined,
     });
-    if (options.editPolicy === "ask") {
+    if (options.editPolicy === "ask" && !options.fullAccess) {
       // Opt-in edit approval (AppSettings.editPolicy="ask"): backend file
       // mutations wait for the same approval UI shell commands use. A
       // "session" decision (approvalKey + runId) approves the rest of the
