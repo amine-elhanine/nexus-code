@@ -16,7 +16,7 @@ import { chunkThinking } from "./thinking-chunk.js";
 import { discoverAllRules, discoverProjectRules } from "./rules-service.js";
 import { discoverProjectInstructions } from "./project-instructions.js";
 import { expandSlashCommand } from "./custom-commands-service.js";
-import { createSubagentDelegationTool, executeSubagentTask, calculateAgentUsage, buildSubagentCatalog, type SubagentItem } from "./subagent-service.js";
+import { createSubagentDelegationTool, executeSubagentTask, buildSubagentCatalog, type SubagentItem } from "./subagent-service.js";
 import { getWorkspaceDiffFiles } from "./diff-service.js";
 import { getMcpTools } from "./mcp-service.js";
 import { getHooksConfig, getRulesConfig, getSkillsConfig } from "./store.js";
@@ -25,7 +25,7 @@ import { GLOBAL_SKILLS_ROUTE, PROJECT_SKILLS_DIR, SKILL_SOURCE_PRIORITY, SYSTEM_
 import { createPluginAgentTools } from "./tool-executor.js";
 import { collectDynamicPluginContext } from "./plugin-lifecycle.js";
 import type { PluginMode } from "./plugin-manifest.js";
-import { computeCompactionThreshold, compactHistory, compactHistoryWithModel, estimateTokens, estimateMessagesTokens, estimateToolSchemaTokens, isContextWindowError, trimRunMessages, trimRunMessagesWithRecoveryBrief, StreamUsageTracker } from "./context-service.js";
+import { computeCompactionThreshold, compactHistory, compactHistoryWithModel, estimateTokens, estimateMessagesTokens, estimateToolSchemaTokens, isContextWindowError, trimRunMessages, trimRunMessagesWithRecoveryBrief } from "./context-service.js";
 import { saveArtifact, type ArtifactItem } from "./artifacts-service.js";
 import { TrajectoryLogger } from "./trajectory-service.js";
 import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint, errorSummary } from "./rate-limit.js";
@@ -45,6 +45,12 @@ import { buildVerificationBatch, classifyTaskComplexity, detectPackageManager, f
 import { describeToolCall, extractGithubLogin, extractSkillNameFromPath, loadedSkillNamesFromMessages, toolCallSummary, toolResultExcerpt } from "./tool-describe.js";
 import { saveLastRunCheckpoint, summarizeCompletedSteps } from "./run-checkpoint.js";
 import type { AgentPromptAsset } from "./prompt-assets.js";
+import { extractDiagnosticFeedback, VERIFY_OUTPUT_CAP, HISTORY_CHAR_CAP, textFromMessage, chunkText, tail, compactTablesForMemory, truncateOnLines, firstMeaningfulLine } from "./agent/message-utils.js";
+import { planItemsFromArgs, buildToolContextBlock } from "./agent/tool-context.js";
+import { UsageAccumulator } from "./agent/usage.js";
+import { AgentContextRelaunch, MODE_LIMITS, SIMPLE_TASK_LIMIT, MAX_AGENT_ERROR_RECOVERIES, MAX_REPAIRS, isRecursionLimitError } from "./agent/loop-limits.js";
+import { snapshotHomeFiles, findFreshHomeFiles, type HomeFileSnapshot } from "./agent/home-files.js";
+import { appendEntryLog, PROJECT_MEMORY_RUN_LOG_CAP, SESSION_MEMORY_ENTRY_CAP, SESSION_MEMORY_CHAR_CAP } from "./agent/memory-log.js";
 
 // Backward-compatible re-exports: main.ts and tests import these from
 // agent-service; the implementations now live in the focused modules above.
@@ -56,110 +62,12 @@ export { detectPackageManager, pickVerificationCommand, pickVerificationCommands
 export { extractSkillNameFromPath, loadedSkillNamesFromMessages, describeToolCall, extractGithubLogin, toolResultExcerpt } from "./tool-describe.js";
 export type { TaskLedger, RunCheckpoint } from "./run-checkpoint.js";
 export { getLastRunCheckpoint, saveLastRunCheckpoint, persistLastRunCheckpoint, loadLastRunCheckpoint, clearLastRunCheckpoint, summarizeCompletedSteps } from "./run-checkpoint.js";
-
-// Internal-only marker: a superstep boundary was reached with real usage data
-// showing the NEXT model call would overfill the context window. Threading it
-// up lets streamDeepAgent condense the transcript and relaunch the stream
-// instead of losing the run to a provider context-length 4xx.
-class AgentContextRelaunch extends Error {
-  constructor(reason: string) {
-    super(`Agent context relaunch: ${reason}`);
-    this.name = "AgentContextRelaunch";
-  }
-}
+export { extractDiagnosticFeedback } from "./agent/message-utils.js";
+export { buildToolContextBlock } from "./agent/tool-context.js";
+export { MAX_REPAIRS } from "./agent/loop-limits.js";
+export { appendEntryLog, PROJECT_MEMORY_RUN_LOG_CAP, SESSION_MEMORY_ENTRY_CAP, SESSION_MEMORY_CHAR_CAP } from "./agent/memory-log.js";
 
 export { RunCancelledError };
-
-
-type HomeFileSnapshot = Map<string, number>;
-
-async function snapshotHomeFiles(root: string): Promise<HomeFileSnapshot> {
-  const snapshot: HomeFileSnapshot = new Map();
-  async function walk(dir: string): Promise<void> {
-    let entries: import("node:fs").Dirent[] = [];
-    try { entries = await fsPromises.readdir(dir, { withFileTypes: true }); } catch { return; }
-    for (const entry of entries) {
-      if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(full);
-        continue;
-      }
-      try {
-        const stat = await fsPromises.stat(full);
-        snapshot.set(path.relative(root, full).replace(/\\/g, "/"), stat.mtimeMs);
-      } catch { /* best effort */ }
-    }
-  }
-  await walk(root);
-  return snapshot;
-}
-
-async function findFreshHomeFiles(root: string, baseline: HomeFileSnapshot, startedAt: number): Promise<string[]> {
-  const current = await snapshotHomeFiles(root);
-  return [...current.entries()]
-    .filter(([relative, mtime]) => !baseline.has(relative) || mtime >= startedAt - 1000)
-    .map(([relative]) => relative)
-    .sort();
-}
-
-
-// LangGraph recursion budgets per mode. Lowered from the previous
-// 60/160/300: unbounded budgets let the model wander on trivial tasks.
-// LangGraph recursion budgets per mode. Lowered from the previous
-// 60/160/300: unbounded budgets let the model wander on trivial tasks.
-// Simple tasks get a tight budget via SIMPLE_TASK_LIMIT instead.
-const MODE_LIMITS: Record<AgentMode, number> = { plan: 40, ask: 100, auto: 150, full: 200 };
-// Fast-path budget for single-lookup / single-edit tasks: enough to
-// read 1-2 files and write. Note this feeds LangGraph's recursionLimit,
-// where one tool call costs several supersteps — keep it >= 50 or trivial
-// tasks die with GraphRecursionError instead of finishing.
-const SIMPLE_TASK_LIMIT = 50;
-// Self-healing passes per stream: how many times a still-failing run injects
-// the error back into the conversation and continues, before honestly pausing
-// with the checkpointed partial result.
-const MAX_AGENT_ERROR_RECOVERIES = 3;
-export const MAX_REPAIRS: Record<AgentMode, number> = { plan: 0, ask: 3, auto: 5, full: 5 };
-const HISTORY_CHAR_CAP = 4000;
-const VERIFY_OUTPUT_CAP = 4000;
-const MEMORY_ENTRY_CAP = 600;
-// Project memory log: newest 20 runs, char-capped as a second bound.
-export const PROJECT_MEMORY_RUN_LOG_CAP = 20;
-// Session memory log: newest 40 run summaries, 4000 chars.
-export const SESSION_MEMORY_ENTRY_CAP = 40;
-export const SESSION_MEMORY_CHAR_CAP = 4000;
-
-export function extractDiagnosticFeedback(rawOutput: string, cap = VERIFY_OUTPUT_CAP): string {
-  if (!rawOutput) return "";
-  const cleaned = rawOutput.trim();
-  if (cleaned.length <= cap) return cleaned;
-
-  const lines = cleaned.split(/\r?\n/);
-  const isDiagnostic = (line: string) =>
-    /(?:error\s+[A-Z0-9]+:|error:|failed:|failure:|exception:|syntaxerror|typeerror|referenceerror|assertionerror|errno\s+\d+|undefined reference|cannot find module|\bFAILED\b)/i.test(line);
-
-  const keyLines: string[] = [];
-  for (let i = 0; i < lines.length && keyLines.length < 30; i++) {
-    if (isDiagnostic(lines[i])) {
-      keyLines.push(lines[i]);
-      if (i + 1 < lines.length && lines[i + 1].trim() && !isDiagnostic(lines[i + 1])) {
-        keyLines.push(`    ${lines[i + 1].trim()}`);
-      }
-    }
-  }
-
-  const budgetPerSection = Math.floor((cap - 200) / 3);
-  const head = cleaned.slice(0, budgetPerSection);
-  const tailPart = cleaned.slice(-budgetPerSection);
-
-  if (keyLines.length > 0) {
-    const diagnosticSummary = `=== Extracted Diagnostics ===\n${keyLines.slice(0, 20).join("\n")}`.slice(0, budgetPerSection);
-    return `${head}\n\n${diagnosticSummary}\n\n…[truncated ${Math.max(0, cleaned.length - budgetPerSection * 2)} chars]…\n\n${tailPart}`;
-  }
-
-  const half = Math.floor((cap - 100) / 2);
-  return `${cleaned.slice(0, half)}\n\n…[truncated ${Math.max(0, cleaned.length - half * 2)} chars]…\n\n${cleaned.slice(-half)}`;
-}
 
 const AgentState = Annotation.Root({
   projectRoot: Annotation<string>(),
@@ -171,239 +79,7 @@ const AgentState = Annotation.Root({
   runMessages: Annotation<any[]>({ reducer: (_, value) => value, default: () => [] }),
 });
 
-function textFromMessage(message: any) {
-  if (!message) return "";
-  if (typeof message.content === "string") return message.content;
-  if (Array.isArray(message.content)) return message.content.map((part: any) => (typeof part === "string" ? part : part?.text ?? "")).join("");
-  return message.text ?? "";
-}
-
-function chunkText(chunk: any) {
-  const content = chunk?.content;
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) return content.map((part: any) => (typeof part === "string" ? part : part?.text ?? "")).join("");
-  return "";
-}
-
-
-function tail(value: string | undefined, cap: number) {
-  if (!value) return "";
-  return value.length > cap ? `…${value.slice(-cap)}` : value;
-}
-
-// Memory entries are summaries, NOT transcripts: the full answer already
-// lives in chat history. Storing verbatim tails of long responses (e.g. a
-// 15-row table cut to its last 4 rows) misleads future runs into thinking
-// the fragment is the complete fact. These helpers collapse large tables
-// and truncate on line boundaries with an explicit marker.
-function compactTablesForMemory(text: string): string {
-  const lines = text.split(/\r?\n/);
-  const out: string[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const isTableRow = /^\s*\|.*\|\s*$/.test(line);
-    if (isTableRow) {
-      let j = i;
-      while (j < lines.length && /^\s*\|.*\|\s*$/.test(lines[j])) j++;
-      const blockSize = j - i;
-      // Keep small tables verbatim; collapse large ones to a row-count note.
-      if (blockSize > 6) {
-        const header = lines[i].trim();
-        out.push(header);
-        out.push(`| …[table with ${blockSize - 2} more rows — see chat transcript for full data]… |`);
-        const last = lines[j - 1].trim();
-        if (last !== header) out.push(last);
-      } else {
-        for (let k = i; k < j; k++) out.push(lines[k]);
-      }
-      i = j;
-    } else {
-      out.push(line);
-      i++;
-    }
-  }
-  return out.join("\n");
-}
-
-function truncateOnLines(value: string, cap: number): string {
-  const compacted = compactTablesForMemory(value.trim());
-  if (compacted.length <= cap) return compacted;
-  const marker = "\n…[summary truncated — see chat transcript for full details]…\n";
-  const budget = cap - marker.length;
-  const headBudget = Math.floor(budget * 0.6);
-  const tailBudget = budget - headBudget;
-  let head = compacted.slice(0, headBudget);
-  const headBreak = head.lastIndexOf("\n");
-  if (headBreak > headBudget * 0.5) head = head.slice(0, headBreak);
-  let tailPart = compacted.slice(-tailBudget);
-  const tailBreak = tailPart.indexOf("\n");
-  if (tailBreak >= 0 && tailBreak < tailBudget * 0.5) tailPart = tailPart.slice(tailBreak + 1);
-  return `${head}${marker}${tailPart}`;
-}
-
-function firstMeaningfulLine(value: string, cap: number): string {
-  const compacted = compactTablesForMemory(value.trim());
-  const line = compacted.split(/\r?\n/).map((l) => l.trim()).find((l) => l && !/^\|?\s*:?-+:?/.test(l) && l !== "…") || "";
-  const flat = line.replace(/\s+/g, " ");
-  return flat.length > cap ? `${flat.slice(0, cap)}…` : flat;
-}
-
-// Usage accounting for streamed runs. Chunk-level extraction and per-invocation
-// deduplication live in StreamUsageTracker; totals must be summed across all
-// model invocations, not overwritten by the latest one.
-class UsageAccumulator {
-  private tracker = new StreamUsageTracker();
-
-  noteChunk(chunk: any) {
-    this.tracker.noteChunk(chunk);
-  }
-
-  /** Largest single model-call input seen so far — the live context size. */
-  get observedInputTokens(): number {
-    return this.tracker.lastObservedInputTokens;
-  }
-
-  get hasObservedInputTokens(): boolean {
-    return this.tracker.sawExactInput && this.tracker.lastObservedInputTokens > 0;
-  }
-
-  addSubagent(usage?: AgentUsage) {
-    if (!usage) return;
-    // Subagent input/output are complete invocation totals, so they are added
-    // directly on top of the parent run's own usage.
-    this.tracker.addTotals(usage.inputTokens || 0, usage.outputTokens || 0);
-  }
-
-  finalize(modelName: string, fallbackInputEstimate = 0, fallbackOutputEstimate = 0): AgentUsage {
-    const inputTokens = this.tracker.inputTokens;
-    const outputTokens = this.tracker.outputTokens;
-    const sawExactInput = this.tracker.sawExactInput;
-    const sawExactOutput = this.tracker.sawExactOutput;
-    const finalInput = !sawExactInput && inputTokens === 0 && fallbackInputEstimate > 0 ? fallbackInputEstimate : inputTokens;
-    const finalOutput = !sawExactOutput && outputTokens === 0 && fallbackOutputEstimate > 0 ? fallbackOutputEstimate : outputTokens;
-    return calculateAgentUsage(finalInput, finalOutput, modelName);
-  }
-}
-
-
-function planItemsFromArgs(args: any): PlanItem[] | null {
-  if (!args || typeof args !== "object") return null;
-  const rawList = Array.isArray(args.items) ? args.items : Array.isArray(args.todos) ? args.todos : Array.isArray(args.plan) ? args.plan : null;
-  if (!rawList) return null;
-  const items = rawList
-    .map((item: any) => {
-      if (typeof item === "string") return { content: item, status: "pending" as const };
-      const content = String(item?.content || item?.task || item?.title || "").trim();
-      const rawStatus = String(item?.status || "pending").toLowerCase();
-      const status: PlanItem["status"] = rawStatus === "completed" || rawStatus === "done" ? "completed" : rawStatus === "in_progress" || rawStatus === "active" ? "in_progress" : "pending";
-      return { content, status };
-    })
-    .filter((item: PlanItem) => item.content);
-  return items.length ? items : null;
-}
-
-
-// Builds the "what prior runs already did" context block from persisted
-// session events (OpenCode/Pi-style: tool history rides along in-session).
-// Call + result pairs are merged, plans expanded, noise (status/usage/
-// artifact/token) skipped. Newest-first under the token budget so recent work
-// always survives; returns null when there is nothing worth carrying.
-export function buildToolContextBlock(items: HistoryInput[] | undefined | null, maxTokens = 4000): string | null {
-  if (!items || items.length === 0) return null;
-  const maxChars = Math.max(500, maxTokens * 4);
-  const PER_ITEM_CAP = 1200;
-  const lines: string[] = [];
-  // First pass: merge call/result pairs chronologically.
-  const push = (head: string, tail = "") => {
-    lines.push(tail ? `${head.slice(0, 200)}\n  ↳ ${tail.slice(0, PER_ITEM_CAP)}` : head.slice(0, 200));
-  };
-  let pendingName: string | null = null;
-  for (const item of items) {
-    if (item.role !== "event") {
-      pendingName = null;
-      continue;
-    }
-    const kind = item.kind || "status";
-    if (kind === "status" || kind === "usage" || kind === "token" || kind === "artifact") continue;
-    if (kind === "plan" && item.plan?.length) {
-      pendingName = null;
-      push(`plan: ${item.plan.map((p) => `[${p.status === "completed" ? "x" : " "}] ${p.content}`).join("; ")}`);
-      continue;
-    }
-    if (kind === "error") {
-      pendingName = null;
-      push(`error: ${item.text}`);
-      continue;
-    }
-    if (kind === "subagent" && item.subagent) {
-      pendingName = null;
-      push(`subagent [${item.subagent.role}] ${item.subagent.status}: ${item.subagent.task}`.slice(0, 300));
-      continue;
-    }
-    if (kind !== "tool") {
-      pendingName = null;
-      continue;
-    }
-    const text = item.text || "";
-    if (text.endsWith("✓")) {
-      const name = text.slice(0, -1).trim();
-      if (pendingName && pendingName.split(" · ")[0] === name && item.detail && lines.length) {
-        const idx = lines.length - 1;
-        lines[idx] = `${lines[idx].slice(0, 200)}\n  ↳ ${item.detail.slice(0, PER_ITEM_CAP)}`;
-      } else if (item.detail) {
-        push(name, item.detail);
-      }
-      pendingName = null;
-      continue;
-    }
-    pendingName = text;
-    push(text, item.detail || "");
-  }
-  if (!lines.length) return null;
-  // Second pass: newest-first under budget.
-  const kept: string[] = [];
-  let used = 0;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (used + lines[i].length > maxChars && kept.length > 0) break;
-    kept.unshift(lines[i]);
-    used += lines[i].length;
-    if (used >= maxChars) break;
-  }
-  if (!kept.length) return null;
-  return (
-    `[Session tool history — work already done in this session, newest last. ` +
-    `Do NOT re-run these tool calls or re-read these files unless they changed since; build on the results below.]\n` +
-    kept.map((l) => `• ${l}`).join("\n")
-  );
-}
-
-
-
-
-function isRecursionLimitError(error: unknown): boolean {
-  const text = [error instanceof Error ? error.message : String(error), String((error as any)?.name ?? "")].join(" ");
-  return /recursion\s*limit|GRAPH_RECURSION_LIMIT/i.test(text);
-}
-
-
-// Project memory is a rolling log; keep the most recent entries so it cannot
-// grow without bound across hundreds of runs.
-// Rolling memory logs (project + session) keep WHOLE entries: char-slicing
-// cut the oldest entry mid-sentence and left a misleading fragment at the
-// top of what the model reads. Entries are separated by `separator`
-// ("\n" for the one-line-per-run project log, "\n\n" for session memory).
-export function appendEntryLog(
-  existing: string | undefined,
-  entry: string,
-  opts: { maxEntries: number; maxChars: number; separator: string }
-): string {
-  const parts = (existing || "").split(opts.separator).map((p) => p.trim()).filter(Boolean);
-  parts.push(entry.trim());
-  let kept = parts.length > opts.maxEntries ? parts.slice(-opts.maxEntries) : parts;
-  while (kept.length > 1 && kept.join(opts.separator).length > opts.maxChars) kept = kept.slice(1);
-  return kept.join(opts.separator);
-}
+// Usage accounting for streamed runs was extracted to ./agent/usage.ts.
 
 // Project facts are agent-recorded and deduped, but unbounded counts would
 // still creep up over months of use (eviction handled by capMemoryItems).
