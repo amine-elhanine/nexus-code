@@ -8,7 +8,7 @@ export interface CustomSlashCommand {
   command: string;          // e.g. "/review"
   name: string;             // e.g. "Code Review"
   description: string;      // e.g. "Run an in-depth security and quality review"
-  mode?: "plan" | "ask" | "auto";
+  mode?: "plan" | "ask" | "auto" | "full";
   promptTemplate: string;   // Prompt text with optional placeholders
   source: "builtin" | "project";
   filePath?: string;
@@ -76,6 +76,14 @@ export const BUILTIN_COMMANDS: CustomSlashCommand[] = [
     name: "Ask Mode",
     description: "Ask questions or investigate without making file modifications",
     mode: "ask",
+    promptTemplate: "{{input}}",
+    source: "builtin",
+  },
+  {
+    command: "/full",
+    name: "Full Access Mode",
+    description: "Execute every command without approval prompts — destructive guardrails stay enforced",
+    mode: "full",
     promptTemplate: "{{input}}",
     source: "builtin",
   },

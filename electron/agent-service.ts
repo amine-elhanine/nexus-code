@@ -12,6 +12,7 @@ import { agentBrowserService } from "./browser-service.js";
 import { getRepoMapSection } from "./repo-map-service.js";
 import { getProjectIndexSection } from "./project-index-service.js";
 import { createWebImageSearchTools, createWebSearchTools } from "./websearch-tool.js";
+import { chunkThinking } from "./thinking-chunk.js";
 import { discoverAllRules, discoverProjectRules } from "./rules-service.js";
 import { discoverProjectInstructions } from "./project-instructions.js";
 import { expandSlashCommand } from "./custom-commands-service.js";
@@ -27,7 +28,7 @@ import type { PluginMode } from "./plugin-manifest.js";
 import { computeCompactionThreshold, compactHistory, compactHistoryWithModel, estimateTokens, estimateMessagesTokens, estimateToolSchemaTokens, isContextWindowError, trimRunMessages, trimRunMessagesWithRecoveryBrief, StreamUsageTracker } from "./context-service.js";
 import { saveArtifact, type ArtifactItem } from "./artifacts-service.js";
 import { TrajectoryLogger } from "./trajectory-service.js";
-import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint } from "./rate-limit.js";
+import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint, errorSummary } from "./rate-limit.js";
 import { RunCancelledError, getRunAbortSignal } from "./command-service.js";
 import { requestCommandApproval } from "./approval-service.js";
 import { createHomeMemoryTool, addMemoryFact, removeMemoryFactWithCount, selectRelevantHomeMemory, parseCandidateFacts, capMemoryItems, shouldExtractMemory, type MemoryCandidate } from "./home-memory-service.js";
@@ -108,13 +109,17 @@ async function findFreshHomeFiles(root: string, baseline: HomeFileSnapshot, star
 // LangGraph recursion budgets per mode. Lowered from the previous
 // 60/160/300: unbounded budgets let the model wander on trivial tasks.
 // Simple tasks get a tight budget via SIMPLE_TASK_LIMIT instead.
-const MODE_LIMITS: Record<AgentMode, number> = { plan: 40, ask: 100, auto: 150 };
+const MODE_LIMITS: Record<AgentMode, number> = { plan: 40, ask: 100, auto: 150, full: 200 };
 // Fast-path budget for single-lookup / single-edit tasks: enough to
 // read 1-2 files and write. Note this feeds LangGraph's recursionLimit,
 // where one tool call costs several supersteps — keep it >= 50 or trivial
 // tasks die with GraphRecursionError instead of finishing.
 const SIMPLE_TASK_LIMIT = 50;
-export const MAX_REPAIRS: Record<AgentMode, number> = { plan: 0, ask: 3, auto: 5 };
+// Self-healing passes per stream: how many times a still-failing run injects
+// the error back into the conversation and continues, before honestly pausing
+// with the checkpointed partial result.
+const MAX_AGENT_ERROR_RECOVERIES = 3;
+export const MAX_REPAIRS: Record<AgentMode, number> = { plan: 0, ask: 3, auto: 5, full: 5 };
 const HISTORY_CHAR_CAP = 4000;
 const VERIFY_OUTPUT_CAP = 4000;
 const MEMORY_ENTRY_CAP = 600;
@@ -424,6 +429,10 @@ export async function runProjectAgent(options: {
   resumeMessages?: any[] | null;
   resumePlanItems?: PlanItem[] | null;
   resumeNote?: string | null;
+  /** Final usedTokens from the session's previous run: seeds the meter before
+   * the provider reports exact tokens, so the bar never drops back to the
+   * text-only estimate on a new request. */
+  previousContextTokens?: number | null;
   taskKind?: AgentTaskKind;
   /** "ask" gates every file mutation (backend + apply_patch + skill files) behind approval UI. */
   editPolicy?: "auto" | "ask";
@@ -438,8 +447,15 @@ export async function runProjectAgent(options: {
   /** Controlled evaluation only: omit selected prompt assets from this run. */
   disabledPromptAssets?: AgentPromptAsset[];
 }) {
-  const { projectRoot, telemetryRoot, sessionId, request: rawRequest, images, attachments, attachmentDocs, importableAttachments, settings, memory, history, mode, agentBackend, onEvent, isCancelled, onHomeMemoryUpdate, onProjectMemoryUpdate, onUserQuestion } = options;
-  const { resumeMessages, resumePlanItems, resumeNote, skillsMode } = options;
+  const { projectRoot, telemetryRoot, sessionId, request: rawRequest, images, attachments, attachmentDocs, importableAttachments, settings, memory, history, agentBackend, onEvent, isCancelled, onHomeMemoryUpdate, onProjectMemoryUpdate, onUserQuestion } = options;
+  // Full Access mode runs every non-denied command without approval prompts.
+  // Behaviorally it IS Auto (verify loop, walkthrough artifact, auto-repair),
+  // so the mode is normalized for all the generic branches below — only the
+  // recursion budget and the system prompt distinguish it.
+  const requestedMode = options.mode;
+  const fullAccess = requestedMode === "full";
+  const mode: AgentMode = fullAccess ? "auto" : requestedMode;
+  const { resumeMessages, resumePlanItems, resumeNote, skillsMode, previousContextTokens } = options;
   const disabledAssets = new Set(options.disabledPromptAssets || []);
   const assetsEnabled = (asset: AgentPromptAsset) => !disabledAssets.has(asset);
   const taskKind: AgentTaskKind = options.taskKind ?? "code";
@@ -774,8 +790,10 @@ export async function runProjectAgent(options: {
   // core to that mode, not an edge case.
   // Edit-approval gate (opt-in via AppSettings.editPolicy or the run options):
   // applied at all three mutation paths — backend write/edit/delete (see
-  // getAgentBackend), apply_patch, and materialize_skill_files.
-  const editGate = options.editPolicy === "ask"
+  // getAgentBackend), apply_patch, and materialize_skill_files. Full Access
+  // mode never asks: mutations run like any other command (guardrail deny
+  // lists still apply).
+  const editGate = options.editPolicy === "ask" && !fullAccess
     ? async (info: { tool: string; files: string[] }) => {
         const decision = await requestCommandApproval({
           runId: sessionId,
@@ -820,7 +838,7 @@ export async function runProjectAgent(options: {
   // in its Markdown response. Charge image lookups to the same research cap.
   const webImageSearchTools = isGeneral ? createWebImageSearchTools({ beforeSearch: beforeHomeResearch }) : [];
   const usage = new UsageAccumulator();
-  let recursionLimit = isSimple ? SIMPLE_TASK_LIMIT : MODE_LIMITS[mode];
+  let recursionLimit = isSimple ? SIMPLE_TASK_LIMIT : MODE_LIMITS[fullAccess ? "full" : mode];
   // Opencode core: ripgrep-like grep + range-read only for simple tasks.
   const codeTools = pickRuntimeCodeTools(allCodeTools, effectiveComplexity);
   // The backend is also read-only in Plan mode, but keep the invariant at the
@@ -845,9 +863,16 @@ export async function runProjectAgent(options: {
     return null;
   });
   let codePlanReady = Boolean(resumePlanItems?.length);
-  const requiresCodePlan = !isGeneral && mode !== "plan" && effectiveComplexity === "complex" && Boolean(codeTaskContract?.expectsChanges);
-  const beforeCodeModify = () => requiresCodePlan && !codePlanReady
-    ? "[PHASE GATE] This is a complex change request and no execution plan exists yet. Create a concrete todo plan with write_todos first, then implement the first item. Do not edit files before the plan is recorded."
+  // Plan phase gate for complex work applies to BOTH modes: Code change
+  // requests, and Home requests whose contract expects an observable output
+  // (document, dataset, multi-part deliverable). Chat-shaped Home questions
+  // (research, explanations) are exempt — no todo plan needed there.
+  const requiresPlanGate =
+    mode !== "plan" &&
+    effectiveComplexity === "complex" &&
+    Boolean(isGeneral ? homeTaskContract?.expectsOutput : codeTaskContract?.expectsChanges);
+  const beforeCodeModify = () => requiresPlanGate && !codePlanReady
+    ? "[PHASE GATE] This is a complex request and no execution plan exists yet. Create a concrete todo plan with write_todos first, then implement the first item. Do not produce the deliverable before the plan is recorded."
     : null;
   const subagentTool = createSubagentDelegationTool({
     projectRoot,
@@ -857,6 +882,7 @@ export async function runProjectAgent(options: {
     mcpTools,
     skills: skillDirs,
     skillsBackend: compositeBackend,
+    fullAccess,
     onEvent: (subEvent) => {
       usage.addSubagent(subEvent.subagent.usage);
       emit("subagent", subEvent.type === "subagent_start" ? `Delegated task to ${subEvent.subagent.role} subagent` : subEvent.type === "subagent_finish" ? `Subagent [${subEvent.subagent.role}] completed` : `Subagent working...`, undefined, undefined, subEvent.subagent);
@@ -972,7 +998,8 @@ export async function runProjectAgent(options: {
     homeTaskContract,
     subagentCatalogText,
     projectInstructions.section,
-    dynamicPluginContext
+    dynamicPluginContext,
+    fullAccess
   );
 
   const builtinTools = [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...webImageSearchTools, ...homeMemoryTool, ...projectMemoryTool];
@@ -1195,8 +1222,12 @@ export async function runProjectAgent(options: {
     // belongs to this invocation only, while the next user request will also
     // restore prior history.
     const exactInputTokens = usage.hasObservedInputTokens ? usage.observedInputTokens : 0;
+    // Carry the session's previous run's final context: the text-only estimate
+    // misses large tool-result payloads, so without this the meter visibly
+    // drops on every new request until the provider reports exact tokens.
+    const carriedTokens = previousContextTokens && previousContextTokens > 0 ? previousContextTokens : 0;
     return {
-      usedTokens: Math.max(estimatedTokens, exactInputTokens),
+      usedTokens: Math.max(estimatedTokens, exactInputTokens, carriedTokens),
       contextWindow: modelContextWindow,
       compactionThreshold,
       estimated: exactInputTokens <= 0,
@@ -1419,10 +1450,8 @@ export async function runProjectAgent(options: {
                     const items = planItemsFromArgs(call.args);
                     if (items) {
                       lastPlanItems = items;
-                      if (!isGeneral) {
-                        codePlanReady = items.length > 0;
-                        if (codeJournal) queueCodeJournalWrite(recordCodeTaskPlan(codeJournal, items));
-                      }
+                      codePlanReady = items.length > 0;
+                      if (!isGeneral && codeJournal) queueCodeJournalWrite(recordCodeTaskPlan(codeJournal, items));
                       emit("plan", "Working plan", items);
                     }
                     continue;
@@ -1535,6 +1564,11 @@ export async function runProjectAgent(options: {
         if (streamMode === "messages") {
           const [chunk] = Array.isArray(payload) ? payload : [payload];
           usage.noteChunk(chunk);
+          // Reasoning deltas (Anthropic extended thinking, DeepSeek-style
+          // reasoning_content, …) stream as their own event kind so the UI can
+          // render a live Claude-Code-style thinking block in the step feed.
+          const thinking = chunkThinking(chunk);
+          if (thinking) emit("thinking", thinking);
           const text = chunkText(chunk);
           if (text) {
             // Counted only as a fallback; finalize ignores it when the
@@ -1588,6 +1622,15 @@ export async function runProjectAgent(options: {
     // is the preferred trigger; message-shaped provider errors are the
     // fallback for providers that never report usage mid-stream.
     let relaunches = 0;
+    // Self-healing error recovery (automated "continue"): when an attempt
+    // still fails after the transient-error backoff machinery is exhausted —
+    // a provider 400, a deserialization error, repeated stream termination —
+    // feed the error back into the run as a system note and continue from the
+    // last complete superstep. The agent corrects itself instead of pausing
+    // the run and waiting for the user to type "continue". Bounded so a
+    // hard-broken provider cannot burn API spend forever; the checkpointed
+    // pause remains the honest terminal state after these passes.
+    let errorRecoveries = 0;
     for (;;) {
       try {
         return await withAgentRetry(consumeStream);
@@ -1595,7 +1638,40 @@ export async function runProjectAgent(options: {
         const cancelled = error instanceof RunCancelledError || error?.name === "AbortError" || isCancelled() || signal?.aborted;
         if (cancelled) throw error;
         const relaunchRequested = error instanceof AgentContextRelaunch || isContextWindowError(error);
-        if (!relaunchRequested || isSimple || runMessages.length <= 2) throw error;
+        if (!relaunchRequested || isSimple || runMessages.length <= 2) {
+          // Recursion-limit errors are handled by the outer budget-extension
+          // loop (bounded, with its own partial-result path) — never recover
+          // them here. Beyond that: automated self-correction passes.
+          if (!isRecursionLimitError(error) && errorRecoveries < MAX_AGENT_ERROR_RECOVERIES) {
+            errorRecoveries++;
+            emit(
+              "status",
+              `Hit an error (${errorSummary(error)}) — recovering automatically and continuing (recovery ${errorRecoveries} of ${MAX_AGENT_ERROR_RECOVERIES})…`
+            );
+            if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: `Auto-recovery ${errorRecoveries}/${MAX_AGENT_ERROR_RECOVERIES}: ${errorSummary(error)}` });
+            // Brief, abort-aware backoff before re-invoking the stream.
+            await new Promise<void>((resolve, reject) => {
+              const timer = setTimeout(() => {
+                signal?.removeEventListener("abort", onAbort);
+                resolve();
+              }, 3_000);
+              const onAbort = () => {
+                clearTimeout(timer);
+                signal?.removeEventListener("abort", onAbort);
+                reject(new RunCancelledError());
+              };
+              if (signal) signal.addEventListener("abort", onAbort, { once: true });
+            });
+            runMessages = [
+              ...runMessages,
+              new HumanMessage(
+                `[System Note: The previous attempt failed with: ${errorSummary(error)}. Continue the task from where it stopped — do not repeat completed steps or re-read files you already inspected. If one specific tool call, image payload or file caused the failure, take a different approach to achieve the same goal.]`
+              ),
+            ];
+            continue;
+          }
+          throw error;
+        }
         if (relaunches >= 3) {
           throw new Error(
             `Context window exhausted after ${relaunches} condensation passes. The current task leaves too little room for the model to keep working — try a model with a larger context window.`
@@ -1825,11 +1901,14 @@ export async function runProjectAgent(options: {
       }
       const changedPaths = runDiff.map((d) => d.path);
       const unfinishedPlan = Boolean(lastPlanItems?.some((item) => item.status !== "completed"));
+      // Same gate as beforeModify: complex Code change requests and complex
+      // Home output contracts push unfinished-plan continuation at verify.
+      const planGateActive = Boolean(isGeneral ? homeTaskContract?.expectsOutput : codeTaskContract?.expectsChanges);
       // Docs/assets-only diffs never need a typecheck: running a 30s+
       // `npm run check` for a README edit is pure "takes time, does nothing".
       const CODE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|py|go|rs|java|kt|c|cpp|h|hpp|cs|rb|php|swift|vue|svelte)$/i;
       if (!changedPaths.some((p) => CODE_EXT.test(p))) {
-        if (codeTaskContract?.expectsChanges && unfinishedPlan && currentRepairs < maxRepairs) {
+        if (planGateActive && unfinishedPlan && currentRepairs < maxRepairs) {
           return {
             verification: "failed",
             repairs: currentRepairs + 1,
@@ -2060,7 +2139,7 @@ export async function runProjectAgent(options: {
         }
       }
 
-      if (codeTaskContract?.expectsChanges && unfinishedPlan && currentRepairs < maxRepairs) {
+      if (planGateActive && unfinishedPlan && currentRepairs < maxRepairs) {
         const remaining = lastPlanItems!
           .filter((item) => item.status !== "completed")
           .slice(0, 8)
@@ -2140,7 +2219,7 @@ export async function runProjectAgent(options: {
         effectiveComplexity = "complex";
         isSimple = false;
       }
-      recursionLimit = MODE_LIMITS[mode];
+      recursionLimit = MODE_LIMITS[fullAccess ? "full" : mode];
       outerLimit = Math.max(recursionLimit, 50);
       saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
       emit("status", `Step budget reached — extending automatically (${budgetExtensions}/${MAX_BUDGET_EXTENSIONS}) and continuing from where the run stopped…`);

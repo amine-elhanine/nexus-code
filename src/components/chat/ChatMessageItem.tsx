@@ -7,6 +7,7 @@ import {
   Brain,
   Check,
   Copy,
+  Lightbulb,
   Loader2,
   ChevronDown,
   ChevronRight,
@@ -82,6 +83,7 @@ export type StepCategory =
   | "skill"
   | "browse"
   | "plan"
+  | "thinking"
   | "subagent"
   | "artifact"
   | "status"
@@ -116,6 +118,17 @@ export interface NormalizedStep {
 
 export function parseEventText(text: string, kind?: string): ParsedStepMeta {
   const clean = (text || "").trim();
+
+  // 0. Reasoning deltas — a Claude-Code-style thinking step. Checked first so
+  // thinking prose that happens to contain "·" or "✓" is never mis-parsed as
+  // a tool call. The full reasoning text travels as the step's detail.
+  if (kind === "thinking") {
+    return {
+      category: "thinking",
+      badgeLabel: "THINKING",
+      title: "Thinking",
+    };
+  }
 
   // 1. Skill loading or consulting
   if (/^Consulting skill:\s*(.+)$/i.test(clean) || /^Skill loaded:\s*(.+?)(?:\s*✓)?$/i.test(clean)) {
@@ -288,6 +301,40 @@ export function parseEventText(text: string, kind?: string): ParsedStepMeta {
     };
   }
 
+  if (/^starting home assistant/i.test(clean)) {
+    return {
+      category: "status",
+      badgeLabel: "INIT",
+      title: "Starting Home Assistant…",
+    };
+  }
+
+  if (/^starting agent\s*·/i.test(clean)) {
+    return {
+      category: "status",
+      badgeLabel: "INIT",
+      title: "Starting agent",
+      query: clean.replace(/^starting agent\s*·\s*/i, ""),
+    };
+  }
+
+  if (/^preparing context/i.test(clean)) {
+    return {
+      category: "status",
+      badgeLabel: "CTX",
+      title: "Preparing context",
+      query: clean.replace(/^preparing context\s*·?\s*/i, ""),
+    };
+  }
+
+  if (/^agent is working on the task$/i.test(clean)) {
+    return {
+      category: "status",
+      badgeLabel: "WORK",
+      title: "Working on the task",
+    };
+  }
+
   if (/^writing response/i.test(clean)) {
     return {
       category: "status",
@@ -343,6 +390,8 @@ function getCategoryIcon(category: StepCategory, size = 11) {
       return <Globe size={size} />;
     case "plan":
       return <Brain size={size} />;
+    case "thinking":
+      return <Lightbulb size={size} />;
     case "subagent":
       return <Bot size={size} />;
     case "artifact":
@@ -390,6 +439,8 @@ function getActionVerb(title: string, isRunning: boolean): string {
         return "Inspected page";
       case "Consult skill":
         return "Consulted skill";
+      case "Thinking":
+        return "Thought";
       default:
         return title;
     }
@@ -420,6 +471,8 @@ function getActionVerb(title: string, isRunning: boolean): string {
       return "Inspecting page";
     case "Consult skill":
       return "Consulting skill";
+    case "Thinking":
+      return "Thinking";
     default:
       return title;
   }
@@ -464,6 +517,12 @@ function normalizeActivityEvents(
     if (event.kind === "plan") {
       continue;
     }
+    // Telemetry-only events never render as steps: context snapshots and
+    // usage rows have no user-facing action (context snapshots even carry
+    // empty text, which used to surface as junk "Agent step" rows).
+    if (event.kind === "context" || event.kind === "usage" || event.kind === "stream-reset") {
+      continue;
+    }
     const isError = event.kind === "error";
     const isSubagent = event.kind === "subagent" && Boolean(event.subagent);
     const isArtifact = Boolean(event.artifact);
@@ -477,12 +536,28 @@ function normalizeActivityEvents(
       const matches =
         (Boolean(doneTool) && prevDesc.startsWith(doneTool)) ||
         (doneTool.startsWith("Skill loaded:") && prev.category === "skill") ||
-        prev.status === "running";
+        (prev.status === "running" && prev.category !== "thinking");
 
       if (matches) {
         prev.status = "completed";
         if (!prev.detail && (event.detail || event.text)) {
           prev.detail = event.detail || event.text;
+        }
+        continue;
+      }
+    }
+
+    // Consecutive subagent events for the SAME subagent merge into ONE step
+    // card: progress/thinking deltas (which re-send the full item) update the
+    // existing card in place instead of spawning a noisy row per event.
+    if (isSubagent && steps.length > 0) {
+      const prev = steps[steps.length - 1];
+      if (prev.category === "subagent" && prev.subagent?.id && prev.subagent.id === event.subagent?.id) {
+        prev.subagent = event.subagent;
+        if (running && i === events.length - 1) {
+          prev.status = event.subagent?.status === "failed" ? "error" : event.subagent?.status === "completed" ? "completed" : "running";
+        } else if (event.subagent?.status === "failed") {
+          prev.status = "error";
         }
         continue;
       }
@@ -511,6 +586,20 @@ function normalizeActivityEvents(
       status = "running";
     }
 
+    // Expandable detail rules: only attach detail that ADDS information.
+    //   - structured detail (tool result excerpts, subagent reports) wins
+    //     unless it just repeats the row's own text;
+    //   - thinking/artifact/subagent/error rows fall back to the event text
+    //     (that text IS their content);
+    //   - plain status/tool rows get NO fallback detail — expanding to read
+    //     the exact same line again is noise, and without a fake detail the
+    //     ✓ merge can still fill the real result excerpt in afterwards.
+    const cleanText = (event.text || "").trim();
+    const rawDetail = (event.detail || "").trim();
+    const structuredDetail = rawDetail && rawDetail !== cleanText ? event.detail : undefined;
+    const keepTextFallback =
+      category === "thinking" || isError || isArtifact;
+
     steps.push({
       id: `${event.createdAt}-${i}`,
       category,
@@ -520,10 +609,7 @@ function normalizeActivityEvents(
       command: parsed.command,
       query: parsed.query,
       skill: parsed.skill,
-      // Content for the expandable sub-view: the structured tool output when
-      // the backend provides it, otherwise the raw event text itself — so
-      // every step's thinking/output is inspectable, never a dead-end row.
-      detail: event.detail || event.text || undefined,
+      detail: structuredDetail ?? (keepTextFallback ? cleanText || undefined : undefined),
       status,
       timestamp: event.createdAt,
       plan: event.plan,
@@ -665,21 +751,23 @@ function StepItemView({
             )}
 
             {step.detail && step.detail.trim().length > 0 && (
-              <div className={`step-detail-container ${isError ? "error-detail" : ""}`}>
+              <div className={`step-detail-container ${isError ? "error-detail" : ""} ${step.category === "thinking" ? "thinking-detail" : ""}`}>
                 <div className="step-detail-header">
                   <span className="step-detail-label">
-                    {step.category === "run" ? (
+                    {step.category === "thinking" ? (
+                      <Lightbulb size={10} />
+                    ) : step.category === "run" ? (
                       <Terminal size={10} />
                     ) : isError ? (
                       <AlertCircle size={10} />
                     ) : (
                       <FileText size={10} />
                     )}
-                    {isError ? "Error trace" : "Output"}
+                    {isError ? "Error trace" : step.category === "thinking" ? "Reasoning" : "Output"}
                   </span>
                   <CopyTextButton text={step.detail} />
                 </div>
-                <pre className="step-detail-pre">{step.detail}</pre>
+                <pre className={`step-detail-pre ${step.category === "thinking" ? "thinking-detail-pre" : ""}`}>{step.detail}</pre>
               </div>
             )}
           </div>
@@ -818,22 +906,18 @@ export function ActivityGroupView({
         <div className="activity-group-body">
           <div className="agent-stepper-timeline">
             {steps.map((step, index) => {
-              // Every step with content opens by default — thinking and
-              // output are visible at a glance; individual steps can still
-              // be collapsed by hand.
-              const defaultStepExpanded =
-                expandedStepIds[step.id] ??
-                (Boolean(step.detail) ||
-                  step.status === "error" ||
-                  Boolean(step.artifact) ||
-                  Boolean(step.subagent) ||
-                  Boolean(step.plan && step.plan.length > 0));
+              // All steps start COLLAPSED — the user opens exactly what they
+              // want to inspect (Claude-Code-style). The explicit boolean
+              // fallback below also makes the first click reliably toggle:
+              // previously auto-opened steps needed two clicks to close
+              // because the toggle flipped an undefined default.
+              const isStepExpanded = Boolean(expandedStepIds[step.id]);
 
               return (
                 <StepItemView
                   key={step.id}
                   step={step}
-                  isExpanded={defaultStepExpanded}
+                  isExpanded={isStepExpanded}
                   onToggle={() => toggleStep(step.id)}
                   onOpenArtifact={onOpenArtifact}
                 />
@@ -877,6 +961,29 @@ export function ChatItemView({
   }
   if (message.role === "event" && message.kind === "plan") {
     return null;
+  }
+  // Telemetry-only events (context snapshots, usage rows, stream resets) are
+  // machinery, not activity — never render them as transcript rows.
+  if (message.role === "event" && (message.kind === "context" || message.kind === "usage" || message.kind === "stream-reset")) {
+    return null;
+  }
+  if (message.role === "event" && message.kind === "thinking") {
+    // Reasoning block (Claude-Code-style): italic reasoning prose only — the
+    // accumulated text already lives in detail, so skip the plain-text body.
+    return (
+      <div className="chat-event-row thinking">
+        <span className="step-category-pill mini thinking">
+          <Lightbulb size={10} />
+          THINKING
+        </span>
+        <div className="chat-event-body">
+          {(message.detail || message.text) && (
+            <pre className="chat-event-detail thinking-detail-pre">{message.detail || message.text}</pre>
+          )}
+        </div>
+        <time>{timeLabel(message.createdAt)}</time>
+      </div>
+    );
   }
   if (message.role === "event") {
     const parsed = parseEventText(message.text, message.kind);

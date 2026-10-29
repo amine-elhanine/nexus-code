@@ -10,10 +10,10 @@ export function formatCost(cost: number | null | undefined): string {
 }
 export type SubagentRole = string;
 export type SubagentStep = { toolName: string; summary?: string; timestamp: string };
-export type SubagentItem = { id: string; role: SubagentRole; task: string; status: "running" | "completed" | "failed"; steps: SubagentStep[]; output?: string; usage?: AgentUsage };
+export type SubagentItem = { id: string; role: SubagentRole; task: string; status: "running" | "completed" | "failed"; steps: SubagentStep[]; output?: string; thinking?: string; usage?: AgentUsage };
 export type ArtifactStatus = "draft" | "pending_approval" | "approved" | "completed" | "rejected";
 export type ArtifactItem = { id: string; sessionId: string; name: string; filename: string; path: string; content: string; status: ArtifactStatus; userFacing: boolean; requestFeedback: boolean; createdAt: string; updatedAt: string };
-export type AgentEvent = { type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "context" | "subagent" | "artifact"; sessionId: string; text: string; timestamp: string; items?: PlanItem[]; usage?: AgentUsage; context?: AgentContextSnapshot; subagent?: SubagentItem; artifact?: ArtifactItem; detail?: string };
+export type AgentEvent = { type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "context" | "subagent" | "artifact" | "thinking" | "stream-reset"; sessionId: string; text: string; timestamp: string; items?: PlanItem[]; usage?: AgentUsage; context?: AgentContextSnapshot; subagent?: SubagentItem; artifact?: ArtifactItem; detail?: string };
 export type ProviderDefinition = { id: string; label: string; packageName: string; envKey: string; defaultBaseUrl?: string; models: string[]; modelEfforts?: Record<string, string[]> };
 export type ProviderConfig = { id: string; label: string; provider: string; apiKey: string; baseUrl?: string; models: string[]; modelEndpoints?: Partial<Record<string, ChatEndpointKind>>; modelEfforts?: Partial<Record<string, string[]>>; modelContextWindows?: Partial<Record<string, number>>; modelMaxOutputs?: Partial<Record<string, number>>; /** Disabled connections stay configured but disappear from the session model pickers. */ enabled?: boolean; keyNeedsReentry?: boolean; keyNeedsReentryReason?: "cross-machine" | "vault-unavailable" };
 export type ChatEndpointKind = "chat" | "responses" | "messages";

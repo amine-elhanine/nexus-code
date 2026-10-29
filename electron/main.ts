@@ -786,6 +786,7 @@ app.whenReady().then(async () => {
         onToken: (delta) => emitFor(payload.chatId, { type: "token", text: delta }),
         onStreamReset: () => emitFor(payload.chatId, { type: "stream-reset", text: "" }),
         onTool: (name, summary, detail) => emitFor(payload.chatId, { type: "tool", text: summary || name, detail }),
+        onThinking: (delta) => emitFor(payload.chatId, { type: "thinking", text: delta }),
       });
       const chat = await appendNotebookMessage(payload.notebookId, payload.chatId, {
         role: "assistant",
@@ -1708,7 +1709,7 @@ app.whenReady().then(async () => {
       const session = await getSession(projectId, sessionId);
       if (!project || !session) throw new Error("Active project/session not found.");
 
-      const mode: AgentMode = payload.mode === "plan" || payload.mode === "auto" ? payload.mode : "ask";
+      const mode: AgentMode = payload.mode === "plan" || payload.mode === "auto" || payload.mode === "full" ? payload.mode : "ask";
       const configured = payload.providerId ? (await listProviders()).find((provider) => provider.id === payload.providerId) : undefined;
       const provider = configured || (await listProviders())[0];
       const modelName = payload.model || session.model?.model;
@@ -1725,6 +1726,17 @@ app.whenReady().then(async () => {
         await updateSession(projectId, sessionId, { title: payload.request.slice(0, 60) });
       }
 
+      // Persist the user request FIRST — before any fallible setup (backend
+      // construction, workspace checkpoint, model resolution). If the run dies
+      // early (bad model, auth error, context window too small), the request
+      // still reaches the transcript, so switching models and continuing picks
+      // up exactly what was asked instead of the message vanishing.
+      // Content snapshot (not the array reference): appendSessionMessages
+      // mutates the store's array in place, and history below must exclude
+      // this run's own request.
+      const priorMessages = [...session.messages];
+      await appendSessionMessages(projectId, sessionId, [{ role: "user", text: payload.request, images: payload.images, attachments: payload.attachments, createdAt: new Date().toISOString() }]);
+
       // Check if session has an explicit active worktree
       let executionRoot = root;
       if (await isGitRepo(root)) {
@@ -1740,7 +1752,9 @@ app.whenReady().then(async () => {
         // Same-session memory: last user/assistant turns plus recent tool
         // activity (with truncated results) so the run reuses prior reads
         // instead of re-reading the project from scratch every request.
-        const recent = session.messages;
+        // Built from the PRE-APPEND snapshot so this run's own request
+        // (already persisted above) is not duplicated into history.
+        const recent = priorMessages;
         return recent.map((message) =>
           message.role === "event"
             ? {
@@ -1792,8 +1806,11 @@ app.whenReady().then(async () => {
       }
 
       const backendRecord = { ...project, root: executionRoot };
+      if (mode === "full") {
+        emitFor(sessionId, { type: "status", text: "FULL ACCESS mode: commands run without approval prompts — only the destructive guardrails stay enforced." });
+      }
       emitFor(sessionId, { type: "status", text: "Preparing workspace…" });
-      const editPolicy = (await getAppSettings().catch(() => ({}) as AppSettings)).editPolicy === "ask" ? "ask" : "auto";
+      const editPolicy = mode !== "full" && (await getAppSettings().catch(() => ({}) as AppSettings)).editPolicy === "ask" ? "ask" : "auto";
       const shouldAutoOpenPreview = mode !== "plan" && isProjectRunRequest(payload.request);
       let previewOpeningStarted = false;
       let recentCommandOutput = "";
@@ -1823,14 +1840,18 @@ app.whenReady().then(async () => {
             });
           }
         : undefined;
-      const { backend } = await getAgentBackend(backendRecord, { readOnly: mode === "plan", runId: sessionId, editPolicy, onCommandOutput });
+      const { backend } = await getAgentBackend(backendRecord, { readOnly: mode === "plan", runId: sessionId, editPolicy, fullAccess: mode === "full", onCommandOutput });
       // Undo-ready baseline: HEAD before the run + file snapshot. Best-effort
-      // so non-git projects still run (their Undo simply no-ops).
+      // so non-git projects still run (their Undo simply no-ops) — and so a
+      // checkpoint failure never kills the run after the request is persisted.
       let preRunHead: string | null = null;
       try { preRunHead = await getHeadCommit(executionRoot); } catch { preRunHead = null; }
       const checkpointId = `cp_${Date.now().toString(36)}`;
-      await createWorkspaceCheckpoint(executionRoot, checkpointId, { headCommit: preRunHead });
-      await appendSessionMessages(projectId, sessionId, [{ role: "user", text: payload.request, images: payload.images, attachments: payload.attachments, createdAt: new Date().toISOString() }]);
+      try {
+        await createWorkspaceCheckpoint(executionRoot, checkpointId, { headCommit: preRunHead });
+      } catch (error) {
+        emitFor(sessionId, { type: "status", text: `Undo checkpoint unavailable: ${error instanceof Error ? error.message : String(error)}` });
+      }
 
       // Renderer-only attachment URLs become inline data URLs for the model.
       const modelImages = payload.images?.length
@@ -1891,6 +1912,12 @@ app.whenReady().then(async () => {
       }
 
       const runStartMs = Date.now();
+      // Seed the meter with the session's last reported context so a new
+      // request doesn't drop the bar back to the text-only estimate.
+      const previousContextTokens = [...(session.messages || [])]
+        .reverse()
+        .find((m) => m.context?.usedTokens && m.context.usedTokens > 0)
+        ?.context?.usedTokens ?? null;
       let result: Awaited<ReturnType<typeof runProjectAgent>>;
       try {
         result = await runProjectAgent({
@@ -1913,12 +1940,14 @@ app.whenReady().then(async () => {
           resumeMessages: stored?.messages ?? null,
           resumePlanItems: stored?.planItems ?? lastPlan ?? null,
           resumeNote,
+          previousContextTokens,
           onProjectMemoryUpdate: (mutate) => updateProjectFacts(projectId, mutate),
           onUserQuestion: (questions) => askUserBlocking(sessionId, questions),
           onEvent: (event) => {
-            // Token chunks stay ephemeral (streaming display only); everything
-            // else is captured for the persisted transcript.
-            if (event.type !== "token") {
+            // Token chunks and thinking deltas stay ephemeral (streaming
+            // display only); everything else is captured for the persisted
+            // transcript.
+            if (event.type !== "token" && event.type !== "thinking") {
               transcript.items.push({
                 role: "event",
                 text: event.text,
@@ -2037,6 +2066,19 @@ app.whenReady().then(async () => {
     if (!session) throw new Error("Home session not found.");
     const homeRoot = await ensureHomeDir();
 
+    // Persist the user request FIRST — before provider/model resolution,
+    // backend construction or anything else fallible. If the chosen model
+    // fails (auth error, rate limit, "No provider/model selected"), the
+    // request still reaches the transcript, so switching models and
+    // continuing picks up exactly what was asked instead of the message
+    // vanishing. Content snapshot (not the array reference): the store's
+    // session object is mutated in place by the append, and history below
+    // must exclude this run's own request.
+    const priorMessages = [...(session.messages || [])];
+    await appendHomeSessionMessages(sessionId, [
+      { role: "user", text: payload.request, images: payload.images, attachments: payload.attachments, createdAt: new Date().toISOString() }
+    ]);
+
     // Same guard as agent:run — a second submit (e.g. Enter pressed while the
     // first run is still in silent setup) must not start a twin agent that
     // interleaves transcripts and clobbers checkpoints/memory.
@@ -2079,7 +2121,7 @@ app.whenReady().then(async () => {
         await updateHomeSession(sessionId, { title: payload.request.trim().slice(0, 60) });
       }
 
-      const history: HistoryInput[] = (session.messages || []).map((message) => {
+      const history: HistoryInput[] = priorMessages.map((message) => {
         if (message.role === "event") {
           return {
             role: "assistant",
@@ -2167,11 +2209,13 @@ app.whenReady().then(async () => {
       // concurrent chats never clobber each other on save (re-read below).
       const homeMemoryAtStart = await getHomeMemory().catch(() => "");
 
-      await appendHomeSessionMessages(sessionId, [
-        { role: "user", text: payload.request, images: payload.images, attachments: payload.attachments, createdAt: new Date().toISOString() }
-      ]);
-
       const runStartMs = Date.now();
+      // Seed the meter with the session's last reported context so a new
+      // request doesn't drop the bar back to the text-only estimate.
+      const previousContextTokens = [...(session.messages || [])]
+        .reverse()
+        .find((m) => m.context?.usedTokens && m.context.usedTokens > 0)
+        ?.context?.usedTokens ?? null;
       let result: Awaited<ReturnType<typeof runProjectAgent>>;
 
       try {
@@ -2202,11 +2246,13 @@ app.whenReady().then(async () => {
           resumeMessages: stored?.messages ?? null,
           resumePlanItems: stored?.planItems ?? lastPlan ?? null,
           resumeNote,
+          previousContextTokens,
           onEvent: (event) => {
-            // Token chunks stay ephemeral; assistant/usage are persisted once
-            // as the final message below (with usage attached) — pushing them
-            // here too would store every answer twice and double history size.
-            if (event.type !== "token" && event.type !== "assistant" && event.type !== "usage") {
+            // Token and thinking chunks stay ephemeral; assistant/usage are
+            // persisted once as the final message below (with usage attached)
+            // — pushing them here too would store every answer twice and
+            // double history size.
+            if (event.type !== "token" && event.type !== "thinking" && event.type !== "assistant" && event.type !== "usage") {
               transcript.items.push({
                 role: "event",
                 text: event.text,

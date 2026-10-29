@@ -24,6 +24,9 @@ export function useNotebookController(enabled: boolean) {
   // Live streamed tokens per conversation (matches the app's token-stream UX).
   const [streamByChat, setStreamByChat] = useState<Record<string, string>>({});
   const [stepsByChat, setStepsByChat] = useState<Record<string, string[]>>({});
+  // Live reasoning (Claude-Code-style thinking block) per conversation —
+  // grows in place while the agent thinks, cleared with the run's steps.
+  const [thinkingByChat, setThinkingByChat] = useState<Record<string, string>>({});
   const [passage, setPassage] = useState<NotebookPassage | null>(null);
   const [settings, setSettings] = useState<NotebookSettings>({ instructions: "", updatedAt: "" });
   const [notes, setNotes] = useState<NotebookNote[]>([]);
@@ -221,12 +224,25 @@ export function useNotebookController(enabled: boolean) {
     return typed.onAgentEvent((event) => {
       if (!event.sessionId) return;
       const id = event.sessionId;
+      if (event.type === "thinking") {
+        // Reasoning deltas accumulate into one live thinking block per chat,
+        // capped to a tail so marathon reasoning stays renderable.
+        const THINKING_DISPLAY_CAP = 8000;
+        setThinkingByChat((prev) => {
+          const combined = (prev[id] || "") + event.text;
+          return { ...prev, [id]: combined.length > THINKING_DISPLAY_CAP ? combined.slice(combined.length - THINKING_DISPLAY_CAP) : combined };
+        });
+        return;
+      }
       if (event.type === "status" || event.type === "tool") {
         setStepsByChat((prev) => {
           const current = prev[id] || [];
           if (!event.text || current[current.length - 1] === event.text) return prev;
           return { ...prev, [id]: [...current, event.text].slice(-16) };
         });
+        // A tool call closes the current thinking burst — the next reasoning
+        // delta starts a fresh thinking block instead of appending to the old one.
+        setThinkingByChat((prev) => (prev[id] ? { ...prev, [id]: "" } : prev));
         return;
       }
       if (event.type === "stream-reset") {
@@ -769,6 +785,7 @@ export function useNotebookController(enabled: boolean) {
     setAsking(true);
     setStreamByChat((prev) => ({ ...prev, [chat!.id]: "" }));
     setStepsByChat((prev) => ({ ...prev, [chat!.id]: ["Starting the notebook agent…"] }));
+    setThinkingByChat((prev) => ({ ...prev, [chat!.id]: "" }));
     setNotice(scope ? `Searching ${scope.length} of ${sources.length} selected files…` : "Searching session files → answering…");
     // Optimistic user message so the transcript never looks stuck.
     setActiveChat((prev) => (prev && chat && prev.id === chat.id ? { ...prev, messages: [...prev.messages, { role: "user", text: question, createdAt: new Date().toISOString() }] } : prev));
@@ -789,6 +806,11 @@ export function useNotebookController(enabled: boolean) {
         delete next[chat!.id];
         return next;
       });
+      setThinkingByChat((prev) => {
+        const next = { ...prev };
+        delete next[chat!.id];
+        return next;
+      });
       const meta = result.metadata || {};
       setNotice(
         meta.refused
@@ -805,6 +827,11 @@ export function useNotebookController(enabled: boolean) {
         return next;
       });
       setStepsByChat((prev) => {
+        const next = { ...prev };
+        delete next[chat!.id];
+        return next;
+      });
+      setThinkingByChat((prev) => {
         const next = { ...prev };
         delete next[chat!.id];
         return next;
@@ -858,6 +885,7 @@ export function useNotebookController(enabled: boolean) {
     resetScope,
     streamByChat,
     stepsByChat,
+    thinkingByChat,
     passage,
     settings,
     notes,

@@ -7,6 +7,7 @@ import { createCodeIntelligenceTools } from "./code-tools.js";
 import { getAgentBackend, getRunAbortSignal } from "./command-service.js";
 import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint } from "./rate-limit.js";
 import { StreamUsageTracker } from "./context-service.js";
+import { chunkThinking } from "./thinking-chunk.js";
 import type { ProviderConfig } from "./store.js";
 import type { AgentUsage } from "./agent-service.js";
 
@@ -202,6 +203,8 @@ export type SubagentItem = {
   status: "running" | "completed" | "failed";
   steps: SubagentStep[];
   output?: string;
+  /** Accumulated reasoning tail (Claude-Code-style thinking block). */
+  thinking?: string;
   usage?: AgentUsage;
 };
 
@@ -519,6 +522,8 @@ export async function executeSubagentTask(options: {
   onEvent?: SubagentEventHandler;
   isCancelled?: () => boolean;
   runId?: string;
+  /** Inherit the parent run's Full Access mode: subagent commands skip approval prompts. */
+  fullAccess?: boolean;
 }): Promise<string> {
   const { role, task, projectRoot, provider, modelName, projectRecord, mcpTools, skills, skillsBackend, onEvent, isCancelled, runId } = options;
   const signal = runId ? getRunAbortSignal(runId) : undefined;
@@ -551,6 +556,7 @@ export async function executeSubagentTask(options: {
     const { backend } = await getAgentBackend(projectRecord, {
       readOnly: config.readOnly,
       runId,
+      fullAccess: options.fullAccess,
     });
 
     const llm = await createChatModel(provider, modelName);
@@ -590,6 +596,7 @@ export async function executeSubagentTask(options: {
         { messages: messagesToStream },
         { streamMode: ["values", "updates", "messages"], recursionLimit: config.recursionLimit, signal }
       );
+      let lastThinkingEmitAt = 0;
       try {
         for await (const item of stream as AsyncIterable<any>) {
           if (isCancelled?.() || signal?.aborted) throw new Error("Subagent cancelled by user");
@@ -603,6 +610,22 @@ export async function executeSubagentTask(options: {
           if (streamMode === "messages") {
             const [chunk] = Array.isArray(payload) ? payload : [payload];
             usage.noteChunk(chunk);
+            // Reasoning deltas accumulate on the card (capped tail) and are
+            // re-emitted throttled, so the subagent card shows a live
+            // thinking block without flooding the event channel.
+            const thinking = chunkThinking(chunk);
+            if (thinking) {
+              const THINKING_DISPLAY_CAP = 6000;
+              const combined = (subagentItem.thinking || "") + thinking;
+              subagentItem.thinking = combined.length > THINKING_DISPLAY_CAP
+                ? combined.slice(combined.length - THINKING_DISPLAY_CAP)
+                : combined;
+              const now = Date.now();
+              if (now - lastThinkingEmitAt >= 300) {
+                lastThinkingEmitAt = now;
+                onEvent?.({ type: "subagent_step", subagent: { ...subagentItem } });
+              }
+            }
           }
 
           if (streamMode === "updates" && payload && typeof payload === "object") {
@@ -703,6 +726,8 @@ export function createSubagentDelegationTool(options: {
   onEvent?: SubagentEventHandler;
   isCancelled?: () => boolean;
   runId?: string;
+  /** Inherit the parent run's Full Access mode: subagent commands skip approval prompts. */
+  fullAccess?: boolean;
 }) {
   return tool(
     async ({ role, task }: { role: SubagentRole; task: string }) => {
@@ -719,6 +744,7 @@ export function createSubagentDelegationTool(options: {
         onEvent: options.onEvent,
         isCancelled: options.isCancelled,
         runId: options.runId,
+        fullAccess: options.fullAccess,
       });
     },
     {

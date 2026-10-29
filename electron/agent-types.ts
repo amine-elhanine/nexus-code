@@ -4,7 +4,7 @@ import type { ArtifactItem } from "./artifacts-service.js";
 import type { SubagentItem } from "./subagent-service.js";
 import type { ProviderConfig } from "./store.js";
 
-export type AgentMode = "plan" | "ask" | "auto";
+export type AgentMode = "plan" | "ask" | "auto" | "full";
 export type PlanItem = { content: string; status: "pending" | "in_progress" | "completed" };
 export type AgentTurn = { role: "user" | "assistant"; text: string };
 // Prior-run tool activity fed back into the next run so it reuses results
@@ -24,7 +24,7 @@ export type AgentUsage = { inputTokens: number; outputTokens: number; totalToken
 export type AgentContextBreakdownEntry = { label: string; tokens: number };
 export type AgentContextSnapshot = { usedTokens: number; contextWindow: number; compactionThreshold: number; estimated: boolean; breakdown?: AgentContextBreakdownEntry[] };
 export type AgentEvent = {
-  type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "context" | "subagent" | "artifact" | "stream-reset";
+  type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "context" | "subagent" | "artifact" | "thinking" | "stream-reset";
   sessionId: string;
   text: string;
   timestamp: string;

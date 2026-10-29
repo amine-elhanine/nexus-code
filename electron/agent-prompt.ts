@@ -84,7 +84,7 @@ function todayLine(): string {
   return `Today is ${long} (${now.toISOString().slice(0, 10)}).`;
 }
 
-export function buildSystemPrompt(mode: AgentMode, projectRoot: string, providerLabel: string, modelName: string, memory: AgentMemoryContext, projectRulesSection: string = "", complexity: TaskComplexity = "complex", isNewProject = false, taskKind: AgentTaskKind = "code", repoMapSection: string = "", homeTaskContract: HomeTaskContract | null = null, subagentCatalog: string = "", projectInstructionsSection: string = "", pluginContextSection: string = "") {
+export function buildSystemPrompt(mode: AgentMode, projectRoot: string, providerLabel: string, modelName: string, memory: AgentMemoryContext, projectRulesSection: string = "", complexity: TaskComplexity = "complex", isNewProject = false, taskKind: AgentTaskKind = "code", repoMapSection: string = "", homeTaskContract: HomeTaskContract | null = null, subagentCatalog: string = "", projectInstructionsSection: string = "", pluginContextSection: string = "", fullAccess = false) {
   const today = todayLine();
   if (taskKind === "general") {
     let general = `You are Nexus Home, a helpful general-purpose assistant. Your workspace folder is exposed at the virtual root / — use paths relative to it (for example report.docx). Files you create land in the user's Nexus folder, where they can download them.
@@ -231,6 +231,9 @@ Working rules:
     if (homeTaskContract?.expectsOutput) {
       general += `\n\nTASK CONTRACT: This request asks for an observable result. If a standalone document format (such as .docx, .pptx, .xlsx, .pdf, or .csv) was requested, create it in the workspace, inspect it, and do not finish with a promise or research summary alone.${homeTaskContract.needsResearch ? " Research is allowed, but switch to producing the result once the evidence is sufficient." : ""} CHAT & VISUAL DELIVERABLE: When the request is chat-shaped OR asks for charts, graphs, diagrams, visual comparisons, explanations, or analyses and does NOT explicitly name a file format, deliver the complete answer—including all graphs and charts (using \`\`\`bar, \`\`\`hbar, \`\`\`line, \`\`\`area, \`\`\`pie, \`\`\`donut, \`\`\`scatter, \`\`\`radar, \`\`\`mermaid, \`\`\`widget, or markdown image embeds \`![Caption](filename.png)\` for generated image charts)—directly in chat. Do NOT create a .md file. End your reply with [[answer-in-chat]].`;
     }
+    if (complexity !== "simple") {
+      general += `\n\nCOMPLEX TASK PLANNING: when this request has 3 or more distinct steps — research plus multiple artifacts, multi-part documents, multi-stage transformations — create a working plan with write_todos FIRST and follow it step by step, updating each item's status as you complete it, instead of improvising end to end. Simple single-artifact requests skip the plan.`;
+    }
     general += `\n\nHOME VISUAL-ANSWER CONTRACT — applies to every substantive Home request, including ordinary questions that do not trigger a file-output task contract:
 - The first response must be a finished visual answer, never text only. Include: (1) a clear written explanation, (2) a curated inline web-image gallery, and (3) an inline data visual. Do this in the same run; do not wait for the user to ask separately for images, charts, plots, or diagrams, and do not end by offering to add them later.
 - Always use web_search first for a substantive question, then use web_image_search for a focused query that represents the subject. Embed 2–4 relevant image results directly as Markdown images with their source links. Choose visuals that show the actual subject, not generic decorative stock imagery. For a game, place, person, product, artwork, landmark, event, or design, image search is mandatory.
@@ -239,7 +242,11 @@ Working rules:
 - For standalone files, complete and verify the requested file. Include useful visuals in that deliverable when they are part of the requested result, and summarize the key result in chat rather than substituting a text-only promise.
 - Only greetings, acknowledgements, and yes/no confirmations may be text-only. If reliable image or numeric evidence is genuinely unavailable, still provide the best available diagram and state the limitation briefly.`;
     if (mode === "plan") return `${general}\n\nMODE: PLAN. Investigate and return a structured markdown plan. Writing, editing and command execution are disabled — read and search only.`;
-    return `${general}\n\nMODE: ${mode === "auto" ? "AUTO. Work autonomously end to end: research, create, then verify the deliverable exists before finishing." : "ASK. Fulfil the request, keep it focused, and confirm the result before answering."}`;
+    const generalModeLine = mode === "auto"
+      ? "AUTO. Work autonomously end to end: research, create, then verify the deliverable exists before finishing."
+      : "ASK. Fulfil the request, keep it focused, and confirm the result before answering.";
+    const generalFullLine = fullAccess ? "\n\nFULL ACCESS: shell commands, installs, and git operations run WITHOUT asking for user approval — do not pause for confirmation. The only blocklist is Nexus's destructive-command guardrails (wiping disks/home/system directories, killing the machine, privilege escalation); those commands fail if attempted, so prefer safe equivalents." : "";
+    return `${general}\n\nMODE: ${generalModeLine}${generalFullLine}`;
   }
 
   let common = `You are Nexus, an advanced autonomous coding agent working on a local repository. The repository is exposed at the virtual root / — use paths relative to the repository root (for example src/App.tsx).
@@ -313,6 +320,7 @@ ${repoMapSection ? `\n${repoMapSection}` : ""}${subagentCatalog ? `\n\nSPECIALIS
   }
 
   if (mode === "plan") return `${common}\n\nMODE: PLAN. Investigate the repository and return a structured markdown implementation plan with sections: # Objective, ## Proposed Changes, ## Risks, ## Verification Plan. Writing, editing, deleting and command execution are disabled — gather information with read, search, and symbol tools only, and do not attempt to change anything.`;
-  if (mode === "auto") return `${common}\n\nMODE: AUTO. Work autonomously end to end: plan, implement, then verify with the available checks. If a check fails, fix your changes before finishing.`;
-  return `${common}\n\nMODE: ASK. Implement the requested change, keep it minimal, and verify with the available checks before answering.`;
+  const fullAccessLine = fullAccess ? "\n\nFULL ACCESS: shell commands, package installs, and git operations (including push/reset/clean when the task needs them) run WITHOUT approval prompts — never pause to ask. Nexus still hard-blocks destructive commands (wiping disks/home/system directories, shutdown/reboot, fork bombs, registry deletes, privilege escalation); if one is blocked, do not retry it — use a safe equivalent." : "";
+  if (mode === "auto") return `${common}\n\nMODE: AUTO. Work autonomously end to end: plan, implement, then verify with the available checks. If a check fails, fix your changes before finishing.${fullAccessLine}`;
+  return `${common}\n\nMODE: ASK. Implement the requested change, keep it minimal, and verify with the available checks before answering.${fullAccessLine}`;
 }

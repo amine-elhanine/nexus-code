@@ -152,6 +152,10 @@ export function useAppController() {
   const [liveEvents, setLiveEvents] = useState<Record<string, ChatItem[]>>({});
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(new Set());
   const liveEventsRef = useRef<Record<string, ChatItem[]>>({});
+  // Reasoning deltas accumulate per session into a single live "thinking"
+  // step (Claude-Code-style). Cleared whenever a tool/status event or the
+  // final assistant message ends the current thinking burst.
+  const thinkingAccRef = useRef<Record<string, string>>({});
   const activeSessionRef = useRef<SessionRecord | null>(null);
   activeSessionRef.current = activeSession ?? null;
   // Same pattern for the project: the mount-only event subscription below
@@ -239,6 +243,25 @@ export function useAppController() {
       const bucket = event.sessionId || "unknown";
       // Events from a session other than the currently viewed one still
       // accumulate (so switching later shows them) but don't stream into view.
+      if (event.type === "thinking") {
+        // Reasoning deltas fold into ONE live thinking step per session —
+        // the block grows in place instead of flooding the feed with a row
+        // per token. Capped to a tail so marathon reasoning stays renderable.
+        const THINKING_DISPLAY_CAP = 8000;
+        const combined = (thinkingAccRef.current[bucket] || "") + event.text;
+        thinkingAccRef.current[bucket] = combined.length > THINKING_DISPLAY_CAP
+          ? combined.slice(combined.length - THINKING_DISPLAY_CAP)
+          : combined;
+        const text = thinkingAccRef.current[bucket];
+        const log = liveEventsRef.current[bucket] || [];
+        const last = log[log.length - 1];
+        const nextLog = last?.kind === "thinking"
+          ? [...log.slice(0, -1), { ...last, text, detail: text }]
+          : [...log, { role: "event", kind: "thinking", text, detail: text, createdAt: event.timestamp } as ChatItem];
+        liveEventsRef.current = { ...liveEventsRef.current, [bucket]: nextLog };
+        setLiveEvents(liveEventsRef.current);
+        return;
+      }
       if (event.type === "token") {
         // This subscription intentionally runs once. Read the ref so tokens
         // follow the session selected after the initial render as well.
@@ -253,6 +276,9 @@ export function useAppController() {
         if (activeSessionRef.current?.id && event.sessionId === activeSessionRef.current.id) {
           setStreamingText("");
         }
+        // A tool call closes the current thinking burst — the next reasoning
+        // delta starts a fresh thinking step instead of appending to the old one.
+        delete thinkingAccRef.current[bucket];
       }
       const item: ChatItem = {
         role: event.type === "assistant" ? "assistant" : "event",
@@ -286,6 +312,7 @@ export function useAppController() {
         const log = liveEventsRef.current[bucket] || [];
         const { [bucket]: _dropped, ...rest } = liveEventsRef.current;
         liveEventsRef.current = rest;
+        delete thinkingAccRef.current[bucket];
         setLiveEvents(rest);
         if (event.type === "assistant" && event.usage) {
           setStreamingText("");
@@ -743,6 +770,26 @@ export function useAppController() {
             }
           : current
       );
+      // Reconcile with server truth after a failure: the backend persisted the
+      // user request (before any fallible setup) plus the error entry. Adopt
+      // the server copy only when it is not shorter — never clobber richer
+      // local state (same never-clobber rule as Home mode's finally block).
+      // This keeps the transcript intact across a model switch, which replaces
+      // the view with the server session via updateSession.
+      try {
+        if (activeProject) {
+          const fresh = await api.listSessions(activeProject.id);
+          const freshCurrent = (fresh as unknown as SessionRecord[]).find((s) => s.id === session.id);
+          if (freshCurrent) {
+            setActiveSession((current) => {
+              if (!current || current.id !== session.id) return current;
+              const serverMessages = freshCurrent.messages || [];
+              if (serverMessages.length < current.messages.length) return current;
+              return { ...current, messages: serverMessages, usage: freshCurrent.usage, checkpointId: freshCurrent.checkpointId, checkpointIds: freshCurrent.checkpointIds };
+            });
+          }
+        }
+      } catch { /* keep local reconciliation */ }
     }
   }
 

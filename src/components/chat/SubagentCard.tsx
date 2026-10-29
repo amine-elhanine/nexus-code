@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Search, Terminal, Code2, Loader2, Check, X, ChevronDown, ChevronRight, Shield, Compass, CheckCheck, Wrench, Sparkles, Database, TestTube2, Layers } from "lucide-react";
+import { Search, Terminal, Code2, Loader2, Check, X, ChevronDown, ChevronRight, Shield, Compass, CheckCheck, Wrench, Sparkles, Database, TestTube2, Layers, Lightbulb } from "lucide-react";
 import type { SubagentItem, SubagentRole } from "../../types.js";
 import { timeLabel } from "../../utils/format.js";
 import { parseEventText } from "./ChatMessageItem.js";
@@ -64,6 +64,17 @@ export function SubagentCardView({ subagent, timestamp }: { subagent: SubagentIt
       </div>
       {expanded && (
         <div className="subagent-body">
+          {subagent.thinking && subagent.thinking.trim().length > 0 && (
+            <div className="step-detail-container thinking-detail">
+              <div className="step-detail-header">
+                <span className="step-detail-label">
+                  <Lightbulb size={10} />
+                  Reasoning
+                </span>
+              </div>
+              <pre className="step-detail-pre thinking-detail-pre">{subagent.thinking}</pre>
+            </div>
+          )}
           {subagent.steps.length > 0 && (
             <div className="subagent-steps-timeline">
               <div className="subagent-steps-head">

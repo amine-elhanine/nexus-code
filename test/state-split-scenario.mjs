@@ -104,4 +104,46 @@ if (scenario === 'migration') {
   process.exit(0);
 }
 
+if (scenario === 'model-switch-context') {
+  // Regression: switching models must never lose the transcript, and a FAILED
+  // run must still leave the user's request (+ error) in the history the next
+  // model reads — otherwise the agent "forgets" the message and the user has
+  // to retype it.
+  const project = await upsertProject({ name: 'p-switch', root: appdata });
+  const session = await createSession(project.id, 'switch test');
+
+  // Run 1 "persistence" — the fixed agent:run/home:run handlers append the
+  // user request BEFORE any fallible setup, then the error entry on failure.
+  const t0 = new Date().toISOString();
+  await appendSessionMessages(project.id, session.id, [
+    { role: 'user', text: 'fix the login bug', createdAt: t0 },
+    { role: 'event', kind: 'error', text: 'Agent run failed: 401 unauthorized', createdAt: t0 },
+  ]);
+
+  // The model-switch round-trip the renderer performs (updateSession returns
+  // the record that becomes the active session — it must carry the messages).
+  const updated = await (await import('../dist-electron/store.js')).updateSession(project.id, session.id, { model: { providerId: 'prov-b', model: 'model-b' } });
+  assert.equal(updated.messages.length, 2, 'updateSession (model switch) returns full transcript');
+  assert.equal(updated.messages[0].text, 'fix the login bug', 'failed run request survives the switch');
+  assert.equal(updated.messages[1].kind, 'error');
+
+  // The next run reads history via getSession — same invariant.
+  const next = await getSession(project.id, session.id);
+  assert.equal(next.messages.length, 2);
+  assert.equal(next.model?.model, 'model-b', 'switched model persisted on the session');
+
+  // Home parity: same round-trip on the isolated home store.
+  const { createHomeSession, appendHomeSessionMessages, getHomeSession } = await import('../dist-electron/store.js');
+  const home = await createHomeSession('home switch');
+  await appendHomeSessionMessages(home.id, [
+    { role: 'user', text: 'draft my trip plan', createdAt: t0 },
+    { role: 'event', kind: 'error', text: 'Home run failed: model overloaded', createdAt: t0 },
+  ]);
+  const homeFresh = await getHomeSession(home.id);
+  assert.equal(homeFresh.messages.length, 2, 'home transcript survives a failed run');
+  assert.equal(homeFresh.messages[0].text, 'draft my trip plan');
+  console.log('OK model-switch-context');
+  process.exit(0);
+}
+
 throw new Error(`unknown scenario ${scenario}`);

@@ -125,7 +125,42 @@ export function sanitizeResumeCheckpoint(messages: any[]): any[] {
     break;
   }
 
-  return checkpoint;
+  return checkpoint.map(normalizeMessageContent);
+}
+
+/**
+ * Cross-provider message repair: a checkpoint saved during a run with one
+ * provider gets replayed against another after a model switch / "continue".
+ * Some OpenAI-compatible backends reject anything but a plain string in a
+ * tool result's content ("data did not match any variant of untagged enum
+ * ChatCompletionRequestToolMessageContent"). Coerce every message's content
+ * into the shape ALL providers accept: a plain string — except human
+ * messages carrying image parts, which stay structured for vision models.
+ */
+export function normalizeMessageContent(message: any): any {
+  if (!message || typeof message !== "object") return message;
+  const kwargs = (message.kwargs ??= {}) as Record<string, unknown>;
+  const target: Record<string, unknown> | null = "content" in kwargs ? kwargs : typeof message.content !== "undefined" ? message : null;
+  if (!target) return message;
+  const content = target.content;
+  if (content === null || content === undefined) {
+    target.content = "";
+    return message;
+  }
+  if (typeof content === "string") return message;
+  if (Array.isArray(content)) {
+    const hasImagePart = content.some((part: any) => part?.type === "image_url" || part?.image_url?.url);
+    const isHuman = message.type === "human" || message._getType?.() === "human";
+    if (hasImagePart && isHuman) return message;
+    const text = content
+      .map((part: any) => (typeof part === "string" ? part : String(part?.text ?? part?.thinking ?? part?.content ?? "")))
+      .filter(Boolean)
+      .join("\n");
+    target.content = text;
+    return message;
+  }
+  target.content = typeof content === "object" ? JSON.stringify(content) : String(content);
+  return message;
 }
 
 /**

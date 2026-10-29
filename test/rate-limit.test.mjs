@@ -6,6 +6,7 @@ import {
   isTransientError,
   errorSummary,
   sanitizeResumeCheckpoint,
+  normalizeMessageContent,
   createProgressTracker,
 } from '../dist-electron/rate-limit.js';
 
@@ -235,6 +236,54 @@ await test('sanitizeResumeCheckpoint prunes trailing duplicate read/inspection l
   assert.equal(cleaned.length, 5);
   assert.equal(cleaned[cleaned.length - 1].type, 'tool');
   assert.equal(cleaned[cleaned.length - 2].tool_calls[0].name, 'read_file');
+});
+
+await test('normalizeMessageContent coerces null tool result content to an empty string', () => {
+  const message = { type: 'tool', name: 'read_file', tool_call_id: 'c1', kwargs: { content: null } };
+  const normalized = normalizeMessageContent(message);
+  assert.equal(normalized.kwargs.content, '');
+});
+
+await test('normalizeMessageContent flattens Anthropic-style content blocks into plain text', () => {
+  const message = {
+    type: 'tool',
+    name: 'execute',
+    tool_call_id: 'c2',
+    kwargs: { content: [{ type: 'text', text: 'step 1 done' }, { type: 'text', text: 'step 2 done' }] },
+  };
+  const normalized = normalizeMessageContent(message);
+  assert.equal(normalized.kwargs.content, 'step 1 done\nstep 2 done');
+});
+
+await test('normalizeMessageContent stringifies structured tool result objects', () => {
+  const message = { type: 'tool', name: 'validate', tool_call_id: 'c3', kwargs: { content: { status: 'ok', count: 2 } } };
+  const normalized = normalizeMessageContent(message);
+  assert.equal(normalized.kwargs.content, JSON.stringify({ status: 'ok', count: 2 }));
+});
+
+await test('normalizeMessageContent preserves vision payloads on human messages', () => {
+  const message = {
+    type: 'human',
+    kwargs: { content: [{ type: 'text', text: 'what is this?' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AAA' } }] },
+  };
+  const normalized = normalizeMessageContent(message);
+  assert.ok(Array.isArray(normalized.kwargs.content), 'image-bearing human content stays structured');
+});
+
+await test('normalizeMessageContent leaves plain string content untouched', () => {
+  const message = { type: 'human', kwargs: { content: 'plain' } };
+  const normalized = normalizeMessageContent(message);
+  assert.equal(normalized.kwargs.content, 'plain');
+});
+
+await test('sanitizeResumeCheckpoint normalizes malformed tool result contents on replay', () => {
+  const msgs = [
+    { type: 'human', kwargs: { content: 'run it' } },
+    { type: 'ai', tool_calls: [{ name: 'execute', args: { command: 'npm test' } }] },
+    { type: 'tool', name: 'execute', tool_call_id: 'c1', kwargs: { content: null } },
+  ];
+  const cleaned = sanitizeResumeCheckpoint(msgs);
+  assert.equal(cleaned[cleaned.length - 1].kwargs.content, '');
 });
 
 await test('createProgressTracker counts superstep and tool-result progress per attempt', () => {

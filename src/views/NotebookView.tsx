@@ -326,6 +326,7 @@ export function NotebookView({
   scopedIds,
   streaming,
   workingSteps,
+  agentThinking,
   passage,
   settings,
   notes,
@@ -408,6 +409,8 @@ export function NotebookView({
   scopedIds: string[];
   streaming: string;
   workingSteps: string[];
+  /** Live agent reasoning for the active chat (Claude-Code-style thinking block). */
+  agentThinking: string;
   passage: NotebookPassage | null;
   settings: NotebookSettings;
   notes: NotebookNote[];
@@ -1323,12 +1326,20 @@ export function NotebookView({
             ))}
             {asking && (
               <ActivityGroupView
-                events={(workingSteps.length ? workingSteps : ["Starting the notebook agent…"]).map((step, index) => ({
-                  role: "event",
-                  text: step,
-                  kind: step.startsWith("Working:") || step.includes("·") ? "tool" : "status",
-                  createdAt: new Date(Date.now() - (workingSteps.length - index) * 1000).toISOString(),
-                }))}
+                events={[
+                  ...(workingSteps.length ? workingSteps : ["Starting the notebook agent…"]).map((step, index) => ({
+                    role: "event" as const,
+                    text: step,
+                    kind: (step.startsWith("Working:") || step.includes("·") ? "tool" : "status") as any,
+                    createdAt: new Date(Date.now() - (workingSteps.length - index) * 1000).toISOString(),
+                  })),
+                  // Live reasoning block: the accumulated thinking deltas ride
+                  // at the end of the feed as a THINKING step (Claude-Code-style),
+                  // expandable with the full reasoning text inside.
+                  ...(agentThinking.trim()
+                    ? [{ role: "event" as const, text: agentThinking, kind: "thinking" as any, detail: agentThinking, createdAt: new Date().toISOString() }]
+                    : []),
+                ]}
                 running={true}
                 currentText={
                   streaming

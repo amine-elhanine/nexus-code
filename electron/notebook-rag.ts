@@ -7,6 +7,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { createNotebookAgentBackend } from "./notebook-agent-backend.js";
+import { chunkThinking } from "./thinking-chunk.js";
 import { getSkillsConfig, listProviders } from "./store.js";
 import { cosine, embedQuery } from "./notebook-embeddings.js";
 import { notebookFlags } from "./notebook-flags.js";
@@ -52,6 +53,8 @@ export type NotebookRagOptions = {
   onStreamReset?: () => void;
   onStatus?: (text: string) => void;
   onTool?: (name: string, summary: string, detail?: string) => void;
+  /** Live reasoning deltas (Claude-Code-style thinking block in the chat feed). */
+  onThinking?: (delta: string) => void;
   onStep?: (step: NotebookAgentStep) => void;
   generate?: (system: string, user: string) => Promise<string>;
   /** Scoped run id for shell cancellation (defaults to `nbchat-<notebookId>`). */
@@ -910,10 +913,12 @@ Notebook terms: ${summary.terms.slice(0, 40).join(", ") || "(none)"}${options.in
             const type = (chunk as any)?._getType?.() || (chunk as any)?.type || (chunk as any)?.constructor?.name;
             const isAi = type === "ai" || type === "AIMessageChunk" || type === "AIMessage";
             const hasToolCalls = Boolean((chunk as any)?.tool_call_chunks?.length || (chunk as any)?.tool_calls?.length);
+            const thinking = chunkThinking(chunk);
             if (isAi && !hasToolCalls) {
               const delta = chunkTextContent(chunk);
               if (delta) trackedOnToken(delta);
             }
+            if (thinking) options.onThinking?.(thinking);
           }
         }
         const aiMessages = messages.filter((m: any) => {

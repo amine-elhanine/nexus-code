@@ -41,7 +41,7 @@ Nexus features three dedicated operational surfaces accessible from the persiste
 
 | Mode | Purpose | Workspace Root |
 |---|---|---|
-| **Code** | Autonomous software engineer — Plan / Ask / Auto execution, diff-first verification, multi-level undo, git worktrees, Monaco editor, and PTY terminal. | Any local directory or Git repository you open |
+| **Code** | Autonomous software engineer — Plan / Ask / Auto / Full execution, diff-first verification, multi-level undo, git worktrees, Monaco editor, and PTY terminal. | Any local directory or Git repository you open |
 | **Home** | General assistant — Web research, document deliverables (Word, PowerPoint, Excel, PDF, LaTeX, Markdown), and structured long-term memory. | Dedicated directory at `Documents/Nexus` |
 | **Notebook** | NotebookLM-inspired grounded research engine over documents, YouTube transcripts, and web pages with strict citation attribution. | Isolated per-session SQLite & vector libraries |
 
@@ -49,11 +49,12 @@ Nexus features three dedicated operational surfaces accessible from the persiste
 
 ### 1. Code Mode — Autonomous Software Engineering
 
-- **Three Autonomous Modes**:
+- **Four Autonomous Modes**:
   - `Plan`: Hard read-only mode (no file mutations, no shell commands, no external side effects) designed for architecture exploration and roadmapping.
   - `Ask`: Interactive paired-programming mode asking for guidance and confirmations before mutations.
   - `Auto`: Full autonomous execution end-to-end with automated self-repair loops.
-- **Diff-First Verify & Repair Loop**: After file modifications, an autonomous supervisor reviews Git diffs and executes relevant verification cascades (typechecking, linters, unit tests). If failures occur, the supervisor extracts diagnostics and initiates repair cycles (up to 3 in *Ask*, 5 in *Auto*).
+  - `Full`: Full Access mode — the agent runs every shell command, install, and git operation **without approval prompts** (including risky-but-legitimate operations like `git reset --hard` and `git push`). Only the built-in destructive guardrails stay hard-enforced: disk/home/system wipes, machine shutdown, registry deletes, fork bombs, and privilege escalation are always blocked, as are any user-defined deny rules in `.nexus/`.
+- **Diff-First Verify & Repair Loop**: After file modifications, an autonomous supervisor reviews Git diffs and executes relevant verification cascades (typechecking, linters, unit tests). If failures occur, the supervisor extracts diagnostics and initiates repair cycles (up to 3 in *Ask*, 5 in *Auto*/*Full*).
 - **Multi-Level Undo & Checkpoints**: File snapshots paired with 20-deep run checkpoints. One-click **Undo run**, per-hunk diff discard, and Nexus-specific commit resets that never alter your personal commit history.
 - **Isolated Git Worktrees**: Spin up ephemeral sessions inside isolated Git worktrees (`.nexus/worktrees/<session>`). Test, develop, and then select **Merge to Main**, **Discard**, or utilize the built-in 3-way conflict resolver.
 - **Code Intelligence & LSP**:
@@ -126,6 +127,7 @@ Nexus features a redesigned, interactive step execution feed inspired by **OpenC
   - `PLAN`: Interactive working plan item trackers.
 - **Live Active Step Highlighting**: The currently running step displays an animated shimmer gradient wave and live present-tense verbs (*"Executing command"*, *"Reading file"*, *"Applying patch"*).
 - **Consolidated Step Pairing**: Merges tool invocations and subsequent completions into a single unified step card, avoiding duplicate or noisy activity rows.
+- **Agent Reasoning Stream (Claude Code-style)**: Model reasoning surfaces as a first-class `THINKING` step in every mode's feed — reasoning deltas from Anthropic extended thinking, DeepSeek/OpenRouter `reasoning_content`, and generic `reasoning` kwargs accumulate into one live block (warm italic prose, expandable, capped to a recent tail), close with each tool call, and stream inside subagent cards too. Reasoning stays ephemeral: it enriches the live feed without bloating the persisted transcript.
 - **Expandable Output Cards**: Terminal outputs, file excerpts, and diagnostic logs feature dark monospace styling, syntax presentation, and a one-click **Copy to Clipboard** button.
 
 ---
@@ -226,7 +228,7 @@ To publish to the official registry, add the plugin to `plugins/` and add a list
                      │ 4. REPAIR SUPERVISOR      │               │
                      │    - Injects diagnostics  │               │
                      │    - Ask: ≤ 3 repairs     │               │
-                     │    - Auto: ≤ 5 repairs    │               │
+                     │    - Auto/Full: ≤ 5 repairs  │               │
                      └─────────────┬─────────────┘               │
                                    ▲                             │
                                    └─────── Loop back ───────────┤
@@ -241,10 +243,12 @@ To publish to the official registry, add the plugin to `plugins/` and add a list
 ```
 
 | Mode | Recursion Step Cap | Automated Repairs | Permissions |
+
 |---|---|---|---|
 | **Plan** | 40 | 0 (None) | Read-only strictly enforced |
 | **Ask** | 100 | Up to 3 | Interactive confirmation for mutations |
 | **Auto** | 150 | Up to 5 | Fully autonomous with self-repair |
+| **Full** | 200 | Up to 5 | No approval prompts — destructive guardrails enforced only |
 
 ### Loop Resilience & Supervision
 
