@@ -1,10 +1,10 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
-const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "nb-generation-cancel-"));
+const tmp = await mkdirScratch("nb-generation-cancel-");
 const originCwd = process.cwd();
 process.chdir(tmp);
 process.on("exit", () => {

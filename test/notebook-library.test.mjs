@@ -1,8 +1,8 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 // Unit tests for the relational library + vector partition (plain Node).
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import {
   sectionIdFor,
   loadLibrary,
@@ -25,10 +25,10 @@ let failed = 0;
 async function test(name, fn) {
   try {
     await fn();
-    console.log(`  ✓ ${name}`);
+    console.log(`  âœ“ ${name}`);
     passed++;
   } catch (error) {
-    console.error(`  ✗ ${name}`);
+    console.error(`  âœ— ${name}`);
     console.error(error);
     failed++;
   }
@@ -36,7 +36,7 @@ async function test(name, fn) {
 
 console.log("\n=== Notebook Library Tests ===");
 
-const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "nb-lib-"));
+const tmp = await mkdirScratch("nb-lib-");
 const SID = "sess1";
 
 function makeFile(fileId, nChunks = 3) {

@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import os from "node:os";
 
 // Test against the compiled or source store methods
 import {

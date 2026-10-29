@@ -1,9 +1,9 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import os from "node:os";
 
-const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "nb-agentic-"));
+const tmp = await mkdirScratch("nb-agentic-");
 const originCwd = process.cwd();
 process.chdir(tmp);
 process.on("exit", () => {
@@ -24,10 +24,10 @@ let failed = 0;
 async function test(name, fn) {
   try {
     await fn();
-    console.log(`  ✓ ${name}`);
+    console.log(`  âœ“ ${name}`);
     passed++;
   } catch (error) {
-    console.error(`  ✗ ${name}`);
+    console.error(`  âœ— ${name}`);
     console.error(error);
     failed++;
   }

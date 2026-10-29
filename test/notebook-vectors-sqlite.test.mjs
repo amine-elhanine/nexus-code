@@ -1,12 +1,12 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 // SQLite vector store tests (plain Node, no Electron).
 // Covers: exact float64 round-trip through the routed API, embedding-space
 // mismatch contract, per-file delete, clear, JSON migration, session cleanup.
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import os from "node:os";
 
-const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "nb-vecsql-"));
+const tmp = await mkdirScratch("nb-vecsql-");
 const originCwd = process.cwd();
 process.chdir(tmp);
 process.on("exit", () => {
@@ -26,10 +26,10 @@ let failed = 0;
 async function test(name, fn) {
   try {
     await fn();
-    console.log(`  ✓ ${name}`);
+    console.log(`  âœ“ ${name}`);
     passed++;
   } catch (error) {
-    console.error(`  ✗ ${name}`);
+    console.error(`  âœ— ${name}`);
     console.error(error);
     failed++;
   }
@@ -37,7 +37,7 @@ async function test(name, fn) {
 
 console.log("\n=== Notebook SQLite Vector Tests ===");
 console.log(`  (working dir: ${tmp})`);
-console.log(`  sqlite backend: ${(await store.sqliteVectorsAvailable()) ? "available" : "UNAVAILABLE — tests need node:sqlite"}`);
+console.log(`  sqlite backend: ${(await store.sqliteVectorsAvailable()) ? "available" : "UNAVAILABLE â€” tests need node:sqlite"}`);
 assert.equal(await store.sqliteVectorsAvailable(), true);
 
 const V1 = [0.1, -0.2, 0.30000000000000004, 0.4, -0.5, 0.6, 0.12345678901234568, -0.9876543210987654];

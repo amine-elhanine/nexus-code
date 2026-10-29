@@ -1,3 +1,4 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 // Secret-storage policy (Phase 1B.2): no silent plaintext fallback.
 //
 // When the OS credential store (safeStorage) is available, secrets must be
@@ -10,7 +11,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 // Distinct module instance per scenario (fresh in-memory cache + APPDATA).
@@ -41,7 +41,7 @@ const readDiskProviders = async (scratch) => {
 };
 
 test("secret policy: with an OS vault, plaintext keys are transparently encrypted on persist", async () => {
-  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-vault-ok-"));
+  const scratch = await mkdirScratch("nexus-vault-ok-");
   process.env.APPDATA = scratch;
   try {
     const storeMod = await importStore();
@@ -57,7 +57,7 @@ test("secret policy: with an OS vault, plaintext keys are transparently encrypte
 });
 
 test("secret policy: without an OS vault, new keys are refused on disk and flagged re-entry", async () => {
-  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-vault-missing-"));
+  const scratch = await mkdirScratch("nexus-vault-missing-");
   process.env.APPDATA = scratch;
   try {
     const storeMod = await importStore();
@@ -75,7 +75,7 @@ test("secret policy: without an OS vault, new keys are refused on disk and flagg
 });
 
 test("secret policy: without an OS vault, cross-machine ciphertext is preserved and flagged", async () => {
-  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-vault-missing-"));
+  const scratch = await mkdirScratch("nexus-vault-missing-");
   process.env.APPDATA = scratch;
   try {
     const stateDir = path.join(scratch, "nexus");
@@ -107,7 +107,7 @@ test("secret policy: without an OS vault, cross-machine ciphertext is preserved 
 });
 
 test("secret policy: undecryptable ciphertext is preserved, flagged cross-machine, and cleared on re-entry", async () => {
-  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-vault-fail-"));
+  const scratch = await mkdirScratch("nexus-vault-fail-");
   process.env.APPDATA = scratch;
   try {
     const stateDir = path.join(scratch, "nexus");
@@ -127,7 +127,7 @@ test("secret policy: undecryptable ciphertext is preserved, flagged cross-machin
     assert.equal(list[0].keyNeedsReentry, true);
     assert.equal(list[0].keyNeedsReentryReason, "cross-machine");
 
-    // Persist something else — ciphertext not destroyed...
+    // Persist something else â€” ciphertext not destroyed...
     await storeMod.setProviderEnabled("prov1", false);
     let onDisk = await readDiskProviders(scratch);
     assert.equal(onDisk.providers[0].apiKey, ciphertext, "ciphertext survives a persist on a foreign machine");

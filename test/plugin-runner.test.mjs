@@ -1,8 +1,8 @@
-// Out-of-process runner: activate → call-tool → timeout/crash/isolation/cleanup.
-// Imports from dist-electron — build first (runner cjs is copied by build:electron).
+import { mkdirScratch } from "./helpers/scratch.mjs";
+// Out-of-process runner: activate â†’ call-tool â†’ timeout/crash/isolation/cleanup.
+// Imports from dist-electron â€” build first (runner cjs is copied by build:electron).
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import {
   startPluginProcess,
@@ -28,18 +28,18 @@ function test(name, fn) {
   return Promise.resolve()
     .then(fn)
     .then(() => {
-      console.log(`  ✓ ${name}`);
+      console.log(`  âœ“ ${name}`);
       passed++;
     })
     .catch((error) => {
-      console.error(`  ✗ ${name}`);
+      console.error(`  âœ— ${name}`);
       console.error(error);
       failed++;
     });
 }
 
 async function makePlugin(files) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-runner-'));
+  const dir = await mkdirScratch('nexus-runner-');
   const pluginDir = path.join(dir, 'plug');
   await fs.mkdir(pluginDir, { recursive: true });
   for (const [rel, content] of Object.entries(files)) {

@@ -1,3 +1,4 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -14,7 +15,6 @@ import {
   updateCodeTaskContextSummary,
 } from "../dist-electron/code-task-service.js";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 test("verification passes only when a check ran and no required check was denied", () => {
@@ -72,7 +72,7 @@ test("Code task journal records phases, progress, files, and verification", () =
 });
 
 test("Code task journal loads v1 data and upgrades it for durable recovery summaries", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-code-task-v1-"));
+  const root = await mkdirScratch("nexus-code-task-v1-");
   try {
     const journal = createCodeTaskJournal({ sessionId: "legacy", goal: "Fix old task", mode: "auto" });
     const legacy = { ...journal, version: 1 };

@@ -1,9 +1,10 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { agentEvalCasePassed, agentEvalReadinessError, parseEvalRepeatCount, redactEvalOutput, resolveAgentEvalRuntime, restoreEvalChecker, runLimitedProcess, summarizeAgentEvalVariants } from '../scripts/eval-runner-utils.mjs';
+import { scratchBase } from './helpers/scratch.mjs';
 
 test('agent evaluation requires a passed Nexus verification result', () => {
   const good = { agentTimedOut: false, checkerTimedOut: false, agentExitCode: 0, verification: 'passed', checkerIntact: true, checkerExitCode: 0 };
@@ -34,13 +35,14 @@ test('evaluation repeat count defaults to one and rejects unsafe bounds', () => 
 });
 
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-eval-checker-'));
+  const root = await mkdirScratch('nexus-eval-checker-');
   const workspace = path.join(root, 'case');
   await fs.mkdir(workspace);
   t.after(async () => {
     const resolved = path.resolve(root);
-    const tempRoot = path.resolve(os.tmpdir()) + path.sep;
-    assert.ok(resolved.startsWith(tempRoot), `refusing cleanup outside temp directory: ${resolved}`);
+    const base = await scratchBase();
+    const scratchRoot = path.resolve(base) + path.sep;
+    assert.ok(resolved.startsWith(scratchRoot), `refusing cleanup outside scratch directory: ${resolved}`);
     await fs.rm(resolved, { recursive: true, force: true });
   });
   return { root, workspace };

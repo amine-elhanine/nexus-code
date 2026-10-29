@@ -1,9 +1,9 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 // State-split test runner: executes each scenario in a child process with a
 // scratch APPDATA (the store caches state at module scope, and the real
 // user's nexus-state.json must never be touched by tests).
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -15,7 +15,7 @@ let failed = 0;
 
 function runScenario(scenario) {
   return new Promise((resolve, reject) => {
-    fs.mkdtemp(path.join(os.tmpdir(), 'nexus-state-split-')).then((scratch) => {
+    mkdirScratch('nexus-state-split-').then((scratch) => {
       const child = spawn(process.execPath, [path.join(here, 'state-split-scenario.mjs')], {
         env: { ...process.env, SCENARIO: scenario, SCRATCH_APPDATA: scratch },
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -37,10 +37,10 @@ const scenarios = ['basic-split', 'cold-hydration', 'migration', 'model-switch-c
 for (const scenario of scenarios) {
   try {
     await runScenario(scenario);
-    console.log(`  ✓ state split: ${scenario}`);
+    console.log(`  âœ“ state split: ${scenario}`);
     passed++;
   } catch (error) {
-    console.error(`  ✗ state split: ${scenario}`);
+    console.error(`  âœ— state split: ${scenario}`);
     console.error(error);
     failed++;
   }

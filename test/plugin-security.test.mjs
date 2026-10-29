@@ -1,9 +1,9 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 // Plugin security: monotonic denial, registry conflicts, permissions,
 // tool boundary, hook aggregation, install integrity.
-// Imports from dist-electron — build first.
+// Imports from dist-electron â€” build first.
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import {
@@ -40,11 +40,11 @@ function test(name, fn) {
   return Promise.resolve()
     .then(fn)
     .then(() => {
-      console.log(`  ✓ ${name}`);
+      console.log(`  âœ“ ${name}`);
       passed++;
     })
     .catch((error) => {
-      console.error(`  ✗ ${name}`);
+      console.error(`  âœ— ${name}`);
       console.error(error);
       failed++;
     });
@@ -211,7 +211,7 @@ await test('tool boundary: approval required denies without channel; policy deny
 });
 
 await test('shell hook denial is monotonic: earlier deny survives later allow', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-hook-mono-'));
+  const tempDir = await mkdirScratch('nexus-hook-mono-');
   try {
     const denyHook = { event: 'tool:before', command: 'node -e "console.error(\'denied\'); process.exit(1)"' };
     const allowHook = { event: 'tool:before', command: 'node -e "process.exit(0)"' };
@@ -225,7 +225,7 @@ await test('shell hook denial is monotonic: earlier deny survives later allow', 
 });
 
 await test('archive path traversal is rejected', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-market-evil-'));
+  const tempDir = await mkdirScratch('nexus-market-evil-');
   try {
     const { default: JSZip } = await import('jszip');
     const zip = new JSZip();
@@ -249,7 +249,7 @@ await test('archive path traversal is rejected', async () => {
 });
 
 await test('interrupted update preserves the last working install (rollback)', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-market-rollback-'));
+  const tempDir = await mkdirScratch('nexus-market-rollback-');
   try {
     const project = path.join(tempDir, 'project');
     const goodSource = path.join(tempDir, 'good');
@@ -258,7 +258,7 @@ await test('interrupted update preserves the last working install (rollback)', a
     await fs.writeFile(path.join(goodSource, 'skills', 's', 'SKILL.md'), '---\nname: s\ndescription: d\n---\n\nHi.', 'utf8');
     await installMarketplacePlugin(project, { id: 'keepme', name: 'Keepme', source: goodSource });
     assert.equal((await discoverPlugins(project)).length, 1);
-    // Bad update: bundle id does not match listing → must fail WITHOUT deleting old.
+    // Bad update: bundle id does not match listing â†’ must fail WITHOUT deleting old.
     const badSource = path.join(tempDir, 'bad');
     await fs.mkdir(badSource, { recursive: true });
     await fs.writeFile(path.join(badSource, 'manifest.json'), JSON.stringify({ id: 'other-id', name: 'Other' }), 'utf8');

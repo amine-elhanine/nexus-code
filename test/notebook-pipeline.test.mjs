@@ -1,12 +1,12 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 // End-to-end notebook acceptance tests (plain Node, temp cwd, local embeddings).
 // Covers: ingestion statuses, citation correctness, refusal, file scoping,
 // crash recovery, cross-session isolation, delete-then-ask.
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import os from "node:os";
 
-const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "nb-pipe-"));
+const tmp = await mkdirScratch("nb-pipe-");
 const originCwd = process.cwd();
 process.chdir(tmp);
 process.on("exit", () => {
@@ -24,10 +24,10 @@ let failed = 0;
 async function test(name, fn) {
   try {
     await fn();
-    console.log(`  ✓ ${name}`);
+    console.log(`  âœ“ ${name}`);
     passed++;
   } catch (error) {
-    console.error(`  ✗ ${name}`);
+    console.error(`  âœ— ${name}`);
     console.error(error);
     failed++;
   }
@@ -40,11 +40,11 @@ const MESSY = [
   "# Quarterly Findings",
   "",
   "Page 1 of 3",
-  "Acme Corp — Internal",
+  "Acme Corp â€” Internal",
   "Revenue grew 12 percent in Q3 driven by cloud storage demand.",
-  "Acme Corp — Internal",
+  "Acme Corp â€” Internal",
   "Operating margin reached 24 percent on cost discipline.",
-  "Acme Corp — Internal",
+  "Acme Corp â€” Internal",
   "1 / 3",
   "",
   "## Risks",
@@ -95,7 +95,7 @@ await test("A1: messy file progresses to ready; headings kept; no boilerplate in
   assert.ok(chunks.some((c) => c.headingPath.includes("Risks")), "heading paths preserved");
   for (const c of chunks) {
     assert.ok(!/^Page 1 of 3$/m.test(c.text), "page counter leaked into chunk");
-    assert.ok(!c.text.includes("Acme Corp — Internal"), "repeated header leaked into chunk");
+    assert.ok(!c.text.includes("Acme Corp â€” Internal"), "repeated header leaked into chunk");
   }
   assert.ok(chunks.some((c) => c.structured && c.text.includes("revenue growth")), "table chunk intact");
 });
@@ -141,7 +141,7 @@ await test("A4: file scope restricts retrieval to selected files", async () => {
     fileIds: [messyId],
     generate: async () => "fallback",
   });
-  // Messy file has no hippocampus content → gate refuses.
+  // Messy file has no hippocampus content â†’ gate refuses.
   assert.equal(scoped.metadata.refused, true);
 });
 

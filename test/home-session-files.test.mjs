@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
+import { scratchBaseSync } from "./helpers/scratch.mjs";
 
 // Point the Home workspace at a scratch dir BEFORE importing the compiled
 // service — getHomeRoot() honors NEXUS_HOME_ROOT so tests never touch the
 // user's real Documents folder.
-const tempHome = path.join(os.tmpdir(), `nexus-test-home-${Date.now()}`);
+const tempHome = path.join(scratchBaseSync(), `nexus-test-home-${Date.now()}`);
 fs.mkdirSync(path.join(tempHome, ".nexus"), { recursive: true });
 process.env.NEXUS_HOME_ROOT = tempHome;
 

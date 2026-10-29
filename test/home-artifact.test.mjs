@@ -1,7 +1,7 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import JSZip from "jszip";
 
@@ -35,7 +35,7 @@ function minimalPdf(text = "Readable Home report") {
 }
 
 test("Home artifact validation checks nested outputs and basic structure", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-home-artifact-"));
+  const root = await mkdirScratch("nexus-home-artifact-");
   try {
     await fs.mkdir(path.join(root, "nested"), { recursive: true });
     await fs.writeFile(path.join(root, "nested", "course.pdf"), minimalPdf());
@@ -53,8 +53,8 @@ test("Home artifact validation checks nested outputs and basic structure", async
 });
 
 test("Home artifact validation rejects a symlink that points outside the workspace", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-home-artifact-link-"));
-  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-home-artifact-outside-"));
+  const root = await mkdirScratch("nexus-home-artifact-link-");
+  const outside = await mkdirScratch("nexus-home-artifact-outside-");
   try {
     await fs.writeFile(path.join(outside, "secret.md"), "# Outside workspace\n", "utf8");
     try {
@@ -73,7 +73,7 @@ test("Home artifact validation rejects a symlink that points outside the workspa
 });
 
 test("Home output contract rejects a valid artifact in the wrong requested format", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-home-contract-format-"));
+  const root = await mkdirScratch("nexus-home-contract-format-");
   try {
     await fs.writeFile(path.join(root, "report.md"), "# Report\n\nReadable output.", "utf8");
     const result = await validateHomeArtifactContract(root, ["report.md"], ["pdf"]);
@@ -86,7 +86,7 @@ test("Home output contract rejects a valid artifact in the wrong requested forma
 });
 
 test("Home output contract accepts each requested format when fresh outputs are readable", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-home-contract-multi-"));
+  const root = await mkdirScratch("nexus-home-contract-multi-");
   try {
     await fs.mkdir(path.join(root, "nested"), { recursive: true });
     await fs.writeFile(path.join(root, "nested", "report.pdf"), minimalPdf("Contract PDF"));
@@ -101,7 +101,7 @@ test("Home output contract accepts each requested format when fresh outputs are 
 });
 
 test("Home artifact validation parses Office archives and requires their main content parts", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-home-office-"));
+  const root = await mkdirScratch("nexus-home-office-");
   try {
     const office = [
       ["docx", "word/document.xml", "<w:document></w:document>", "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"],
@@ -138,7 +138,7 @@ test("Home artifact validation parses Office archives and requires their main co
 });
 
 test("Home artifact validation rejects a PDF that only imitates its header and end marker", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-home-pdf-spoof-"));
+  const root = await mkdirScratch("nexus-home-pdf-spoof-");
   try {
     const spoofed = path.join(root, "spoofed.pdf");
     await fs.writeFile(spoofed, "%PDF-1.7\nThis is not a PDF document.\n%%EOF\n", "ascii");

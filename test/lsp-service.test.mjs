@@ -1,10 +1,10 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 // LSP client tests: deterministic unit coverage of the framing parser, kind
 // mapping, and language detection, plus a REAL round-trip against
 // typescript-language-server when it is installed (skipped otherwise, so the
 // suite stays green on machines and CI runners without the server).
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { parseLspFrames, lspSymbolKindToKind, languageForFile, lspDocumentSymbols, resetLspForTests } from '../dist-electron/lsp-service.js';
@@ -16,11 +16,11 @@ function test(name, fn) {
   return Promise.resolve()
     .then(fn)
     .then(() => {
-      console.log(`  ✓ ${name}`);
+      console.log(`  âœ“ ${name}`);
       passed++;
     })
     .catch((error) => {
-      console.error(`  ✗ ${name}`);
+      console.error(`  âœ— ${name}`);
       console.error(error);
       failed++;
     });
@@ -57,11 +57,11 @@ await test('parseLspFrames: headers, chunked payloads, and multiple frames', () 
   assert.ok(partial.rest.length > 0);
 
   // Multi-byte UTF-8 in payload must not corrupt framing
-  const unicode = { jsonrpc: '2.0', method: 'x', params: { text: 'héllo ✓ 日本語' } };
+  const unicode = { jsonrpc: '2.0', method: 'x', params: { text: 'hÃ©llo âœ“ æ—¥æœ¬èªž' } };
   const uFrame = frame(unicode);
   const uParsed = parseLspFrames(uFrame);
   assert.equal(uParsed.frames.length, 1);
-  assert.equal(uParsed.frames[0].params.text, 'héllo ✓ 日本語');
+  assert.equal(uParsed.frames[0].params.text, 'hÃ©llo âœ“ æ—¥æœ¬èªž');
 });
 
 await test('lspSymbolKindToKind maps LSP SymbolKind numbers', () => {
@@ -90,12 +90,12 @@ let serverAvailable = existsSync(
   path.join(process.cwd(), 'node_modules', '.bin', process.platform === 'win32' ? 'typescript-language-server.cmd' : 'typescript-language-server')
 );
 if (!serverAvailable) {
-  console.log('  (typescript-language-server not installed — skipping live round-trip)');
+  console.log('  (typescript-language-server not installed â€” skipping live round-trip)');
 }
 
 if (serverAvailable) {
   await test('live round-trip: documentSymbol against typescript-language-server', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-lsp-'));
+    const tempDir = await mkdirScratch('nexus-lsp-');
     try {
       await fs.writeFile(path.join(tempDir, 'tsconfig.json'), '{"compilerOptions":{"strict":true}}', 'utf8');
       await fs.writeFile(

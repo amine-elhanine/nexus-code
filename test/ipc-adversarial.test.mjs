@@ -1,3 +1,4 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 // Phase 1C.5: consolidated adversarial IPC-surface audit.
 //
 // The main-process IPC handlers are thin wrappers over these services; every
@@ -9,13 +10,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 const isWin = process.platform === "win32";
 
 test("adversarial IPC: workspace file ops refuse traversal and absolute escapes", async () => {
-  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-ipc-adv-"));
+  const scratch = await mkdirScratch("nexus-ipc-adv-");
   const root = path.join(scratch, "project");
   await fs.mkdir(root, { recursive: true });
   const outsideDir = path.join(scratch, "outside");
@@ -45,7 +45,7 @@ test("adversarial IPC: workspace file ops refuse traversal and absolute escapes"
         try {
           await call;
         } catch {
-          continue; // refused — expected
+          continue; // refused â€” expected
         }
         throw new Error(`${label} accepted an escape payload: ${escapee}`);
       }
@@ -56,7 +56,7 @@ test("adversarial IPC: workspace file ops refuse traversal and absolute escapes"
 });
 
 test("adversarial IPC: symlink escape is refused (realpath containment)", async (t) => {
-  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-ipc-symlink-"));
+  const scratch = await mkdirScratch("nexus-ipc-symlink-");
   const root = path.join(scratch, "project");
   await fs.mkdir(root, { recursive: true });
   const outsideDir = path.join(scratch, "outside");
@@ -102,7 +102,7 @@ test("adversarial IPC: symlink escape is refused (realpath containment)", async 
 });
 
 test("adversarial IPC: Home file reads/downloads refuse traversal", async () => {
-  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-ipc-home-"));
+  const scratch = await mkdirScratch("nexus-ipc-home-");
   process.env.APPDATA = scratch;
   try {
     const home = await import("../dist-electron/home-service.js");
@@ -128,7 +128,7 @@ test("adversarial IPC: artifact filename traversal cannot read state files", asy
     const none = await artifacts.getArtifact("/tmp/any-project", "sess", "nonexistent.txt");
     assert.equal(none, null);
   } catch (error) {
-    if (error && error.code === "ENOENT") return; // state dirs absent under node FAT-appconfig — refusal by missing file is fine
+    if (error && error.code === "ENOENT") return; // state dirs absent under node FAT-appconfig â€” refusal by missing file is fine
     throw error;
   }
 });

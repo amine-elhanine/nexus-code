@@ -1,7 +1,7 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, access, mkdir, writeFile, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { classifyCommand, isDeniedCommand, isHttpMutationCommand, isWindowsDownloadCommand } from "../dist-electron/permissions.js";
 import { beginCommandRun, endCommandRun, executeCommand, getAgentBackend } from "../dist-electron/command-service.js";
@@ -152,7 +152,7 @@ test("recursive deletion aliases cannot bypass root and parent-path denials", ()
 });
 
 test("agent backend pins project permissions before the model can rewrite them", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "nexus-policy-snapshot-"));
+  const root = await mkdirScratch("nexus-policy-snapshot-");
   const runId = `policy-snapshot-${Date.now()}`;
   const nexusDir = path.join(root, ".nexus");
   let approval;
@@ -181,7 +181,7 @@ test("agent backend pins project permissions before the model can rewrite them",
 });
 
 test("denying approval stops remote code before the command shell starts", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "nexus-command-approval-"));
+  const root = await mkdirScratch("nexus-command-approval-");
   const runId = `permission-test-${Date.now()}`;
   const marker = path.join(root, "executed.txt");
   let approval;
@@ -206,7 +206,7 @@ test("denying approval stops remote code before the command shell starts", async
 });
 
 test("denying a network write stops the shell and identifies the network approval scope", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "nexus-network-approval-"));
+  const root = await mkdirScratch("nexus-network-approval-");
   const runId = `network-permission-test-${Date.now()}`;
   const marker = path.join(root, "executed.txt");
   let approval;

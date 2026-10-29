@@ -1,8 +1,8 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile as rawExecFile } from "node:child_process";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { boundedExecFile } from "../dist-electron/shell-subprocess.js";
@@ -11,11 +11,11 @@ const isWin = process.platform === "win32";
 const hostGitVersion = promisify(rawExecFile);
 
 test("bounded exec: a hanging grandchild is killed within the timeout (tree cleanup)", async () => {
-  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-tree-kill-"));
+  const scratch = await mkdirScratch("nexus-tree-kill-");
   // Grandchild writes a "survived the kill" marker 15s in. If the timeout
   // kill had not cleaned the tree, this marker would show up after the test.
   const linger = path.join(scratch, "survived-the-kill.marker");
-  const hangScript = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-tree-hang-"));
+  const hangScript = await mkdirScratch("nexus-tree-hang-");
   const scriptPath = path.join(hangScript, "hang-grandchild.mjs");
   await fs.writeFile(scriptPath, `import timers from "node:timers/promises";await timers.setTimeout(15000);await fs_promises(); function fs_promises(){return import("node:fs").then(fs => fs.promises.writeFile(${JSON.stringify(linger)}, "survived"));}`);
   const started = Date.now();
@@ -34,7 +34,7 @@ test("bounded exec: a hanging grandchild is killed within the timeout (tree clea
     // Outlive window: give a non-tree-killed child time to write the marker.
     await new Promise((resolve) => setTimeout(resolve, 3_000));
     const survived = await fs.readFile(linger, "utf8").then(() => true, () => false);
-    assert.ok(!survived, "grandchild wrote its marker — the process tree was NOT cleaned up");
+    assert.ok(!survived, "grandchild wrote its marker â€” the process tree was NOT cleaned up");
   } finally {
     await fs.rm(scratch, { recursive: true, force: true });
     await fs.rm(hangScript, { recursive: true, force: true });
@@ -49,9 +49,9 @@ test("bounded exec: default timeout exists (no options, command succeeds)", asyn
 });
 
 test("bounded exec: maxBuffer bounds unbounded output and rejects", async () => {
-  // ~13MiB of output from a scratch script (no shell quoting involved) —
+  // ~13MiB of output from a scratch script (no shell quoting involved) â€”
   // must reject at the caller-set 1MiB cap, never buffer-and-resolve.
-  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-bounds-"));
+  const scratch = await mkdirScratch("nexus-bounds-");
   const script = path.join(scratch, "big.js");
   await fs.writeFile(script, 'process.stdout.write("x".repeat(13800000));');
   try {

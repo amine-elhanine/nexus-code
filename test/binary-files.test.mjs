@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { isKnownBinaryFile, isRenderablePreview } from "../src/utils/binaryFiles.ts";
 import { readWorkspaceFile, readWorkspaceFileBase64 } from "../dist-electron/project-tools.js";
+import { mkdirScratchSync } from "./helpers/scratch.mjs";
 
 // ---- Extension classification (renderer routing) ----
 
@@ -30,7 +30,7 @@ test("binaryFiles: renderable preview set vs download-only set", () => {
 // ---- Backend read boundary (project-tools) ----
 
 function makeProject() {
-  return mkdtempSync(path.join(tmpdir(), "nexus-bin-"));
+  return mkdirScratchSync("nexus-bin-");
 }
 
 test("workspace read: binary file content is refused, not mojibake", async () => {

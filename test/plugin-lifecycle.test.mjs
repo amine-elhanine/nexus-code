@@ -1,8 +1,8 @@
-// Plugin lifecycle: discover → validate → enable → disable → dispose.
-// Imports from dist-electron — build first.
+import { mkdirScratch } from "./helpers/scratch.mjs";
+// Plugin lifecycle: discover â†’ validate â†’ enable â†’ disable â†’ dispose.
+// Imports from dist-electron â€” build first.
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import {
   discoverExecutablePlugin,
@@ -22,11 +22,11 @@ function test(name, fn) {
   return Promise.resolve()
     .then(fn)
     .then(() => {
-      console.log(`  ✓ ${name}`);
+      console.log(`  âœ“ ${name}`);
       passed++;
     })
     .catch((error) => {
-      console.error(`  ✗ ${name}`);
+      console.error(`  âœ— ${name}`);
       console.error(error);
       failed++;
     });
@@ -38,7 +38,7 @@ function reset() {
 }
 
 async function makePlugin(files) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-lifecycle-'));
+  const dir = await mkdirScratch('nexus-lifecycle-');
   const pluginDir = path.join(dir, 'plug');
   await fs.mkdir(pluginDir, { recursive: true });
   for (const [rel, content] of Object.entries(files)) {
@@ -168,7 +168,7 @@ await test('enable fails when permissions not approved; duplicate enable rolls b
 
 await test('malicious entry (require/process) cannot escape the sandbox', async () => {
   reset();
-  // Top-level require() without a catch: ReferenceError in the sandbox → enable fails safely.
+  // Top-level require() without a catch: ReferenceError in the sandbox â†’ enable fails safely.
   const { root, pluginDir } = await makePlugin({
     'manifest.json': JSON.stringify({
       id: 'evil-entry',
