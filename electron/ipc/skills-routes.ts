@@ -16,14 +16,24 @@ import {
   readSkillContent, setSkillModes,
 } from "../skills-service.js";
 import type { MainIpcContext } from "./context.js";
+import { assertPayload, ConfigToggleSchema, SkillsImportSchema, SkillCreateSchema, SkillSetModesSchema, SkillChangeScopeSchema } from "./schemas.js";
 
 export function registerSkillsRoutes(ctx: MainIpcContext): void {
   ipcMain.handle("hooks:config:get", () => getHooksConfig());
-  ipcMain.handle("hooks:config:save", (_event, config: { enabled: boolean }) => saveHooksConfig(config));
+  ipcMain.handle("hooks:config:save", (_event, config: { enabled: boolean }) => {
+    assertPayload(ConfigToggleSchema, config, "hooks:config:save");
+    return saveHooksConfig(config);
+  });
   ipcMain.handle("rules:config:get", () => getRulesConfig());
-  ipcMain.handle("rules:config:save", (_event, config: { enabled: boolean }) => saveRulesConfig(config));
+  ipcMain.handle("rules:config:save", (_event, config: { enabled: boolean }) => {
+    assertPayload(ConfigToggleSchema, config, "rules:config:save");
+    return saveRulesConfig(config);
+  });
   ipcMain.handle("skills:config:get", () => getSkillsConfig());
-  ipcMain.handle("skills:config:save", (_event, config: { enabled: boolean }) => saveSkillsConfig(config));
+  ipcMain.handle("skills:config:save", (_event, config: { enabled: boolean }) => {
+    assertPayload(ConfigToggleSchema, config, "skills:config:save");
+    return saveSkillsConfig(config);
+  });
   ipcMain.handle("skills:list", async () => {
     const projectRoot = ctx.active().projectRoot;
     await ensureSkillSourceDirs(projectRoot);
@@ -51,6 +61,7 @@ export function registerSkillsRoutes(ctx: MainIpcContext): void {
     return paths;
   });
   ipcMain.handle("skills:import", async (_event, input: { sourcePath: string; scope: "global" | "project" }) => {
+    assertPayload(SkillsImportSchema, input, "skills:import");
     const pickedAt = dialogPickedSkillSources.get(path.resolve(String(input?.sourcePath || "")));
     if (!pickedAt || Date.now() - pickedAt > 30 * 60_000) {
       throw new Error("Import refused: the source path was not picked through the file dialog in this session. Use the Choose File / Choose Folder buttons, then import.");
@@ -61,6 +72,7 @@ export function registerSkillsRoutes(ctx: MainIpcContext): void {
     return res;
   });
   ipcMain.handle("skills:create", async (_event, input: { name: string; description?: string; scope: "global" | "project"; content?: string; modes?: string[] }) => {
+    assertPayload(SkillCreateSchema, input, "skills:create");
     const root = input.scope === "project" ? ctx.requireRoot() : (ctx.active().projectRoot || "");
     const res = await createSkill(root, input);
     ctx.window()?.webContents.send("skills:changed");
@@ -71,11 +83,13 @@ export function registerSkillsRoutes(ctx: MainIpcContext): void {
     ctx.window()?.webContents.send("skills:changed");
   });
   ipcMain.handle("skills:set-modes", async (_event, input: { skillPath: string; modes: string[] }) => {
+    assertPayload(SkillSetModesSchema, input, "skills:set-modes");
     const res = await setSkillModes(input.skillPath, input.modes, ctx.active().projectRoot);
     ctx.window()?.webContents.send("skills:changed");
     return res;
   });
   ipcMain.handle("skills:change-scope", async (_event, input: { skillPath: string; targetScope: "global" | "project" }) => {
+    assertPayload(SkillChangeScopeSchema, input, "skills:change-scope");
     const res = await changeSkillScope(input.skillPath, input.targetScope, ctx.active().projectRoot);
     ctx.window()?.webContents.send("skills:changed");
     return res;

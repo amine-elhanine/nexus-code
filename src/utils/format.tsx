@@ -121,6 +121,9 @@ export function getSessionContextUsage(session?: SessionRecord | null): AgentCon
       compactionThreshold: message.context.compactionThreshold,
       usedTokens: message.context.usedTokens,
       breakdown: message.context.breakdown,
+      cacheInputTokens: message.context.cacheInputTokens,
+      cacheReadTokens: message.context.cacheReadTokens,
+      cacheCreationTokens: message.context.cacheCreationTokens,
     };
   }
   return undefined;

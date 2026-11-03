@@ -24,6 +24,8 @@ import { cancelCommandApprovals } from "../approval-service.js";
 import { resolveImageForModel, resolveAttachmentBytes } from "../attachment-utils.js";
 import { pushCheckpoint } from "../checkpoint-stack.js";
 import { isLikelyDevServerCommand, extractLocalDevServerUrl, waitForLocalServer } from "../project-preview.js";
+import { assertPayload, AgentRunSchema, AgentCancelSchema } from "./schemas.js";
+import { acquireRunSlot } from "./run-guard.js";
 import type { MainIpcContext } from "./context.js";
 
 // Each run collects its own transcript events so they can be persisted to the
@@ -38,24 +40,16 @@ type RunTranscript = {
 
 export function registerAgentRoutes(ctx: MainIpcContext): void {
   ipcMain.handle("agent:run", async (_event, payload: { request: string; images?: string[]; attachments?: Array<{ url: string; name: string; mimeType: string; size: number }>; providerId?: string; model?: string; effort?: string; contextWindow?: number; maxOutput?: number; mode?: string; sessionId?: string; projectId?: string }) => {
+    // Trust boundary: the renderer is untrusted — reject malformed/oversized
+    // payloads before any store or service sees them (validate-and-throw; the
+    // original payload is still what gets forwarded on success).
+    assertPayload(AgentRunSchema, payload, "agent:run");
     const root = ctx.requireRoot();
     const sessionId = payload.sessionId || ctx.active().sessionId;
     const projectId = payload.projectId || ctx.active().projectId;
     if (!projectId || !sessionId) throw new Error("Create a session first.");
     ctx.setActive({ sessionId, projectId });
-    if (ctx.activeRunSessions.has(sessionId)) {
-      if (isCommandRunCancelled(sessionId)) {
-        const waitStart = Date.now();
-        while (ctx.activeRunSessions.has(sessionId) && Date.now() - waitStart < 1000) {
-          await new Promise((r) => setTimeout(r, 25));
-        }
-      }
-      if (ctx.activeRunSessions.has(sessionId)) {
-        throw new Error("An agent run is already in progress in this session.");
-      }
-    }
-
-    ctx.activeRunSessions.add(sessionId);
+    await acquireRunSlot(ctx.activeRunSessions, sessionId);
     beginCommandRun(sessionId);
     const transcript: RunTranscript = { items: [] };
     // Prelude heartbeat: if the run ever wedges before the agent emits,
@@ -406,5 +400,10 @@ export function registerAgentRoutes(ctx: MainIpcContext): void {
     }
   });
 
-  ipcMain.handle("agent:cancel", (_event, sessionId?: string) => { cancelCommandRun(sessionId); cancelCommandApprovals(sessionId); return true; });
+  ipcMain.handle("agent:cancel", (_event, sessionId?: string) => {
+    assertPayload(AgentCancelSchema, [sessionId], "agent:cancel");
+    cancelCommandRun(sessionId);
+    cancelCommandApprovals(sessionId);
+    return true;
+  });
 }

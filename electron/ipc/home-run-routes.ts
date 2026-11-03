@@ -17,6 +17,8 @@ import { getWorkspaceDiffFiles } from "../diff-service.js";
 import { cancelCommandApprovals } from "../approval-service.js";
 import { recordDeliverable, isSubstantiveHomeTask, parseHomeMemory, addMemoryFact } from "../home-memory-service.js";
 import { resolveImageForModel, resolveAttachmentBytes } from "../attachment-utils.js";
+import { assertPayload, HomeRunSchema, AgentCancelSchema } from "./schemas.js";
+import { acquireRunSlot } from "./run-guard.js";
 import type { MainIpcContext } from "./context.js";
 
 export function registerHomeRunRoutes(ctx: MainIpcContext): void {
@@ -32,6 +34,9 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
     contextWindow?: number;
     maxOutput?: number;
   }) => {
+    // Trust boundary: the renderer is untrusted — reject malformed/oversized
+    // payloads before any store or service sees them (validate-and-throw).
+    assertPayload(HomeRunSchema, payload, "home:run");
     const { sessionId } = payload;    const session = await getHomeSession(sessionId);
     if (!session) throw new Error("Home session not found.");
     const homeRoot = await ensureHomeDir();
@@ -49,22 +54,11 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
       { role: "user", text: payload.request, images: payload.images, attachments: payload.attachments, createdAt: new Date().toISOString() }
     ]);
 
-    // Same guard as agent:run — a second submit (e.g. Enter pressed while the
-    // first run is still in silent setup) must not start a twin agent that
-    // interleaves transcripts and clobbers checkpoints/memory.
-    if (ctx.activeRunSessions.has(sessionId)) {
-      if (isCommandRunCancelled(sessionId)) {
-        const waitStart = Date.now();
-        while (ctx.activeRunSessions.has(sessionId) && Date.now() - waitStart < 1000) {
-          await new Promise((r) => setTimeout(r, 25));
-        }
-      }
-      if (ctx.activeRunSessions.has(sessionId)) {
-        throw new Error("An agent run is already in progress in this session.");
-      }
-    }
-
-    ctx.activeRunSessions.add(sessionId);
+    // Same guard as agent:run (shared acquireRunSlot) — a second submit
+    // (e.g. Enter pressed while the first run is still in silent setup) must
+    // not start a twin agent that interleaves transcripts and clobbers
+    // checkpoints/memory.
+    await acquireRunSlot(ctx.activeRunSessions, sessionId);
     beginCommandRun(sessionId);
     const transcript: { items: any[] } = { items: [] };
 
@@ -348,6 +342,7 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
   });
 
   ipcMain.handle("home:cancel", (_event, sessionId?: string) => {
+    assertPayload(AgentCancelSchema, [sessionId], "home:cancel");
     cancelCommandRun(sessionId);
     cancelCommandApprovals(sessionId);
     return true;

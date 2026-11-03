@@ -20,9 +20,9 @@ export type HistoryEventItem = {
 };
 export type HistoryInput = AgentTurn | HistoryEventItem;
 export type AgentSettings = { provider?: ProviderConfig; model?: string; apiKey?: string; baseUrl?: string; effort?: string; reasoningEffort?: string; contextWindow?: number; maxOutput?: number };
-export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
+export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null; /** Prompt-cache totals for the run (provider-reported when available). */ cacheReadTokens?: number; cacheCreationTokens?: number };
 export type AgentContextBreakdownEntry = { label: string; tokens: number };
-export type AgentContextSnapshot = { usedTokens: number; contextWindow: number; compactionThreshold: number; estimated: boolean; breakdown?: AgentContextBreakdownEntry[] };
+export type AgentContextSnapshot = { usedTokens: number; contextWindow: number; compactionThreshold: number; estimated: boolean; breakdown?: AgentContextBreakdownEntry[]; /** Run-cumulative exact input + cache-hit tokens for the hover-card cache rate. */ cacheInputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number };
 export type AgentEvent = {
   type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "context" | "subagent" | "artifact" | "thinking" | "stream-reset";
   sessionId: string;

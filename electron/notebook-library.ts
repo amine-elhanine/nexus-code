@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { sha256Hex, uuid5 } from "./notebook-text.js";
+import { writeFileAtomic } from "./atomic-write.js";
 import * as sqliteStore from "./notebook-vectors-sqlite.js";
 
 // Relational store for Notebook Mode: documents, sections and chunks as JSON
@@ -99,12 +100,9 @@ async function readJson<T>(file: string, fallback: T): Promise<T> {
 }
 
 async function writeJson(file: string, value: unknown) {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  // Atomic replacement prevents readers from observing a half-written JSON
-  // file when multiple ingestion jobs finish close together.
-  const temp = `${file}.${process.pid}.${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`;
-  await fs.writeFile(temp, JSON.stringify(value), "utf8");
-  await fs.rename(temp, file);
+  // Atomic (temp + rename) replacement prevents readers from observing a
+  // half-written JSON file when multiple ingestion jobs finish close together.
+  await writeFileAtomic(file, JSON.stringify(value));
 }
 
 const mutationLocks = new Map<string, Promise<void>>();

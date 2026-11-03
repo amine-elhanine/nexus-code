@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { WindowControls } from "./components/common/WindowControls.js";
 import { ConfirmModal } from "./modals/ConfirmModal.js";
+import { ErrorBoundary } from "./components/common/ErrorBoundary.js";
 import { ProviderModal } from "./modals/ProviderModal.js";
 import { McpModal } from "./modals/McpModal.js";
 import { SkillsModal } from "./modals/SkillsModal.js";
@@ -541,28 +542,41 @@ function App() {
   // Multi-panel right sidebar: several panels can be open at once, each shown
   // as a tab with its own close (X) button. openSidePanel adds a tab (or just
   // activates it), closeSidePanel removes it — hiding the pane when the last
-  // tab closes, and activating a neighbor when the active one closes.
-  function openHomeSidePanel(key: "artifacts" | "browser" | "memory") {
-    setHomeSideTabs((tabs) => (tabs.includes(key) ? tabs : [...tabs, key]));
-    setHomeSideTab(key);
+  // tab closes, and activating a neighbor when the active one closes. The home
+  // and code sidebars share this logic, each with its own tab union type.
+  function openSidePanel<K extends string>(
+    key: K,
+    tabs: K[],
+    setTabs: (update: (tabs: K[]) => K[]) => void,
+    setTab: (tab: K) => void,
+  ) {
+    setTabs((current) => (current.includes(key) ? current : [...current, key]));
+    setTab(key);
     setShowContext(true);
+  }
+  function closeSidePanel<K extends string>(
+    key: K,
+    tabs: K[],
+    setTabs: (tabs: K[]) => void,
+    activeTab: K,
+    setTab: (tab: K) => void,
+  ) {
+    const next = tabs.filter((tab) => tab !== key);
+    setTabs(next);
+    if (next.length === 0) setShowContext(false);
+    else if (activeTab === key) setTab(next[next.length - 1]);
+  }
+  function openHomeSidePanel(key: "artifacts" | "browser" | "memory") {
+    openSidePanel(key, homeSideTabs, setHomeSideTabs, setHomeSideTab);
   }
   function closeHomeSidePanel(key: "artifacts" | "browser" | "memory") {
-    const next = homeSideTabs.filter((tab) => tab !== key);
-    setHomeSideTabs(next);
-    if (next.length === 0) setShowContext(false);
-    else if (homeSideTab === key) setHomeSideTab(next[next.length - 1]);
+    closeSidePanel(key, homeSideTabs, setHomeSideTabs, homeSideTab, setHomeSideTab);
   }
   function openCodeSidePanel(key: "browser" | "terminal" | "diff" | "memory") {
-    setCodeSideTabs((tabs) => (tabs.includes(key) ? tabs : [...tabs, key]));
-    setCodeSideTab(key);
-    setShowContext(true);
+    openSidePanel(key, codeSideTabs, setCodeSideTabs, setCodeSideTab);
   }
   function closeCodeSidePanel(key: "browser" | "terminal" | "diff" | "memory") {
-    const next = codeSideTabs.filter((tab) => tab !== key);
-    setCodeSideTabs(next);
-    if (next.length === 0) setShowContext(false);
-    else if (codeSideTab === key) setCodeSideTab(next[next.length - 1]);
+    closeSidePanel(key, codeSideTabs, setCodeSideTabs, codeSideTab, setCodeSideTab);
   }
   const [updater, setUpdater] = useState<UpdaterState>({ status: "idle" });
   const [appVersion, setAppVersion] = useState("");
@@ -676,6 +690,7 @@ function App() {
   }
 
   return (
+    <ErrorBoundary label="app root">
     <div className="product-shell">
       <header className="product-topbar">
         <div className="product-left">
@@ -1841,6 +1856,7 @@ function App() {
       {/* Shared fullscreen viewer for chat visuals (charts/diagrams/widgets). */}
       <VisualFullscreenLayer />
     </div>
+    </ErrorBoundary>
   );
 }
 

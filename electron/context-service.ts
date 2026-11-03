@@ -201,7 +201,7 @@ export function trimRunMessagesWithRecoveryBrief(messages: any[], recoveryBrief:
   return trimRunMessages([...compacted, brief], budgetTokens);
 }
 
-export type StreamUsage = { inputTokens: number; outputTokens: number; totalTokens: number };
+export type StreamUsage = { inputTokens: number; outputTokens: number; totalTokens: number; cacheReadTokens: number; cacheCreationTokens: number };
 
 function usageFromMeta(u: any): StreamUsage | null {
   if (!u || typeof u !== "object") return null;
@@ -209,6 +209,19 @@ function usageFromMeta(u: any): StreamUsage | null {
     inputTokens: u.promptTokens || u.prompt_tokens || u.input_tokens || u.inputTokens || 0,
     outputTokens: u.completionTokens || u.completion_tokens || u.output_tokens || u.outputTokens || 0,
     totalTokens: u.totalTokens || u.total_tokens || u.totalTokens || 0,
+    // Prompt-cache accounting, normalized across providers. LangChain standard
+    // (Anthropic/OpenAI integrations): input_token_details.cache_read is the
+    // subset of input_tokens served from cache (both APIs report input_tokens
+    // INCLUSIVE of cached tokens). Legacy spots: Anthropic's raw usage
+    // (cache_read_input_tokens / cache_creation_input_tokens) and OpenAI's
+    // prompt_tokens_details.cached_tokens.
+    cacheReadTokens:
+      u.input_token_details?.cache_read ??
+      u.cache_read_input_tokens ??
+      u.prompt_tokens_details?.cached_tokens ??
+      0,
+    cacheCreationTokens:
+      u.input_token_details?.cache_creation ?? u.cache_creation_input_tokens ?? 0,
   };
   // An all-zero payload carries no information (some providers emit empty
   // usage objects mid-stream); treat it as absent so callers can fall through
@@ -246,9 +259,11 @@ export function extractStreamUsage(chunk: any): StreamUsage | null {
 // collapses to the max seen per field, usage on id-less chunks is incremental
 // and is summed as reported, and the grand total sums across invocations.
 export class StreamUsageTracker {
-  private perMessage = new Map<string, { inputTokens: number; outputTokens: number }>();
+  private perMessage = new Map<string, { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }>();
   private incrementalInputTokens = 0;
   private incrementalOutputTokens = 0;
+  private incrementalCacheReadTokens = 0;
+  private incrementalCacheCreationTokens = 0;
   private maxObservedInputTokens = 0;
   sawExactInput = false;
   sawExactOutput = false;
@@ -274,11 +289,15 @@ export class StreamUsageTracker {
     if (!id) {
       this.incrementalInputTokens += usage.inputTokens || 0;
       this.incrementalOutputTokens += usage.outputTokens || 0;
+      this.incrementalCacheReadTokens += usage.cacheReadTokens || 0;
+      this.incrementalCacheCreationTokens += usage.cacheCreationTokens || 0;
       return;
     }
-    const bucket = this.perMessage.get(id) ?? { inputTokens: 0, outputTokens: 0 };
+    const bucket = this.perMessage.get(id) ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
     bucket.inputTokens = Math.max(bucket.inputTokens, usage.inputTokens || 0);
     bucket.outputTokens = Math.max(bucket.outputTokens, usage.outputTokens || 0);
+    bucket.cacheReadTokens = Math.max(bucket.cacheReadTokens, usage.cacheReadTokens || 0);
+    bucket.cacheCreationTokens = Math.max(bucket.cacheCreationTokens, usage.cacheCreationTokens || 0);
     this.perMessage.set(id, bucket);
   }
 
@@ -298,6 +317,21 @@ export class StreamUsageTracker {
   get outputTokens(): number {
     let total = this.incrementalOutputTokens;
     for (const bucket of this.perMessage.values()) total += bucket.outputTokens;
+    return total;
+  }
+
+  // Cache-token totals follow the same per-invocation collapse as inputTokens
+  // (max per message id, sum across invocations) so the hover-card hit rate
+  // stays consistent with the input totals it is divided by.
+  get cacheReadTokens(): number {
+    let total = this.incrementalCacheReadTokens;
+    for (const bucket of this.perMessage.values()) total += bucket.cacheReadTokens;
+    return total;
+  }
+
+  get cacheCreationTokens(): number {
+    let total = this.incrementalCacheCreationTokens;
+    for (const bucket of this.perMessage.values()) total += bucket.cacheCreationTokens;
     return total;
   }
 }

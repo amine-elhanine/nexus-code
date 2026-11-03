@@ -11,6 +11,11 @@ import {
   type ChatEndpointKind, type McpServerConfig, type ProviderConfig,
 } from "../store.js";
 import { testMcpServer } from "../mcp-service.js";
+import {
+  assertPayload, ProviderCreateSchema, ProviderUpdateMetaSchema, ProviderUpdateKeySchema, ProviderSetEnabledSchema,
+  ProviderModelsAddSchema, ProviderModelsUpdateSchema, ProviderModelDetectSchema, ProviderModelsRemoveSchema,
+  ProviderRemoveSchema, ProviderFetchModelsSchema, McpSaveSchema, McpTestSchema, McpRemoveSchema,
+} from "./schemas.js";
 import type { MainIpcContext } from "./context.js";
 
 const maskProviders = (list: ProviderConfig[]) => list.map((provider) => ({ ...provider, apiKey: provider.apiKey ? "********" : "" }));
@@ -43,11 +48,24 @@ export function registerProviderRoutes(_ctx: MainIpcContext): void {
   });
   // Granular provider CRUD: the renderer never sends (or holds) the real key
   // except through provider:updateKey, and model edits cannot touch it.
-  ipcMain.handle("provider:create", async (_event, input: { provider: string; label: string; apiKey: string; baseUrl?: string }) => maskProviders([await createProviderConnection(input)])[0]);
-  ipcMain.handle("provider:updateMeta", async (_event, providerId: string, patch: { label?: string; baseUrl?: string }) => maskProviders([await updateProviderConnection(providerId, patch)])[0]);
-  ipcMain.handle("provider:updateKey", async (_event, providerId: string, apiKey: string) => maskProviders([await updateProviderKey(providerId, apiKey)])[0]);
-  ipcMain.handle("provider:setEnabled", async (_event, providerId: string, enabled: boolean) => maskProviders([await setProviderEnabled(providerId, enabled)])[0]);
+  ipcMain.handle("provider:create", async (_event, input: { provider: string; label: string; apiKey: string; baseUrl?: string }) => {
+    assertPayload(ProviderCreateSchema, input, "provider:create");
+    return maskProviders([await createProviderConnection(input)])[0];
+  });
+  ipcMain.handle("provider:updateMeta", async (_event, providerId: string, patch: { label?: string; baseUrl?: string }) => {
+    assertPayload(ProviderUpdateMetaSchema, patch, "provider:updateMeta");
+    return maskProviders([await updateProviderConnection(providerId, patch)])[0];
+  });
+  ipcMain.handle("provider:updateKey", async (_event, providerId: string, apiKey: string) => {
+    assertPayload(ProviderUpdateKeySchema, [providerId, apiKey], "provider:updateKey");
+    return maskProviders([await updateProviderKey(providerId, apiKey)])[0];
+  });
+  ipcMain.handle("provider:setEnabled", async (_event, providerId: string, enabled: boolean) => {
+    assertPayload(ProviderSetEnabledSchema, [providerId, enabled], "provider:setEnabled");
+    return maskProviders([await setProviderEnabled(providerId, enabled)])[0];
+  });
   ipcMain.handle("provider:models:add", async (_event, providerId: string, models: string[], efforts?: Record<string, string[]>) => {
+    assertPayload(ProviderModelsAddSchema, [providerId, models, efforts], "provider:models:add");
     const rawProviders = await listProviders();
     const stored = rawProviders.find((p) => p.id === providerId);
     const resolvedEfforts: Record<string, string[]> = { ...(efforts || {}) };
@@ -79,6 +97,7 @@ export function registerProviderRoutes(_ctx: MainIpcContext): void {
     return maskProviders([await addProviderModels(providerId, models, resolvedEfforts, resolvedContexts, resolvedMaxOutputs)])[0];
   });
   ipcMain.handle("provider:models:update", async (_event, providerId: string, model: string, patch: { newName?: string; endpoint?: "" | ChatEndpointKind; efforts?: string[] }) => {
+    assertPayload(ProviderModelsUpdateSchema, [providerId, model, patch], "provider:models:update");
     if (patch.newName && !patch.efforts) {
       const rawProviders = await listProviders();
       const stored = rawProviders.find((p) => p.id === providerId);
@@ -97,6 +116,7 @@ export function registerProviderRoutes(_ctx: MainIpcContext): void {
     return maskProviders([await updateProviderModel(providerId, model, patch)])[0];
   });
   ipcMain.handle("provider:model:detect-context", async (_event, providerId: string, model: string) => {
+    assertPayload(ProviderModelDetectSchema, [providerId, model], "provider:model:detect");
     const rawProviders = await listProviders();
     const stored = rawProviders.find((p) => p.id === providerId);
     if (!stored) return { contextWindow: 128_000 };
@@ -114,6 +134,7 @@ export function registerProviderRoutes(_ctx: MainIpcContext): void {
     }
   });
   ipcMain.handle("provider:model:detect-efforts", async (_event, providerId: string, model: string) => {
+    assertPayload(ProviderModelDetectSchema, [providerId, model], "provider:model:detect");
     const rawProviders = await listProviders();
     const stored = rawProviders.find((p) => p.id === providerId);
     if (!stored) return [];
@@ -131,11 +152,18 @@ export function registerProviderRoutes(_ctx: MainIpcContext): void {
       return fallback;
     }
   });
-  ipcMain.handle("provider:models:remove", async (_event, providerId: string, model: string) => maskProviders([await removeProviderModel(providerId, model)])[0]);
-  ipcMain.handle("provider:remove", async (_event, providerId: string) => maskProviders(await removeProvider(providerId)));
+  ipcMain.handle("provider:models:remove", async (_event, providerId: string, model: string) => {
+    assertPayload(ProviderModelsRemoveSchema, [providerId, model], "provider:models:remove");
+    return maskProviders([await removeProviderModel(providerId, model)])[0];
+  });
+  ipcMain.handle("provider:remove", async (_event, providerId: string) => {
+    assertPayload(ProviderRemoveSchema, [providerId], "provider:remove");
+    return maskProviders(await removeProvider(providerId));
+  });
   // Model discovery: when the renderer has no key (it never does — only a
   // mask), the server resolves the STORED key for the given provider.
   ipcMain.handle("providers:fetch-models", async (_event, input: { providerId?: string; baseUrl?: string; apiKey?: string }) => {
+    assertPayload(ProviderFetchModelsSchema, input, "providers:fetch-models");
     let apiKey = (input?.apiKey || "").trim();
     if ((!apiKey || isMaskedSecret(apiKey)) && input?.providerId) {
       const stored = (await listProviders()).find((provider) => provider.id === input.providerId);
@@ -145,7 +173,16 @@ export function registerProviderRoutes(_ctx: MainIpcContext): void {
   });
 
   ipcMain.handle("mcp:list", async () => listMcpServersMasked());
-  ipcMain.handle("mcp:save", (_event, input: Omit<McpServerConfig, "id"> & { id?: string }) => upsertMcpServer(input));
-  ipcMain.handle("mcp:remove", (_event, serverId: string) => removeMcpServer(serverId));
-  ipcMain.handle("mcp:test", (_event, input: Omit<McpServerConfig, "id" | "enabled">) => testMcpServer(input));
+  ipcMain.handle("mcp:save", (_event, input: Omit<McpServerConfig, "id"> & { id?: string }) => {
+    assertPayload(McpSaveSchema, input, "mcp:save");
+    return upsertMcpServer(input);
+  });
+  ipcMain.handle("mcp:remove", (_event, serverId: string) => {
+    assertPayload(McpRemoveSchema, [serverId], "mcp:remove");
+    return removeMcpServer(serverId);
+  });
+  ipcMain.handle("mcp:test", (_event, input: Omit<McpServerConfig, "id" | "enabled">) => {
+    assertPayload(McpTestSchema, input, "mcp:test");
+    return testMcpServer(input);
+  });
 }

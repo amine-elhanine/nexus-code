@@ -15,9 +15,16 @@
 //     { "id": 2, "ok": true, "result": { "output": ... } }
 //     { "id": 1, "ok": false, "error": "..." }
 //
-// Security:
-// - Entry source runs in node:vm with ONLY a frozen `nexus` object.
-// - No require/process/fetch/Electron/timers beyond setTimeout (bounded).
+// Security (honest model — see also plugin-sandbox.ts):
+// - node:vm is NOT a hard sandbox. It hides globals and removes require/
+//   process/fetch/Electron, but `vm` cannot stop a determined script from
+//   reaching the host realm via prototype chains (e.g. through the `nexus`
+//   object's constructor chain). The real boundary is: plugins only run
+//   after explicit user install approval, run out-of-process (crash + env
+//   isolation — the host spawns this runner with secret-shaped env vars
+//   scrubbed), and every capability passes permission checks at call time.
+// - Entry source runs in node:vm with ONLY a frozen `nexus` object as its
+//   intended surface.
 // - Entry capped at 256KB; activation timeout enforced by the host killing
 //   this process (the vm timeout is a second net, not the only one).
 // - Tool handlers run inside the same vm context on call-tool; each call has

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import LlamaCloud from "@llamaindex/llama-cloud";
 import { assertPublicHttpUrl } from "./net-guard.js";
+import { decodeHtmlEntities } from "./html-text.js";
 
 // Format parsers: raw bytes -> canonical markdown (the single intermediate
 // format for ingestion). Pure functions of (buffer, filename); no fs, no
@@ -148,7 +149,7 @@ function parseHtml(buffer: Buffer): ParsedDocument {
     return "\n";
   });
   const cleanInline = (s: string) =>
-    s.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/\s+/g, " ").trim();
+    decodeHtmlEntities(s.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
   // Document-order walk over the tags we care about. The capture runs to the
   // NEXT block boundary (not just to the next "<"), so text inside inline
   // markup — `<p>Hello <b>world</b> end</p>` — is kept; cleanInline strips

@@ -6,7 +6,8 @@ import {
 import { ModelSelect } from "./AgentView.js";
 import { ChatItemView, ActivityGroupView, StreamingAssistantMessage } from "../components/chat/ChatMessageItem.js";
 import { SlashCommandPopup, filterSlashCommands, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
-import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
+import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment, openChatAttachment } from "../utils/attachments.js";
+import { insertAtCursor } from "../utils/textarea.js";
 import type { ChatItem, ProviderConfig, ProviderDefinition, AgentUsage, AgentContextUsageSnapshot, ChatAttachment, SkillInfo } from "../types.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
 
@@ -225,31 +226,24 @@ export function HomeView({
   }
 
   function insertSkillMention(skillName: string) {
-    if (!textareaRef.current) return;
-    const cursor = textareaRef.current.selectionStart || draft.length;
-    const beforeCursor = draft.slice(0, cursor);
-    const afterCursor = draft.slice(cursor);
-    const updatedBefore = beforeCursor.replace(/@([a-zA-Z0-9_./-]*)$/, `@${skillName} `);
-    setDraft(`${updatedBefore}${afterCursor}`);
+    const result = insertAtCursor(textareaRef.current, draft, /@([a-zA-Z0-9_./-]*)$/, `@${skillName} `);
+    if (!result) return;
+    setDraft(result.nextDraft);
     setMentionQuery(null);
     setTimeout(() => textareaRef.current?.focus(), 10);
   }
 
   function handleSlashSelect(cmd: SlashCommand) {
-    if (!textareaRef.current) return;
-    const cursor = textareaRef.current.selectionStart || draft.length;
-    const beforeCursor = draft.slice(0, cursor);
-    const afterCursor = draft.slice(cursor);
-    const updatedBefore = beforeCursor.replace(/(?:^|\s)\/([a-zA-Z0-9_-]*)$/, (match) => {
+    const result = insertAtCursor(textareaRef.current, draft, /(?:^|\s)\/([a-zA-Z0-9_-]*)$/, (match) => {
       const leadingWhitespace = match.match(/^\s/)?.[0] || "";
       return `${leadingWhitespace}${cmd.command} `;
     });
-    const nextDraft = `${updatedBefore}${afterCursor}`;
-    setDraft(nextDraft);
+    if (!result) return;
+    setDraft(result.nextDraft);
     setSlashQuery(null);
     setSlashIndex(0);
 
-    const newCursor = updatedBefore.length;
+    const newCursor = result.cursor;
     setTimeout(() => {
       if (textareaRef.current) {
         textareaRef.current.focus();
@@ -323,12 +317,7 @@ export function HomeView({
   }
 
   function openAttachment(attachment: ChatAttachment) {
-    if (onOpenAttachment) {
-      onOpenAttachment(attachment);
-      return;
-    }
-    // Back-compat: image-only preview callback.
-    if (isImageAttachment(attachment)) onOpenImage?.(attachment.url);
+    openChatAttachment(attachment, onOpenAttachment, onOpenImage);
   }
 
   function handleImageFileSelect(event: React.ChangeEvent<HTMLInputElement>) {

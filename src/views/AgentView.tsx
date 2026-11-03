@@ -8,7 +8,8 @@ import { WorktreeBar } from "../components/worktree/WorktreeBar.js";
 import { SlashCommandPopup, filterSlashCommands, DEFAULT_SLASH_COMMANDS, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
 import { ChatItemView, ActivityGroupView, StreamingAssistantMessage } from "../components/chat/ChatMessageItem.js";
 import { fileIcon } from "../utils/format.js";
-import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment } from "../utils/attachments.js";
+import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment, openChatAttachment } from "../utils/attachments.js";
+import { insertAtCursor } from "../utils/textarea.js";
 import { formatCost } from "../types.js";
 import type { ChatItem, FileEntry, ProviderConfig, ProviderDefinition, AgentUsage, AgentContextUsageSnapshot, ArtifactItem, ChatAttachment, SkillInfo, WorkspaceDiffFile } from "../types.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
@@ -160,6 +161,14 @@ export function ModelContextLine({
   const breakdownRows = contextUsage?.breakdown?.length ? contextUsage.breakdown : null;
   const breakdownTotal = breakdownRows ? breakdownRows.reduce((sum, entry) => sum + entry.tokens, 0) : 0;
 
+  // Prompt-cache hit rate for the current run: provider-reported cached input
+  // tokens over the exact input total. Only shown when the provider reports
+  // cache accounting (Anthropic-family; OpenAI/DeepSeek/GLM via their
+  // cached-token fields).
+  const cacheInput = contextUsage?.cacheInputTokens ?? 0;
+  const cacheRead = contextUsage?.cacheReadTokens ?? 0;
+  const cacheRate = cacheInput > 0 && cacheRead > 0 ? (cacheRead / cacheInput) * 100 : null;
+
   const isNearThreshold = usedTokens >= compactionThreshold * 0.85;
   const isAtThreshold = usedTokens >= compactionThreshold;
 
@@ -297,6 +306,17 @@ export function ModelContextLine({
                 <span className="ctx-detail-value">{formatTokenCount(maxOutput)}</span>
               </div>
             ) : null}
+            {cacheRate !== null && (
+              <div
+                className="ctx-detail-item"
+                title={`${formatTokenCount(cacheRead)} of ${formatTokenCount(cacheInput)} input tokens served from the prompt cache`}
+              >
+                <span className="ctx-detail-label">Cache Hit Rate</span>
+                <span className="ctx-detail-value highlighted">
+                  {cacheRate.toFixed(cacheRate < 10 ? 1 : 0)}% ({formatTokenCount(cacheRead)} cached)
+                </span>
+              </div>
+            )}
             {sessionUsage && sessionUsage.totalTokens > 0 ? (
               <>
                 <div className="ctx-detail-item">
@@ -635,11 +655,7 @@ export function AgentView({
     }
   };
   function openAttachment(attachment: ChatAttachment) {
-    if (onOpenAttachment) {
-      onOpenAttachment(attachment);
-      return;
-    }
-    if (isImageAttachment(attachment)) onOpenImage?.(attachment.url);
+    openChatAttachment(attachment, onOpenAttachment, onOpenImage);
   }
   messages.forEach((message, index) => {
     if (message.role === "event") pendingActivity.push(message);
@@ -714,13 +730,10 @@ export function AgentView({
   }
 
   function insertMentionItem(item: { kind: "skill"; name: string } | { kind: "file"; path: string }) {
-    if (!textareaRef.current) return;
-    const cursor = textareaRef.current.selectionStart || draft.length;
-    const beforeCursor = draft.slice(0, cursor);
-    const afterCursor = draft.slice(cursor);
     const textToInsert = item.kind === "skill" ? `@${item.name} ` : `@${item.path} `;
-    const updatedBefore = beforeCursor.replace(/@([a-zA-Z0-9_./-]*)$/, textToInsert);
-    setDraft(`${updatedBefore}${afterCursor}`);
+    const result = insertAtCursor(textareaRef.current, draft, /@([a-zA-Z0-9_./-]*)$/, textToInsert);
+    if (!result) return;
+    setDraft(result.nextDraft);
     setMentionQuery(null);
     setTimeout(() => textareaRef.current?.focus(), 10);
   }
@@ -729,20 +742,16 @@ export function AgentView({
     if (cmd.mode) {
       setMode(cmd.mode === "plan" ? "Plan" : cmd.mode === "auto" ? "Auto" : cmd.mode === "full" ? "Full" : "Ask");
     }
-    if (!textareaRef.current) return;
-    const cursor = textareaRef.current.selectionStart || draft.length;
-    const beforeCursor = draft.slice(0, cursor);
-    const afterCursor = draft.slice(cursor);
-    const updatedBefore = beforeCursor.replace(/(?:^|\s)\/([a-zA-Z0-9_-]*)$/, (match) => {
+    const result = insertAtCursor(textareaRef.current, draft, /(?:^|\s)\/([a-zA-Z0-9_-]*)$/, (match) => {
       const leadingWhitespace = match.match(/^\s/)?.[0] || "";
       return `${leadingWhitespace}${cmd.command} `;
     });
-    const nextDraft = `${updatedBefore}${afterCursor}`;
-    setDraft(nextDraft);
+    if (!result) return;
+    setDraft(result.nextDraft);
     setSlashQuery(null);
     setSlashIndex(0);
 
-    const newCursor = updatedBefore.length;
+    const newCursor = result.cursor;
     setTimeout(() => {
       if (textareaRef.current) {
         textareaRef.current.focus();

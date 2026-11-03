@@ -19,17 +19,28 @@ import { ATTACHMENT_EXT_BY_MIME, resolveAttachmentBytes } from "../attachment-ut
 import { clearCheckpoint, popCheckpoint } from "../checkpoint-stack.js";
 import { getSession } from "../store.js";
 import type { MainIpcContext } from "./context.js";
+import {
+  assertPayload, WorkspaceReadSchema, WorkspaceWriteSchema, WorkspaceCommandSchema, WorkspaceRevertHunkSchema,
+  WorktreeMergeSchema, ArtifactUpdateStatusSchema, AttachmentSaveSchema, AttachmentReadSchema,
+} from "./schemas.js";
 
 const execFileAsync = boundedExecFile;
 
 export function registerWorkspaceRoutes(ctx: MainIpcContext): void {
   ipcMain.handle("workspace:list", () => listWorkspaceFiles(ctx.requireRoot()));
-  ipcMain.handle("workspace:read", (_event, file: string) => readWorkspaceFile(ctx.requireRoot(), file));
+  ipcMain.handle("workspace:read", (_event, file: string) => {
+    assertPayload(WorkspaceReadSchema, [file], "workspace:read");
+    return readWorkspaceFile(ctx.requireRoot(), file);
+  });
   // Base64 read for the file previewer (pptx/docx/xlsx/pdf/images) — the code
   // editor path above refuses binary content, this one serves it.
-  ipcMain.handle("workspace:readBase64", (_event, file: string) => readWorkspaceFileBase64(ctx.requireRoot(), file));
+  ipcMain.handle("workspace:readBase64", (_event, file: string) => {
+    assertPayload(WorkspaceReadSchema, [file], "workspace:readBase64");
+    return readWorkspaceFileBase64(ctx.requireRoot(), file);
+  });
   ipcMain.handle("workspace:gitStatus", () => getWorkspaceGitStatus(ctx.requireRoot()));
   ipcMain.handle("workspace:downloadFile", async (_event, file: string) => {
+    assertPayload(WorkspaceReadSchema, [file], "workspace:downloadFile");
     const root = ctx.requireRoot();
     const source = safePath(root, file);
     const { canceled, filePath } = await dialog.showSaveDialog({
@@ -57,6 +68,7 @@ export function registerWorkspaceRoutes(ctx: MainIpcContext): void {
     }
   });
   ipcMain.handle("attachments:save", async (_event, payload: { data: string; filename?: string }) => {
+    assertPayload(AttachmentSaveSchema, payload, "attachments:save");
     const attachmentsDir = path.join(app.getPath("userData"), "attachments");
     await fs.mkdir(attachmentsDir, { recursive: true });
 
@@ -94,10 +106,14 @@ export function registerWorkspaceRoutes(ctx: MainIpcContext): void {
   // home:readFile for generated artifacts — never depends on custom-scheme
   // fetch from the renderer, which images don't need but documents do).
   ipcMain.handle("attachments:read", async (_event, attachmentUrl: string) => {
+    assertPayload(AttachmentReadSchema, [attachmentUrl], "attachments:read");
     const { buffer, fileName, mimeType } = await resolveAttachmentBytes(String(attachmentUrl || ""));
     return { base64: buffer.toString("base64"), fileName, mimeType, size: buffer.length };
   });
-  ipcMain.handle("workspace:write", (_event, file: string, content: string) => writeWorkspaceFile(ctx.requireRoot(), file, content));
+  ipcMain.handle("workspace:write", (_event, file: string, content: string) => {
+    assertPayload(WorkspaceWriteSchema, [file, content], "workspace:write");
+    return writeWorkspaceFile(ctx.requireRoot(), file, content);
+  });
   ipcMain.handle("workspace:diff", async () => {
     const root = ctx.requireRoot();
     const activeSessionId = ctx.active().sessionId;
@@ -106,6 +122,7 @@ export function registerWorkspaceRoutes(ctx: MainIpcContext): void {
   });
   ipcMain.handle("workspace:git", () => getWorkspaceGit(ctx.requireRoot()));
   ipcMain.handle("workspace:command", async (_event, command: string) => {
+    assertPayload(WorkspaceCommandSchema, [command], "workspace:command");
     const { getProject } = await import("../store.js");
     const activeProjectId = ctx.active().projectId;
     const project = activeProjectId ? await getProject(activeProjectId) : null;
@@ -115,12 +132,14 @@ export function registerWorkspaceRoutes(ctx: MainIpcContext): void {
   });
 
   ipcMain.handle("workspace:revert-file", async (_event, file: string) => {
+    assertPayload(WorkspaceReadSchema, [file], "workspace:revert-file");
     const root = ctx.requireRoot();
     const activeSessionId = ctx.active().sessionId;
     const wt = activeSessionId ? await getSessionWorktree(root, activeSessionId) : null;
     return revertWorkspaceFile(wt?.worktreePath || root, file);
   });
   ipcMain.handle("workspace:revert-hunk", async (_event, file: string, hunkHeader: string) => {
+    assertPayload(WorkspaceRevertHunkSchema, [file, hunkHeader], "workspace:revert-hunk");
     const root = ctx.requireRoot();
     const activeSessionId = ctx.active().sessionId;
     const wt = activeSessionId ? await getSessionWorktree(root, activeSessionId) : null;
@@ -169,6 +188,7 @@ export function registerWorkspaceRoutes(ctx: MainIpcContext): void {
     return { isGit, worktree: wt };
   });
   ipcMain.handle("worktree:merge", async (_event, sessionId: string, commitMessage?: string) => {
+    assertPayload(WorktreeMergeSchema, [sessionId, commitMessage], "worktree:merge");
     const root = ctx.requireRoot();
     return mergeWorktreeToMain(root, sessionId, commitMessage);
   });
@@ -202,6 +222,7 @@ export function registerWorkspaceRoutes(ctx: MainIpcContext): void {
     return getArtifact(root, sessionId, filename);
   });
   ipcMain.handle("artifacts:update-status", async (_event, sessionId: string, filename: string, status: ArtifactStatus) => {
+    assertPayload(ArtifactUpdateStatusSchema, [sessionId, filename, status], "artifacts:update-status");
     const root = ctx.requireRoot();
     return updateArtifactStatus(root, sessionId, filename, status);
   });

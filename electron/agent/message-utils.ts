@@ -1,11 +1,54 @@
 // Message/text helpers shared by the agent run pipeline.
 // Extracted verbatim from agent-service.ts; no behavior change.
 
+import { ToolMessage } from "@langchain/core/messages";
+
 // Verify/repair output cap: diagnostic feedback injected back into the model
 // conversation is truncated to this many characters.
 export const VERIFY_OUTPUT_CAP = 4000;
 // History message char cap (per-message transcript excerpt bound).
 export const HISTORY_CHAR_CAP = 4000;
+
+// Tool results with structured (array) content — e.g. embedded image parts —
+// permanently poison OpenAI-compatible providers that only accept string tool
+// content ("Failed to deserialize … ChatCompletionRequestToolMessageContent").
+// The failure is payload-SHAPED, not transient: every retry, recovery pass and
+// "continue" re-sends the same tool message and 400s forever, burning the
+// whole step budget. Flattening to plain text at the stream boundary makes the
+// transcript provider-safe; images are referenced instead of inlined (the
+// model can re-read them from disk by path when a vision path exists).
+export function flattenToolMessageContent(messages: any[]): { messages: any[]; flattened: number; omittedImages: number } {
+  let flattened = 0;
+  let omittedImages = 0;
+  const out = messages.map((message) => {
+    const content = message?.content;
+    if (message?._getType?.() !== "tool" || !Array.isArray(content)) return message;
+    const textParts: string[] = [];
+    for (const part of content) {
+      if (typeof part === "string") textParts.push(part);
+      else if (part?.type === "text" && typeof part.text === "string") textParts.push(part.text);
+      else if (part?.type === "image_url" || part?.type === "image" || part?.type === "input_image") omittedImages++;
+    }
+    flattened++;
+    let text = textParts.join("\n").trim();
+    if (omittedImages && text) text += `\n[${omittedImages} image part(s) removed from this tool result — if the image matters, reference it by its file path instead.]`;
+    else if (omittedImages && !text) text = `[${omittedImages} image part(s) removed from this tool result — reference the image by its file path instead.]`;
+    const next = new ToolMessage({
+      content: text || "(empty tool result)",
+      tool_call_id: message.tool_call_id,
+      ...(message.name ? { name: message.name } : {}),
+    });
+    // Preserve any additional fields the original message carried (status,
+    // artifact markers) so downstream consumers see the same shape.
+    for (const [key, value] of Object.entries(message)) {
+      if (!(key in next) && key !== "content" && value !== undefined) {
+        try { (next as any)[key] = value; } catch { /* read-only field */ }
+      }
+    }
+    return next;
+  });
+  return { messages: out, flattened, omittedImages };
+}
 
 export function extractDiagnosticFeedback(rawOutput: string, cap = VERIFY_OUTPUT_CAP): string {
   if (!rawOutput) return "";

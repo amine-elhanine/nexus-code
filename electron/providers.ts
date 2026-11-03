@@ -279,6 +279,43 @@ function effortToAnthropicBudget(effort: string): number {
   }
 }
 
+// Prompt caching for every Anthropic Messages-API path (native Anthropic AND
+// Anthropic-protocol gateways like OpenCode Zen serving Claude on /messages).
+// The Anthropic API accepts a top-level `cache_control` request field: it
+// applies a cache breakpoint to the last cacheable block and advances it as
+// the conversation grows — exactly the right shape for an agent loop, where
+// tools + system prompt + prior turns are identical between steps and only
+// the newest messages change. Cached prefix tokens are billed at ~0.1x.
+// Both Home and Code agent runs go through createChatModel, so this covers
+// both modes (OpenAI/DeepSeek/GLM-style providers cache automatically and
+// need no request flag).
+function anthropicCachingModel(params: {
+  ChatAnthropic: new (fields: any) => any;
+  apiKey: string | undefined;
+  model: string;
+  thinking?: { type: "enabled"; budget_tokens: number };
+  anthropicApiUrl?: string;
+  clientHeaders?: Record<string, string>;
+}): any {
+  class CachingChatAnthropic extends params.ChatAnthropic {
+    invocationParams(options?: any): any {
+      const params = super.invocationParams(options);
+      if (params && (params as Record<string, unknown>).cache_control == null) {
+        (params as Record<string, unknown>).cache_control = { type: "ephemeral" };
+      }
+      return params;
+    }
+  }
+  return new CachingChatAnthropic({
+    apiKey: params.apiKey,
+    model: params.model,
+    temperature: params.thinking ? 1.0 : 0.1,
+    ...(params.thinking ? { thinking: params.thinking } : {}),
+    ...(params.anthropicApiUrl ? { anthropicApiUrl: params.anthropicApiUrl } : {}),
+    ...(params.clientHeaders ? { clientOptions: { defaultHeaders: params.clientHeaders } } : {}),
+  });
+}
+
 function openAiReasoningOptions(effort?: string) {
   if (!effort) return {};
   return {
@@ -311,14 +348,14 @@ export async function createChatModel(config: ProviderConfig, modelName: string,
       type: "enabled" as const,
       budget_tokens: effortToAnthropicBudget(reasoning),
     } : undefined;
-    return new ChatAnthropic({
+    return anthropicCachingModel({
+      ChatAnthropic,
       apiKey: key,
       model: modelName,
-      temperature: thinking ? 1.0 : 0.1,
+      thinking,
       // The Anthropic SDK appends /v1/messages to this base URL.
       anthropicApiUrl: (config.baseUrl || "").trim().replace(/\/+$/, "") || "https://api.anthropic.com",
-      ...(zenHeaders ? { clientOptions: { defaultHeaders: zenHeaders } } : {}),
-      ...(thinking ? { thinking } : {}),
+      clientHeaders: zenHeaders,
     });
   }
   try {
@@ -371,24 +408,15 @@ export async function createChatModel(config: ProviderConfig, modelName: string,
   }
   if (provider === "anthropic") {
     const { ChatAnthropic } = await import("@langchain/anthropic");
-    class CachingChatAnthropic extends ChatAnthropic {
-      override invocationParams(options?: any): any {
-        const params = super.invocationParams(options);
-        if (params && (params as Record<string, unknown>).cache_control == null) {
-          (params as Record<string, unknown>).cache_control = { type: "ephemeral" };
-        }
-        return params;
-      }
-    }
     const thinking = reasoning && reasoning !== "none" ? {
       type: "enabled" as const,
       budget_tokens: effortToAnthropicBudget(reasoning),
     } : undefined;
-    return new CachingChatAnthropic({
+    return anthropicCachingModel({
+      ChatAnthropic,
       apiKey: key,
       model: modelName,
-      temperature: thinking ? 1.0 : 0.1,
-      ...(thinking ? { thinking } : {}),
+      thinking,
     });
   }
   if (provider === "google") {

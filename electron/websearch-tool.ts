@@ -1,38 +1,12 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import { decodeHtmlEntities, htmlToText } from "./html-text.js";
 
 // Free, keyless web search via DuckDuckGo Lite (plain HTML, no JS, no
 // token handshake). Best-effort by design: if DDG is unreachable or changes
 // markup, the tool reports it instead of failing the run.
 const DDG_TIMEOUT_MS = 12000;
 const MAX_RESULTS = 8;
-
-function decodeEntities(text: string): string {
-  return text
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex: string) => {
-      try {
-        return String.fromCodePoint(parseInt(hex, 16));
-      } catch {
-        return "";
-      }
-    })
-    .replace(/&#(\d+);/g, (_, num: string) => {
-      try {
-        return String.fromCodePoint(parseInt(num, 10));
-      } catch {
-        return "";
-      }
-    })
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'");
-}
-
-function stripTags(html: string): string {
-  return decodeEntities(html.replace(/<[^>]*>/g, " ")).replace(/\s+/g, " ").trim();
-}
 
 export type WebSearchResult = { title: string; url: string; snippet: string };
 export type WebImageResult = { title: string; imageUrl: string; sourceUrl: string };
@@ -155,14 +129,14 @@ export async function duckDuckGoSearch(query: string, maxResults = MAX_RESULTS, 
     const linkPattern = /<a\s+rel="nofollow"\s+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
     let match: RegExpExecArray | null;
     while ((match = linkPattern.exec(html)) !== null && results.length < maxResults) {
-      const rawUrl = decodeEntities(match[1]);
+      const rawUrl = decodeHtmlEntities(match[1]);
       if (!/^https?:\/\//i.test(rawUrl)) continue;
       if (/duckduckgo\.com/i.test(rawUrl)) continue;
-      const title = stripTags(match[2]).slice(0, 160) || rawUrl;
+      const title = htmlToText(match[2]).slice(0, 160) || rawUrl;
       // The snippet cell follows the link row in the lite layout.
       const rest = html.slice(match.index, match.index + 4000);
       const snippetMatch = rest.match(/class=['"]result-snippet['"][^>]*>([\s\S]*?)<\/td>/i);
-      const snippet = snippetMatch ? stripTags(snippetMatch[1]).slice(0, 300) : "";
+      const snippet = snippetMatch ? htmlToText(snippetMatch[1]).slice(0, 300) : "";
       results.push({ title, url: rawUrl, snippet });
     }
     return results;

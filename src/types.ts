@@ -1,10 +1,10 @@
 export type PlanItem = { content: string; status: "pending" | "in_progress" | "completed" };
-export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
+export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null; /** Prompt-cache totals for the run (provider-reported when available). */ cacheReadTokens?: number; cacheCreationTokens?: number };
 export type AgentContextBreakdownEntry = { label: string; tokens: number };
-export type AgentContextSnapshot = { usedTokens: number; contextWindow: number; compactionThreshold: number; estimated: boolean; breakdown?: AgentContextBreakdownEntry[] };
+export type AgentContextSnapshot = { usedTokens: number; contextWindow: number; compactionThreshold: number; estimated: boolean; breakdown?: AgentContextBreakdownEntry[]; /** Run-cumulative exact input + cache-hit tokens for the hover-card cache rate. */ cacheInputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number };
 /** Renderer-facing context meter snapshot: the last persisted AgentContextSnapshot
  *  flattened onto the usage shape the model/context line components consume. */
-export type AgentContextUsageSnapshot = AgentUsage & { contextWindow?: number; compactionThreshold?: number; usedTokens?: number; breakdown?: AgentContextBreakdownEntry[] };
+export type AgentContextUsageSnapshot = AgentUsage & { contextWindow?: number; compactionThreshold?: number; usedTokens?: number; breakdown?: AgentContextBreakdownEntry[]; cacheInputTokens?: number };
 export function formatCost(cost: number | null | undefined): string {
   return cost == null ? "—" : `~$${cost.toFixed(4)}`;
 }

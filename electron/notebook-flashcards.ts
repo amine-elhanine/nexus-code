@@ -1,9 +1,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { composeContextBlock } from "./notebook-text.js";
+import { attachCitations, composeContextBlock, uid } from "./notebook-text.js";
 import { collectDocumentEvidence, extractDocumentJson, fallbackTitle } from "./notebook-documents.js";
 import { assertNotebookGenerationActive, planNotebookWithLlm } from "./notebook-generation.js";
 import { notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
+import { writeFileAtomic } from "./atomic-write.js";
 
 // Grounded flashcard generation for Notebook Mode: concise Q/A cards covering
 // the key concepts in the in-scope sources. Retrieval reuses the isolated
@@ -42,10 +43,6 @@ export type GenerateFlashcardsInput = {
   onStatus?: (text: string) => void;
 };
 
-function uid(prefix: string) {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
 function flashcardsPath(notebookId: string) {
   return path.join(notebookSessionDir(notebookId), "flashcards.json");
 }
@@ -59,8 +56,8 @@ async function readSets(notebookId: string): Promise<NotebookFlashcardSet[]> {
 }
 
 async function writeSets(notebookId: string, sets: NotebookFlashcardSet[]) {
-  await fs.mkdir(path.dirname(flashcardsPath(notebookId)), { recursive: true });
-  await fs.writeFile(flashcardsPath(notebookId), JSON.stringify(sets, null, 2), "utf8");
+  // Atomic (temp + rename): a crash mid-write must not truncate the card store.
+  await writeFileAtomic(flashcardsPath(notebookId), JSON.stringify(sets, null, 2));
 }
 
 export async function listNotebookFlashcardSets(notebookId: string): Promise<NotebookFlashcardSet[]> {
@@ -79,21 +76,6 @@ export function clampFlashcardCount(raw: unknown): number {
   const n = typeof raw === "number" ? raw : Number(raw);
   if (!Number.isFinite(n)) return 10;
   return Math.min(30, Math.max(3, Math.round(n)));
-}
-
-function citationByIndex(citations: NotebookSourceCitation[], index: number): NotebookSourceCitation | undefined {
-  return citations.find((c) => c.index === index);
-}
-
-function parseCitationRefs(text: string): number[] {
-  const out: number[] = [];
-  const re = /\[S(\d+)\]/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text || ""))) {
-    const n = Number(m[1]);
-    if (Number.isFinite(n) && n > 0 && !out.includes(n)) out.push(n);
-  }
-  return out.slice(0, 4);
 }
 
 type RawFlashcard = {
@@ -116,14 +98,11 @@ export function sanitizeCards(
     if (!front) throw new Error(`Card ${i + 1} is missing its front.`);
     const back = String(raw.back || "").trim().slice(0, 600);
     if (!back) throw new Error(`Card ${i + 1} is missing its back.`);
-    const refs = parseCitationRefs(`${front} ${back} ${Array.isArray(raw.citations) ? (raw.citations as unknown[]).join(" ") : ""}`);
-    const linked = refs.map((n) => citationByIndex(citations, n)).filter((c): c is NotebookSourceCitation => Boolean(c));
-    const fallbackCite = citations[i % Math.max(1, citations.length)];
-    // Model-cited passages are verified; the positional fallback is an
-    // unverified guess that the UI renders dimmed.
-    const linkedCitations = linked.map((c) => ({ ...c, verified: true }));
-    const fallbackCitations = fallbackCite ? [{ ...fallbackCite, verified: false }] : [];
-    const cardCitations = (linkedCitations.length ? linkedCitations : fallbackCitations).slice(0, 2);
+    const cardCitations = attachCitations(
+      `${front} ${back} ${Array.isArray(raw.citations) ? (raw.citations as unknown[]).join(" ") : ""}`,
+      citations,
+      i
+    );
     cards.push({ id: uid("card"), front, back, citations: cardCitations });
   });
   if (!cards.length) throw new Error("Model returned no usable cards.");

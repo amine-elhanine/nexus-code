@@ -24,6 +24,21 @@ export class UsageAccumulator {
     return this.tracker.sawExactInput && this.tracker.lastObservedInputTokens > 0;
   }
 
+  /** Sum of exact input totals across all model invocations in this run. */
+  get cumulativeInputTokens(): number {
+    return this.tracker.inputTokens;
+  }
+
+  // Prompt-cache totals across the run (see StreamUsageTracker) — the
+  // hover-card cache hit rate divides these by the exact input total.
+  get cacheReadTokens(): number {
+    return this.tracker.cacheReadTokens;
+  }
+
+  get cacheCreationTokens(): number {
+    return this.tracker.cacheCreationTokens;
+  }
+
   addSubagent(usage?: AgentUsage) {
     if (!usage) return;
     // Subagent input/output are complete invocation totals, so they are added
@@ -38,6 +53,16 @@ export class UsageAccumulator {
     const sawExactOutput = this.tracker.sawExactOutput;
     const finalInput = !sawExactInput && inputTokens === 0 && fallbackInputEstimate > 0 ? fallbackInputEstimate : inputTokens;
     const finalOutput = !sawExactOutput && outputTokens === 0 && fallbackOutputEstimate > 0 ? fallbackOutputEstimate : outputTokens;
-    return calculateAgentUsage(finalInput, finalOutput, modelName);
+    const usage = calculateAgentUsage(finalInput, finalOutput, modelName);
+    // Provider-reported prompt-cache totals (only meaningful alongside exact
+    // input totals); omitted entirely when the provider reports none, so old
+    // persisted sessions stay shape-compatible.
+    const cacheReadTokens = this.tracker.cacheReadTokens;
+    const cacheCreationTokens = this.tracker.cacheCreationTokens;
+    if (cacheReadTokens > 0 || cacheCreationTokens > 0) {
+      usage.cacheReadTokens = cacheReadTokens;
+      usage.cacheCreationTokens = cacheCreationTokens;
+    }
+    return usage;
   }
 }

@@ -15,6 +15,10 @@ import { sessionOutline } from "../notebook-library.js";
 import { listEmbeddingProviders, removeEmbeddingProvider, upsertEmbeddingProvider, getAppSettings, isMaskedSecret, type EmbeddingProviderConfig } from "../store.js";
 import { beginCommandRun, endCommandRun, isCommandRunCancelled } from "../command-service.js";
 import { RunCancelledError } from "../agent-service.js";
+import {
+  assertPayload, NotebookDocumentGenerateSchema, NotebookGeneratePayloadSchema, NotebookMindmapGenerateSchema,
+  NotebookSummaryGenerateSchema, NotebookAskSchema, NotebookEmbeddingSaveSchema, NotebookEmbeddingProviderSchema,
+} from "./schemas.js";
 import type { MainIpcContext } from "./context.js";
 
 // A notebook generation/chat occupies one "run" slot so cancels and
@@ -100,6 +104,7 @@ export function registerNotebookRoutes(ctx: MainIpcContext): void {
     return listNotebookDocuments(notebookId);
   });
   ipcMain.handle("notebook:document:generate", async (_event, payload: { notebookId: string; kind: "report" | "slides"; format: "docx" | "pdf" | "pptx"; prompt?: string; fileIds?: string[]; providerId?: string; model?: string }) => {
+    assertPayload(NotebookDocumentGenerateSchema, payload, "notebook:document:generate");
     const statusKey = `nbdoc:${payload.notebookId}`;
     const runId = statusKey;
     if (ctx.activeRunSessions.has(runId)) throw new Error("A document is already being generated for this notebook.");
@@ -153,6 +158,7 @@ export function registerNotebookRoutes(ctx: MainIpcContext): void {
     return listNotebookQuizzes(notebookId);
   });
   ipcMain.handle("notebook:quiz:generate", async (_event, payload: { notebookId: string; topic?: string; count?: number; quizType?: "mcq" | "truefalse" | "mixed"; fileIds?: string[]; providerId?: string; model?: string }) => {
+    assertPayload(NotebookGeneratePayloadSchema, payload, "notebook:quiz:generate");
     const statusKey = `nbquiz:${payload.notebookId}`;
     const quiz = await runNotebookGeneration(ctx, statusKey, async (isCancelled) => {
       const { generateNotebookQuiz } = await import("../notebook-quiz.js");
@@ -184,6 +190,7 @@ export function registerNotebookRoutes(ctx: MainIpcContext): void {
     return listNotebookFlashcardSets(notebookId);
   });
   ipcMain.handle("notebook:flashcards:generate", async (_event, payload: { notebookId: string; topic?: string; count?: number; fileIds?: string[]; providerId?: string; model?: string }) => {
+    assertPayload(NotebookGeneratePayloadSchema, payload, "notebook:flashcards:generate");
     const statusKey = `nbfiches:${payload.notebookId}`;
     const set = await runNotebookGeneration(ctx, statusKey, async (isCancelled) => {
       const { generateNotebookFlashcards } = await import("../notebook-flashcards.js");
@@ -214,6 +221,7 @@ export function registerNotebookRoutes(ctx: MainIpcContext): void {
     return listNotebookMindmaps(notebookId);
   });
   ipcMain.handle("notebook:mindmaps:generate", async (_event, payload: { notebookId: string; topic?: string; maxNodes?: number; fileIds?: string[]; providerId?: string; model?: string }) => {
+    assertPayload(NotebookMindmapGenerateSchema, payload, "notebook:mindmaps:generate");
     const statusKey = `nbmap:${payload.notebookId}`;
     const map = await runNotebookGeneration(ctx, statusKey, async (isCancelled) => {
       const { generateNotebookMindmap } = await import("../notebook-mindmaps.js");
@@ -244,6 +252,7 @@ export function registerNotebookRoutes(ctx: MainIpcContext): void {
     return listNotebookSummaries(notebookId);
   });
   ipcMain.handle("notebook:summaries:generate", async (_event, payload: { notebookId: string; topic?: string; length?: "brief" | "standard" | "detailed"; fileIds?: string[]; providerId?: string; model?: string }) => {
+    assertPayload(NotebookSummaryGenerateSchema, payload, "notebook:summaries:generate");
     const statusKey = `nbsum:${payload.notebookId}`;
     const summary = await runNotebookGeneration(ctx, statusKey, async (isCancelled) => {
       const { generateNotebookSummary } = await import("../notebook-summaries.js");
@@ -275,6 +284,7 @@ export function registerNotebookRoutes(ctx: MainIpcContext): void {
   ipcMain.handle("notebook:deleteChat", (_event, notebookId: string, chatId: string) => deleteNotebookChat(notebookId, chatId));
   ipcMain.handle("notebook:retrieve", (_event, notebookId: string, query: string, topK?: number, fileIds?: string[]) => hybridRetrieve(notebookId, query, topK || 8, fileIds));
   ipcMain.handle("notebook:ask", async (_event, payload: { notebookId: string; chatId: string; question: string; fileIds?: string[]; providerId?: string; model?: string; effort?: string; topK?: number }) => {
+    assertPayload(NotebookAskSchema, payload, "notebook:ask");
     if (ctx.activeRunSessions.has(payload.chatId)) {
       throw new Error("A response is already running in this chat. Stop it before sending another question.");
     }
@@ -359,9 +369,13 @@ export function registerNotebookRoutes(ctx: MainIpcContext): void {
     }
   });
   ipcMain.handle("notebook:embedding:get", () => getNotebookEmbeddingConfig());
-  ipcMain.handle("notebook:embedding:save", (_event, config: { providerId: string; model: string }) => saveNotebookEmbeddingConfig(config));
+  ipcMain.handle("notebook:embedding:save", (_event, config: { providerId: string; model: string }) => {
+    assertPayload(NotebookEmbeddingSaveSchema, config, "notebook:embedding:save");
+    return saveNotebookEmbeddingConfig(config);
+  });
   ipcMain.handle("notebook:embedding-providers:list", async () => (await listEmbeddingProviders()).map((p) => ({ ...p, apiKey: p.apiKey ? "********" : "" })));
   ipcMain.handle("notebook:embedding-provider:save", async (_event, input: Omit<EmbeddingProviderConfig, "id"> & { id?: string }) => {
+    assertPayload(NotebookEmbeddingProviderSchema, input, "notebook:embedding-provider:save");
     const existing = input.id ? (await listEmbeddingProviders()).find((p) => p.id === input.id) : undefined;
     const payload = { ...input, apiKey: isMaskedSecret(input.apiKey) ? existing?.apiKey || "" : input.apiKey };
     return (await upsertEmbeddingProvider(payload)).map((p) => ({ ...p, apiKey: p.apiKey ? "********" : "" }));
