@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState, type KeyboardEvent, type R
 import {
   Sparkles, GitBranch, RotateCcw, Check, FileCode2,
   Paperclip, FileText, Plus, Square, ArrowUp, ShieldCheck, ChevronDown, X,
-  Bug, Code2, CheckCircle2,
+  Bug, Code2, CheckCircle2, Compass, MessageSquare, Zap, Flame, Terminal
 } from "lucide-react";
 import { WorktreeBar } from "../components/worktree/WorktreeBar.js";
 import { SlashCommandPopup, filterSlashCommands, DEFAULT_SLASH_COMMANDS, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
@@ -629,6 +629,40 @@ export function AgentView({
     }
   }, [messages, liveEvents, streamingText]);
 
+  // Keep pinned to bottom when lazy visual content (e.g. images, charts, diagrams) loads or resizes
+  useEffect(() => {
+    const el = transcriptRef.current;
+    if (!el) return;
+
+    const handleImageLoaded = () => {
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (stickToBottomRef.current || distFromBottom < 400) {
+        stickToBottomRef.current = true;
+        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      }
+    };
+    window.addEventListener("nexus:chat-image-loaded", handleImageLoaded);
+
+    let prevHeight = el.scrollHeight;
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(() => {
+        const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+        if ((stickToBottomRef.current || distFromBottom < 300) && el.scrollHeight !== prevHeight) {
+          el.scrollTop = el.scrollHeight;
+        }
+        prevHeight = el.scrollHeight;
+      });
+      observer.observe(el);
+      Array.from(el.children).forEach((child) => observer?.observe(child));
+    }
+
+    return () => {
+      window.removeEventListener("nexus:chat-image-loaded", handleImageLoaded);
+      observer?.disconnect();
+    };
+  }, [messages.length, liveEvents.length, streamingText]);
+
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
@@ -968,31 +1002,32 @@ export function AgentView({
         onScroll={() => {
           const el = transcriptRef.current;
           if (!el) return;
-          stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 240;
         }}
       >
         {!messages.length && (
-          <div className="empty-agent">
-            <div className="empty-agent-icon">
-              <Sparkles size={20} />
+          <div className="empty-agent codex-hero">
+            <div className="empty-agent-icon codex-hero-icon">
+              <Terminal size={22} />
             </div>
-            <h2>Start a coding session</h2>
+            <div className="codex-hero-badge">OPENAI CODEX ENGINE · {mode.toUpperCase()} MODE</div>
+            <h2>What should we build or fix today?</h2>
             <p>
-              Ask for a feature, a bug fix, a refactor, or a code review. Type @ to reference files,
-              or / for slash shortcuts.
+              Autonomous software engineering with live diffs, sandboxed terminal execution, and instant checkpoints. Reference files with <code>@</code> or run commands with <code>/</code>.
             </p>
-            <div className="starter-prompts">
+            <div className="starter-prompts codex-starter-grid">
               {AGENT_STARTERS.map((starter) => (
                 <button
                   key={starter.label}
                   type="button"
+                  className="codex-starter-card"
                   onClick={() => {
                     setDraft(starter.prompt);
                     textareaRef.current?.focus();
                   }}
                 >
-                  {starter.icon}
-                  <span>{starter.label}</span>
+                  <span className="codex-starter-icon">{starter.icon}</span>
+                  <span className="codex-starter-label">{starter.label}</span>
                 </button>
               ))}
             </div>
@@ -1207,15 +1242,24 @@ export function AgentView({
                   </div>
                 )}
               </div>
-              <div className="mode-select">
-                {["Plan", "Ask", "Auto", "Full"].map((item) => (
+              <div className="mode-select" role="radiogroup" aria-label="Execution autonomy mode">
+                {([
+                  { id: "Plan", icon: <Compass size={12} />, hint: "Plan mode — design architecture & step-by-step plan before editing" },
+                  { id: "Ask", icon: <MessageSquare size={12} />, hint: "Ask mode — read-only codebase Q&A and explanations" },
+                  { id: "Auto", icon: <Zap size={12} />, hint: "Auto mode — autonomous coding with standard command safety checks" },
+                  { id: "Full", icon: <Flame size={12} />, hint: "Full Access — every command runs without approval prompts (destructive guardrails still enforced)" },
+                ] as const).map((item) => (
                   <button
-                    key={item}
-                    className={`${mode === item ? "active" : ""}${item === "Full" ? " mode-full" : ""}`}
-                    onClick={() => setMode(item)}
-                    title={item === "Full" ? "Full Access: every command runs without approval prompts (destructive guardrails still enforced)" : undefined}
+                    key={item.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={mode === item.id}
+                    className={`mode-pill-btn ${mode === item.id ? "active" : ""}${item.id === "Full" ? " mode-full" : ""}`}
+                    onClick={() => setMode(item.id)}
+                    title={item.hint}
                   >
-                    {item}
+                    <span className="mode-pill-icon">{item.icon}</span>
+                    <span>{item.id}</span>
                   </button>
                 ))}
               </div>

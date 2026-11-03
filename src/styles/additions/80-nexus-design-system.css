@@ -83,19 +83,20 @@ html {
   margin: 0 0 var(--space-6);
 }
 
-/* Turns ease in — keeps streaming and history renders feeling alive. */
+/* Turns ease in — keeps streaming and history renders feeling alive.
+   OPACITY ONLY: a transform here would make every message a containing
+   block for fixed-positioned descendants while animating (the lightbox
+   overlay lives inside a message) — the stacked-image-viewers bug. */
 @keyframes message-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
   }
   to {
     opacity: 1;
-    transform: none;
   }
 }
 .chat-message {
-  animation: message-in 0.22s var(--ease-out);
+  animation: message-in 0.18s var(--ease-out);
 }
 
 /* Streaming answer: blinking accent caret at the growth point. */

@@ -1,0 +1,1439 @@
+/* ==========================================================================
+   81. PROFESSIONAL CHATGPT · CODEX · NOTEBOOKLM UNIFIED REDESIGN
+   Authoritative Master Styling Layer — Phase 2 Theme-Adaptive Refinement
+   Direction: World-class software design, adaptive glassmorphism, hairline borders,
+   generous reading whitespace, interactive micro-animations, and unified polish.
+   Flawlessly responsive across ALL 10 themes (Dark Emerald, Dark White, Warm Alabaster, etc.).
+   ========================================================================== */
+
+/* ── 1. GLOBAL CANVAS & FOUNDATIONS ─────────────────────────────────────── */
+:root {
+  --radius-capsule: 26px;
+  --radius-card: 14px;
+  --radius-pill: 999px;
+  --shadow-omnibox: 0 16px 48px rgba(0, 0, 0, 0.38), 0 2px 8px rgba(0, 0, 0, 0.2);
+  --shadow-card: 0 4px 20px rgba(0, 0, 0, 0.25);
+  --shadow-hover: 0 8px 32px rgba(0, 0, 0, 0.35);
+  --shadow-subtle: 0 2px 8px rgba(0, 0, 0, 0.18);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.28);
+  --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Light Theme Shadow & Ambient Light Adaptations */
+html[data-theme="alabaster"],
+html[data-theme="daylight"] {
+  --shadow-omnibox: 0 12px 36px rgba(40, 25, 10, 0.10), 0 2px 8px rgba(40, 25, 10, 0.05);
+  --shadow-card: 0 3px 14px rgba(40, 25, 10, 0.07);
+  --shadow-hover: 0 8px 24px rgba(40, 25, 10, 0.12);
+  --shadow-subtle: 0 1px 5px rgba(40, 25, 10, 0.06);
+  --shadow-sm: 0 1px 2px rgba(40, 25, 10, 0.08);
+  --shadow-md: 0 4px 12px rgba(40, 25, 10, 0.10);
+}
+
+.product-shell {
+  background: var(--bg) !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font-sans) !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── 2. TOPBAR & AREA MODE SWITCHER (Home / Codex / Notebook) ───────────── */
+.product-topbar {
+  height: 48px !important;
+  background: var(--panel) !important;
+  border-bottom: 1px solid var(--border) !important;
+  backdrop-filter: blur(24px) !important;
+  -webkit-backdrop-filter: blur(24px) !important;
+  padding: 0 12px 0 14px !important;
+  box-shadow: 0 1px 0 var(--border) !important;
+  z-index: 50;
+  display: flex !important;
+  align-items: center !important;
+}
+
+.product-logo {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 5px 9px !important;
+  border-radius: 8px !important;
+  cursor: pointer !important;
+  transition: background 0.15s var(--ease-spring) !important;
+}
+
+.product-logo:hover {
+  background: var(--surface-2) !important;
+}
+
+.nexus-title {
+  font-size: 13.5px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  color: var(--text-primary) !important;
+}
+
+.nexus-cursor {
+  color: var(--accent) !important;
+  font-weight: 800 !important;
+  animation: cursorPulse 1.2s ease-in-out infinite !important;
+}
+
+/* Unified Segmented Mode Switcher (Home Chat · Code Codex · Notebook Studio) */
+.area-tabs {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 3px !important;
+  background: var(--surface-2) !important;
+  border: 1px solid var(--border-strong) !important;
+  padding: 3px !important;
+  border-radius: 999px !important;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.08) !important;
+}
+
+.area-tabs button.area-tab {
+  height: 29px !important;
+  padding: 0 14px !important;
+  border-radius: 999px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: var(--text-secondary) !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  cursor: pointer !important;
+  transition: all 0.18s var(--ease-spring) !important;
+}
+
+.area-tabs button.area-tab .area-tab-icon {
+  opacity: 0.75 !important;
+  transition: opacity 0.15s ease !important;
+}
+
+.area-tabs button.area-tab .area-tab-sub {
+  font-size: 9.5px !important;
+  font-weight: 600 !important;
+  padding: 1px 6px !important;
+  border-radius: 999px !important;
+  background: var(--surface-1) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-secondary) !important;
+  letter-spacing: 0.02em !important;
+}
+
+.area-tabs button.area-tab:hover:not(.active) {
+  color: var(--text-primary) !important;
+  background: var(--surface-1) !important;
+}
+
+.area-tabs button.area-tab.active {
+  background: var(--surface-1) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-strong) !important;
+  box-shadow: var(--shadow-subtle), 0 0 0 1px var(--border) !important;
+}
+
+.area-tabs button.area-tab.active .area-tab-icon {
+  opacity: 1 !important;
+  color: var(--accent) !important;
+}
+
+.area-tabs button.area-tab.active .area-tab-sub {
+  background: var(--accent-soft) !important;
+  color: var(--accent-strong) !important;
+  border-color: var(--accent) !important;
+}
+
+/* Topbar Center Capsule */
+.session-top-title {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 4px 14px !important;
+  border-radius: 999px !important;
+  background: var(--surface-2) !important;
+  border: 1px solid var(--border) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  color: var(--text-primary) !important;
+  max-width: 360px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+/* Sidebar Toggle & Settings Buttons in Topbar */
+.sidebar-toggle-btn {
+  width: 32px !important;
+  height: 32px !important;
+  border-radius: 8px !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  display: inline-grid !important;
+  place-items: center !important;
+  cursor: pointer !important;
+  transition: all 0.15s var(--ease-spring) !important;
+}
+
+.sidebar-toggle-btn:hover {
+  background: var(--surface-2) !important;
+  border-color: var(--border) !important;
+  color: var(--text-primary) !important;
+}
+
+.sidebar-toggle-btn.active {
+  background: var(--accent-soft) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent-strong) !important;
+}
+
+.top-settings-btn {
+  height: 32px !important;
+  padding: 0 12px !important;
+  border-radius: 999px !important;
+  border: 1px solid var(--border) !important;
+  background: var(--surface-2) !important;
+  color: var(--text-primary) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  cursor: pointer !important;
+  transition: all 0.16s var(--ease-spring) !important;
+}
+
+.top-settings-btn:hover,
+.top-settings-btn.active {
+  border-color: var(--accent) !important;
+  background: var(--accent-soft) !important;
+  color: var(--accent-strong) !important;
+  box-shadow: 0 0 16px var(--nexus-glow) !important;
+}
+
+/* ── 3. LEFT SIDEBAR (ChatGPT Conversations & Codex Workspaces) ─────────── */
+.session-pane {
+  width: 268px !important;
+  background: var(--surface-1) !important;
+  border-right: 1px solid var(--border) !important;
+  padding: 14px 10px 10px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+  transition: transform 0.22s var(--ease-spring), opacity 0.2s ease, width 0.22s var(--ease-spring) !important;
+}
+
+.session-pane.closing {
+  transform: translateX(-100%) !important;
+  opacity: 0 !important;
+}
+
+.ds-sidebar-top {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 2px 6px 6px !important;
+}
+
+.ds-brand-row {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.ds-brand-icon {
+  color: var(--accent-strong) !important;
+}
+
+.ds-brand {
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  color: var(--text-primary) !important;
+  letter-spacing: -0.01em !important;
+}
+
+/* "New Chat" Pill Button (ChatGPT / Codex Style) */
+.ds-new-chat {
+  display: flex !important;
+  align-items: center !important;
+  gap: 9px !important;
+  width: 100% !important;
+  height: 38px !important;
+  padding: 0 14px !important;
+  border-radius: 11px !important;
+  border: 1px solid var(--border-strong) !important;
+  background: var(--surface-2) !important;
+  color: var(--text-primary) !important;
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+  transition: all 0.16s var(--ease-spring) !important;
+}
+
+.ds-new-chat:hover {
+  border-color: var(--accent) !important;
+  background: var(--accent-soft) !important;
+  color: var(--accent-strong) !important;
+  box-shadow: 0 2px 14px var(--nexus-glow) !important;
+  transform: translateY(-1px);
+}
+
+.ds-shortcut-badge {
+  margin-left: auto !important;
+  font-family: var(--font-mono) !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  padding: 2px 6px !important;
+  border-radius: 5px !important;
+  background: var(--surface-1) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-tertiary) !important;
+}
+
+/* Search Bar in Sidebar */
+.ds-search {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  height: 34px !important;
+  padding: 0 11px !important;
+  border-radius: 9px !important;
+  border: 1px solid var(--border) !important;
+  background: var(--bg) !important;
+  color: var(--text-secondary) !important;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease !important;
+}
+
+.ds-search:focus-within {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px var(--nexus-glow) !important;
+}
+
+.ds-search input {
+  flex: 1 !important;
+  border: 0 !important;
+  outline: 0 !important;
+  background: transparent !important;
+  font-size: 12px !important;
+  color: var(--text-primary) !important;
+}
+
+.ds-search input::placeholder {
+  color: var(--text-tertiary) !important;
+}
+
+.ds-search-clear {
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--text-tertiary) !important;
+  cursor: pointer !important;
+  padding: 2px !important;
+  display: grid !important;
+  place-items: center !important;
+  border-radius: 4px !important;
+}
+
+.ds-search-clear:hover {
+  color: var(--text-primary) !important;
+}
+
+/* Sidebar List & Groups (Today, Previous 7 Days) */
+.ds-session-list {
+  flex: 1 !important;
+  overflow-y: auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 12px !important;
+  padding-right: 2px !important;
+}
+
+.ds-group-label {
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase !important;
+  color: var(--text-tertiary) !important;
+  padding: 4px 8px 2px !important;
+}
+
+.session-row {
+  display: flex !important;
+  align-items: center !important;
+  gap: 9px !important;
+  padding: 8px 10px !important;
+  border-radius: 8px !important;
+  font-size: 12px !important;
+  color: var(--text-secondary) !important;
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  cursor: pointer !important;
+  transition: all 0.14s ease !important;
+  width: 100% !important;
+  text-align: left !important;
+  position: relative !important;
+}
+
+.session-row:hover:not(.active) {
+  background: var(--surface-2) !important;
+  color: var(--text-primary) !important;
+}
+
+.session-row.active {
+  background: var(--accent-soft) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent-strong) !important;
+  font-weight: 600 !important;
+}
+
+.session-row.active::before {
+  content: "" !important;
+  position: absolute !important;
+  left: 0 !important;
+  top: 6px !important;
+  bottom: 6px !important;
+  width: 3px !important;
+  border-radius: 0 3px 3px 0 !important;
+  background: var(--accent) !important;
+}
+
+.session-row span {
+  flex: 1 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.session-row small {
+  font-family: var(--font-mono) !important;
+  font-size: 9.5px !important;
+  color: var(--text-tertiary) !important;
+  padding: 1px 5px !important;
+  border-radius: 999px !important;
+  background: var(--surface-1) !important;
+  border: 1px solid var(--border) !important;
+}
+
+.session-row .row-edit,
+.session-row .row-delete {
+  opacity: 0 !important;
+  padding: 3px !important;
+  border-radius: 4px !important;
+  transition: opacity 0.15s ease, background 0.15s ease !important;
+  color: var(--text-secondary) !important;
+}
+
+.session-row:hover .row-edit,
+.session-row:hover .row-delete {
+  opacity: 1 !important;
+}
+
+.session-row .row-edit:hover {
+  background: var(--surface-1) !important;
+  color: var(--text-primary) !important;
+}
+
+.session-row .row-delete:hover {
+  background: rgba(239, 68, 68, 0.18) !important;
+  color: #ef4444 !important;
+}
+
+.session-row.editing {
+  background: var(--surface-2) !important;
+  border-color: var(--accent) !important;
+  padding: 4px 8px !important;
+}
+
+.session-rename-input {
+  flex: 1 !important;
+  border: 0 !important;
+  outline: 0 !important;
+  background: transparent !important;
+  color: var(--text-primary) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+}
+
+/* Sidebar Footer Profile Card */
+.ds-sidebar-footer {
+  padding-top: 8px !important;
+  border-top: 1px solid var(--border) !important;
+}
+
+.ds-footer-btn {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  width: 100% !important;
+  padding: 8px 10px !important;
+  border-radius: 10px !important;
+  background: var(--surface-2) !important;
+  border: 1px solid var(--border) !important;
+  cursor: pointer !important;
+  text-align: left !important;
+  transition: all 0.16s var(--ease-spring) !important;
+}
+
+.ds-footer-btn:hover {
+  border-color: var(--accent) !important;
+  background: var(--surface-1) !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+
+.ds-avatar-badge {
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 7px !important;
+  background: var(--accent-soft) !important;
+  border: 1px solid var(--accent) !important;
+  color: var(--accent-strong) !important;
+  font-family: var(--font-mono) !important;
+  font-weight: 700 !important;
+  font-size: 11px !important;
+  display: grid !important;
+  place-items: center !important;
+}
+
+.ds-footer-meta {
+  display: flex !important;
+  flex-direction: column !important;
+  min-width: 0 !important;
+  flex: 1 !important;
+}
+
+.ds-profile-name {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: var(--text-primary) !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.ds-profile-sub {
+  font-size: 10px !important;
+  color: var(--text-tertiary) !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.ds-footer-icon {
+  color: var(--text-secondary) !important;
+}
+
+/* Reopen Button living inside the sub-topbar when sidebar is closed */
+.topbar-reopen {
+  width: 32px !important;
+  height: 32px !important;
+  border-radius: 8px !important;
+  background: var(--surface-2) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-secondary) !important;
+  display: inline-grid !important;
+  place-items: center !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+}
+
+.topbar-reopen:hover {
+  background: var(--accent-soft) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent-strong) !important;
+}
+
+/* ── 4. CHAT FEED & MESSAGE TYPOGRAPHY (ChatGPT / Codex Stream) ─────────── */
+.home-transcript,
+.agent-transcript {
+  width: 100% !important;
+  padding: 18px 24px 100px !important;
+  scroll-behavior: smooth !important;
+}
+
+.home-transcript > *,
+.agent-transcript > * {
+  max-width: 808px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.home-transcript > *:last-child,
+.agent-transcript > *:last-child {
+  margin-bottom: 48px !important;
+}
+
+/* Home Sub-Topbar Title & Secondary Action Pills */
+.home-topbar {
+  height: 48px !important;
+  background: var(--bg) !important;
+  border-bottom: 1px solid var(--border) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 0 20px !important;
+}
+
+.home-topbar-title {
+  font-size: 13.5px !important;
+  font-weight: 600 !important;
+  color: var(--text-primary) !important;
+  letter-spacing: -0.01em !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.agent-view-meta {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.panel-menu-btn {
+  height: 29px !important;
+  padding: 0 11px !important;
+  border-radius: 999px !important;
+  border: 1px solid var(--border) !important;
+  background: var(--surface-2) !important;
+  color: var(--text-secondary) !important;
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+}
+
+.panel-menu-btn:hover {
+  background: var(--surface-1) !important;
+  border-color: var(--border-strong) !important;
+  color: var(--text-primary) !important;
+}
+
+.panel-menu-btn.active {
+  background: var(--accent-soft) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent-strong) !important;
+}
+
+/* User Message: Sleek elevated bubble */
+.chat-message.user {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-end !important;
+  margin-bottom: 24px !important;
+}
+
+.chat-message.user .chat-message-text {
+  max-width: min(82%, 660px) !important;
+  border-radius: 18px !important;
+  background: var(--surface-2) !important;
+  border: 1px solid var(--border-strong) !important;
+  padding: 12px 18px !important;
+  font-size: 14px !important;
+  line-height: 1.6 !important;
+  color: var(--text-primary) !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+
+/* Assistant Message: Clean editorial reading layout */
+.chat-message.assistant {
+  margin-bottom: 32px !important;
+}
+
+.chat-message.assistant .chat-author {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  margin-bottom: 8px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: var(--text-secondary) !important;
+}
+
+.chat-message.assistant .agent-avatar {
+  width: 24px !important;
+  height: 24px !important;
+  border-radius: 6px !important;
+  background: var(--accent-soft) !important;
+  border: 1px solid var(--accent) !important;
+  color: var(--accent-strong) !important;
+  display: inline-grid !important;
+  place-items: center !important;
+}
+
+.chat-message.assistant .chat-message-text {
+  font-size: 14.5px !important;
+  line-height: 1.72 !important;
+  color: var(--text-primary) !important;
+}
+
+/* Code Blocks in Chat (Codex IDE Dark Chrome) */
+.chat-message-text pre {
+  margin: 16px 0 !important;
+  border-radius: 12px !important;
+  background: var(--surface-1) !important;
+  border: 1px solid var(--border-strong) !important;
+  padding: 16px 20px !important;
+  box-shadow: var(--shadow-md) !important;
+  overflow-x: auto !important;
+}
+
+.chat-message-text pre code {
+  font-family: var(--font-mono) !important;
+  font-size: 13px !important;
+  line-height: 1.55 !important;
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+/* Codex Starter Grid (Empty State) */
+.codex-hero {
+  max-width: 680px !important;
+  margin: 40px auto !important;
+  text-align: center !important;
+}
+
+.codex-hero-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  padding: 4px 12px !important;
+  border-radius: 999px !important;
+  background: var(--accent-soft) !important;
+  border: 1px solid var(--accent) !important;
+  color: var(--accent-strong) !important;
+  font-size: 10.5px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.05em !important;
+  margin-bottom: 14px !important;
+}
+
+.codex-hero h2 {
+  font-size: 28px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.025em !important;
+  color: var(--text-primary) !important;
+  margin-bottom: 10px !important;
+}
+
+.codex-hero p {
+  font-size: 14px !important;
+  line-height: 1.6 !important;
+  color: var(--text-secondary) !important;
+}
+
+.codex-starter-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, 1fr) !important;
+  gap: 10px !important;
+  margin-top: 24px !important;
+}
+
+.codex-starter-card {
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  padding: 12px 14px !important;
+  border-radius: 12px !important;
+  background: var(--surface-1) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-secondary) !important;
+  cursor: pointer !important;
+  text-align: left !important;
+  transition: all 0.16s var(--ease-spring) !important;
+}
+
+.codex-starter-card:hover {
+  border-color: var(--accent) !important;
+  background: var(--surface-2) !important;
+  color: var(--text-primary) !important;
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-sm) !important;
+}
+
+.codex-starter-icon {
+  color: var(--accent) !important;
+}
+
+.codex-starter-label {
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+}
+
+/* ── 5. COMPOSER OMNIBOX & EXECUTION MODES (Codex + ChatGPT Parity) ─────── */
+.agent-input-area {
+  max-width: 808px !important;
+  margin: 0 auto !important;
+  width: 100% !important;
+  padding: 0 20px 20px !important;
+  position: relative !important;
+  z-index: 10 !important;
+}
+
+.agent-input {
+  border-radius: var(--radius-capsule) !important;
+  border: 1px solid var(--border-strong) !important;
+  background: var(--surface-1) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  padding: 14px 16px 12px !important;
+  box-shadow: var(--shadow-omnibox) !important;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease !important;
+}
+
+.agent-input:focus-within {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px var(--nexus-glow), var(--shadow-omnibox) !important;
+}
+
+.agent-input textarea {
+  font-size: 14px !important;
+  line-height: 1.6 !important;
+  color: var(--text-primary) !important;
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  resize: none !important;
+}
+
+.agent-input textarea::placeholder {
+  color: var(--text-tertiary) !important;
+}
+
+/* Action Tray inside Omnibox */
+.attach-button {
+  width: 32px !important;
+  height: 32px !important;
+  border-radius: 999px !important;
+  border: 1px solid var(--border) !important;
+  background: var(--surface-2) !important;
+  color: var(--text-secondary) !important;
+  display: inline-grid !important;
+  place-items: center !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+}
+
+.attach-button:hover {
+  background: var(--surface-1) !important;
+  border-color: var(--border-strong) !important;
+  color: var(--text-primary) !important;
+}
+
+/* Codex / ChatGPT Autonomy Mode Pills inside Composer */
+.mode-select {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 2px !important;
+  padding: 2px !important;
+  border-radius: 999px !important;
+  background: var(--bg) !important;
+  border: 1px solid var(--border) !important;
+}
+
+.mode-pill-btn {
+  height: 26px !important;
+  padding: 0 11px !important;
+  border-radius: 999px !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+}
+
+.mode-pill-btn:hover:not(.active) {
+  color: var(--text-primary) !important;
+  background: var(--surface-2) !important;
+}
+
+.mode-pill-btn.active {
+  background: var(--accent-soft) !important;
+  color: var(--accent-strong) !important;
+  border-color: var(--accent) !important;
+}
+
+.mode-pill-btn.active.mode-full {
+  background: rgba(245, 158, 11, 0.16) !important;
+  border-color: #f59e0b !important;
+  color: #fbbf24 !important;
+}
+
+.send-button {
+  width: 34px !important;
+  height: 34px !important;
+  border-radius: 999px !important;
+  border: 1px solid var(--accent) !important;
+  background: var(--accent) !important;
+  color: #ffffff !important;
+  display: inline-grid !important;
+  place-items: center !important;
+  cursor: pointer !important;
+  transition: all 0.18s var(--ease-spring) !important;
+  box-shadow: 0 2px 10px var(--nexus-glow) !important;
+}
+
+.send-button:hover:not(:disabled) {
+  background: var(--accent-strong) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px var(--nexus-glow) !important;
+}
+
+.send-button:disabled {
+  opacity: 0.35 !important;
+  border-color: var(--border) !important;
+  background: var(--surface-2) !important;
+  color: var(--text-tertiary) !important;
+  cursor: not-allowed !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+.stop-button {
+  width: 34px !important;
+  height: 34px !important;
+  border-radius: 999px !important;
+  border: 1px solid var(--red) !important;
+  background: var(--red) !important;
+  color: #ffffff !important;
+  display: inline-grid !important;
+  place-items: center !important;
+  cursor: pointer !important;
+  transition: all 0.16s ease !important;
+}
+
+/* ── 6. SETTINGS MODAL & SETTING PAGES (ChatGPT & Codex Parity) ─────────── */
+.modal-layer {
+  background: rgba(0, 0, 0, 0.6) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+}
+
+.modal-card.settings-modal-card {
+  width: min(94vw, 920px) !important;
+  height: min(88vh, 660px) !important;
+  max-height: 88vh !important;
+  padding: 0 !important;
+  border-radius: 18px !important;
+  border: 1px solid var(--border-strong) !important;
+  background: var(--panel) !important;
+  box-shadow: var(--shadow-omnibox) !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.modal-card.settings-modal-card .modal-card-head {
+  padding: 16px 24px !important;
+  margin: 0 !important;
+  border-bottom: 1px solid var(--border) !important;
+  background: var(--surface-1) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+}
+
+.modal-card.settings-modal-card .modal-card-head h2 {
+  font-size: 17px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  color: var(--text-primary) !important;
+  margin: 0 !important;
+}
+
+.modal-card.settings-modal-card .modal-card-head p {
+  font-size: 11px !important;
+  color: var(--text-secondary) !important;
+  margin: 2px 0 0 !important;
+}
+
+.settings-layout {
+  display: flex !important;
+  flex: 1 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+.settings-side {
+  width: 240px !important;
+  flex: none !important;
+  background: var(--surface-1) !important;
+  border-right: 1px solid var(--border) !important;
+  padding: 14px 12px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 12px !important;
+}
+
+.settings-side-search {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  height: 34px !important;
+  padding: 0 11px !important;
+  border-radius: 9px !important;
+  border: 1px solid var(--border-strong) !important;
+  background: var(--surface-2) !important;
+  color: var(--text-secondary) !important;
+}
+
+.settings-side-search:focus-within {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px var(--nexus-glow) !important;
+}
+
+.settings-side-search input {
+  flex: 1 !important;
+  border: 0 !important;
+  outline: 0 !important;
+  background: transparent !important;
+  font-size: 12px !important;
+  color: var(--text-primary) !important;
+}
+
+.settings-side-nav {
+  flex: 1 !important;
+  overflow-y: auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 14px !important;
+}
+
+.settings-side-title {
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase !important;
+  color: var(--text-tertiary) !important;
+  padding: 6px 10px 4px !important;
+}
+
+.settings-side-btn {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  width: 100% !important;
+  height: 35px !important;
+  padding: 0 11px !important;
+  border-radius: 9px !important;
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  color: var(--text-secondary) !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  cursor: pointer !important;
+  transition: all 0.14s ease !important;
+}
+
+.settings-side-btn:hover:not(.active) {
+  background: var(--surface-2) !important;
+  color: var(--text-primary) !important;
+}
+
+.settings-side-btn.active {
+  background: var(--accent-soft) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent-strong) !important;
+  font-weight: 600 !important;
+  box-shadow: 0 0 12px var(--nexus-glow) !important;
+}
+
+.settings-side-badge {
+  margin-left: auto !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  padding: 2px 7px !important;
+  border-radius: 999px !important;
+  background: var(--surface-2) !important;
+  color: var(--text-secondary) !important;
+}
+
+.settings-side-badge.active-badge {
+  background: var(--accent-soft) !important;
+  color: var(--accent-strong) !important;
+  border: 1px solid var(--accent) !important;
+}
+
+.settings-body {
+  flex: 1 !important;
+  overflow-y: auto !important;
+  padding: 26px 34px !important;
+  background: var(--panel) !important;
+}
+
+.settings-hero {
+  margin-bottom: 22px !important;
+}
+
+.settings-hero-kicker {
+  font-size: 10.5px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase !important;
+  color: var(--accent) !important;
+}
+
+.settings-hero-title {
+  font-size: 21px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  color: var(--text-primary) !important;
+  margin: 4px 0 6px !important;
+}
+
+.settings-hero-subtitle {
+  font-size: 13px !important;
+  color: var(--text-secondary) !important;
+  line-height: 1.5 !important;
+  margin: 0 !important;
+}
+
+/* Card Groups in Settings */
+.setting-card {
+  border-radius: var(--radius-card) !important;
+  border: 1px solid var(--border) !important;
+  background: var(--surface-1) !important;
+  padding: 18px 20px !important;
+  margin-bottom: 16px !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+
+.setting-row {
+  display: flex !important;
+  align-items: center !important;
+  gap: 14px !important;
+}
+
+.setting-icon {
+  width: 34px !important;
+  height: 34px !important;
+  border-radius: 9px !important;
+  background: var(--surface-2) !important;
+  border: 1px solid var(--border-strong) !important;
+  color: var(--accent) !important;
+  display: grid !important;
+  place-items: center !important;
+  flex: none !important;
+}
+
+.setting-text strong {
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  color: var(--text-primary) !important;
+}
+
+.setting-text small {
+  font-size: 11.5px !important;
+  color: var(--text-secondary) !important;
+  line-height: 1.45 !important;
+}
+
+/* Segmented Controls inside Settings */
+.seg {
+  display: inline-flex !important;
+  padding: 2px !important;
+  border-radius: 999px !important;
+  background: var(--bg) !important;
+  border: 1px solid var(--border-strong) !important;
+}
+
+.seg button {
+  height: 27px !important;
+  padding: 0 12px !important;
+  border-radius: 999px !important;
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  color: var(--text-secondary) !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+}
+
+.seg button:hover:not(.active) {
+  color: var(--text-primary) !important;
+}
+
+.seg button.active {
+  background: var(--surface-2) !important;
+  color: var(--accent-strong) !important;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 10px var(--nexus-glow) !important;
+}
+
+/* Theme Picker Cards in Appearance */
+.theme-grid {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)) !important;
+  gap: 12px !important;
+  margin-top: 14px !important;
+}
+
+.theme-card {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 10px !important;
+  border-radius: 12px !important;
+  border: 1px solid var(--border) !important;
+  background: var(--surface-1) !important;
+  padding: 12px !important;
+  cursor: pointer !important;
+  transition: all 0.16s var(--ease-spring) !important;
+  text-align: left !important;
+}
+
+.theme-card:hover {
+  border-color: var(--border-strong) !important;
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-sm) !important;
+}
+
+.theme-card.selected {
+  border-color: var(--accent) !important;
+  background: var(--accent-soft) !important;
+  box-shadow: 0 0 0 1px var(--accent), 0 4px 18px var(--nexus-glow) !important;
+}
+
+.theme-preview {
+  height: 56px !important;
+  border-radius: 8px !important;
+  border: 1px solid var(--border-strong) !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+}
+
+.theme-meta strong {
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  color: var(--text-primary) !important;
+}
+
+.theme-meta small {
+  font-size: 10.5px !important;
+  color: var(--text-secondary) !important;
+  line-height: 1.35 !important;
+}
+
+.theme-card.selected .theme-check {
+  background: var(--accent) !important;
+  color: #ffffff !important;
+  border-radius: 999px !important;
+  width: 18px !important;
+  height: 18px !important;
+  display: grid !important;
+  place-items: center !important;
+}
+
+/* Provider Manager Polish */
+.provider-card {
+  border-radius: 12px !important;
+  border: 1px solid var(--border) !important;
+  background: var(--surface-2) !important;
+  padding: 12px 14px !important;
+  margin-bottom: 8px !important;
+  transition: all 0.15s ease !important;
+}
+
+.provider-card:hover {
+  border-color: var(--border-strong) !important;
+  background: var(--surface-1) !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+
+.provider-card.active {
+  border-color: var(--accent) !important;
+  background: var(--accent-soft) !important;
+}
+
+.provider-logo {
+  width: 30px !important;
+  height: 30px !important;
+  border-radius: 8px !important;
+  background: var(--surface-1) !important;
+  border: 1px solid var(--border-strong) !important;
+  color: var(--accent-strong) !important;
+  font-weight: 700 !important;
+  display: grid !important;
+  place-items: center !important;
+}
+
+/* ── 7. INLINE IMAGES & MEDIA DISPLAY (Codex & ChatGPT Parity) ──────────── */
+.chat-inline-image-card {
+  margin: 22px auto 30px !important;
+  width: min(100%, 780px) !important;
+  border-radius: 14px !important;
+  background: var(--surface-1) !important;
+  border: 1px solid var(--border-strong) !important;
+  padding: 14px 16px 16px !important;
+  box-shadow: var(--shadow-card) !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+
+.chat-inline-image-card:hover {
+  border-color: var(--accent) !important;
+  box-shadow: var(--shadow-hover) !important;
+}
+
+.chat-inline-image-header {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+  gap: 12px !important;
+  margin-bottom: 12px !important;
+}
+
+.chat-inline-image-title-group {
+  display: flex !important;
+  align-items: center !important;
+  gap: 9px !important;
+  overflow: hidden !important;
+}
+
+.chat-inline-image-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  padding: 3px 8px !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.5px !important;
+  border-radius: 6px !important;
+  text-transform: uppercase !important;
+  flex-shrink: 0 !important;
+}
+
+.chat-inline-image-badge.badge-image {
+  background: var(--accent-soft) !important;
+  color: var(--accent-strong) !important;
+  border: 1px solid var(--accent) !important;
+}
+
+.chat-inline-image-badge.badge-chart {
+  background: rgba(56, 189, 248, 0.14) !important;
+  color: #38bdf8 !important;
+  border: 1px solid rgba(56, 189, 248, 0.35) !important;
+}
+
+.chat-inline-image-badge.badge-diagram {
+  background: rgba(192, 132, 252, 0.14) !important;
+  color: #c084fc !important;
+  border: 1px solid rgba(192, 132, 252, 0.35) !important;
+}
+
+.chat-inline-image-title {
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  color: var(--text-primary) !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.chat-inline-image-body {
+  position: relative !important;
+  border-radius: 10px !important;
+  overflow: hidden !important;
+  background: var(--surface-2) !important;
+  border: 1px solid var(--border) !important;
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  min-height: 160px !important;
+}
+
+.chat-inline-image-preview-wrap {
+  position: relative !important;
+  width: 100% !important;
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  cursor: pointer !important;
+  padding: 10px !important;
+}
+
+.chat-inline-image-img {
+  max-width: 100% !important;
+  height: auto !important;
+  max-height: 520px !important;
+  object-fit: contain !important;
+  display: block !important;
+  border-radius: 8px !important;
+  transition: transform 0.2s ease, filter 0.2s ease !important;
+}
+
+.chat-inline-image-preview-wrap:hover .chat-inline-image-img {
+  filter: brightness(1.04) !important;
+}
+
+.chat-inline-image-zoom-overlay {
+  position: absolute !important;
+  bottom: 14px !important;
+  right: 14px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  padding: 6px 12px !important;
+  background: var(--surface-1) !important;
+  backdrop-filter: blur(12px) !important;
+  border: 1px solid var(--border-strong) !important;
+  border-radius: 8px !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  color: var(--text-primary) !important;
+  box-shadow: var(--shadow-sm) !important;
+  opacity: 0 !important;
+  transition: opacity 0.2s ease, transform 0.2s ease !important;
+  pointer-events: none !important;
+}
+
+.chat-inline-image-preview-wrap:hover .chat-inline-image-zoom-overlay {
+  opacity: 1 !important;
+  transform: translateY(-2px) !important;
+}
+
+/* Lightbox Modal Polish */
+.chat-image-lightbox-overlay {
+  background: rgba(0, 0, 0, 0.88) !important;
+  backdrop-filter: blur(16px) !important;
+  -webkit-backdrop-filter: blur(16px) !important;
+}
+
+.chat-image-lightbox-content {
+  border-radius: 16px !important;
+  border: 1px solid var(--border-strong) !important;
+  box-shadow: 0 24px 90px rgba(0, 0, 0, 0.9) !important;
+  background: var(--panel) !important;
+}
+
+/* ── 8. NOTEBOOK STUDIO & 3-PANE ELEVATION ──────────────────────────────── */
+.notebook-side {
+  border-radius: 16px !important;
+  border: 1px solid var(--border) !important;
+  background: var(--surface-1) !important;
+}
+
+.nb-source-chip,
+.nb-save-note-btn {
+  border-radius: 999px !important;
+  transition: all 0.15s ease !important;
+}
+
+.nb-source-chip:hover,
+.nb-save-note-btn:hover {
+  background: var(--surface-2) !important;
+  color: var(--text-primary) !important;
+}

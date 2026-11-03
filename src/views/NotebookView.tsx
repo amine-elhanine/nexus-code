@@ -828,6 +828,16 @@ export function NotebookView({
     if (el) el.scrollTop = el.scrollHeight;
   }, [messageCount, asking, streaming]);
 
+  useEffect(() => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    const handleImageLoaded = () => {
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    };
+    window.addEventListener("nexus:chat-image-loaded", handleImageLoaded);
+    return () => window.removeEventListener("nexus:chat-image-loaded", handleImageLoaded);
+  }, []);
+
   const latestAnswer = [...(activeChat?.messages || [])].reverse().find((message) => message.role === "assistant" && message.text.trim());
 
   const evalSummary = useMemo(() => {
@@ -983,6 +993,28 @@ export function NotebookView({
           </span>
         </div>
         <div className="nb-topbar-actions">
+          <button
+            className={`drawer-pill-btn${showSources ? " active" : ""}`}
+            onClick={() => setShowSources((v) => !v)}
+            title={showSources ? "Collapse Sources card" : "Open Sources card"}
+          >
+            <PanelLeft size={13} />
+            <span>Sources</span>
+            <em className="drawer-pill-badge">{scopedCount}/{sources.length}</em>
+          </button>
+          <button
+            className={`drawer-pill-btn${showStudio ? " active" : ""}`}
+            onClick={() => setShowStudio((v) => !v)}
+            title={showStudio ? "Collapse Studio card" : "Open Studio card"}
+          >
+            <PanelRight size={13} />
+            <span>Studio</span>
+            {(documents.length + notes.length + quizzes.length + flashcards.length + mindmaps.length + summaries.length + audioOverviews.length) > 0 && (
+              <em className="drawer-pill-badge">
+                {documents.length + notes.length + quizzes.length + flashcards.length + mindmaps.length + summaries.length + audioOverviews.length}
+              </em>
+            )}
+          </button>
           <button className="nb-icon-btn" onClick={onRefresh} title="Refresh sources and stats">
             <RefreshCw size={14} />
           </button>
@@ -1288,8 +1320,10 @@ export function NotebookView({
             <div className="context-resize notebook-resize-right" onPointerDown={startSourcesResize} title="Drag to resize sources sidebar" />
           </aside>
         ) : (
-          <button className="context-restore notebook-restore-left" onClick={() => setShowSources(true)} title="Open sources sidebar">
+          <button className="nb-collapsed-rail nb-collapsed-rail-left" onClick={() => setShowSources(true)} title="Expand Sources card">
             <PanelLeft size={15} />
+            <span className="nb-rail-label">Sources</span>
+            <em className="nb-rail-count">{scopedCount}</em>
           </button>
         )}
 
@@ -1720,8 +1754,12 @@ export function NotebookView({
             </div>
           </aside>
         ) : (
-          <button className="context-restore notebook-restore-right" onClick={() => setShowStudio(true)} title="Open studio sidebar">
+          <button className="nb-collapsed-rail nb-collapsed-rail-right" onClick={() => setShowStudio(true)} title="Expand Studio card">
             <PanelRight size={15} />
+            <span className="nb-rail-label">Studio</span>
+            <em className="nb-rail-count">
+              {documents.length + notes.length + quizzes.length + flashcards.length + mindmaps.length + summaries.length + audioOverviews.length}
+            </em>
           </button>
         )}
       </div>

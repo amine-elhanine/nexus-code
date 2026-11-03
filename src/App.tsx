@@ -3,9 +3,10 @@ import {
   Brain, BookOpen, Check, ChevronDown, ChevronRight, Code2, Coins, Download, FileCode2, FileText,
   Folder, FolderOpen, GitBranch, Home, Menu, Sparkles, X,
   MessageSquare, MoreHorizontal, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Search,
-  Terminal, Trash2, TriangleAlert, Activity
+  Terminal, Trash2, TriangleAlert, Activity, Globe, GitCompare, Layers, SlidersHorizontal, Share2
 } from "lucide-react";
 import { WindowControls } from "./components/common/WindowControls.js";
+import { NexusLogo } from "./components/common/NexusLogo.js";
 import { ConfirmModal } from "./modals/ConfirmModal.js";
 import { ErrorBoundary } from "./components/common/ErrorBoundary.js";
 import { ProviderModal } from "./modals/ProviderModal.js";
@@ -723,25 +724,56 @@ function App() {
 
   return (
     <ErrorBoundary label="app root">
-    <div className="product-shell">
+    <div className={`product-shell area-${area}`}>
       <header className="product-topbar">
         <div className="product-left">
-          <button className="icon-plain" onClick={() => setShowSettings(true)} title="Settings">
-            <Menu size={15} />
-          </button>
-          <div className="product-logo">
+          {area !== "notebook" && (
+            <button
+              className={`icon-plain sidebar-toggle-btn${showSessions ? " active" : ""}`}
+              onClick={() => setShowSessions((v) => !v)}
+              title={showSessions ? "Collapse left sidebar" : "Open left sidebar"}
+            >
+              <PanelLeft size={15} />
+            </button>
+          )}
+          <div className="product-logo" onClick={() => void enterHome()} title="Nexus — Unified AI Workspace" style={{ cursor: "pointer" }}>
+            <NexusLogo size={16} />
             <span className="nexus-title">nexus<span className="nexus-cursor">_</span></span>
           </div>
           <div className="top-separator" />
-          <div className="area-tabs">
-            <button className={area === "home" ? "active" : ""} onClick={() => void enterHome()} title="General assistant">
-              <Home size={13} /> Home
+          <div className="area-tabs" role="tablist" aria-label="Workspace mode">
+            <button
+              role="tab"
+              aria-selected={area === "home"}
+              className={`area-tab area-tab-home ${area === "home" ? "active" : ""}`}
+              onClick={() => void enterHome()}
+              title="Home — ChatGPT-style conversational assistant & deep research"
+            >
+              <Sparkles size={13} className="area-tab-icon" />
+              <span>Home</span>
+              <small className="area-tab-sub">Chat</small>
             </button>
-            <button className={area === "code" ? "active" : ""} onClick={() => void enterCode()} title="Coding agent">
-              <Code2 size={13} /> Code
+            <button
+              role="tab"
+              aria-selected={area === "code"}
+              className={`area-tab area-tab-code ${area === "code" ? "active" : ""}`}
+              onClick={() => void enterCode()}
+              title="Code — Codex-style autonomous engineering & IDE workspace"
+            >
+              <Code2 size={13} className="area-tab-icon" />
+              <span>Code</span>
+              <small className="area-tab-sub">Codex</small>
             </button>
-            <button className={area === "notebook" ? "active" : ""} onClick={() => enterNotebook()} title="NotebookLM-style grounded Q&A over your documents">
-              <BookOpen size={13} /> Notebook
+            <button
+              role="tab"
+              aria-selected={area === "notebook"}
+              className={`area-tab area-tab-notebook ${area === "notebook" ? "active" : ""}`}
+              onClick={() => enterNotebook()}
+              title="Notebook — NotebookLM-style grounded sources & Studio synthesis"
+            >
+              <BookOpen size={13} className="area-tab-icon" />
+              <span>Notebook</span>
+              <small className="area-tab-sub">Studio</small>
             </button>
           </div>
           {area === "code" && (
@@ -823,7 +855,7 @@ function App() {
         </div>
 
         <div className="session-top-title">
-          <span className="green-dot" />
+          <span className={`green-dot${running || home.running || notebook.asking ? " pulsing" : ""}`} />
           <span>{headerTitle}</span>
         </div>
 
@@ -833,6 +865,17 @@ function App() {
               <Terminal size={13} /> Services
             </button>
           )}
+          {area !== "notebook" && (
+            <button
+              className={`icon-plain sidebar-toggle-btn${showContext ? " active" : ""}`}
+              onClick={() => setShowContext((v) => !v)}
+              title={showContext ? "Close right drawer" : "Open right drawer"}
+            >
+              <PanelRight size={15} />
+            </button>
+          )}
+          {/* Settings entry points: the ⋯/hamburger top-left and the sidebar
+              footer button — the duplicate top-right gear was removed. */}
           {(updater.status === "available" || updater.status === "downloading") && (
             <span
               className="update-pill"
@@ -869,23 +912,32 @@ function App() {
         {showLeftSidebar && area === "home" && (
           <aside className={`session-pane home-ds-sidebar${!showSessions ? " closing" : ""}`}>
             <div className="ds-sidebar-top">
-              <span className="ds-brand">Nexus</span>
+              <div className="ds-brand-row">
+                <Sparkles size={14} className="ds-brand-icon" />
+                <span className="ds-brand">Conversations</span>
+              </div>
               <button className="pane-action" onClick={() => setShowSessions(false)} title="Collapse sidebar">
                 <PanelLeft size={14} />
               </button>
             </div>
             <button className="ds-new-chat" onClick={() => void home.createChat()} title="Start a new home chat">
               <Plus size={15} />
-              <span>New conversation</span>
+              <span>New chat</span>
+              <kbd className="ds-shortcut-badge">⌘N</kbd>
             </button>
             <div className="ds-search">
-              <Search size={12} />
+              <Search size={13} />
               <input
                 value={homeSearch}
                 onChange={(event) => setHomeSearch(event.target.value)}
-                placeholder="Search chats…"
+                placeholder="Search conversations…"
                 aria-label="Search home chats"
               />
+              {homeSearch && (
+                <button className="ds-search-clear" onClick={() => setHomeSearch("")} title="Clear search">
+                  <X size={11} />
+                </button>
+              )}
             </div>
             <div className="session-list ds-session-list">
               {groupHomeSessions(home.sessions)
@@ -921,21 +973,48 @@ function App() {
                 <div className="empty-pane">No chats match “{homeSearch.trim()}”.</div>
               )}
             </div>
-            <div className="ds-profile">
-              <span className="ds-profile-name">You</span>
+            <div className="ds-sidebar-footer">
+              <button className="ds-footer-btn" onClick={() => setShowSettings(true)} title="Open Settings">
+                <div className="ds-avatar-badge">N</div>
+                <div className="ds-footer-meta">
+                  <span className="ds-profile-name">Nexus Workspace</span>
+                  <small className="ds-profile-sub">{selectedModel || "Configure AI Models"}</small>
+                </div>
+                <SlidersHorizontal size={14} className="ds-footer-icon" />
+              </button>
             </div>
           </aside>
         )}
         {showLeftSidebar && area === "code" && (
-          <aside className={`session-pane${!showSessions ? " closing" : ""}`}>
+          <aside className={`session-pane codex-sidebar${!showSessions ? " closing" : ""}`}>
+            <div className="ds-sidebar-top codex-sidebar-top">
+              <div className="ds-brand-row">
+                <Code2 size={14} className="ds-brand-icon" />
+                <span className="ds-brand">Codex Workspace</span>
+              </div>
+              <button className="pane-action" onClick={() => setShowSessions(false)} title="Hide sidebar">
+                <PanelLeft size={14} />
+              </button>
+            </div>
+            {activeProject ? (
+              <button className="ds-new-chat codex-new-task" onClick={() => void createSession()} title="New coding task (⌘ N)">
+                <Plus size={15} />
+                <span>New coding task</span>
+                <kbd className="ds-shortcut-badge">⌘N</kbd>
+              </button>
+            ) : (
+              <button className="ds-new-chat codex-new-task" onClick={() => void openProjectFromDialog()} title="Open a project folder">
+                <FolderOpen size={15} />
+                <span>Open repository…</span>
+              </button>
+            )}
             <div className="pane-top">
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span className="context-kicker">PROJECTS</span>
+                <span className="context-kicker">REPOSITORIES</span>
                 <span className="notebook-head-count-pill">{projects.length}</span>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
-                <button className="pane-action" onClick={() => void openProjectFromDialog()} title="New project"><Plus size={14} /></button>
-                <button className="pane-action" onClick={() => setShowSessions(false)} title="Hide sidebar"><PanelLeft size={14} /></button>
+                <button className="pane-action" onClick={() => void openProjectFromDialog()} title="Add repository"><Plus size={14} /></button>
               </div>
             </div>
             <div className="project-list">
@@ -959,13 +1038,13 @@ function App() {
                   </i>
                 </button>
               ))}
-              {!projects.length && <div className="empty-pane">Create a project to start.</div>}
+              {!projects.length && <div className="empty-pane">Open a folder to start coding.</div>}
             </div>
             {activeProject && (
               <>
                 <div className="pane-top sessions-label" style={{ marginTop: 4 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <span className="context-kicker">SESSIONS</span>
+                    <span className="context-kicker">TASKS & THREADS</span>
                     <span className="notebook-head-count-pill">{sortedSessions.length}</span>
                   </div>
                   <button className="pane-action" onClick={() => void createSession()} title="New coding session (⌘ N)"><Plus size={14} /></button>
@@ -989,6 +1068,16 @@ function App() {
                 </div>
               </>
             )}
+            <div className="ds-sidebar-footer">
+              <button className="ds-footer-btn" onClick={() => setShowSettings(true)} title="Open Settings">
+                <div className="ds-avatar-badge codex">C</div>
+                <div className="ds-footer-meta">
+                  <span className="ds-profile-name">{activeProject?.name || "Codex Agent"}</span>
+                  <small className="ds-profile-sub">{gitBranch || "local"} · {mode} mode</small>
+                </div>
+                <SlidersHorizontal size={14} className="ds-footer-icon" />
+              </button>
+            </div>
           </aside>
         )}
 
@@ -1036,19 +1125,70 @@ function App() {
                   <PanelLeft size={15} />
                 </button>
               )}
-              <span>{activeProject?.name || "No project"}</span>
+              <span className="crumb-project">{activeProject?.name || "No repository"}</span>
               <i>/</i>
-              <strong>{view === "chat" ? "Agent session" : activeFile || "Editor"}</strong>
+              <strong>{view === "chat" ? (activeSession?.title || "Codex Thread") : activeFile || "Code Editor"}</strong>
             </div>
             <div className="workspace-actions">
-              <button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}>
-                <MessageSquare size={13} /> Agent
-              </button>
-              <button className={view === "files" ? "active" : ""} onClick={() => setView("files")}>
-                <Code2 size={13} /> Editor
-              </button>
+              <div className="workspace-view-seg" role="group" aria-label="Code view">
+                <button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")} title="Codex Agent Thread">
+                  <MessageSquare size={13} /> Agent
+                </button>
+                <button className={view === "files" ? "active" : ""} onClick={() => setView("files")} title="Monaco File Editor & Explorer">
+                  <FileCode2 size={13} /> Editor
+                </button>
+              </div>
+              <div className="workspace-drawer-pills">
+                <button
+                  className={`drawer-pill-btn${showContext && codeSideTab === "diff" ? " active" : ""}`}
+                  onClick={() => {
+                    void refreshDiff();
+                    if (showContext && codeSideTab === "diff") setShowContext(false);
+                    else openCodeSidePanel("diff");
+                  }}
+                  title="Toggle Git Diff Drawer"
+                >
+                  <GitCompare size={13} />
+                  <span>Diff</span>
+                  {diff.length > 0 && <em className="drawer-pill-badge">{diff.length}</em>}
+                </button>
+                <button
+                  className={`drawer-pill-btn${showContext && codeSideTab === "terminal" ? " active" : ""}`}
+                  onClick={() => {
+                    setTerminalOpened(true);
+                    if (showContext && codeSideTab === "terminal") setShowContext(false);
+                    else openCodeSidePanel("terminal");
+                  }}
+                  title="Toggle Interactive Terminal Drawer"
+                >
+                  <Terminal size={13} />
+                  <span>Terminal</span>
+                </button>
+                <button
+                  className={`drawer-pill-btn${showContext && codeSideTab === "browser" ? " active" : ""}`}
+                  onClick={() => {
+                    if (showContext && codeSideTab === "browser") setShowContext(false);
+                    else openCodeSidePanel("browser");
+                  }}
+                  title="Toggle Built-in Browser Drawer"
+                >
+                  <Globe size={13} />
+                  <span>Browser</span>
+                </button>
+                <button
+                  className={`drawer-pill-btn${showContext && codeSideTab === "memory" ? " active" : ""}`}
+                  onClick={() => {
+                    if (showContext && codeSideTab === "memory") setShowContext(false);
+                    else openCodeSidePanel("memory");
+                  }}
+                  title="Toggle Project & Session Memory Drawer"
+                >
+                  <Brain size={13} />
+                  <span>Memory</span>
+                </button>
+              </div>
               <PanelMenuButton
-                title="Open a side panel"
+                title="More workspace actions"
                 items={[
                   { key: "browser", label: "Browser", hint: "Built-in browser", open: codeSideTabs.includes("browser") },
                   { key: "terminal", label: "Terminal", hint: "Interactive shell", open: codeSideTabs.includes("terminal") },
@@ -1337,18 +1477,55 @@ function App() {
                   ) : undefined
                 }
                 panelMenu={
-                  <PanelMenuButton
-                    title="Open a side panel"
-                    items={[
-                      { key: "artifacts", label: "Artifacts", hint: home.homeSessionFiles.length ? `${home.homeSessionFiles.length} file${home.homeSessionFiles.length === 1 ? "" : "s"}` : "Chat files", open: homeSideTabs.includes("artifacts") },
-                      { key: "browser", label: "Browser", hint: "Built-in browser", open: homeSideTabs.includes("browser") },
-                      { key: "memory", label: "Memory", hint: "Long-term memory", open: homeSideTabs.includes("memory") },
-                    ]}
-                    onPick={(key) => {
-                      if (key === "memory") void home.refreshHomeMemory();
-                      openHomeSidePanel(key as "artifacts" | "browser" | "memory");
-                    }}
-                  />
+                  <div className="workspace-drawer-pills home-drawer-pills">
+                    <button
+                      className={`drawer-pill-btn${showContext && homeSideTab === "artifacts" ? " active" : ""}`}
+                      onClick={() => {
+                        if (showContext && homeSideTab === "artifacts") setShowContext(false);
+                        else openHomeSidePanel("artifacts");
+                      }}
+                      title="Toggle Session Files & Artifacts Drawer"
+                    >
+                      <Layers size={13} />
+                      <span>Artifacts</span>
+                      {home.homeSessionFiles.length > 0 && <em className="drawer-pill-badge">{home.homeSessionFiles.length}</em>}
+                    </button>
+                    <button
+                      className={`drawer-pill-btn${showContext && homeSideTab === "browser" ? " active" : ""}`}
+                      onClick={() => {
+                        if (showContext && homeSideTab === "browser") setShowContext(false);
+                        else openHomeSidePanel("browser");
+                      }}
+                      title="Toggle Built-in Browser Drawer"
+                    >
+                      <Globe size={13} />
+                      <span>Browser</span>
+                    </button>
+                    <button
+                      className={`drawer-pill-btn${showContext && homeSideTab === "memory" ? " active" : ""}`}
+                      onClick={() => {
+                        void home.refreshHomeMemory();
+                        if (showContext && homeSideTab === "memory") setShowContext(false);
+                        else openHomeSidePanel("memory");
+                      }}
+                      title="Toggle Long-Term Memory Drawer"
+                    >
+                      <Brain size={13} />
+                      <span>Memory</span>
+                    </button>
+                    <PanelMenuButton
+                      title="Open a side panel"
+                      items={[
+                        { key: "artifacts", label: "Artifacts", hint: home.homeSessionFiles.length ? `${home.homeSessionFiles.length} file${home.homeSessionFiles.length === 1 ? "" : "s"}` : "Chat files", open: homeSideTabs.includes("artifacts") },
+                        { key: "browser", label: "Browser", hint: "Built-in browser", open: homeSideTabs.includes("browser") },
+                        { key: "memory", label: "Memory", hint: "Long-term memory", open: homeSideTabs.includes("memory") },
+                      ]}
+                      onPick={(key) => {
+                        if (key === "memory") void home.refreshHomeMemory();
+                        openHomeSidePanel(key as "artifacts" | "browser" | "memory");
+                      }}
+                    />
+                  </div>
                 }
                 onDownloadFile={(relPath) => void api.downloadHomeFile(relPath)}
                 attachedImages={home.attachedImages}

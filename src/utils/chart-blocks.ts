@@ -157,7 +157,7 @@ export function parsePieChart(source: string, forceDonut = false): PieSpec | nul
   return spec;
 }
 
-export type RadarAxis = { label: string; values: number[] };
+export type RadarAxis = { label: string; values: number[]; value?: number };
 export type RadarSpec = {
   title: string;
   max: number;
@@ -190,7 +190,7 @@ export function parseRadarChart(source: string): RadarSpec | null {
       // Single-value axes keep the classic one-polygon radar; the series count
       // locks on the FIRST value and every following axis must match it.
       if (spec.axes.length && values.length !== spec.axes[0].values.length) continue;
-      spec.axes.push({ label: match[1], values });
+      spec.axes.push({ label: match[1], values, value: values[0] });
     }
   }
   if (spec.axes.length < 3) return null;
