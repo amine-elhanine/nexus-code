@@ -1,0 +1,29 @@
+.rollback-card {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+  margin: 12px 0 16px !important;
+  padding: 11px 16px !important;
+  border: 1px solid var(--line2) !important;
+  border-radius: 9px !important;
+  background: var(--panel2) !important;
+  color: var(--text) !important;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08) !important;
+}
+
+.rollback-info {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  font-size: 11px !important;
+  color: var(--text) !important;
+}
+
+.rollback-info strong {
+  color: var(--text) !important;
+}
+
+.rollback-info svg {
+  color: var(--nexus-green) !important;
+}

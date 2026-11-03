@@ -1,0 +1,47 @@
+.topbar-reopen {
+  flex: none;
+  margin-right: 2px;
+}
+
+/* Top bar: title stays left, next to the sidebar-reopen button (never centered) */
+.home-topbar-title {
+  margin-right: auto;
+}
+
+/* Left sidebar: slide in on open, slide out on close.
+   Negative margin frees the layout width so the content reflows smoothly
+   while the pane slides away; the pane stays mounted ~250ms on close. */
+.session-pane {
+  overflow: hidden;
+  animation: sidebarSlideIn 0.24s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+@keyframes sidebarSlideIn {
+  from {
+    margin-left: -300px;
+    transform: translateX(-48px);
+    opacity: 0.4;
+  }
+  to {
+    margin-left: 0;
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.session-pane.closing {
+  animation: sidebarSlideOut 0.24s cubic-bezier(0.55, 0.06, 0.68, 0.19) forwards;
+}
+
+@keyframes sidebarSlideOut {
+  from {
+    margin-left: 0;
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    margin-left: -300px;
+    transform: translateX(-48px);
+    opacity: 0;
+  }
+}

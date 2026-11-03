@@ -1,0 +1,37 @@
+.area-tabs {
+  display: flex !important;
+  align-items: center !important;
+  gap: 3px !important;
+  background: var(--panel2) !important;
+  padding: 3px !important;
+  border-radius: 8px !important;
+  border: 1px solid var(--line) !important;
+}
+
+.area-tabs button {
+  height: 27px !important;
+  padding: 0 10px !important;
+  border-radius: 6px !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  color: var(--muted) !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  transition: all 0.15s ease !important;
+}
+
+.area-tabs button:hover:not(.active) {
+  color: var(--text) !important;
+  background: rgba(127, 127, 127, 0.08) !important;
+}
+
+.area-tabs button.active {
+  background: var(--accent-soft) !important;
+  color: var(--nexus-bright) !important;
+  font-weight: 600 !important;
+  border: 1px solid var(--nexus-green) !important;
+  box-shadow: 0 0 12px var(--nexus-glow) !important;
+}

@@ -1,0 +1,28 @@
+.starter-prompts {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.starter-prompts button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.starter-prompts button:hover {
+  border-color: var(--nexus-green);
+  color: var(--nexus-bright);
+  background: var(--accent-soft);
+  transform: translateY(-1px);
+}

@@ -1,0 +1,34 @@
+.workspace-actions .panel-menu-btn {
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  border-radius: 6px;
+  color: #aab4c2;
+}
+
+.workspace-actions .panel-menu-btn:hover,
+.workspace-actions .panel-menu-btn.active {
+  border-color: var(--nexus-green);
+  background: var(--accent-soft);
+  color: var(--nexus-bright);
+}
+
+/* Undo / Keep-changes bar: anchored above the composer, aligned with the
+   message column instead of scrolling inside the transcript */
+.agent-view:not(.home-ds-main) .rollback-anchor {
+  max-width: 856px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 0 18px;
+  flex: none;
+}
+
+.agent-view:not(.home-ds-main) .rollback-anchor .rollback-card {
+  margin: 0 0 10px !important;
+}
+
+.agent-view:not(.home-ds-main) .rollback-anchor .rollback-files {
+  margin: -4px 0 10px;
+}

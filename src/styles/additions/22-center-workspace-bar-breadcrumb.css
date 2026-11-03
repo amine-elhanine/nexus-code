@@ -1,0 +1,49 @@
+.workspace-bar {
+  height: 42px !important;
+  background: var(--panel) !important;
+  border-bottom: 1px solid var(--line) !important;
+  padding: 0 14px !important;
+}
+
+.workspace-breadcrumb {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  font-size: 11px !important;
+  color: var(--muted) !important;
+}
+
+.workspace-breadcrumb strong {
+  color: var(--text) !important;
+  font-weight: 600 !important;
+}
+
+.workspace-actions {
+  display: flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+}
+
+.workspace-actions button {
+  height: 28px !important;
+  padding: 0 10px !important;
+  border-radius: 6px !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  border: 1px solid var(--line2) !important;
+  background: var(--panel2) !important;
+  color: var(--muted) !important;
+  transition: all 0.15s ease !important;
+}
+
+.workspace-actions button:hover {
+  color: var(--text) !important;
+  border-color: var(--line2) !important;
+}
+
+.workspace-actions button.active {
+  background: var(--accent-soft) !important;
+  color: var(--nexus-bright) !important;
+  border-color: var(--nexus-green) !important;
+  font-weight: 600 !important;
+}

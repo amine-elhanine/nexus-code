@@ -1,0 +1,64 @@
+.model-context-line {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 23px;
+  padding: 0 6px 0 5px;
+  border-radius: 4px;
+  background: var(--panel2, #0e151e);
+  border: 1px solid var(--line2, #1c2635);
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.model-context-line:hover {
+  border-color: var(--nexus-green, #34d399);
+  box-shadow: 0 0 0 1px var(--nexus-glow, rgba(52, 211, 153, 0.25));
+}
+
+.model-context-line .context-badge {
+  font: 7.5px/1 "DM Mono", monospace;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 1.5px 3.5px;
+  border-radius: 3px;
+  background: var(--accent-soft, rgba(52, 211, 153, 0.12));
+  color: var(--nexus-green, #34d399);
+  border: 1px solid var(--nexus-glow, rgba(52, 211, 153, 0.25));
+  pointer-events: none;
+}
+
+.model-context-line .context-value {
+  font: 9px/1 "DM Mono", monospace;
+  font-weight: 600;
+  color: var(--text, #f0f4fc);
+  pointer-events: none;
+}
+
+.model-context-line .context-meter-track {
+  width: 34px;
+  height: 3.5px;
+  border-radius: 2px;
+  background: var(--line, rgba(255, 255, 255, 0.08));
+  overflow: hidden;
+  position: relative;
+  pointer-events: none;
+}
+
+.model-context-line .context-meter-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--nexus-green, #34d399);
+  transition: width 0.3s ease, background-color 0.2s ease;
+}
+
+.model-context-line .context-meter-fill.status-warning {
+  background: var(--orange, #e5aa64);
+}
+
+.model-context-line .context-meter-fill.status-critical {
+  background: var(--red, #eb808a);
+}

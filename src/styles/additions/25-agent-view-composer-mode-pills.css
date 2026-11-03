@@ -1,0 +1,60 @@
+.agent-input-area {
+  padding: 0 36px 20px !important;
+}
+
+.agent-input {
+  border: 1px solid var(--line2) !important;
+  border-radius: 10px !important;
+  background: var(--panel) !important;
+  padding: 12px !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08) !important;
+  transition: all 0.18s ease !important;
+}
+
+.agent-input textarea {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: var(--text) !important;
+}
+
+.agent-input textarea::placeholder {
+  color: var(--faint) !important;
+}
+
+.agent-input:focus-within {
+  border-color: var(--nexus-green) !important;
+  box-shadow: 0 0 0 3px var(--nexus-glow), 0 8px 30px var(--nexus-glow) !important;
+}
+
+.mode-select {
+  display: flex !important;
+  gap: 2px !important;
+  padding: 2px !important;
+  border: 1px solid var(--line2) !important;
+  background: var(--panel2) !important;
+  border-radius: 6px !important;
+}
+
+.mode-select button {
+  border-radius: 4px !important;
+  padding: 3px 8px !important;
+  font-size: 9.5px !important;
+  font-weight: 500 !important;
+  color: var(--muted) !important;
+  transition: all 0.15s ease !important;
+}
+
+.mode-select button.active {
+  background: var(--accent-soft) !important;
+  color: var(--nexus-bright) !important;
+  font-weight: 700 !important;
+  border: 1px solid var(--nexus-green) !important;
+}
+
+.send-button {
+  width: 32px !important;
+  height: 32px !important;
+  border-radius: 7px !important;
+  transition: all 0.15s ease !important;
+}

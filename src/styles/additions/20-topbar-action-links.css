@@ -1,0 +1,27 @@
+.top-link {
+  height: 27px !important;
+  padding: 0 9px !important;
+  border-radius: 6px !important;
+  font-size: 10.5px !important;
+  font-weight: 500 !important;
+  color: var(--muted) !important;
+  border: 1px solid transparent !important;
+  transition: all 0.15s ease !important;
+}
+
+.top-link:hover {
+  background: var(--panel2) !important;
+  border-color: var(--line) !important;
+  color: var(--text) !important;
+}
+
+.user-chip {
+  width: 25px !important;
+  height: 25px !important;
+  border-radius: 6px !important;
+  background: rgba(52, 211, 153, 0.12) !important;
+  border: 1px solid rgba(52, 211, 153, 0.3) !important;
+  color: var(--nexus-bright) !important;
+  font-size: 9px !important;
+  font-weight: 700 !important;
+}

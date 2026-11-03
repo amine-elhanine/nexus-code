@@ -1,0 +1,62 @@
+.nb-answer-actions{display:flex;align-items:center;gap:4px;margin-top:8px}
+.nb-save-note-btn{display:flex;align-items:center;gap:5px;border:0;background:transparent;color:var(--muted);border-radius:6px;padding:4px 8px;font-size:11px}
+.nb-save-note-btn:hover{background:var(--panel2);color:var(--text)}
+.nb-source-chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line2);background:var(--panel2);color:var(--muted);border-radius:999px;padding:4px 10px;font-size:10px;white-space:nowrap}
+.notebook-main .agent-input{border-radius:24px;border-color:var(--line2);padding:12px 14px 10px}
+.notebook-main .agent-input:focus-within{box-shadow:none;border-color:var(--line2)}
+.notebook-main .send-button{border-radius:50%;width:32px;height:32px}
+.nb-disclaimer{white-space:normal;text-align:center}
+
+/* ============================================================
+   ChatGPT-style Home Hero (empty-state landing)
+   ============================================================ */
+.home-hero {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px 6vh;
+  overflow-y: auto;
+}
+
+.home-hero-greeting {
+  font-size: 36px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.03em !important;
+  margin: 0 0 24px !important;
+  text-align: center;
+  background: linear-gradient(100deg, var(--text) 25%, var(--nexus-bright));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.home-hero .agent-input-area {
+  width: 100% !important;
+  max-width: 780px !important;
+  flex: none !important;
+  padding: 0 !important;
+}
+
+.home-hero .agent-input {
+  border-radius: 24px !important;
+  padding: 14px 16px 10px !important;
+  background: var(--panel2) !important;
+  border-color: var(--line) !important;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.28) !important;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease !important;
+}
+
+.home-hero .agent-input:focus-within {
+  border-color: var(--nexus-green) !important;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.28), 0 0 0 1px var(--nexus-glow) !important;
+}
+
+.home-hero .agent-input textarea {
+  font-size: 14.5px !important;
+  line-height: 1.45 !important;
+  min-height: 24px !important;
+  max-height: 160px !important;
+}

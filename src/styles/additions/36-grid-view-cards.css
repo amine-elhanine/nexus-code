@@ -1,0 +1,291 @@
+.market-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.market-redesigned-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  gap: 12px;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  cursor: pointer;
+}
+
+.market-redesigned-card:hover {
+  border-color: var(--line2);
+  background: color-mix(in srgb, var(--panel) 92%, var(--accent-soft));
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+  transform: translateY(-2px);
+}
+
+.market-redesigned-card.installed {
+  border-left: 3px solid var(--nexus-green);
+}
+
+.card-top-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.card-icon-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  color: var(--text);
+  flex: none;
+  transition: all 0.18s ease;
+}
+
+.theme-engineering .card-icon-avatar {
+  background: rgba(52, 211, 153, 0.1);
+  border-color: rgba(52, 211, 153, 0.35);
+  color: var(--nexus-bright);
+}
+
+.theme-research .card-icon-avatar {
+  background: rgba(168, 85, 247, 0.1);
+  border-color: rgba(168, 85, 247, 0.35);
+  color: #c084fc;
+}
+
+.theme-creative .card-icon-avatar {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #fbbf24;
+}
+
+.card-heading-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.card-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-sub-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.card-author {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.market-official-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--nexus-bright);
+}
+
+.market-official-badge.compact {
+  font-size: 9px;
+}
+
+.card-quick-remove-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex: none;
+}
+
+.card-quick-remove-btn:hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+.card-description {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card-pills-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.market-cap-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  text-transform: capitalize;
+}
+
+.market-cap-pill.compact {
+  font-size: 9.5px;
+  padding: 1.5px 5px;
+}
+
+.market-mode-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 9.5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel2) 70%, var(--accent-soft));
+  border: 1px solid var(--line);
+  color: var(--nexus-bright);
+}
+
+.card-bottom-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  margin-top: auto;
+}
+
+.card-status-indicator {
+  display: flex;
+  align-items: center;
+}
+
+.status-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.status-label.installed {
+  color: var(--nexus-bright);
+  font-weight: 500;
+}
+
+.status-label.dev {
+  color: #fb923c;
+  font-weight: 500;
+}
+
+.card-actions-cluster {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.card-details-btn {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s ease;
+}
+
+.card-details-btn:hover {
+  color: var(--text);
+  border-color: var(--line2);
+  background: var(--panel2);
+}
+
+.market-btn-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+
+.market-btn-action.primary {
+  background: var(--accent-soft);
+  border-color: var(--nexus-green);
+  color: var(--nexus-bright);
+}
+
+.market-btn-action.primary:hover:not(:disabled) {
+  background: var(--nexus-green);
+  color: #080a0f;
+  box-shadow: 0 2px 8px var(--nexus-glow);
+}
+
+.market-btn-action.danger {
+  background: transparent;
+  color: var(--muted);
+  border-color: var(--line);
+}
+
+.market-btn-action.danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+.market-btn-action.update {
+  background: rgba(96, 165, 250, 0.15);
+  border-color: rgba(96, 165, 250, 0.5);
+  color: #93c5fd;
+}
+
+.market-btn-action.update:hover:not(:disabled) {
+  background: #3b82f6;
+  color: #fff;
+}

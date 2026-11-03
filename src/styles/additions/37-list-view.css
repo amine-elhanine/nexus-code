@@ -1,0 +1,85 @@
+.market-list-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.market-list-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.market-list-row:hover {
+  background: var(--panel2);
+  border-color: var(--line2);
+}
+
+.market-list-row.installed {
+  border-left: 3px solid var(--nexus-green);
+}
+
+.list-icon-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  flex: none;
+}
+
+.list-info-cluster {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.list-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.list-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.list-desc {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 520px;
+}
+
+.list-tags-cluster {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.list-actions-cluster {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}

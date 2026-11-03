@@ -3,6 +3,8 @@ import type { IpcRendererEvent } from "electron";
 
 type PlanItem = { content: string; status: "pending" | "in_progress" | "completed" };
 type AgentEvent = { type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact" | "thinking"; text: string; timestamp: string; items?: PlanItem[]; artifact?: any };
+// Mirrors the server-side session:update patch contract (store.ts updateSession).
+type SessionPatch = { title?: string; memory?: string; model?: unknown; messages?: unknown; usage?: unknown; checkpointId?: string; checkpointIds?: string[] };
 const invoke = (channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
 
 const nexusApi = {
@@ -16,7 +18,7 @@ const nexusApi = {
   createSession: (projectId: string, title?: string) => invoke("session:create", projectId, title),
   activateSession: (projectId: string, sessionId: string) => invoke("session:activate", projectId, sessionId),
   deleteSession: (projectId: string, sessionId: string, options?: { deleteFiles?: boolean }) => invoke("session:delete", projectId, sessionId, options),
-  updateSession: (projectId: string, sessionId: string, patch: unknown) => invoke("session:update", projectId, sessionId, patch),
+  updateSession: (projectId: string, sessionId: string, patch: SessionPatch) => invoke("session:update", projectId, sessionId, patch),
   updateProjectMemory: (projectId: string, memory: string) => invoke("memory:project:update", projectId, memory),
   updateProjectFacts: (projectId: string, facts: string) => invoke("memory:project:facts:update", projectId, facts),
   removeProjectFact: (projectId: string, fact: string) => invoke("memory:project:fact:remove", projectId, fact),

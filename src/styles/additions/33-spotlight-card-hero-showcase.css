@@ -1,0 +1,101 @@
+.market-spotlight-card {
+  position: relative;
+  border: 1px solid var(--line2);
+  border-radius: 12px;
+  padding: 16px 20px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--panel) 90%, var(--accent-soft)) 0%, var(--panel) 100%);
+  overflow: hidden;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.14);
+}
+
+.market-spotlight-card.theme-engineering {
+  border-color: rgba(52, 211, 153, 0.35);
+  background: linear-gradient(135deg, rgba(52, 211, 153, 0.08) 0%, var(--panel) 65%);
+}
+
+.market-spotlight-card.theme-research {
+  border-color: rgba(168, 85, 247, 0.35);
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.08) 0%, var(--panel) 65%);
+}
+
+.market-spotlight-card.theme-creative {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, var(--panel) 65%);
+}
+
+.market-spotlight-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.market-spotlight-left {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 280px;
+}
+
+.market-spotlight-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--nexus-bright);
+}
+
+.market-spotlight-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.market-spotlight-title-row h4 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.market-spotlight-desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  margin: 0;
+  max-width: 600px;
+}
+
+.market-spotlight-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.market-spotlight-cap-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2.5px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  text-transform: capitalize;
+}
+
+.market-spotlight-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}

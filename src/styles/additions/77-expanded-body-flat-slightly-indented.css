@@ -1,0 +1,14 @@
+.activity-group-body {
+  background: transparent !important;
+  border-top: 0 !important;
+  padding: 0 0 2px 8px;
+}
+
+.agent-stepper-timeline {
+  padding: 2px 0 2px 10px;
+  gap: 2px;
+}
+
+.agent-stepper-timeline::before {
+  display: none;
+}

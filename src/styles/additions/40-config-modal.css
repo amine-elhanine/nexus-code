@@ -1,0 +1,90 @@
+.market-config-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 8px 4px 16px;
+}
+
+.config-section-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  border-radius: 10px;
+}
+
+.config-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.config-card-header h4 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+.config-card-header p {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 2px 0 0;
+}
+
+.config-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.market-config-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 7px !important;
+  padding: 8px 12px !important;
+  font-size: 11.5px !important;
+  color: var(--text) !important;
+  font-family: monospace;
+  outline: none;
+}
+
+.market-config-input:focus {
+  border-color: var(--nexus-green) !important;
+}
+
+.devroot-display-box {
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-size: 11.5px;
+  font-family: monospace;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.config-btn-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.market-btn.danger-subtle {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+.market-btn.danger-subtle:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.35);
+}

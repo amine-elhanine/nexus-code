@@ -25,7 +25,7 @@ import { resolveImageForModel, resolveAttachmentBytes } from "../attachment-util
 import { pushCheckpoint } from "../checkpoint-stack.js";
 import { isLikelyDevServerCommand, extractLocalDevServerUrl, waitForLocalServer } from "../project-preview.js";
 import { assertPayload, AgentRunSchema, AgentCancelSchema } from "./schemas.js";
-import { acquireRunSlot } from "./run-guard.js";
+import { acquireRunSlot, releaseRunSlot } from "./run-guard.js";
 import type { MainIpcContext } from "./context.js";
 
 // Each run collects its own transcript events so they can be persisted to the
@@ -395,7 +395,7 @@ export function registerAgentRoutes(ctx: MainIpcContext): void {
       await updateProjectMemory(projectId, nextProjectMemory);
       return result.response;
     } finally {
-      ctx.activeRunSessions.delete(sessionId);
+      releaseRunSlot(ctx.activeRunSessions, sessionId);
       endCommandRun(sessionId);
     }
   });

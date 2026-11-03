@@ -1,0 +1,743 @@
+.notebook-agent-trace {
+  margin: 6px 0 8px;
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.notebook-agent-trace summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--nexus-bright);
+  user-select: none;
+  cursor: pointer;
+}
+.notebook-agent-steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding-left: 4px;
+}
+.notebook-step-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11.5px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  background: var(--bg);
+  border-left: 2px solid var(--nexus-green);
+}
+.notebook-step-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.notebook-step-badge {
+  font-family: 'DM Mono', monospace;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  color: #72b7ff;
+  background: rgba(114, 183, 255, 0.1);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.notebook-step-title {
+  color: var(--text);
+  font-weight: 500;
+}
+.notebook-step-detail {
+  font-size: 10.5px;
+  color: var(--muted);
+  line-height: 1.4;
+  margin-left: 2px;
+}
+
+/* ==========================================================================
+   Mind Map Viewer Modal & Split Layout
+   ========================================================================== */
+
+.modal-card.mindmap-modal-card {
+  width: min(1560px, 96vw);
+  height: 90vh;
+  max-height: 94vh;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  border-radius: 10px;
+  box-shadow: 0 24px 90px rgba(0, 0, 0, 0.85);
+  transition: width 0.2s ease, height 0.2s ease;
+}
+
+.modal-card.mindmap-modal-card.maximized {
+  width: 98vw;
+  height: 96vh;
+  max-height: 98vh;
+  border-radius: 6px;
+}
+
+.mindmap-modal-card .modal-card-head {
+  padding: 12px 18px;
+  margin-bottom: 0;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--panel);
+}
+
+.mindmap-modal-card .modal-card-head h2 {
+  font-size: 14px;
+  letter-spacing: -0.01em;
+  margin: 0;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.mindmap-modal-card .modal-card-head p {
+  font-size: 10.5px;
+  color: var(--muted);
+  margin: 2px 0 0;
+}
+
+.mindmap-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  flex: none;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mindmap-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mindmap-toolbar-hint {
+  font-size: 10px;
+  color: var(--faint);
+  font-family: 'DM Mono', monospace;
+  user-select: none;
+}
+
+.mindmap-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.mindmap-canvas-wrap {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+}
+
+.mindmap-inspector {
+  width: 360px;
+  flex: none;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: slideInRight 0.15s ease-out;
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(12px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.mindmap-inspector-head {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  background: var(--panel2);
+  gap: 8px;
+}
+
+.mindmap-inspector-head div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+
+.mindmap-inspector-head strong {
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mindmap-inspector-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mindmap-breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--muted);
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+}
+
+.mindmap-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mindmap-crumb-sep {
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.mindmap-selected-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--nexus-green);
+  border-radius: 6px;
+}
+
+.mindmap-selected-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mindmap-selected-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.mindmap-selected-detail {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.mindmap-subtopics-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.mindmap-subtopics-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.mindmap-subtopic-chip {
+  font-size: 10.5px;
+  color: var(--text);
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: left;
+}
+
+.mindmap-subtopic-chip:hover {
+  background: var(--line);
+  border-color: var(--nexus-green);
+  color: var(--nexus-bright);
+}
+
+.mindmap-sources-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.mindmap-sources-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.mindmap-source-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 10.5px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--panel2);
+  color: var(--muted);
+}
+
+.mindmap-source-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+/* ==========================================================================
+   Settings Page Redesign
+   ========================================================================== */
+
+.modal-card.settings-modal-card {
+  width: min(1140px, 96vw) !important;
+  height: min(780px, 90vh) !important;
+  max-height: 92vh !important;
+  display: flex !important;
+  flex-direction: column !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  background: var(--panel) !important;
+  border: 1px solid var(--line2) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 28px 100px rgba(0, 0, 0, 0.85) !important;
+}
+
+.modal-card.settings-modal-card .modal-card-head {
+  padding: 14px 22px !important;
+  margin-bottom: 0 !important;
+  border-bottom: 1px solid var(--line) !important;
+  background: var(--panel) !important;
+  flex: none !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+}
+
+.modal-card.settings-modal-card .settings-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.modal-card.settings-modal-card .settings-side {
+  width: 215px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  border-right: 1px solid var(--line);
+  padding: 16px 10px 16px 12px;
+  overflow-y: auto;
+  background: var(--panel);
+}
+
+.settings-side-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.settings-side-title {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding: 0 8px 6px;
+  font-family: 'DM Mono', monospace;
+  user-select: none;
+}
+
+.settings-side-btn {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 7px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+  position: relative;
+}
+
+.settings-side-btn:hover {
+  background: var(--panel2);
+  color: var(--text);
+}
+
+.settings-side-btn.active {
+  background: var(--accent-soft);
+  color: var(--nexus-bright);
+  font-weight: 600;
+}
+
+.settings-side-btn.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--nexus-green);
+  box-shadow: 0 0 8px var(--nexus-green);
+}
+
+.settings-side-btn-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  flex: none;
+  transition: all 0.15s ease;
+}
+
+.settings-side-btn:hover .settings-side-btn-icon {
+  border-color: var(--line2);
+  color: var(--text);
+}
+
+.settings-side-btn.active .settings-side-btn-icon {
+  background: var(--panel2);
+  border-color: var(--nexus-green);
+  color: var(--nexus-bright);
+}
+
+.settings-side-btn-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-side-badge {
+  font-size: 9px;
+  font-family: 'DM Mono', monospace;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 10px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  color: var(--faint);
+  line-height: 1.2;
+}
+
+.settings-side-badge.active-badge {
+  background: rgba(52, 211, 153, 0.15);
+  border-color: var(--nexus-green);
+  color: var(--nexus-bright);
+}
+
+.settings-side-badge.alert-badge {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: #ef4444;
+  color: #f87171;
+}
+
+.modal-card.settings-modal-card .settings-body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 20px 24px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.settings-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+.settings-hero-kicker {
+  font-size: 9.5px;
+  font-family: 'DM Mono', monospace;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--nexus-green);
+  font-weight: 600;
+}
+
+.settings-hero-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.settings-hero-subtitle {
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.settings-subtabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+
+.settings-subtab-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 5px 11px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.settings-subtab-btn:hover {
+  background: var(--panel2);
+  color: var(--text);
+}
+
+.settings-subtab-btn.active {
+  background: var(--panel2);
+  color: var(--nexus-bright);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.modal-card.settings-modal-card .settings-body .provider-layout {
+  display: grid;
+  grid-template-columns: 1fr 1.15fr;
+  gap: 20px;
+  align-items: start;
+}
+
+.modal-card.settings-modal-card .settings-body .provider-form {
+  border-top: 0;
+  border-left: 1px solid var(--line);
+  padding-top: 0;
+  padding-left: 20px;
+}
+
+.modal-card.settings-modal-card .theme-grid {
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px;
+}
+
+.modal-card.settings-modal-card .theme-card {
+  transition: all 0.15s ease;
+}
+
+.modal-card.settings-modal-card .theme-card:hover {
+  border-color: var(--line2);
+  transform: translateY(-1px);
+}
+
+.modal-card.settings-modal-card .theme-card.selected {
+  border-color: var(--nexus-green);
+  box-shadow: 0 0 0 1px var(--nexus-green), 0 8px 24px var(--nexus-glow);
+}
+
+.modal-card.settings-modal-card .provider-card,
+.provider-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel2);
+  padding: 10px 12px;
+  transition: all 0.15s ease;
+  margin-bottom: 6px;
+}
+
+.modal-card.settings-modal-card .provider-card:hover,
+.provider-card:hover {
+  border-color: var(--line2);
+  background: var(--panel);
+}
+
+.modal-card.settings-modal-card .provider-card.active,
+.provider-card.active {
+  border-color: var(--nexus-green) !important;
+  background: var(--accent-soft) !important;
+  box-shadow: 0 0 0 1px var(--nexus-green) !important;
+}
+
+.modal-card.settings-modal-card .provider-card.active:hover,
+.provider-card.active:hover {
+  border-color: var(--nexus-bright) !important;
+  background: var(--accent-soft) !important;
+}
+
+.provider-card-main strong {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text) !important;
+}
+
+.provider-card-main small {
+  font-size: 9px;
+  color: var(--muted) !important;
+}
+
+.modal-card.settings-modal-card .provider-logo,
+.provider-logo {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--nexus-green);
+  font-weight: 700;
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  flex: none;
+}
+
+.provider-card.active .provider-logo {
+  background: var(--accent-soft);
+  border-color: var(--nexus-green);
+  color: var(--nexus-bright);
+}
+
+.provider-card-actions button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted) !important;
+  transition: all 0.15s ease;
+}
+
+.provider-card-actions button:hover {
+  background: var(--panel) !important;
+  border-color: var(--line) !important;
+  color: var(--text) !important;
+}
+
+.provider-card-actions button.danger:hover,
+.provider-card-actions .danger:hover {
+  background: rgba(239, 68, 68, 0.12) !important;
+  border-color: rgba(239, 68, 68, 0.3) !important;
+  color: #ef4444 !important;
+}
+
+.modal-card.settings-modal-card .provider-form .form-title {
+  font-size: 13px;
+  font-weight: 600;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 14px;
+}
+
+.modal-card.settings-modal-card .setting-nav-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 8px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.modal-card.settings-modal-card .setting-nav-row:hover {
+  background: var(--panel2);
+}
+
+.modal-card.settings-modal-card .setting-nav-row:hover .setting-text strong {
+  color: var(--nexus-bright);
+}
+
+.citation-trace summary,
+.retrieval-trace summary {
+  cursor: pointer;
+  user-select: none;
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  color: var(--muted);
+  transition: color 0.15s ease;
+}
+
+.citation-trace summary:hover,
+.retrieval-trace summary:hover {
+  color: var(--nexus-bright);
+}
+
+/* ==========================================================================
+   Notebook Session Sidebars Redesign
+   ========================================================================== */

@@ -1,0 +1,61 @@
+.notebook-sources-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.notebook-add-btn.primary-add {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.notebook-add-btn.primary-add:hover {
+  border-color: var(--nexus-green);
+  background: var(--accent-soft);
+  color: var(--nexus-bright);
+}
+
+.notebook-quick-add-group {
+  display: flex;
+  gap: 4px;
+}
+
+.notebook-quick-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 9px;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.notebook-quick-btn:hover {
+  border-color: var(--nexus-green);
+  color: var(--nexus-bright);
+}
+
+.notebook-quick-btn.active {
+  border-color: var(--nexus-green);
+  background: var(--accent-soft);
+  color: var(--nexus-bright);
+}

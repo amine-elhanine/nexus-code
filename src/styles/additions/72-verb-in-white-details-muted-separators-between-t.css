@@ -1,0 +1,39 @@
+.step-title-text {
+  gap: 0;
+}
+
+.step-verb {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.step-title-text > :not(.step-verb) {
+  color: #7d8a9e;
+}
+
+.step-title-text > :not(.step-verb)::before {
+  content: "·";
+  margin: 0 7px;
+  color: #4d5a6e;
+  font-weight: 700;
+}
+
+.step-code-target,
+.step-command-target,
+.step-query-target,
+.step-skill-target {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: #7d8a9e;
+  font-size: 10.5px;
+  font-family: "DM Mono", monospace;
+}
+
+.step-card.error .step-verb {
+  color: #fb7185;
+}
+
+.step-card.error .step-title-text > :not(.step-verb) {
+  color: #b97a83;
+}

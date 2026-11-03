@@ -15,3 +15,5 @@ landing_page/
 # Session reports and local test scratch (audit 2026-10-24)
 reports/
 .codex-test-tmp/
+test-output.log
+.tmp-*

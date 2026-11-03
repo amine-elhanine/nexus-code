@@ -1,0 +1,55 @@
+.market-cap-chips-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cap-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-right: 2px;
+}
+
+.market-cap-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s ease;
+}
+
+.market-cap-chip:hover {
+  color: var(--text);
+  border-color: var(--line2);
+  background: var(--panel2);
+}
+
+.market-cap-chip.active {
+  background: var(--panel2);
+  border-color: var(--line2);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+.market-cap-chip .chip-count {
+  font-size: 9.5px;
+  font-family: monospace;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--faint);
+}
+
+.market-cap-chip.active .chip-count {
+  background: var(--accent-soft);
+  color: var(--nexus-bright);
+}

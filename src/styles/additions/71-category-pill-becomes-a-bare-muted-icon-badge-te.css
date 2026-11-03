@@ -1,0 +1,16 @@
+.step-category-pill {
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0 !important;
+  gap: 0 !important;
+  color: #8a97a8 !important;
+  flex: none;
+}
+
+.step-category-pill span {
+  display: none;
+}
+
+.step-category-pill svg {
+  color: #8a97a8 !important;
+}

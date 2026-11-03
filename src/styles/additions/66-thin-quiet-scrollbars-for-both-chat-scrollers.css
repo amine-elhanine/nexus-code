@@ -1,0 +1,31 @@
+.home-transcript::-webkit-scrollbar,
+.agent-transcript::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.home-transcript::-webkit-scrollbar-track,
+.agent-transcript::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.home-transcript::-webkit-scrollbar-thumb,
+.agent-transcript::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+}
+
+.home-transcript::-webkit-scrollbar-thumb:hover,
+.agent-transcript::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+
+.home-transcript {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+
+.agent-transcript {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}

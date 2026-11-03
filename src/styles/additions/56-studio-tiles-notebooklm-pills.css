@@ -1,0 +1,4 @@
+.studio-card{border-radius:12px;background:transparent;border-color:transparent;min-height:42px;padding:8px 10px;font-weight:500}
+.studio-card:hover{background:var(--panel2);border-color:transparent}
+.studio-card.active{background:var(--accent-soft);border-color:transparent}
+.studio-generate{border-radius:999px}

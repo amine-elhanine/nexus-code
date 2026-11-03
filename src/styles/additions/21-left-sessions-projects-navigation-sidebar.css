@@ -1,0 +1,100 @@
+.session-pane {
+  width: 235px !important;
+  background: var(--panel) !important;
+  border-right: 1px solid var(--line) !important;
+  padding: 10px 8px !important;
+  gap: 6px !important;
+}
+
+.pane-top {
+  height: 28px !important;
+  padding: 0 6px !important;
+  font-size: 9.5px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.1em !important;
+  color: var(--muted) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.pane-action {
+  width: 24px !important;
+  height: 24px !important;
+  border-radius: 5px !important;
+  border: 1px solid transparent !important;
+  color: var(--muted) !important;
+  transition: all 0.15s ease !important;
+}
+
+.pane-action:hover {
+  background: var(--panel2) !important;
+  border-color: var(--line2) !important;
+  color: var(--text) !important;
+}
+
+.project-row {
+  height: 33px !important;
+  border: 1px solid transparent !important;
+  border-radius: 6px !important;
+  padding: 0 8px !important;
+  font-size: 11px !important;
+  color: var(--muted) !important;
+  transition: all 0.15s ease !important;
+}
+
+.project-row:hover {
+  background: var(--panel2) !important;
+  color: var(--text) !important;
+  border-color: var(--line) !important;
+}
+
+.project-row.active {
+  background: rgba(52, 211, 153, 0.08) !important;
+  border-color: rgba(52, 211, 153, 0.25) !important;
+  color: var(--nexus-bright) !important;
+  font-weight: 600 !important;
+}
+
+.project-row small, .session-row small {
+  background: var(--bg) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 8px !important;
+  padding: 1px 6px !important;
+  font-size: 9.5px !important;
+  color: var(--faint) !important;
+}
+
+.session-row {
+  min-height: 33px !important;
+  border: 1px solid transparent !important;
+  border-radius: 6px !important;
+  padding: 0 8px !important;
+  font-size: 11.5px !important;
+  color: var(--muted) !important;
+  transition: all 0.15s ease !important;
+}
+
+.session-row:hover {
+  background: var(--panel2) !important;
+  color: var(--text) !important;
+  border-color: var(--line) !important;
+}
+
+.session-row.active {
+  background: rgba(52, 211, 153, 0.08) !important;
+  border-color: rgba(52, 211, 153, 0.25) !important;
+  color: var(--nexus-bright) !important;
+  font-weight: 600 !important;
+  border-left: 3px solid var(--nexus-green) !important;
+}
+
+.session-rename-input {
+  width: 100%;
+  background: var(--bg) !important;
+  border: 1px solid var(--nexus-green) !important;
+  border-radius: 5px !important;
+  color: var(--text) !important;
+  padding: 4px 7px !important;
+  font-size: 11px !important;
+  outline: none !important;
+  box-shadow: 0 0 0 2px var(--nexus-glow);
+}

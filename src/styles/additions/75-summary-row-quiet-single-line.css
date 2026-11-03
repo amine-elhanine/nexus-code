@@ -1,0 +1,38 @@
+.activity-group-summary {
+  background: transparent !important;
+  padding: 5px 8px;
+  border-radius: 6px;
+  gap: 8px;
+}
+
+.activity-group-summary:hover {
+  background: rgba(255, 255, 255, 0.04) !important;
+  filter: none;
+}
+
+.activity-group-icon {
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  background: transparent !important;
+  border: 0 !important;
+  color: #66727f !important;
+}
+
+.activity-group.completed .activity-group-icon {
+  color: #66727f !important;
+}
+
+.activity-group.error .activity-group-icon {
+  color: #fb7185 !important;
+}
+
+.activity-group-title {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: #98a3b3;
+}
+
+.activity-group-title .running-label {
+  color: #c7d2fe;
+}

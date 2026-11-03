@@ -1,0 +1,97 @@
+.rollback-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  text-align: left;
+  padding: 2px 4px;
+  border-radius: 5px;
+}
+
+.rollback-summary:disabled {
+  cursor: default;
+}
+
+.rollback-summary:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.rollback-chev {
+  transition: transform 0.15s ease;
+  color: var(--muted);
+  flex: none;
+}
+
+.rollback-chev.open {
+  transform: rotate(180deg);
+}
+
+.rollback-summary span {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.diff-stat {
+  font: 10.5px "DM Mono", monospace;
+  font-weight: 600;
+}
+
+.diff-stat.add {
+  color: #3ee695;
+}
+
+.diff-stat.del {
+  color: #eb808a;
+}
+
+.rollback-files {
+  margin: -10px 0 16px;
+  border: 1px solid var(--line2);
+  border-radius: 9px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.rollback-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 10.5px;
+  padding: 7px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+}
+
+.rollback-file-row:last-child {
+  border-bottom: 0;
+}
+
+.rollback-file-row:hover {
+  background: var(--panel2);
+}
+
+.rollback-file-row svg {
+  color: #6d7b8d;
+  flex: none;
+}
+
+.rollback-file-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

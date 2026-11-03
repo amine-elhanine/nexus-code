@@ -17,6 +17,7 @@ import { agentBrowserService } from "./browser-service.js";
 import { updaterService } from "./updater-service.js";
 import { ensureHomeDir } from "./home-service.js";
 import { attachmentFileName } from "./attachment-utils.js";
+import { ensureBuiltinToolCatalog } from "./agent/builtin-tool-catalog.js";
 import type { AgentEvent, AgentSettings } from "./agent-service.js";
 import type { MainIpcContext } from "./ipc/context.js";
 import { registerWindowRoutes } from "./ipc/window-routes.js";
@@ -52,6 +53,11 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Register the built-in tool catalog once at startup: the capability registry
+// then has a single inventory of first-party tools (metadata only; execution
+// pipelines are unchanged — see agent/builtin-tool-catalog.ts).
+ensureBuiltinToolCatalog();
 let mainWindow: BrowserWindow | null = null;
 let activeProjectId: string | null = null;
 let activeSessionId: string | null = null;
@@ -74,6 +80,11 @@ function getAppIcon(): string | undefined {
   return undefined;
 }
 
+/** True only when running from source (`npm run dev`) — never in a packaged build. */
+function isDevMode(): boolean {
+  return process.argv.includes("--dev") || Boolean(process.env.VITE_DEV_SERVER_URL);
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1540,
@@ -91,15 +102,20 @@ function createWindow() {
       // Chromium renderer sandbox is ON by default. The preload runs with
       // contextBridge/ipcRenderer only (verified by test/renderer-security
       // canary: sandboxed renderer + real preload bundle). The env escape
-      // hatch is for local diagnosis only and must never ship disabled.
-      sandbox: process.env.NEXUS_SANDBOX === "0" ? false : true,
+      // hatch is for local diagnosis only and must never ship disabled —
+      // it is honored only when the dev flag (--dev) is also present, so a
+      // packaged build can never silently run with the sandbox off.
+      sandbox:
+        process.env.NEXUS_SANDBOX === "0" && isDevMode()
+          ? false
+          : true,
       webviewTag: true,
       // Required for the built-in Chromium PDF viewer: the Home and Notebook
       // file previews render generated PDFs in an <iframe src="blob:…">.
       plugins: true,
     },
   });
-  const devMode = process.argv.includes("--dev") || Boolean(process.env.VITE_DEV_SERVER_URL);
+  const devMode = isDevMode();
   if (devMode) void mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL || "http://127.0.0.1:5173");
   else void mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {

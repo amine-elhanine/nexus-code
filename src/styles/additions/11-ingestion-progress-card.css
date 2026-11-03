@@ -1,0 +1,207 @@
+.notebook-ingestion-card {
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  background: var(--panel2);
+  padding: 9px 10px;
+  margin: 6px 0 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.notebook-ingestion-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.notebook-ingestion-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.notebook-ingestion-pill {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid var(--line2);
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-family: 'DM Mono', monospace;
+}
+
+.notebook-ingestion-in-flight {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--orange);
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: 5px;
+  padding: 3px 7px;
+  overflow: hidden;
+}
+
+.notebook-ingestion-in-flight .in-flight-url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'DM Mono', monospace;
+  font-size: 9.5px;
+}
+
+.notebook-ingestion-progress-track {
+  width: 100%;
+  height: 5px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  position: relative;
+}
+
+.notebook-ingestion-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--orange) 0%, var(--nexus-green) 100%);
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 0 6px var(--nexus-glow);
+}
+
+.notebook-ingestion-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 9px;
+  color: var(--muted);
+  padding-top: 1px;
+}
+
+.ingestion-step {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  opacity: 0.6;
+  transition: all 0.2s ease;
+}
+
+.ingestion-step.active {
+  opacity: 1;
+  color: var(--orange);
+  font-weight: 700;
+}
+
+.ingestion-step.done {
+  opacity: 1;
+  color: var(--nexus-bright);
+}
+
+.ingestion-step .step-dot {
+  width: 4.5px;
+  height: 4.5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.step-arrow {
+  color: var(--faint);
+  font-size: 8px;
+  opacity: 0.4;
+}
+
+.notebook-source-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.notebook-source-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.notebook-source-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.notebook-source-name {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notebook-source-submeta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.notebook-source-chunks {
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  color: var(--muted);
+}
+
+.notebook-source-error {
+  color: #f87171;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notebook-source-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0.6;
+  transition: opacity 0.15s ease;
+}
+
+.notebook-source-card:hover .notebook-source-actions {
+  opacity: 1;
+}
+
+.notebook-empty-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--muted);
+  gap: 6px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  margin: 6px 0;
+}
+
+.notebook-empty-box p {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+.notebook-empty-box small {
+  font-size: 9.5px;
+  color: var(--faint);
+  line-height: 1.4;
+}
