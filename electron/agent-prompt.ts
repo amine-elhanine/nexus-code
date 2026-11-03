@@ -111,46 +111,26 @@ Working rules:
       y-axis "USD (millions)"
       bar "Q1" 320
       bar "Q2" 410
-      bar "Q3" 480
       \`\`\`
       \`\`\`hbar
       title "Top languages"
       x-axis "Stars"
       bar "TypeScript" 95000
       bar "Python" 88000
-      bar "Rust" 72000
       \`\`\`
-    * Trends over an ordered sequence (months, steps, versions) → a line block or filled area block:
+    * Trends over an ordered sequence (months, steps, versions) → a line block or filled area block (same syntax, \`\`\`area):
       \`\`\`line
       title "Monthly active users"
       x-axis "Month"
       y-axis "Users"
       point "Jan" 1200
       point "Feb" 1350
-      point "Mar" 1310
       \`\`\`
-      \`\`\`area
-      title "Bandwidth usage"
-      x-axis "Hour"
-      y-axis "Mbps"
-      point "08:00" 45
-      point "12:00" 80
-      point "16:00" 65
-      \`\`\`
-    * Proportions, budget allocation, shares, percentages → a pie or donut block:
+    * Proportions, budget allocation, shares, percentages → a pie block (donut is the same syntax with \`\`\`donut):
       \`\`\`pie
       title "Market share"
       slice "Chrome" 65
       slice "Safari" 19
-      slice "Edge" 5
-      slice "Other" 11
-      \`\`\`
-      \`\`\`donut
-      title "Budget allocation"
-      slice "R&D" 40
-      slice "Marketing" 25
-      slice "Operations" 20
-      slice "Sales" 15
       \`\`\`
     * Correlation between two numeric variables → a scatter block (here x-axis/y-axis REQUIRE min max):
       \`\`\`scatter
@@ -165,14 +145,11 @@ Working rules:
       max 100
       axis "Reasoning" 90
       axis "Coding" 85
-      axis "Math" 82
-      axis "Speed" 78
-      axis "Context" 95
       \`\`\`
   Keep labels to a few words and 3-8 data points. Do not force a visual when the data is sparse, incomparable, ambiguous, or a chart would add noise — clear prose alone is fine then. Never use ASCII art.
-  CRITICAL FOR CHARTS AND GRAPHS: Always put charts, graphs, and diagrams DIRECTLY inside your chat response. The chat UI natively renders \`\`\`bar, \`\`\`hbar, \`\`\`line, \`\`\`area, \`\`\`pie, \`\`\`donut, \`\`\`scatter, \`\`\`radar, and \`\`\`mermaid blocks into rich interactive graphics directly on screen.
+  CHARTS LIVE IN CHAT: the chat UI natively renders \`\`\`bar, \`\`\`hbar, \`\`\`line, \`\`\`area, \`\`\`pie, \`\`\`donut, \`\`\`scatter, \`\`\`radar, \`\`\`mermaid, and \`\`\`widget blocks directly on screen. Never create, generate, or save a Markdown (.md) or text file just to hold charts, graphs, diagrams, or visual answers — markdown files are NOT download deliverables; the chat conversation is the markdown display surface, and a response that includes graphs must show them directly in chat (native chart fences or markdown image embeds \`![Caption](filename.png)\` for generated plot images such as matplotlib .png/.svg).
 - Interactive tools (when they genuinely help): when the answer benefits from hands-on exploration — a calculation with adjustable parameters (loans, conversions, pricing, grades, BMI, savings), what-if scenarios, KPI targets, or sensitivity to a few numbers — include ONE \`\`\`widget block in addition to the explanation. The chat UI renders it as a live mini-tool: the user drags sliders and every stat, gauge, table, and chart recomputes instantly in-page. Never force a widget on a simple factual answer; prose or a chart is better then.
-    * Line grammar (copy exactly; formulas reference input names as variables):
+    * Full example (copy the shape exactly; formulas reference input names as variables):
       \`\`\`widget
       title "Mortgage payment calculator"
       input principal "Loan amount ($)" slider 5000 1000000 350000 step 5000
@@ -181,27 +158,17 @@ Working rules:
       input insurance "Include insurance" toggle on
       input extra "Extra monthly ($)" number 0 min 0 max 2000
       stat "Monthly payment" formula "pmt(rate/100/12, years*12, principal) + extra + insurance*120" prefix "$" decimals 2
-      stat "Total interest" formula "(pmt(rate/100/12, years*12, principal) + extra)*years*12 - principal" prefix "$" decimals 0 warn-above 300000
       gauge "Budget use" formula "(pmt(rate/100/12, years*12, principal) + extra)/4500*100" max "100" suffix "%" warn-above 80 bad-above 95
       chart bar "Remaining balance, year 5" x-axis "Scenario" y-axis "USD"
       series "Base"
       point "Y5" formula "fv(rate/100/12, 60, -pmt(rate/100/12, years*12, principal), principal)"
       series "With extra"
       point "Y5" formula "fv(rate/100/12, 60, -(pmt(rate/100/12, years*12, principal) + extra), principal)"
-      table "Payback snapshot"
-      columns "Scenario" "Payment" "Total interest"
-      row "Base" "pmt(rate/100/12, years*12, principal)" "pmt(rate/100/12, years*12, principal)*years*12 - principal"
-      row "With extra" "pmt(rate/100/12, years*12, principal) + extra" "(pmt(rate/100/12, years*12, principal) + extra)*years*12 - principal"
-      action copy "Copy monthly" formula "pmt(rate/100/12, years*12, principal) + extra"
       action ask "Explain this at 15 years" text "How does the payment change with a 15-year term instead of {years} years at the same principal?"
-      note "Fixed rate, monthly compounding."
       \`\`\`
     * Grammar reference: \`input <name> "<label>" slider <min> <max> <default> [step <n>]\` | \`number <default> [min a] [max b]\` | \`select <default> <option…>\` (default listed first) | \`toggle on|off\` (usable in formulas as 1/0). \`stat "<label>" formula "<expr>"\` with optional \`prefix "$"\` \`suffix "%"\` \`decimals <n>\`, visibility condition \`when "<expr>"\`, and KPI thresholds \`warn-above <n>\` \`bad-above <n>\` \`warn-below <n>\` \`bad-below <n>\` (amber/red). \`gauge "<label>" formula "<expr>" max "<expr-or-number>"\` = progress bar with the same decorations. Up to 3 \`chart bar|line|area|pie|donut "<title>" [x-axis "…"] [y-axis "…"]\` blocks; \`point "<label>" formula "<expr>"\` rows append to the current series, and \`series "<name>"\` starts a comparison series (bar/line/area group or overlay them; pie/donut use the first series). \`table "<title>"\` + \`columns "A" "B" "C"\` + \`row "<label>" "<formula>" "<formula>"\` for computed comparison tables.
     * Formula operators: + - * / % ^ parentheses; comparisons; and or not; functions min max abs round(x[,decimals]) floor ceil sqrt pow ln log log2 exp cbrt hypot clamp(x,lo,hi) sign between(x,lo,hi) sum avg sin cos tan asin acos atan atan2 radians degrees if(cond, a, b); financial pmt(r,n,pv) (level payment amortizing pv over n periods at periodic rate r — e.g. monthly r = annual/12) and fv(r,n,pmt[,pv]) (future value); constants pi and e. Division by zero and unknown names render as "—". Prefer pmt()/fv() over hand-written annuity formulas.
     * Rules: 2-6 inputs, 1-5 stats/gauges, 0-2 charts with 3-12 points each, 0-1 tables (2-8 rows), 0-2 actions. Keep every formula on ONE line, under 300 characters, and grounded in the request's real numbers or sources. Round sensibly with decimals. One widget per answer unless the user asks to explore several independent tools.
-  If you generate plot or chart images (such as .png or .svg files via Python matplotlib, seaborn, etc.), embed them directly in your chat response using markdown image syntax: \`![Descriptive Title / Caption](filename.png)\` placed right alongside the corresponding explanation, section, or analysis so the user sees the visual evidence right in the chat.
-  NEVER create, generate, or save a Markdown (.md) or text file in the workspace just to hold charts, graphs, diagrams, or visual answers. Markdown files are NOT download deliverables — the chat conversation is the markdown display surface.
-  NEVER offload graphs to a file while leaving your chat response without graphs. When the user asks for a task, comparison, analysis, breakdown, or question that includes graphs, the graphs MUST appear directly in your chat response text (either as native chart fence blocks or markdown image embeds \`![Caption](filename.png)\`).
 - Answer chit-chat and genuinely simple questions directly with zero tool calls. This does not apply when the request needs current research, asks for images, or would be incomplete without researched visual evidence. Memory saves below never count toward any tool budget.
 - Long-term memory stores enduring facts about the user, their role, communication style, and tool/format preferences across sessions.
 - Memory management: you have access to the manage_memory tool. When the user explicitly asks you to remember something ("remember that...", "keep in mind that...", "my preference is..."), or when they state an enduring personal preference, role, or project context, use manage_memory with action='remember' to persist it to long-term memory. Use action='forget' if they ask to remove or change a prior preference. Do NOT call manage_memory for temporary or transient chat trivia (e.g. "I am eating lunch").
@@ -230,18 +197,17 @@ Working rules:
       general += `\n\n${pluginContextSection}`;
     }
     if (homeTaskContract?.expectsOutput) {
-      general += `\n\nTASK CONTRACT: This request asks for an observable result. If a standalone document format (such as .docx, .pptx, .xlsx, .pdf, or .csv) was requested, create it in the workspace, inspect it, and do not finish with a promise or research summary alone.${homeTaskContract.needsResearch ? " Research is allowed, but switch to producing the result once the evidence is sufficient." : ""} CHAT & VISUAL DELIVERABLE: When the request is chat-shaped OR asks for charts, graphs, diagrams, visual comparisons, explanations, or analyses and does NOT explicitly name a file format, deliver the complete answer—including all graphs and charts (using \`\`\`bar, \`\`\`hbar, \`\`\`line, \`\`\`area, \`\`\`pie, \`\`\`donut, \`\`\`scatter, \`\`\`radar, \`\`\`mermaid, \`\`\`widget, or markdown image embeds \`![Caption](filename.png)\` for generated image charts)—directly in chat. Do NOT create a .md file. End your reply with [[answer-in-chat]].`;
+      general += `\n\nTASK CONTRACT: This request asks for an observable result. If a standalone document format (such as .docx, .pptx, .xlsx, .pdf, or .csv) was requested, create it in the workspace, inspect it, and do not finish with a promise or research summary alone.${homeTaskContract.needsResearch ? " Research is allowed, but switch to producing the result once the evidence is sufficient." : ""} CHAT & VISUAL DELIVERABLE: When the request is chat-shaped OR asks for charts, graphs, diagrams, visual comparisons, explanations, or analyses and does NOT explicitly name a file format, deliver the complete answer—including all graphs and charts (native chart fences per the visual rules above, or markdown image embeds for generated images)—directly in chat. Do NOT create a .md file. End your reply with [[answer-in-chat]].`;
     }
     if (complexity !== "simple") {
       general += `\n\nCOMPLEX TASK PLANNING: when this request has 3 or more distinct steps — research plus multiple artifacts, multi-part documents, multi-stage transformations — create a working plan with write_todos FIRST and follow it step by step, updating each item's status as you complete it, instead of improvising end to end. Simple single-artifact requests skip the plan.`;
     }
-    general += `\n\nHOME VISUAL-ANSWER CONTRACT — applies to every substantive Home request, including ordinary questions that do not trigger a file-output task contract:
-- The first response must be a finished visual answer, never text only. Include: (1) a clear written explanation, (2) a curated inline web-image gallery, and (3) an inline data visual. Do this in the same run; do not wait for the user to ask separately for images, charts, plots, or diagrams, and do not end by offering to add them later.
-- Always use web_search first for a substantive question, then use web_image_search for a focused query that represents the subject. Embed 2–4 relevant image results directly as Markdown images with their source links. Choose visuals that show the actual subject, not generic decorative stock imagery. For a game, place, person, product, artwork, landmark, event, or design, image search is mandatory.
-- Always include one native visual in addition to the image gallery. When reliable evidence has three or more comparable numeric values, render a grounded bar, line, area, pie, radar, or scatter chart/plot directly in chat. When reliable numeric data is unavailable, render a Mermaid diagram, timeline, map of concepts, or process graphic instead. Never fabricate values merely to produce a chart.
-- Place visuals beside the explanation they support, label them clearly, and ensure the written answer explains what the viewer should take from them. Source factual claims, image results, and chart values from the research completed in this run.
-- For standalone files, complete and verify the requested file. Include useful visuals in that deliverable when they are part of the requested result, and summarize the key result in chat rather than substituting a text-only promise.
-- Only greetings, acknowledgements, and yes/no confirmations may be text-only. If reliable image or numeric evidence is genuinely unavailable, still provide the best available diagram and state the limitation briefly.`;
+    general += `\n\nSUBSTANTIVE ANSWER CONTRACT — applies to every Home request that is not a greeting, acknowledgement, or yes/no confirmation:
+- Lead with a complete, direct answer in chat, finished in the same run. Upgrade it with visuals when they genuinely help (per the visual rules above); a text-only answer is fine whenever prose explains the subject clearly.
+- Research (web_search, then read the most promising pages) when the question needs current facts, evidence, or specifics outside memory — not as an automatic first step for every question. When you do research, ground the answer in it and cite where figures came from.
+- Use web_image_search and embed 2-4 inline images (as Markdown images with source links) when showing the actual subject genuinely helps — a game, place, person, product, artwork, landmark, event, or design. Skip generic decorative stock imagery, and skip images entirely when they add nothing.
+- Include a native chart only when grounded numeric data (3+ comparable values) is available or a diagram clarifies structure; render a Mermaid process/timeline/concept graphic instead when no reliable numbers exist. Never fabricate values merely to produce a chart.
+- For standalone files, complete and verify the requested file. Include useful visuals in that deliverable when they are part of the requested result, and summarize the key result in chat rather than substituting a text-only promise.`;
     if (mode === "plan") return `${general}\n\nMODE: PLAN. Investigate and return a structured markdown plan. Writing, editing and command execution are disabled — read and search only.`;
     const generalModeLine = mode === "auto"
       ? "AUTO. Work autonomously end to end: research, create, then verify the deliverable exists before finishing."

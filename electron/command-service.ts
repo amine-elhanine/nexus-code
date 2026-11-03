@@ -262,11 +262,13 @@ export async function executeCommand(projectRoot: string, command: string, optio
   // Wrap command with working directory tracker sentinel so sticky cwd works across execute tool calls
   const sentinelTag = `__NEXUS_PWD_${Date.now()}__`;
   const wrappedCommand = process.platform === "win32"
-    // `|| (exit /b)` preserves the real exit code of a failing command (the
-    // previous `exit /b 1` masked every failure to exit code 1). A failed
-    // command simply does not emit the cwd sentinel, so sticky-cwd tracking
-    // skips it — same behavior as before the sentinel existed.
-    ? `${normalized} && (echo ${sentinelTag}& cd) || (exit /b)`
+    // Exit-code fidelity: the cwd report must not clobber ERRORLEVEL. `cd`
+    // resets ERRORLEVEL to 0 on success (it would mask a failing command's
+    // real exit code), and `echo` does not. So the cwd is reported by a
+    // `for /f` child running `cd` instead of a direct `cd`, and the failure
+    // branch ends with a bare `exit /b`, which exits with the preserved
+    // ERRORLEVEL instead of the previous hardcoded 1.
+    ? `${normalized} && (echo ${sentinelTag}& for /f "delims=" %i in ('cd') do @echo %i) || (echo ${sentinelTag}& for /f "delims=" %i in ('cd') do @echo %i & exit /b)`
     : `{ ${normalized}; }; __ex=$?; echo "${sentinelTag}"; pwd; exit $__ex`;
 
   const extractAndApplySentinel = (rawStdout: string): string => {
