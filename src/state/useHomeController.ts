@@ -346,6 +346,40 @@ export function useHomeController(enabled = true) {
     setEditingSessionTitle("");
   }, []);
 
+  const truncateChat = useCallback(
+    async (fromIndex: number) => {
+      const active = activeSessionRef.current;
+      if (!active || typeof api?.truncateHomeSession !== "function") return null;
+      try {
+        const updated = await api.truncateHomeSession(active.id, fromIndex);
+        setActiveSession(updated);
+        setSessions((curr) => sortHomeSessions(curr.map((s) => (s.id === updated.id ? updated : s))));
+        return updated;
+      } catch (err) {
+        console.error("Failed to truncate home session", err);
+        return null;
+      }
+    },
+    [api]
+  );
+
+  const forkChat = useCallback(
+    async (fromIndex: number, newTitle?: string) => {
+      const active = activeSessionRef.current;
+      if (!active || typeof api?.forkHomeSession !== "function") return null;
+      try {
+        const forked = await api.forkHomeSession(active.id, fromIndex, newTitle);
+        setActiveSession(forked);
+        setSessions((curr) => sortHomeSessions([forked, ...curr]));
+        return forked;
+      } catch (err) {
+        console.error("Failed to fork home session", err);
+        return null;
+      }
+    },
+    [api]
+  );
+
   const submit = useCallback(
     async (
       overrideText?: string,
@@ -482,6 +516,8 @@ export function useHomeController(enabled = true) {
     createChat,
     selectChat,
     deleteChat,
+    truncateChat,
+    forkChat,
     submit,
     stopAgent,
     refreshFiles,

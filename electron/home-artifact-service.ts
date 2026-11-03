@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
@@ -176,4 +177,127 @@ export async function validateHomeArtifactContract(
 export function selectHomeArtifactCandidates(relativePaths: string[]): string[] {
   const final = relativePaths.filter((p) => !isGeneratedSource(p));
   return final.length ? final : relativePaths;
+}
+
+// ── Artifact Canvas Version History (ChatGPT / Claude Desktop Parity) ───────
+
+export type ArtifactVersionEntry = {
+  version: number;
+  updatedAt: string;
+  sizeBytes: number;
+  snapshotRelPath: string;
+};
+
+export type ArtifactVersionManifest = {
+  filePath: string;
+  currentVersion: number;
+  versions: ArtifactVersionEntry[];
+};
+
+function versionsDir(root: string): string {
+  return path.join(root, ".nexus-versions");
+}
+
+function assertInsideRoot(root: string, relPath: string): { abs: string; cleanRel: string } {
+  const resolvedRoot = path.resolve(root);
+  const abs = path.resolve(resolvedRoot, relPath);
+  const isWin = process.platform === "win32";
+  const rootCmp = isWin ? resolvedRoot.toLowerCase() : resolvedRoot;
+  const absCmp = isWin ? abs.toLowerCase() : abs;
+  if (absCmp === rootCmp || !absCmp.startsWith(`${rootCmp}${path.sep}`)) {
+    throw new Error(`Artifact path escapes workspace root: ${relPath}`);
+  }
+  const cleanRel = path.relative(resolvedRoot, abs).replace(/\\/g, "/");
+  return { abs, cleanRel };
+}
+
+function manifestPath(root: string, cleanRel: string): string {
+  const safeName = cleanRel.replace(/[\\/]/g, "__") + ".manifest.json";
+  return path.join(versionsDir(root), safeName);
+}
+
+/** Record a new version snapshot whenever a file is created or updated in the Canvas workspace. */
+export async function snapshotArtifactVersion(root: string, relPath: string): Promise<ArtifactVersionEntry | null> {
+  try {
+    const { abs, cleanRel } = assertInsideRoot(root, relPath);
+    const stat = await fs.stat(abs);
+    const vDir = versionsDir(root);
+    await fs.mkdir(vDir, { recursive: true });
+
+    const mPath = manifestPath(root, cleanRel);
+    let manifest: ArtifactVersionManifest = { filePath: cleanRel, currentVersion: 0, versions: [] };
+    try {
+      manifest = JSON.parse(await fs.readFile(mPath, "utf8"));
+    } catch { /* new manifest */ }
+
+    // Skip creating a duplicate snapshot if bytes are identical to the latest version
+    const latest = manifest.versions[manifest.versions.length - 1];
+    if (latest) {
+      try {
+        const latestAbs = path.join(root, latest.snapshotRelPath);
+        const [curBytes, prevBytes] = await Promise.all([fs.readFile(abs), fs.readFile(latestAbs)]);
+        const curHash = crypto.createHash("sha256").update(curBytes).digest("hex");
+        const prevHash = crypto.createHash("sha256").update(prevBytes).digest("hex");
+        if (curHash === prevHash) return latest;
+      } catch { /* proceed with snapshot */ }
+    }
+
+    const nextVer = manifest.currentVersion + 1;
+    const snapFileName = `${cleanRel.replace(/[\\/]/g, "__")}.v${nextVer}`;
+    const snapAbsPath = path.join(vDir, snapFileName);
+
+    await fs.copyFile(abs, snapAbsPath);
+
+    const entry: ArtifactVersionEntry = {
+      version: nextVer,
+      updatedAt: new Date().toISOString(),
+      sizeBytes: stat.size,
+      snapshotRelPath: `.nexus-versions/${snapFileName}`,
+    };
+
+    manifest.currentVersion = nextVer;
+    manifest.versions.push(entry);
+    // Keep max 20 versions per artifact
+    if (manifest.versions.length > 20) {
+      const removed = manifest.versions.shift();
+      if (removed) {
+        try { await fs.rm(path.join(root, removed.snapshotRelPath), { force: true }); } catch { /* ignore */ }
+      }
+    }
+
+    await fs.writeFile(mPath, JSON.stringify(manifest, null, 2), "utf8");
+    return entry;
+  } catch {
+    return null;
+  }
+}
+
+/** List all available version snapshots for an artifact. */
+export async function getArtifactVersions(root: string, relPath: string): Promise<ArtifactVersionManifest | null> {
+  try {
+    const { cleanRel } = assertInsideRoot(root, relPath);
+    const mPath = manifestPath(root, cleanRel);
+    const data = JSON.parse(await fs.readFile(mPath, "utf8"));
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+/** Revert artifact content to an earlier version snapshot. */
+export async function restoreArtifactVersion(root: string, relPath: string, version: number): Promise<boolean> {
+  try {
+    const { abs: targetAbs, cleanRel } = assertInsideRoot(root, relPath);
+    const manifest = await getArtifactVersions(root, cleanRel);
+    if (!manifest) return false;
+    const target = manifest.versions.find((v) => v.version === version);
+    if (!target) return false;
+    const { abs: snapAbs } = assertInsideRoot(root, target.snapshotRelPath);
+    await fs.copyFile(snapAbs, targetAbs);
+    // Snapshot this restore action as the newest version (force snapshot even if hash matches an earlier entry)
+    await snapshotArtifactVersion(root, cleanRel);
+    return true;
+  } catch {
+    return false;
+  }
 }

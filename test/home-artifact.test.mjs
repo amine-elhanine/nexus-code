@@ -10,6 +10,9 @@ import {
   validateHomeArtifact,
   validateHomeArtifactContract,
   validateHomeArtifacts,
+  snapshotArtifactVersion,
+  getArtifactVersions,
+  restoreArtifactVersion,
 } from "../dist-electron/home-artifact-service.js";
 
 function minimalPdf(text = "Readable Home report") {
@@ -145,6 +148,42 @@ test("Home artifact validation rejects a PDF that only imitates its header and e
     const result = await validateHomeArtifact(root, "spoofed.pdf");
     assert.equal(result.valid, false);
     assert.match(result.error || "", /PDF structure is corrupt or unreadable/);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Home artifact versioning snapshots, deduplicates identical content, restores, and refuses traversal", async () => {
+  const root = await mkdirScratch("nexus-home-versions-");
+  try {
+    const file = path.join(root, "report.md");
+    await fs.writeFile(file, "# Version 1\n", "utf8");
+    const v1 = await snapshotArtifactVersion(root, "report.md");
+    assert.equal(v1?.version, 1);
+
+    // Identical content must not create v2
+    const v1Dup = await snapshotArtifactVersion(root, "report.md");
+    assert.equal(v1Dup?.version, 1);
+
+    // Modified content creates v2
+    await fs.writeFile(file, "# Version 2\nUpdated body\n", "utf8");
+    const v2 = await snapshotArtifactVersion(root, "report.md");
+    assert.equal(v2?.version, 2);
+
+    // Restore to v1
+    const restored = await restoreArtifactVersion(root, "report.md", 1);
+    assert.equal(restored, true);
+    assert.equal(await fs.readFile(file, "utf8"), "# Version 1\n");
+
+    const manifest = await getArtifactVersions(root, "report.md");
+    assert.equal(manifest?.currentVersion, 3);
+    assert.equal(manifest?.versions.length, 3);
+
+    // Path traversal outside root must be refused
+    const traversal = await snapshotArtifactVersion(root, "../outside.md");
+    assert.equal(traversal, null);
+    assert.equal(await getArtifactVersions(root, "../outside.md"), null);
+    assert.equal(await restoreArtifactVersion(root, "../outside.md", 1), false);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

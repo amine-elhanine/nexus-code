@@ -64,6 +64,8 @@ export interface NexusApi {
   detectProviderModelEfforts: (providerId: string, model: string) => Promise<string[]>;
   detectProviderModelContext: (providerId: string, model: string) => Promise<{ contextWindow: number; maxOutput?: number; tokenizer?: string; modality?: string }>;
   compactSession: (payload?: { sessionId?: string; projectId?: string }) => Promise<{ originalTokens: number; compactedTokens: number; freedTokens: number; contextWindow?: number; threshold?: number; notice?: string }>;
+  truncateSession: (projectId: string, sessionId: string, fromIndex: number) => Promise<SessionRecord>;
+  forkSession: (projectId: string, sessionId: string, fromIndex: number, newTitle?: string) => Promise<SessionRecord>;
   removeProviderModel: (providerId: string, model: string) => Promise<ProviderConfig>;
   removeProvider: (providerId: string) => Promise<ProviderConfig[]>;
   fetchProviderModels: (input: { providerId?: string; baseUrl?: string; apiKey?: string }) => Promise<string[] | { models: string[]; modelEfforts?: Record<string, string[]>; defaultEfforts?: Record<string, string> }>;
@@ -212,6 +214,11 @@ export interface NexusApi {
   readHomeFile: (relativePath: string) => Promise<{ name: string; path: string; size: number; base64: string }>;
   downloadHomeFile: (relativePath: string) => Promise<string | null>;
   openHomeFolder: () => Promise<void>;
+  truncateHomeSession: (sessionId: string, fromIndex: number) => Promise<SessionRecord>;
+  forkHomeSession: (sessionId: string, fromIndex: number, newTitle?: string) => Promise<SessionRecord>;
+  getArtifactVersions: (relativePath: string) => Promise<{ filePath: string; currentVersion: number; versions: Array<{ version: number; updatedAt: string; sizeBytes: number; snapshotRelPath: string }> } | null>;
+  restoreArtifactVersion: (relativePath: string, version: number) => Promise<boolean>;
+  snapshotArtifactVersion: (relativePath: string) => Promise<{ version: number; updatedAt: string; sizeBytes: number; snapshotRelPath: string } | null>;
 
   listNotebooks: () => Promise<Array<{ id: string; name: string; description?: string; createdAt: string; updatedAt: string }>>;
   createNotebook: (name: string, description?: string) => Promise<{ id: string; name: string; description?: string; createdAt: string; updatedAt: string }>;
@@ -251,6 +258,9 @@ export interface NexusApi {
   saveEmbeddingProvider: (provider: unknown) => Promise<Array<{ id: string; name: string; kind: string; baseUrl?: string; apiKey: string; models: string[] }>>;
   removeEmbeddingProvider: (providerId: string) => Promise<Array<{ id: string; name: string; kind: string; baseUrl?: string; apiKey: string; models: string[] }>>;
   testEmbeddingProvider: (input: { id?: string; kind: string; baseUrl?: string; apiKey?: string; model: string }) => Promise<{ dims: number }>;
+  notebookAudioList: (notebookId: string) => Promise<Array<any>>;
+  notebookAudioGenerate: (payload: { notebookId: string; topic?: string; fileIds?: string[]; providerId?: string; model?: string }) => Promise<{ audio: any; fallbackReason: string | null }>;
+  notebookAudioDelete: (notebookId: string, audioId: string) => Promise<Array<any>>;
 
   runAgent: (payload: { request: string; images?: string[]; attachments?: ChatAttachment[]; providerId?: string; model?: string; effort?: string; contextWindow?: number; maxOutput?: number; mode?: string; sessionId?: string; projectId?: string }) => Promise<string>;
   cancelAgent: (sessionId?: string) => Promise<boolean>;

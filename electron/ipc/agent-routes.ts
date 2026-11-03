@@ -7,7 +7,7 @@ import { ipcMain } from "electron";
 import path from "node:path";
 import {
   appendSessionMessages, getProject, getSession, listProviders, updateProjectMemory, updateProjectFacts, updateSession,
-  getAppSettings, type AppSettings,
+  getAppSettings, type AppSettings, truncateSessionFromMessage, forkSessionAtMessage,
 } from "../store.js";
 import {
   runProjectAgent, RunCancelledError, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint,
@@ -405,5 +405,13 @@ export function registerAgentRoutes(ctx: MainIpcContext): void {
     cancelCommandRun(sessionId);
     cancelCommandApprovals(sessionId);
     return true;
+  });
+
+  // ── Conversation Branching & Truncation IPC (ChatGPT / Claude Parity) ──
+  ipcMain.handle("agent:session:truncate", async (_event, projectId: string, sessionId: string, fromIndex: number) => {
+    return truncateSessionFromMessage(projectId, sessionId, fromIndex);
+  });
+  ipcMain.handle("agent:session:fork", async (_event, projectId: string, sessionId: string, messageIndex: number, newTitle?: string) => {
+    return forkSessionAtMessage(projectId, sessionId, messageIndex, newTitle);
   });
 }

@@ -5,7 +5,7 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { stripProjectRoot } from "./path-utils.js";
 import { ensureSymbolParsersReady, parseSymbolsWithTreeSitterSync, startSymbolParserWarmup, type SymbolEntry } from "./symbol-parser.js";
-import { lspDefinition, lspDiagnostics, lspDocumentSymbols, lspReferences } from "./lsp-service.js";
+import { lspDefinition, lspDiagnostics, lspDocumentSymbols, lspReferences, lspRename } from "./lsp-service.js";
 
 export type { SymbolEntry };
 // Warm the WASM grammars in the background so the sync parse path is
@@ -284,12 +284,12 @@ async function walkSearch(
   return hits;
 }
 
-export type DiagnosticItem = { file: string; line: number; col: number; code: string; message: string };
+export type DiagnosticItem = { file: string; line: number; col: number; code: string; message: string; severity?: "error" | "warning" | "info" | "hint" | string };
 
 function parseTscLine(line: string): DiagnosticItem | null {
   const m = line.match(/^(.+?)\((\d+),(\d+)\):\s*(error|warning)\s+([A-Z0-9]+):\s*(.+)$/);
   if (!m) return null;
-  return { file: m[1].replace(/\\/g, "/"), line: Number(m[2]), col: Number(m[3]), code: m[5], message: m[6].slice(0, 300) };
+  return { file: m[1].replace(/\\/g, "/"), line: Number(m[2]), col: Number(m[3]), code: m[5], message: m[6].slice(0, 300), severity: m[4] };
 }
 
 /**
@@ -372,7 +372,10 @@ export async function runDiagnostics(projectRoot: string, files: string[] = []):
   }
 }
 
-export function createCodeIntelligenceTools(projectRoot: string) {
+export function createCodeIntelligenceTools(
+  projectRoot: string,
+  options?: { readOnly?: boolean; beforeEdit?: (info: { tool: string; files: string[] }) => Promise<string | null> }
+) {
   const getSymbolOutlineTool = tool(
     async ({ filePath }: { filePath: string }) => {
       try {
@@ -623,12 +626,48 @@ export function createCodeIntelligenceTools(projectRoot: string) {
     }
   );
 
-  return [findSymbolReferencesTool, readFileRangeTool, grepSearchTool, getDiagnosticsTool];
+  const lspRenameTool = tool(
+    async ({ filePath, line, character = 0, newName }: { filePath: string; line: number; character?: number; newName: string }) => {
+      try {
+        const absPath = await safePath(projectRoot, filePath);
+        const relPath = path.relative(path.resolve(projectRoot), absPath).replace(/\\/g, "/");
+        if (options?.beforeEdit) {
+          const denial = await options.beforeEdit({ tool: "lsp_rename", files: [relPath] });
+          if (denial) return denial;
+        }
+        const result = await lspRename(projectRoot, absPath, line, character, newName);
+        if (!result) {
+          return `LSP rename not available for ${filePath}. Check that a language server is active for this file type.`;
+        }
+        if (!result.success) {
+          return `LSP rename failed: ${result.error || "Unknown error"}`;
+        }
+        return `Successfully renamed symbol to "${newName}" across ${result.modifiedFiles.length} file(s) (${result.totalEdits} edit(s)):\n${result.modifiedFiles.map((f) => `- ${f}`).join("\n")}`;
+      } catch (err: any) {
+        return `LSP rename error: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    },
+    {
+      name: "lsp_rename",
+      description: "Safely rename a symbol (function, variable, class, interface, type) across the entire codebase using the language server. Automatically updates all definition and reference sites.",
+      schema: z.object({
+        filePath: z.string().describe("Relative path to the file containing the symbol definition or reference"),
+        line: z.number().describe("1-indexed line number where the symbol occurs"),
+        character: z.number().optional().describe("0-indexed character offset on the line (default 0)"),
+        newName: z.string().describe("New name for the symbol"),
+      }),
+    }
+  );
+
+  if (options?.readOnly) {
+    return [findSymbolReferencesTool, readFileRangeTool, grepSearchTool, getDiagnosticsTool];
+  }
+  return [findSymbolReferencesTool, readFileRangeTool, grepSearchTool, getDiagnosticsTool, lspRenameTool];
 }
 
 // Opencode parity: the backend already exposes read/grep/glob, so the LLM
 // only needs a small core.
-export const CORE_CODE_TOOL_NAMES = ["read_file_range", "grep_search", "get_diagnostics"];
+export const CORE_CODE_TOOL_NAMES = ["read_file_range", "grep_search", "get_diagnostics", "lsp_rename"];
 
 export function pickRuntimeCodeTools(allTools: any[], complexity: "simple" | "complex"): any[] {
   if (complexity === "simple") {

@@ -6,9 +6,10 @@
 // timeout, crash) resolves null and marks the language unavailable, so
 // callers degrade to the tree-sitter/regex tools and a run is never blocked.
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, promises as fsPromises } from "node:fs";
+import fs, { existsSync, promises as fsPromises } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { guardAgainstLegacyStateDir } from "./state-guard.js";
 import type { DiagnosticItem } from "./code-tools.js";
 
 export type LspLanguage = "typescript" | "python" | "go" | "rust" | "cpp";
@@ -141,6 +142,12 @@ class LspServer {
     const proc = this.spawnServer();
     if (!proc || !proc.pid) return false;
     this.proc = proc;
+    // Allow standalone CLI scripts and unit tests to exit without waiting for
+    // the 5-minute idle timer when no LSP request is actively awaiting a timer.
+    proc.unref?.();
+    (proc.stdin as any)?.unref?.();
+    (proc.stdout as any)?.unref?.();
+    (proc.stderr as any)?.unref?.();
 
     proc.stdout?.on("data", (chunk: Buffer) => this.consume(chunk));
     proc.stderr?.on("data", () => { /* servers log verbosely; ignore */ });
@@ -269,10 +276,10 @@ class LspServer {
   }
 
   /** didOpen the file so the server has content for position queries. */
-  private async ensureOpened(filePath: string): Promise<string | null> {
+  private async ensureOpened(filePath: string, forceRefresh = false): Promise<string | null> {
     const abs = path.resolve(filePath);
     const uri = toLspUri(abs);
-    if (this.openedUris.has(uri)) return uri;
+    if (this.openedUris.has(uri) && !forceRefresh) return uri;
     let text: string;
     try {
       const raw = await fsPromises.readFile(abs);
@@ -281,8 +288,12 @@ class LspServer {
     } catch {
       return null;
     }
+    if (this.openedUris.has(uri)) {
+      await this.notify("textDocument/didClose", { textDocument: { uri } });
+      this.openedUris.delete(uri);
+    }
     await this.notify("textDocument/didOpen", {
-      textDocument: { uri, languageId: this.language === "typescript" ? "typescript" : this.language, version: 1, text },
+      textDocument: { uri, languageId: this.language === "typescript" ? "typescript" : this.language, version: Date.now() % 1_000_000, text },
     });
     this.openedUris.add(uri);
     return uri;
@@ -336,6 +347,38 @@ class LspServer {
       .map((l: any) => ({ path: fromLspUri(String(l.uri)), line: (l.range.start.line ?? 0) + 1, col: (l.range.start.character ?? 0) + 1 }));
   }
 
+  async rename(filePath: string, line1: number, characterUtf16: number, newName: string): Promise<Record<string, Array<{ range: { start: { line: number; character: number }; end: { line: number; character: number } }; newText: string }>> | null> {
+    const uri = await this.ensureOpened(filePath);
+    if (!uri) return null;
+    const result: any = await this.request("textDocument/rename", {
+      textDocument: { uri },
+      position: { line: Math.max(0, line1 - 1), character: Math.max(0, characterUtf16) },
+      newName,
+    });
+    if (!result) return null;
+    const editsByFile: Record<string, Array<{ range: { start: { line: number; character: number }; end: { line: number; character: number } }; newText: string }>> = {};
+    if (result.changes) {
+      for (const [docUri, textEdits] of Object.entries(result.changes)) {
+        const targetPath = fromLspUri(docUri);
+        editsByFile[targetPath] = (textEdits as any[]).map((e) => ({
+          range: e.range,
+          newText: e.newText,
+        }));
+      }
+    } else if (Array.isArray(result.documentChanges)) {
+      for (const change of result.documentChanges) {
+        if (change.textDocument?.uri && Array.isArray(change.edits)) {
+          const targetPath = fromLspUri(change.textDocument.uri);
+          editsByFile[targetPath] = change.edits.map((e: any) => ({
+            range: e.range,
+            newText: e.newText,
+          }));
+        }
+      }
+    }
+    return editsByFile;
+  }
+
   diagnosticsFor(filePath: string): DiagnosticItem[] {
     const uri = toLspUri(path.resolve(filePath));
     return (this.diagnostics.get(uri) ?? []).map((d) => ({ ...d, file: path.relative(this.projectRoot, filePath).replace(/\\/g, "/") }));
@@ -343,9 +386,11 @@ class LspServer {
 
   /** didOpen + brief wait for the server to push publishDiagnostics. */
   async collectDiagnostics(filePath: string, waitMs = 1500): Promise<DiagnosticItem[]> {
-    const uri = await this.ensureOpened(filePath);
-    if (!uri) return [];
+    const abs = path.resolve(filePath);
+    const uri = toLspUri(abs);
     this.diagnostics.delete(uri);
+    const openedUri = await this.ensureOpened(filePath, true);
+    if (!openedUri) return [];
     await new Promise((r) => setTimeout(r, waitMs));
     return this.diagnosticsFor(filePath);
   }
@@ -516,3 +561,118 @@ export async function lspDiagnostics(projectRoot: string, filePath: string, wait
     return null;
   }
 }
+
+/** Rename symbol across project files via LSP. Returns applied files or null. */
+export async function lspRename(
+  projectRoot: string,
+  filePath: string,
+  line1: number,
+  characterUtf16: number,
+  newName: string
+): Promise<{ success: boolean; modifiedFiles: string[]; totalEdits: number; error?: string } | null> {
+  const resolvedRoot = path.resolve(projectRoot);
+  const resolvedTarget = path.resolve(resolvedRoot, filePath);
+  const isWin = process.platform === "win32";
+  const rootCmp = isWin ? resolvedRoot.toLowerCase() : resolvedRoot;
+  const targetCmp = isWin ? resolvedTarget.toLowerCase() : resolvedTarget;
+  if (targetCmp !== rootCmp && !targetCmp.startsWith(`${rootCmp}${path.sep}`)) {
+    return { success: false, modifiedFiles: [], totalEdits: 0, error: "Target path is outside project workspace" };
+  }
+  const language = languageForFile(resolvedTarget);
+  if (!language) return null;
+  try {
+    const server = await getLspServer(resolvedRoot, language);
+    if (!server) return null;
+    const editsByFile = await server.rename(resolvedTarget, line1, characterUtf16, newName);
+    if (!editsByFile || Object.keys(editsByFile).length === 0) {
+      return { success: false, modifiedFiles: [], totalEdits: 0, error: "No rename edits produced by language server" };
+    }
+
+    const modifiedFiles: string[] = [];
+    let totalEdits = 0;
+
+    for (const [absFile, edits] of Object.entries(editsByFile)) {
+      const resolvedFile = path.resolve(absFile);
+      const fileCmp = isWin ? resolvedFile.toLowerCase() : resolvedFile;
+      if (fileCmp !== rootCmp && !fileCmp.startsWith(`${rootCmp}${path.sep}`)) continue;
+      guardAgainstLegacyStateDir(resolvedFile);
+      if (!fs.existsSync(resolvedFile)) continue;
+      const content = fs.readFileSync(resolvedFile, "utf8");
+      const lines = content.split("\n");
+
+      // Sort edits in reverse document order (bottom to top, right to left) so earlier offsets remain valid
+      const sorted = [...edits].sort((a, b) => {
+        if (a.range.start.line !== b.range.start.line) return b.range.start.line - a.range.start.line;
+        return b.range.start.character - a.range.start.character;
+      });
+
+      for (const edit of sorted) {
+        const startL = edit.range.start.line;
+        const startC = edit.range.start.character;
+        const endL = edit.range.end.line;
+        const endC = edit.range.end.character;
+
+        if (startL <= endL && lines[startL] !== undefined && lines[endL] !== undefined) {
+          const prefix = lines[startL].slice(0, startC);
+          const suffix = lines[endL].slice(endC);
+          const replacementLines = (prefix + edit.newText + suffix).split("\n");
+          lines.splice(startL, endL - startL + 1, ...replacementLines);
+          totalEdits++;
+        }
+      }
+
+      fs.writeFileSync(resolvedFile, lines.join("\n"), "utf8");
+      modifiedFiles.push(path.relative(resolvedRoot, resolvedFile).replace(/\\/g, "/"));
+    }
+
+    return { success: true, modifiedFiles, totalEdits };
+  } catch (err: any) {
+    return { success: false, modifiedFiles: [], totalEdits: 0, error: String(err?.message || err) };
+  }
+}
+
+function hasProjectLanguageConfig(projectRoot: string, language: LspLanguage): boolean {
+  const root = path.resolve(projectRoot);
+  if (language === "typescript") {
+    return existsSync(path.join(root, "tsconfig.json")) || existsSync(path.join(root, "jsconfig.json"));
+  }
+  if (language === "python") {
+    return existsSync(path.join(root, "pyproject.toml")) || existsSync(path.join(root, "pyrightconfig.json"));
+  }
+  if (language === "go") return existsSync(path.join(root, "go.mod"));
+  if (language === "rust") return existsSync(path.join(root, "Cargo.toml"));
+  return false;
+}
+
+/** Collect post-edit LSP diagnostics for modified paths (immediate compiler/linter feedback). */
+export async function collectPostEditDiagnostics(
+  projectRoot: string,
+  modifiedPaths: string[]
+): Promise<string | null> {
+  if (process.env.NEXUS_DISABLE_POST_EDIT_LSP === "1") return null;
+  const resolvedRoot = path.resolve(projectRoot);
+  const reports: string[] = [];
+  for (const relOrAbs of modifiedPaths) {
+    const absPath = path.isAbsolute(relOrAbs) ? relOrAbs : path.resolve(resolvedRoot, relOrAbs);
+    if (!existsSync(absPath)) continue;
+    const language = languageForFile(absPath);
+    if (!language) continue;
+    const key = serverKey(resolvedRoot, language);
+    if (!servers.has(key) && !hasProjectLanguageConfig(resolvedRoot, language)) continue;
+    const diags = await lspDiagnostics(resolvedRoot, absPath, 300).catch(() => null);
+    if (diags && diags.length > 0) {
+      const errors = diags.filter((d) => d.severity === "error" || d.severity === "warning");
+      if (errors.length > 0) {
+        const rel = path.relative(resolvedRoot, absPath).replace(/\\/g, "/");
+        const lines = errors.slice(0, 5).map((e) => `- Line ${e.line}: ${e.message}${e.code ? ` (${e.code})` : ""}`);
+        reports.push(`Diagnostics for ${rel}:\n${lines.join("\n")}`);
+      }
+    }
+  }
+  if (reports.length === 0) return null;
+  return `\n\n[LSP Diagnostics after edit]:\n${reports.join("\n\n")}`;
+}
+
+process.once("exit", () => {
+  try { resetLspForTests(); } catch { /* ignore */ }
+});

@@ -582,6 +582,32 @@ export function useAppController() {
     setView("chat");
   }
 
+  async function truncateSession(fromIndex: number) {
+    if (!activeProject || !activeSession || typeof api?.truncateSession !== "function") return null;
+    try {
+      const updated = await api.truncateSession(activeProject.id, activeSession.id, fromIndex);
+      setActiveSession(updated);
+      setSessions((current) => sortSessionsByUpdatedAt(current.map((s) => (s.id === updated.id ? updated : s))));
+      return updated;
+    } catch (err) {
+      console.error("Failed to truncate session", err);
+      return null;
+    }
+  }
+
+  async function forkSession(fromIndex: number, newTitle?: string) {
+    if (!activeProject || !activeSession || typeof api?.forkSession !== "function") return null;
+    try {
+      const forked = await api.forkSession(activeProject.id, activeSession.id, fromIndex, newTitle);
+      setActiveSession(forked);
+      setSessions((current) => sortSessionsByUpdatedAt([forked, ...current]));
+      return forked;
+    } catch (err) {
+      console.error("Failed to fork session", err);
+      return null;
+    }
+  }
+
   function enterHome() {
     setArea("home");
     setStreamingText("");
@@ -1106,6 +1132,8 @@ export function useAppController() {
     activateSession,
     deleteActiveSession,
     renameSession,
+    truncateSession,
+    forkSession,
     openFile,
     saveFile,
     toggleFolder,

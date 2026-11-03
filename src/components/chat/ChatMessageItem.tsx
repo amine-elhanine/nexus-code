@@ -18,6 +18,8 @@ import {
   Sparkles,
   Globe,
   AlertCircle,
+  GitBranch,
+  Pencil,
 } from "lucide-react";
 import { RichMarkdown } from "../common/RichMarkdown.js";
 import { timeLabel } from "../../utils/format.js";
@@ -939,14 +941,20 @@ export function ActivityGroupView({
 
 export function ChatItemView({
   message,
+  index,
   onOpenArtifact,
   onOpenImage,
   onOpenAttachment,
+  onEditMessage,
+  onForkChat,
 }: {
   message: ChatItem;
+  index?: number;
   onOpenArtifact?: (artifact: ArtifactItem) => void;
   onOpenImage?: (src: string) => void;
   onOpenAttachment?: (attachment: ChatAttachment) => void;
+  onEditMessage?: (index: number, text: string) => void;
+  onForkChat?: (index: number) => void;
 }) {
   if (message.artifact) {
     return (
@@ -1050,9 +1058,47 @@ export function ChatItemView({
         </div>
       )}
       <RichMarkdown source={message.text} className="chat-message-text" />
+      {message.role === "user" && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
+          <CopyTextButton text={message.text} />
+          {onEditMessage && typeof index === "number" && (
+            <button
+              className="pane-action"
+              style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11 }}
+              onClick={() => onEditMessage(index, message.text)}
+              title="Edit & retry from this message"
+            >
+              <Pencil size={11} />
+              <span>Edit</span>
+            </button>
+          )}
+          {onForkChat && typeof index === "number" && (
+            <button
+              className="pane-action"
+              style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11 }}
+              onClick={() => onForkChat(index)}
+              title="Fork chat from here into a new branch"
+            >
+              <GitBranch size={11} />
+              <span>Fork</span>
+            </button>
+          )}
+        </div>
+      )}
       {message.role === "assistant" && Boolean(message.text?.trim()) && (
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
           <CopyTextButton text={message.text} />
+          {onForkChat && typeof index === "number" && (
+            <button
+              className="pane-action"
+              style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11 }}
+              onClick={() => onForkChat(index)}
+              title="Fork chat from here into a new branch"
+            >
+              <GitBranch size={11} />
+              <span>Fork</span>
+            </button>
+          )}
         </div>
       )}
     </div>

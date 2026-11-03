@@ -696,6 +696,66 @@ export async function deleteHomeSession(sessionId: string): Promise<boolean> {
   await Promise.all([persist(), deleteMessageFile(null, sessionId)]);
   return true;
 }
+
+/** Truncate a code session's messages from a given index (Edit & Resubmit / Regenerate). */
+export async function truncateSessionFromMessage(projectId: string, sessionId: string, fromIndex: number): Promise<SessionRecord> {
+  const project = await getProject(projectId);
+  if (!project) throw new Error("Project not found");
+  const session = await getSession(projectId, sessionId);
+  if (!session) throw new Error("Session not found");
+  if (fromIndex >= 0 && fromIndex < session.messages.length) {
+    session.messages = session.messages.slice(0, fromIndex);
+    session.usage = calculateSessionUsage(session.messages);
+    session.updatedAt = new Date().toISOString();
+    project.updatedAt = session.updatedAt;
+    sortSessionsInPlace(project.sessions);
+    await Promise.all([persist(), writeMessageFile(projectId, sessionId, session.messages)]);
+  }
+  return session;
+}
+
+/** Truncate a home session's messages from a given index (Edit & Resubmit / Regenerate). */
+export async function truncateHomeSessionFromMessage(sessionId: string, fromIndex: number): Promise<SessionRecord> {
+  const state = await ensureLoaded();
+  const session = await getHomeSession(sessionId);
+  if (!session) throw new Error("Home session not found");
+  if (fromIndex >= 0 && fromIndex < session.messages.length) {
+    session.messages = session.messages.slice(0, fromIndex);
+    session.usage = calculateSessionUsage(session.messages);
+    session.updatedAt = new Date().toISOString();
+    if (state.homeSessions) sortSessionsInPlace(state.homeSessions);
+    await Promise.all([persist(), writeMessageFile(null, sessionId, session.messages)]);
+  }
+  return session;
+}
+
+/** Fork a session into a new branch from a given message index. */
+export async function forkSessionAtMessage(projectId: string, sessionId: string, messageIndex: number, newTitle?: string): Promise<SessionRecord> {
+  const source = await getSession(projectId, sessionId);
+  if (!source) throw new Error("Session not found");
+  const branchMessages = source.messages.slice(0, Math.max(0, messageIndex + 1)).map((m) => ({ ...m }));
+  const newSession = await createSession(projectId, newTitle || `${source.title} (branch)`);
+  newSession.messages = branchMessages;
+  newSession.memory = source.memory || "";
+  newSession.usage = calculateSessionUsage(newSession.messages);
+  newSession.model = source.model ? { ...source.model } : undefined;
+  await Promise.all([persist(), writeMessageFile(projectId, newSession.id, newSession.messages)]);
+  return newSession;
+}
+
+/** Fork a home session into a new branch from a given message index. */
+export async function forkHomeSessionAtMessage(sessionId: string, messageIndex: number, newTitle?: string): Promise<SessionRecord> {
+  const source = await getHomeSession(sessionId);
+  if (!source) throw new Error("Home session not found");
+  const branchMessages = source.messages.slice(0, Math.max(0, messageIndex + 1)).map((m) => ({ ...m }));
+  const newSession = await createHomeSession(newTitle || `${source.title} (branch)`);
+  newSession.messages = branchMessages;
+  newSession.memory = source.memory || "";
+  newSession.usage = calculateSessionUsage(newSession.messages);
+  newSession.model = source.model ? { ...source.model } : undefined;
+  await Promise.all([persist(), writeMessageFile(null, newSession.id, newSession.messages)]);
+  return newSession;
+}
 // Shared Home memory: ChatGPT-style long-term memory across all Home chats.
 // Session memory stays per-chat; this is the cross-chat layer injected as
 // "Project memory" into the Home system prompt.

@@ -3,12 +3,13 @@
 import { ipcMain } from "electron";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { getHomeMemory, getHomeSession, listHomeSessions, createHomeSession, deleteHomeSession, updateHomeMemory, updateHomeSession } from "../store.js";
+import { getHomeMemory, getHomeSession, listHomeSessions, createHomeSession, deleteHomeSession, updateHomeMemory, updateHomeSession, truncateHomeSessionFromMessage, forkHomeSessionAtMessage } from "../store.js";
 import { removeSessionFromManifest, downloadHomeFile, ensureHomeDir, listHomeFiles, listHomeSessionFiles, listHomeSessionFilesForDeletion, openHomeFolder, readHomeFile } from "../home-service.js";
 import { homeTaskJournalPath } from "../home-task-service.js";
 import { codeTaskJournalPath } from "../code-task-service.js";
 import { deleteSessionTelemetry } from "../artifacts-service.js";
 import { parseHomeMemory, removeMemoryFact } from "../home-memory-service.js";
+import { getArtifactVersions, restoreArtifactVersion, snapshotArtifactVersion } from "../home-artifact-service.js";
 import type { MainIpcContext } from "./context.js";
 
 export function registerHomeRoutes(_ctx: MainIpcContext): void {
@@ -73,5 +74,27 @@ export function registerHomeRoutes(_ctx: MainIpcContext): void {
     const current = await getHomeMemory();
     await updateHomeMemory(removeMemoryFact(current, payload.fact || ""));
     return parseHomeMemory(await getHomeMemory());
+  });
+
+  // ── Canvas Artifact Version History IPC ──
+  ipcMain.handle("home:artifact:versions", async (_event, relPath: string) => {
+    const root = await ensureHomeDir();
+    return getArtifactVersions(root, relPath);
+  });
+  ipcMain.handle("home:artifact:restoreVersion", async (_event, relPath: string, version: number) => {
+    const root = await ensureHomeDir();
+    return restoreArtifactVersion(root, relPath, version);
+  });
+  ipcMain.handle("home:artifact:snapshot", async (_event, relPath: string) => {
+    const root = await ensureHomeDir();
+    return snapshotArtifactVersion(root, relPath);
+  });
+
+  // ── Conversation Branching & Truncation IPC (Home mode) ──
+  ipcMain.handle("home:session:truncate", async (_event, sessionId: string, fromIndex: number) => {
+    return truncateHomeSessionFromMessage(sessionId, fromIndex);
+  });
+  ipcMain.handle("home:session:fork", async (_event, sessionId: string, messageIndex: number, newTitle?: string) => {
+    return forkHomeSessionAtMessage(sessionId, messageIndex, newTitle);
   });
 }

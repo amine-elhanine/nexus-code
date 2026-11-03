@@ -3,6 +3,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { writeFileAtomic, withFileLock } from "./atomic-write.js";
 import { safePath } from "./project-tools.js";
+import { snapshotArtifactVersion } from "./home-artifact-service.js";
 
 const electronRequire = createRequire(import.meta.url);
 type ElectronShim = {
@@ -149,6 +150,10 @@ export async function recordHomeRunFiles(sessionId: string, runStartMs: number, 
   }
   if (created.length) {
     await recordHomeFilesOwnedBySession(sessionId, created);
+    const root = await ensureHomeDir();
+    for (const relPath of created) {
+      await snapshotArtifactVersion(root, relPath).catch(() => null);
+    }
   }
   return created;
 }

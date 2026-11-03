@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 
 import {
   ArrowLeft, ArrowUp, BookOpen, Check, Clapperboard, Download, FileText, Globe, HelpCircle,
   Layers, Loader2, Network, PanelLeft, PanelRight, Plus, Presentation, RefreshCw, Search, Sparkles, Square, Trash2, Upload, X,
-  FolderArchive, MoreVertical, Workflow, Compass, AlertCircle, Clock, Cpu, UploadCloud,
+  FolderArchive, MoreVertical, Workflow, Compass, AlertCircle, Clock, Cpu, UploadCloud, Headphones, Code2,
 } from "lucide-react";
 import { ModelSelect } from "./AgentView.js";
 import { ActivityGroupView, CopyTextButton } from "../components/chat/ChatMessageItem.js";
@@ -14,9 +14,10 @@ import { DocumentViewerModal } from "../components/notebook/DocumentViewerModal.
 import { QuizPlayerModal } from "../components/notebook/QuizPlayerModal.js";
 import { FlashcardPlayerModal } from "../components/notebook/FlashcardPlayerModal.js";
 import { MindmapViewerModal } from "../components/notebook/MindmapViewerModal.js";
+import { AudioPlayerModal } from "../components/notebook/AudioPlayerModal.js";
 import { FilePreviewModal } from "../components/home/FilePreviewModal.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
-import type { ChatItem, NotebookChat, NotebookDocument, NotebookEvaluation, NotebookFlashcardSet, NotebookMeta, NotebookMindmap, NotebookNote, NotebookPassage, NotebookQuiz, NotebookQuizType, NotebookSettings, NotebookSource, NotebookStats, NotebookSummary, NotebookSummaryLength, ProviderConfig, ProviderDefinition } from "../types.js";
+import type { ChatItem, NotebookAudioOverview, NotebookChat, NotebookCitation, NotebookDocument, NotebookEvaluation, NotebookFlashcardSet, NotebookMeta, NotebookMindmap, NotebookNote, NotebookPassage, NotebookQuiz, NotebookQuizType, NotebookSettings, NotebookSource, NotebookStats, NotebookSummary, NotebookSummaryLength, ProviderConfig, ProviderDefinition } from "../types.js";
 
 function verdictColor(verdict?: string) {
   if (verdict === "grounded") return "#3fb950";
@@ -85,7 +86,76 @@ function getSourceIcon(filename: string) {
   return <FileText size={14} className="file-icon-text" />;
 }
 
-type StudioKind = NotebookDocument["kind"] | "quiz" | "fiches" | "mindmap" | "summary";
+function CitationHoverChip({
+  citation,
+  onOpenPassage,
+}: {
+  citation: NotebookCitation;
+  onOpenPassage: (chunkId: string) => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+
+  return (
+    <div
+      style={{ position: "relative", display: "inline-block" }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <button
+        type="button"
+        className="citation-row clickable"
+        onClick={() => onOpenPassage(citation.chunkId)}
+        style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+      >
+        <span className="citation-tag">[S{citation.index}]</span>
+        <span className="citation-name">{citation.sourceName} — {citation.heading}</span>
+        <span className="citation-score">{(citation.score || 1).toFixed(2)}</span>
+      </button>
+
+      {hovered && (
+        <div
+          className="citation-hover-popover"
+          style={{
+            position: "absolute",
+            bottom: "calc(100% + 6px)",
+            left: 0,
+            zIndex: 100,
+            width: 320,
+            maxWidth: "85vw",
+            background: "var(--bg-elevated, #222)",
+            border: "1px solid var(--border-subtle, #444)",
+            borderRadius: 6,
+            padding: "8px 12px",
+            boxShadow: "0 6px 18px rgba(0,0,0,0.4)",
+            fontSize: 11,
+            lineHeight: 1.45,
+            pointerEvents: "none",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+            <strong style={{ color: "var(--accent, #3b82f6)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {citation.sourceName}
+            </strong>
+            <span style={{ opacity: 0.6, fontSize: 10 }}>Score: {(citation.score || 1).toFixed(2)}</span>
+          </div>
+          {citation.heading && (
+            <div style={{ opacity: 0.8, fontWeight: 600, marginBottom: 4 }}>
+              {citation.heading}
+            </div>
+          )}
+          <div style={{ opacity: 0.9, fontStyle: "italic", maxHeight: 80, overflow: "hidden" }}>
+            “{citation.snippet || citation.excerpt}”
+          </div>
+          <div style={{ marginTop: 6, fontSize: 9, opacity: 0.5, textAlign: "right" }}>
+            Click to view full passage
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+type StudioKind = NotebookDocument["kind"] | "quiz" | "fiches" | "mindmap" | "summary" | "audio";
 
 /** Builds the rich markdown preview for a saved summary. */
 function summaryToMarkdown(summary: NotebookSummary): string {
@@ -104,12 +174,13 @@ function summaryToMarkdown(summary: NotebookSummary): string {
 }
 
 /** Right-panel Studio: output-type tiles on top, generation composer, outputs below. */
-function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generatingMindmap, generatingSummary, hasSources, docSteps, quizSteps, fichesSteps, mapSteps, summarySteps, onGenerate, onCancelGeneration, onGenerateQuiz, onGenerateFlashcards, onGenerateMindmap, onGenerateSummary }: {
+function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generatingMindmap, generatingSummary, generatingAudio, hasSources, docSteps, quizSteps, fichesSteps, mapSteps, summarySteps, onGenerate, onCancelGeneration, onGenerateQuiz, onGenerateFlashcards, onGenerateMindmap, onGenerateSummary, onGenerateAudio }: {
   generating: boolean;
   generatingQuiz: boolean;
   generatingFlashcards: boolean;
   generatingMindmap: boolean;
   generatingSummary: boolean;
+  generatingAudio: boolean;
   hasSources: boolean;
   docSteps: string[];
   quizSteps: string[];
@@ -117,11 +188,12 @@ function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generat
   mapSteps: string[];
   summarySteps: string[];
   onGenerate: (kind: NotebookDocument["kind"], format: NotebookDocument["format"], prompt: string) => void;
-  onCancelGeneration: (kind: "document" | "quiz" | "flashcards" | "mindmap" | "summary") => void;
+  onCancelGeneration: (kind: "document" | "quiz" | "flashcards" | "mindmap" | "summary" | "audio") => void;
   onGenerateQuiz: (topic: string, count: number, quizType: NotebookQuizType) => void;
   onGenerateFlashcards: (topic: string, count: number) => void;
   onGenerateMindmap: (topic: string) => void;
   onGenerateSummary: (topic: string, length: NotebookSummaryLength) => void;
+  onGenerateAudio: (topic: string) => void;
 }) {
   const [kind, setKind] = useState<StudioKind>("report");
   const [format, setFormat] = useState<NotebookDocument["format"]>("docx");
@@ -138,16 +210,18 @@ function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generat
   const tiles = [
     { key: "report", icon: <FileText size={15} />, label: "Reports", tone: "green" },
     { key: "slides", icon: <Presentation size={15} />, label: "Presentation", tone: "yellow" },
+    { key: "audio", icon: <Headphones size={15} />, label: "Audio Overview", tone: "amber" },
     { key: "quiz", icon: <HelpCircle size={15} />, label: "Quiz", tone: "blue" },
     { key: "fiches", icon: <Layers size={15} />, label: "Flashcards", tone: "purple" },
     { key: "mindmap", icon: <Network size={15} />, label: "Mind map", tone: "pink" },
     { key: "summary", icon: <Sparkles size={15} />, label: "Summary", tone: "gray" },
   ] as const;
 
-  const busy = kind === "quiz" ? generatingQuiz : kind === "fiches" ? generatingFlashcards : kind === "mindmap" ? generatingMindmap : kind === "summary" ? generatingSummary : generating;
+  const busy = kind === "quiz" ? generatingQuiz : kind === "fiches" ? generatingFlashcards : kind === "mindmap" ? generatingMindmap : kind === "summary" ? generatingSummary : kind === "audio" ? generatingAudio : generating;
   const steps = kind === "quiz" ? quizSteps : kind === "fiches" ? fichesSteps : kind === "mindmap" ? mapSteps : kind === "summary" ? summarySteps : docSteps;
-  const activeGenerations: Array<{ kind: "document" | "quiz" | "flashcards" | "mindmap" | "summary"; label: string; running: boolean }> = [
+  const activeGenerations: Array<{ kind: "document" | "quiz" | "flashcards" | "mindmap" | "summary" | "audio"; label: string; running: boolean }> = [
     { kind: "document", label: "document", running: generating },
+    { kind: "audio", label: "audio overview", running: generatingAudio },
     { kind: "quiz", label: "quiz", running: generatingQuiz },
     { kind: "flashcards", label: "flashcards", running: generatingFlashcards },
     { kind: "mindmap", label: "mind map", running: generatingMindmap },
@@ -177,7 +251,7 @@ function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generat
           type="text"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder={kind === "slides" ? "Slide deck topic… (empty = full overview)" : kind === "quiz" ? "Quiz topic… (empty = full overview)" : kind === "fiches" ? "Flashcard topic… (empty = full overview)" : kind === "mindmap" ? "Mind-map topic… (empty = full overview)" : kind === "summary" ? "Summary topic… (empty = full overview)" : "Report topic… (empty = full overview)"}
+          placeholder={kind === "slides" ? "Slide deck topic… (empty = full overview)" : kind === "audio" ? "Discussion topic… (empty = comprehensive deep dive)" : kind === "quiz" ? "Quiz topic… (empty = full overview)" : kind === "fiches" ? "Flashcard topic… (empty = full overview)" : kind === "mindmap" ? "Mind-map topic… (empty = full overview)" : kind === "summary" ? "Summary topic… (empty = full overview)" : "Report topic… (empty = full overview)"}
           spellCheck={false}
           className="text-field"
         />
@@ -271,6 +345,16 @@ function StudioPanel({ generating, generatingQuiz, generatingFlashcards, generat
             {busy ? <Loader2 size={13} className="spin" /> : <Plus size={13} />}
             {busy ? " Generating…" : " Generate Summary"}
           </button>
+        ) : kind === "audio" ? (
+          <button
+            className={`studio-generate${busy ? " is-busy" : ""}`}
+            disabled={busy || !hasSources}
+            onClick={() => onGenerateAudio(prompt.trim())}
+            title={hasSources ? "Generate a 2-host audio overview discussion grounded in sources" : "Upload sources first"}
+          >
+            {busy ? <Loader2 size={13} className="spin" /> : <Headphones size={13} />}
+            {busy ? " Generating…" : " Generate Audio Overview"}
+          </button>
         ) : (
           <button
             className={`studio-generate${busy ? " is-busy" : ""}`}
@@ -335,11 +419,13 @@ export function NotebookView({
   flashcards,
   mindmaps,
   summaries,
+  audioOverviews,
   generatingDoc,
   generatingQuiz,
   generatingFlashcards,
   generatingMindmap,
   generatingSummary,
+  generatingAudio,
   docSteps,
   quizSteps,
   fichesSteps,
@@ -355,6 +441,10 @@ export function NotebookView({
   onDeleteMindmap,
   onGenerateSummary,
   onDeleteSummary,
+  onGenerateAudio,
+  onDeleteAudio,
+  onHandoffToCode,
+  onHandoffToHome,
   onDownloadDocument,
   onDeleteDocument,
   onCreateNotebook,
@@ -419,18 +509,20 @@ export function NotebookView({
   flashcards: NotebookFlashcardSet[];
   mindmaps: NotebookMindmap[];
   summaries: NotebookSummary[];
+  audioOverviews: NotebookAudioOverview[];
   generatingDoc: boolean;
   generatingQuiz: boolean;
   generatingFlashcards: boolean;
   generatingMindmap: boolean;
   generatingSummary: boolean;
+  generatingAudio: boolean;
   docSteps: string[];
   quizSteps: string[];
   fichesSteps: string[];
   mapSteps: string[];
   summarySteps: string[];
   onGenerateDocument: (kind: NotebookDocument["kind"], format: NotebookDocument["format"], prompt: string) => void;
-  onCancelGeneration: (kind: "document" | "quiz" | "flashcards" | "mindmap" | "summary") => void;
+  onCancelGeneration: (kind: "document" | "quiz" | "flashcards" | "mindmap" | "summary" | "audio") => void;
   onGenerateQuiz: (topic: string, count: number, quizType: NotebookQuizType) => void;
   onDeleteQuiz: (quiz: NotebookQuiz) => void;
   onGenerateFlashcards: (topic: string, count: number) => void;
@@ -439,6 +531,10 @@ export function NotebookView({
   onDeleteMindmap: (map: NotebookMindmap) => void;
   onGenerateSummary: (topic: string, length: NotebookSummaryLength) => void;
   onDeleteSummary: (summary: NotebookSummary) => void;
+  onGenerateAudio: (topic: string) => void;
+  onDeleteAudio: (audio: NotebookAudioOverview) => void;
+  onHandoffToCode?: (prompt: string) => void;
+  onHandoffToHome?: (prompt: string) => void;
   onDownloadDocument: (docId: string) => void;
   onDeleteDocument: (doc: NotebookDocument) => void;
   onCreateNotebook: (name: string) => void;
@@ -681,12 +777,14 @@ export function NotebookView({
   const [viewFichesId, setViewFichesId] = useState<string | null>(null);
   const [viewMapId, setViewMapId] = useState<string | null>(null);
   const [viewSummaryId, setViewSummaryId] = useState<string | null>(null);
+  const [viewAudioId, setViewAudioId] = useState<string | null>(null);
   const viewDoc = viewDocId ? documents.find((d) => d.id === viewDocId) || null : null;
   const viewNote = viewNoteId ? notes.find((n) => n.id === viewNoteId) || null : null;
   const viewQuiz = viewQuizId ? quizzes.find((q) => q.id === viewQuizId) || null : null;
   const viewFiches = viewFichesId ? flashcards.find((s) => s.id === viewFichesId) || null : null;
   const viewMap = viewMapId ? mindmaps.find((m) => m.id === viewMapId) || null : null;
   const viewSummary = viewSummaryId ? summaries.find((s) => s.id === viewSummaryId) || null : null;
+  const viewAudio = viewAudioId ? audioOverviews.find((a) => a.id === viewAudioId) || null : null;
   // Link import form, shared by YouTube transcripts and website crawls.
   const [linkKind, setLinkKind] = useState<"youtube" | "website" | null>(null);
   const [linkUrl, setLinkUrl] = useState("");
@@ -1276,6 +1374,34 @@ export function NotebookView({
                     >
                       <FileText size={11} /> Save to notes
                     </button>
+                    {onHandoffToCode && (
+                      <button
+                        className="nb-save-note-btn"
+                        onClick={() => {
+                          const sourcesText = message.citations?.length
+                            ? `\n\nReferenced Notebook Sources:\n` + message.citations.map((c) => `- ${c.sourceName} (${c.heading}): "${c.snippet || c.excerpt}"`).join("\n")
+                            : "";
+                          onHandoffToCode(`Implement the following based on our research:\n\n${message.text}${sourcesText}`);
+                        }}
+                        title="Send this research & citations to Code Mode to implement"
+                      >
+                        <Code2 size={11} /> Send to Code
+                      </button>
+                    )}
+                    {onHandoffToHome && (
+                      <button
+                        className="nb-save-note-btn"
+                        onClick={() => {
+                          const sourcesText = message.citations?.length
+                            ? `\n\nSources:\n` + message.citations.map((c) => `- ${c.sourceName} (${c.heading}): "${c.snippet || c.excerpt}"`).join("\n")
+                            : "";
+                          onHandoffToHome(`Create a presentation / deliverable based on this:\n\n${message.text}${sourcesText}`);
+                        }}
+                        title="Send this research & citations to Home Mode to create deliverables"
+                      >
+                        <Presentation size={11} /> Create in Home
+                      </button>
+                    )}
                   </div>
                 )}
                 {message.role === "assistant" && message.metadata?.refused && (
@@ -1299,13 +1425,9 @@ export function NotebookView({
                 {message.role === "assistant" && !!message.citations?.length && (
                   <details className="retrieval-trace citation-trace" style={{ marginTop: 8 }}>
                     <summary>citations ({message.citations.length} passage{message.citations.length === 1 ? "" : "s"})</summary>
-                    <div className="citation-list" style={{ marginTop: 6 }}>
+                    <div className="citation-list" style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 6 }}>
                       {message.citations.map((cite) => (
-                        <button key={cite.chunkId} className="citation-row clickable" title={`${cite.snippet}\n\nClick to open the passage`} onClick={() => onOpenPassage(cite.chunkId)}>
-                          <span className="citation-tag">[S{cite.index}]</span>
-                          <span className="citation-name">{cite.sourceName} — {cite.heading}</span>
-                          <span className="citation-score">{cite.score.toFixed(2)}</span>
-                        </button>
+                        <CitationHoverChip key={cite.chunkId} citation={cite} onOpenPassage={onOpenPassage} />
                       ))}
                     </div>
                   </details>
@@ -1445,6 +1567,7 @@ export function NotebookView({
                 generatingFlashcards={generatingFlashcards}
                 generatingMindmap={generatingMindmap}
                 generatingSummary={generatingSummary}
+                generatingAudio={generatingAudio}
                 hasSources={sources.length > 0}
                 docSteps={docSteps}
                 quizSteps={quizSteps}
@@ -1457,12 +1580,23 @@ export function NotebookView({
                 onGenerateFlashcards={onGenerateFlashcards}
                 onGenerateMindmap={onGenerateMindmap}
                 onGenerateSummary={onGenerateSummary}
+                onGenerateAudio={onGenerateAudio}
               />
 
               <div className="context-section-title" style={{ marginTop: 12 }}>
-                <span>OUTPUTS</span><small>{documents.length + notes.length + quizzes.length + flashcards.length + mindmaps.length + summaries.length}</small>
+                <span>OUTPUTS</span><small>{documents.length + notes.length + quizzes.length + flashcards.length + mindmaps.length + summaries.length + audioOverviews.length}</small>
               </div>
               <div className="nb-output-list">
+                {audioOverviews.map((audio) => (
+                  <div className="nb-output-row clickable" key={audio.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewQuizId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(null); setViewAudioId(audio.id); }} title="Listen to this Audio Overview">
+                    <span className="nb-output-icon tone-audio" style={{ color: "#f59e0b" }}><Headphones size={13} /></span>
+                    <div className="nb-output-main">
+                      <strong className="nb-output-title">{audio.title}</strong>
+                      <span className="nb-output-meta">~{audio.durationMinutes} min · {audio.turns.length} turns · {relTime(audio.createdAt)}</span>
+                    </div>
+                    <button className="nb-output-menu" onClick={(e) => { e.stopPropagation(); onDeleteAudio(audio); }} title="Delete audio overview"><MoreVertical size={13} /></button>
+                  </div>
+                ))}
                 {summaries.map((summary) => (
                   <div className="nb-output-row clickable" key={summary.id} onClick={() => { setViewDocId(null); setViewNoteId(null); setViewQuizId(null); setViewFichesId(null); setViewMapId(null); setViewSummaryId(summary.id); }} title="Read this summary">
                     <span className="nb-output-icon tone-summary"><Sparkles size={13} /></span>
@@ -1628,6 +1762,15 @@ export function NotebookView({
           markdown={summaryToMarkdown(viewSummary)}
           citations={viewSummary.citations}
           onClose={() => setViewSummaryId(null)}
+        />
+      )}
+      {viewAudio && (
+        <AudioPlayerModal
+          audio={viewAudio}
+          onClose={() => setViewAudioId(null)}
+          onAskFollowUp={(q) => {
+            setDraft(q);
+          }}
         />
       )}
     </div>

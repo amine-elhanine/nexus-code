@@ -34,6 +34,8 @@ const nexusApi = {
   detectProviderModelEfforts: (providerId: string, model: string) => invoke("provider:model:detect-efforts", providerId, model),
   detectProviderModelContext: (providerId: string, model: string) => invoke("provider:model:detect-context", providerId, model),
   compactSession: (payload?: { sessionId?: string; projectId?: string }) => invoke("session:compact", payload),
+  truncateSession: (projectId: string, sessionId: string, fromIndex: number) => invoke("agent:session:truncate", projectId, sessionId, fromIndex),
+  forkSession: (projectId: string, sessionId: string, fromIndex: number, newTitle?: string) => invoke("agent:session:fork", projectId, sessionId, fromIndex, newTitle),
   removeProviderModel: (providerId: string, model: string) => invoke("provider:models:remove", providerId, model),
   removeProvider: (providerId: string) => invoke("provider:remove", providerId),
   fetchProviderModels: (input: { providerId?: string; baseUrl?: string; apiKey?: string }) => invoke("providers:fetch-models", input),
@@ -214,6 +216,11 @@ const nexusApi = {
   readHomeFile: (relativePath: string) => invoke("home:readFile", relativePath),
   downloadHomeFile: (relativePath: string) => invoke("home:download", relativePath),
   openHomeFolder: () => invoke("home:openFolder"),
+  truncateHomeSession: (sessionId: string, fromIndex: number) => invoke("home:session:truncate", sessionId, fromIndex),
+  forkHomeSession: (sessionId: string, fromIndex: number, newTitle?: string) => invoke("home:session:fork", sessionId, fromIndex, newTitle),
+  getArtifactVersions: (relativePath: string) => invoke("home:artifact:versions", relativePath),
+  restoreArtifactVersion: (relativePath: string, version: number) => invoke("home:artifact:restoreVersion", relativePath, version),
+  snapshotArtifactVersion: (relativePath: string) => invoke("home:artifact:snapshot", relativePath),
 
   // Notebook (isolated agentic RAG per notebook)
   listNotebooks: () => invoke("notebook:list"),
@@ -266,6 +273,9 @@ const nexusApi = {
   saveEmbeddingProvider: (provider: unknown) => invoke("notebook:embedding-provider:save", provider),
   removeEmbeddingProvider: (providerId: string) => invoke("notebook:embedding-provider:remove", providerId),
   testEmbeddingProvider: (input: { id?: string; kind: string; baseUrl?: string; apiKey?: string; model: string }) => invoke("notebook:embedding-provider:test", input),
+  notebookAudioList: (notebookId: string) => invoke("notebook:audio:list", notebookId),
+  notebookAudioGenerate: (payload: { notebookId: string; topic?: string; fileIds?: string[]; providerId?: string; model?: string }) => invoke("notebook:audio:generate", payload),
+  notebookAudioDelete: (notebookId: string, audioId: string) => invoke("notebook:audio:delete", notebookId, audioId),
 
   runAgent: (payload: { request: string; images?: string[]; attachments?: Array<{ url: string; name: string; mimeType: string; size: number }>; providerId?: string; model?: string; effort?: string; contextWindow?: number; maxOutput?: number; mode?: string; sessionId?: string; projectId?: string }) => invoke("agent:run", payload),
   cancelAgent: (sessionId?: string) => invoke("agent:cancel", sessionId),

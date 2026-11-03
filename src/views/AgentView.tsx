@@ -548,6 +548,8 @@ export function AgentView({
   customCommands,
   skills,
   onRefreshSkills,
+  onTruncateSession,
+  onForkSession,
 }: {
   hasProject: boolean;
   activeFile: string;
@@ -595,6 +597,8 @@ export function AgentView({
   customCommands?: SlashCommand[];
   skills?: SkillInfo[];
   onRefreshSkills?: () => void;
+  onTruncateSession?: (fromIndex: number) => Promise<any>;
+  onForkSession?: (fromIndex: number) => Promise<any>;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
@@ -665,9 +669,17 @@ export function AgentView({
         <ChatItemView
           key={`${message.createdAt}-${index}`}
           message={message}
+          index={index}
           onOpenArtifact={onOpenArtifact}
           onOpenImage={onOpenImage}
           onOpenAttachment={onOpenAttachment}
+          onEditMessage={running ? undefined : (idx, text) => {
+            setDraft(text);
+            void onTruncateSession?.(idx);
+          }}
+          onForkChat={running ? undefined : (idx) => {
+            void onForkSession?.(idx);
+          }}
         />
       );
     }

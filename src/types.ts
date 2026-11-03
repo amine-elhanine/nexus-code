@@ -80,3 +80,40 @@ export type UpdaterState =
   | { status: "downloading"; version: string; percent: number }
   | { status: "downloaded"; version: string }
   | { status: "error"; message: string };
+
+export type AudioOverviewTurn = {
+  speaker: "Alex" | "Sam";
+  text: string;
+  citations: NotebookCitation[];
+};
+
+export type AudioOverviewChapter = {
+  title: string;
+  turnIndex: number;
+};
+
+export type NotebookAudioOverview = {
+  id: string;
+  notebookId: string;
+  title: string;
+  topic: string;
+  durationMinutes: number;
+  chapters: AudioOverviewChapter[];
+  turns: AudioOverviewTurn[];
+  citations: NotebookCitation[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ArtifactVersionEntry = {
+  version: number;
+  updatedAt: string;
+  sizeBytes: number;
+  snapshotRelPath: string;
+};
+
+export type ArtifactVersionManifest = {
+  filePath: string;
+  currentVersion: number;
+  versions: ArtifactVersionEntry[];
+};

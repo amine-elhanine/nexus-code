@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { NotebookChat, NotebookDocument, NotebookEmbeddingConfig, NotebookFlashcardSet, NotebookMeta, NotebookMindmap, NotebookNote, NotebookPassage, NotebookQuiz, NotebookQuizType, NotebookRagAnswer, NotebookSettings, NotebookSource, NotebookStats, NotebookSummary, NotebookSummaryLength } from "../types.js";
+import type { NotebookAudioOverview, NotebookChat, NotebookDocument, NotebookEmbeddingConfig, NotebookFlashcardSet, NotebookMeta, NotebookMindmap, NotebookNote, NotebookPassage, NotebookQuiz, NotebookQuizType, NotebookRagAnswer, NotebookSettings, NotebookSource, NotebookStats, NotebookSummary, NotebookSummaryLength } from "../types.js";
 
 const INTERMEDIATE_STATUSES = new Set(["uploaded", "parsing", "chunking", "indexing"]);
 
 export function useNotebookController(enabled: boolean) {
   const api = window.nexus;
-  const generationRunIds = useRef<Partial<Record<"document" | "quiz" | "flashcards" | "mindmap" | "summary", string>>>({});
+  const generationRunIds = useRef<Partial<Record<"document" | "quiz" | "flashcards" | "mindmap" | "summary" | "audio", string>>>({});
   const [notebooks, setNotebooks] = useState<NotebookMeta[]>([]);
   // Source counts per notebook id — powers the "N sources" meta on the
   // sessions-overview cards without entering each notebook.
@@ -40,6 +40,8 @@ export function useNotebookController(enabled: boolean) {
   const [generatingDoc, setGeneratingDoc] = useState(false);
   const [generatingQuiz, setGeneratingQuiz] = useState(false);
   const [generatingFlashcards, setGeneratingFlashcards] = useState(false);
+  const [audioOverviews, setAudioOverviews] = useState<NotebookAudioOverview[]>([]);
+  const [generatingAudio, setGeneratingAudio] = useState(false);
   const [importingLink, setImportingLink] = useState<{ kind: "youtube" | "website"; url: string } | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   // Current ingestion sub-step (vision image analysis, page OCR) for the card.
@@ -138,6 +140,11 @@ export function useNotebookController(enabled: boolean) {
           const typedSums = api as unknown as { notebookSummaries?: (id: string) => Promise<NotebookSummary[]> };
           if (typeof typedSums.notebookSummaries === "function") setSummaries(await typedSums.notebookSummaries(notebookId).catch(() => [] as NotebookSummary[]));
         } catch { /* summaries unavailable */ }
+        try {
+          if (typeof api?.notebookAudioList === "function") {
+            setAudioOverviews(await api.notebookAudioList(notebookId).catch(() => [] as NotebookAudioOverview[]));
+          }
+        } catch { /* audio unavailable */ }
         if (c.length) {
           setChats(c);
           setActiveChat((prev) => {
@@ -273,6 +280,7 @@ export function useNotebookController(enabled: boolean) {
     setFlashcards([]);
     setMindmaps([]);
     setSummaries([]);
+    setAudioOverviews([]);
     void refreshNotebookDetail(nb.id);
   }
 
@@ -293,6 +301,7 @@ export function useNotebookController(enabled: boolean) {
     setFlashcards([]);
     setMindmaps([]);
     setSummaries([]);
+    setAudioOverviews([]);
     // Counts may have changed while inside (uploads, deletions) — refresh the
     // overview cards.
     void refreshNotebooks();
@@ -414,7 +423,7 @@ export function useNotebookController(enabled: boolean) {
     }
   }
 
-  async function stopGeneration(kind: "document" | "quiz" | "flashcards" | "mindmap" | "summary") {
+  async function stopGeneration(kind: "document" | "quiz" | "flashcards" | "mindmap" | "summary" | "audio") {
     const runId = generationRunIds.current[kind];
     if (!runId) return;
     try {
@@ -581,6 +590,50 @@ export function useNotebookController(enabled: boolean) {
     try {
       const typed = api as unknown as { notebookDeleteSummary: (id: string, summary: string) => Promise<NotebookSummary[]> };
       setSummaries(await typed.notebookDeleteSummary(activeNotebook.id, summaryId));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Delete failed.");
+    }
+  }
+
+  async function generateAudioOverview(topic?: string, providerId?: string, model?: string) {
+    if (!activeNotebook || generatingAudio) return null;
+    const statusKey = `nbaudio:${activeNotebook.id}`;
+    generationRunIds.current.audio = statusKey;
+    const scopedIds = sources.filter((s) => !excludedIds.includes(s.id)).map((s) => s.id);
+    const scope = scopedIds.length === sources.length ? undefined : scopedIds;
+    setGeneratingAudio(true);
+    setStepsByChat((prev) => ({ ...prev, [statusKey]: ["Starting the audio overview producer…"] }));
+    setNotice("Generating 2-host audio overview script…");
+    try {
+      const res = await api.notebookAudioGenerate({
+        notebookId: activeNotebook.id,
+        topic,
+        fileIds: scope,
+        providerId,
+        model,
+      });
+      const list = await api.notebookAudioList(activeNotebook.id);
+      setAudioOverviews(Array.isArray(list) ? list : [res.audio]);
+      setNotice(res.fallbackReason ? `Audio overview ready (${res.fallbackReason})` : "Audio overview ready!");
+      return res.audio;
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Audio overview generation failed.");
+      return null;
+    } finally {
+      if (generationRunIds.current.audio === statusKey) delete generationRunIds.current.audio;
+      setGeneratingAudio(false);
+    }
+  }
+
+  async function removeAudioOverview(audioId: string) {
+    if (!activeNotebook || typeof api?.notebookAudioDelete !== "function") return;
+    try {
+      const remaining = await api.notebookAudioDelete(activeNotebook.id, audioId);
+      if (Array.isArray(remaining)) {
+        setAudioOverviews(remaining);
+      } else {
+        setAudioOverviews((prev) => prev.filter((a) => a.id !== audioId));
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Delete failed.");
     }
@@ -909,6 +962,10 @@ export function useNotebookController(enabled: boolean) {
     generatingSummary,
     generateSummary,
     removeSummary,
+    audioOverviews,
+    generatingAudio,
+    generateAudioOverview,
+    removeAudioOverview,
     downloadDocument,
     removeDocument,
     openPassage,
