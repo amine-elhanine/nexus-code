@@ -1,0 +1,152 @@
+a.rich-chart-btn {
+  text-decoration: none;
+}
+
+
+/* Web image lightbox fills most of the window (the default lightbox is
+   shrink-to-fit of the image natural size, which stays small for web
+   thumbnails and never upscales because max-* never enlarge). */
+.chat-image-lightbox-content.web-image-lightbox {
+  width: min(92vw, 1500px);
+  height: min(92vh, 1000px);
+}
+
+.web-image-lightbox .chat-image-lightbox-body {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  padding: 18px;
+}
+
+/* Letterbox: fixed frame size + object-fit contain = the image always
+   fills the space regardless of how small the source thumbnail is,
+   without ever distorting it. */
+.web-image-lightbox .chat-image-lightbox-img {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: contain;
+}
+
+
+/* ===== DeepSeek-style Home mode: sidebar + topbar + centered column ===== */
+.session-pane.home-ds-sidebar {
+  width: 264px !important;
+  padding: 12px 10px 10px !important;
+  gap: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.ds-sidebar-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 10px;
+}
+
+.ds-brand {
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  padding-left: 6px;
+}
+
+.ds-new-chat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  color: #d5dbe6;
+  border-radius: 22px;
+  padding: 9px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  margin-bottom: 8px;
+  transition: all 0.15s ease;
+}
+
+.ds-new-chat:hover {
+  border-color: var(--nexus-green);
+  background: var(--accent-soft);
+  color: var(--nexus-bright);
+}
+
+.ds-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 18px;
+  padding: 6px 10px;
+  margin-bottom: 4px;
+  color: var(--faint);
+  flex: none;
+}
+
+.ds-search:focus-within {
+  border-color: var(--line2);
+  background: var(--panel2);
+}
+
+.ds-search input {
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  min-width: 0;
+}
+
+.ds-search input::placeholder {
+  color: var(--faint);
+}
+
+.ds-session-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 0 8px;
+}
+
+.ds-group {
+  margin-top: 6px;
+}
+
+.ds-group-label {
+  padding: 8px 10px 4px;
+  color: var(--faint);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.ds-group .session-row.active {
+  border-left: 0 !important;
+  padding-left: 8px !important;
+}
+
+.ds-profile {
+  margin-top: auto;
+  border-top: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 4px 2px;
+  flex: none;
+}
+
+.ds-profile-name {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: #c9d1de;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

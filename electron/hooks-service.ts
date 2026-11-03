@@ -186,7 +186,13 @@ export function createHooksMiddleware(options: { projectRoot: string; hooks: Hoo
       const toolName = String(request?.tool?.name ?? request?.toolCall?.name ?? "");
       const args = request?.toolCall?.args ?? {};
       const toolCallId = String(request?.toolCall?.id ?? "");
-      const isPluginOwnedTool = toolName.startsWith("plugin_") || listCapabilities({ kind: "tool" }).some((c) => c.id === toolName || c.name === toolName);
+      // "Plugin-owned" = genuinely an SDK/plugin tool. Built-in tools that
+      // are REGISTERED in the capability catalog (owner "builtin") are not
+      // plugin-owned: they never flow through executePluginTool, so they get
+      // the policy-hook evaluation below directly.
+      const isPluginOwnedTool =
+        toolName.startsWith("plugin_") ||
+        listCapabilities({ kind: "tool" }).some((c) => (c.id === toolName || c.name === toolName) && c.owner !== "builtin");
 
       if (before.length) {
         const outcome = await dispatchHooks(projectRoot, before, "tool:before", { tool: toolName, args, runId });

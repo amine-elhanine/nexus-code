@@ -1,0 +1,20 @@
+.product-topbar {
+  height: 42px !important;
+  background: var(--panel) !important;
+  backdrop-filter: blur(16px) !important;
+  -webkit-backdrop-filter: blur(16px) !important;
+  border-bottom: 1px solid var(--line) !important;
+  padding: 0 0 0 10px !important;
+  box-shadow: 0 1px 0 var(--line);
+}
+
+.product-logo {
+  gap: 8px !important;
+}
+
+.nexus-title {
+  font-size: 13.5px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.03em !important;
+  color: var(--text) !important;
+}

@@ -1,0 +1,30 @@
+.step-card {
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 6px;
+  overflow: visible;
+}
+
+.step-card.running {
+  background: transparent !important;
+  border: 0 !important;
+}
+
+.step-card.running::after {
+  display: none;
+}
+
+.step-card.error {
+  background: transparent !important;
+  border: 0 !important;
+}
+
+.step-card-header {
+  padding: 4px 8px;
+  min-height: 26px;
+  border-radius: 6px;
+}
+
+.step-card-header:hover:not(.static) {
+  background: rgba(255, 255, 255, 0.04);
+}

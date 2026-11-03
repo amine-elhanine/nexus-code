@@ -1,0 +1,46 @@
+.home-hero-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 9px;
+  margin-top: 18px;
+  max-width: 780px;
+}
+
+.hero-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 7px 15px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.16s ease;
+  white-space: nowrap;
+}
+
+.hero-chip svg {
+  width: 14px;
+  height: 14px;
+}
+
+.hero-chip:hover {
+  background: var(--panel2);
+  color: var(--text);
+  border-color: var(--line2);
+  transform: translateY(-1px);
+}
+
+.hero-chip-doc svg { color: #60a5fa; }
+.hero-chip-ppt svg { color: #fbbf24; }
+.hero-chip-table svg { color: #34d399; }
+.hero-chip-web svg { color: #38bdf8; }
+
+.hero-chip-doc:hover { border-color: rgba(96, 165, 250, 0.4); background: rgba(96, 165, 250, 0.07); color: var(--text); }
+.hero-chip-ppt:hover { border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.07); color: var(--text); }
+.hero-chip-table:hover { border-color: rgba(52, 211, 153, 0.4); background: rgba(52, 211, 153, 0.07); color: var(--text); }
+.hero-chip-web:hover { border-color: rgba(56, 189, 248, 0.4); background: rgba(56, 189, 248, 0.07); color: var(--text); }

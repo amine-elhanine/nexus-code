@@ -1,0 +1,5 @@
+.notebook-add-btn.primary-add{border-radius:999px;justify-content:center;padding:12px;font-size:12.5px}
+.nb-select-all{display:flex;align-items:center;gap:8px;padding:9px 6px;font-size:12px;color:var(--text);border-bottom:1px solid var(--line);margin-bottom:4px}
+.nb-select-all small{margin-left:auto;color:var(--muted);font-size:10px}
+.nb-select-all input{accent-color:var(--nexus-green)}
+.notebook-source-row .scope-checkbox{accent-color:var(--nexus-green)}

@@ -1,0 +1,42 @@
+.market-version-pill {
+  font-size: 9.5px;
+  font-family: monospace;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.market-version-pill.large {
+  font-size: 11px;
+  padding: 2px 7px;
+}
+
+.market-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.market-badge.installed {
+  background: var(--accent-soft);
+  border: 1px solid var(--nexus-green);
+  color: var(--nexus-bright);
+}
+
+.market-badge.dev {
+  background: rgba(249, 115, 22, 0.12);
+  border: 1px solid rgba(249, 115, 22, 0.4);
+  color: #fb923c;
+}
+
+.market-badge.update {
+  background: rgba(96, 165, 250, 0.15);
+  border: 1px solid rgba(96, 165, 250, 0.4);
+  color: #93c5fd;
+}

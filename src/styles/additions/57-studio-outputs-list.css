@@ -1,0 +1,18 @@
+.nb-output-list{display:flex;flex-direction:column;gap:2px}
+.nb-output-row{display:flex;align-items:center;gap:9px;padding:8px;border-radius:10px;min-width:0}
+.nb-output-row:hover{background:var(--panel2)}
+.nb-output-row .nb-output-menu{opacity:0;transition:opacity .12s ease}
+.nb-output-row:hover .nb-output-menu{opacity:1}
+.nb-output-icon{display:grid;place-items:center;width:28px;height:28px;border-radius:8px;flex:none}
+.nb-output-icon.tone-summary{background:rgba(154,167,184,.16);color:#9aa7b8}
+.nb-output-icon.tone-mindmap{background:rgba(240,147,192,.14);color:#f093c0}
+.nb-output-icon.tone-flashcards{background:rgba(180,157,240,.14);color:#b49df0}
+.nb-output-icon.tone-quiz{background:rgba(125,184,240,.14);color:#7db8f0}
+.nb-output-icon.tone-doc{background:rgba(62,230,149,.12);color:#3ee695}
+.nb-output-icon.tone-note{background:rgba(229,197,100,.13);color:#e5c564}
+.nb-output-main{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
+.nb-output-title{font-size:12px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nb-output-meta{font-size:10px;color:var(--muted)}
+.nb-output-menu{display:grid;place-items:center;width:24px;height:24px;border:0;border-radius:6px;background:transparent;color:var(--muted);flex:none}
+.nb-output-menu:hover{background:var(--line);color:var(--text)}
+.nb-add-note-btn{border-radius:999px;justify-content:center}

@@ -1,0 +1,28 @@
+.rich-mermaid { position: relative; }
+.rich-mermaid-fullscreen {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  background: var(--panel2, rgba(35, 39, 56, 0.9));
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  border-radius: 4px;
+  color: var(--muted, #8b9bb4);
+  font-size: 10px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s ease, color 0.15s, border-color 0.15s;
+  z-index: 5;
+}
+.rich-mermaid:hover .rich-mermaid-fullscreen { opacity: 1; }
+.rich-mermaid-fullscreen:hover { color: var(--text, #fff); border-color: #7aa8d1; }
+.widget-fullscreen-btn { padding: 3px 6px; }
+.widget-head .widget-fullscreen-btn { order: 2; }
+.widget-head .widget-badge { order: 3; }
+
+/* ============================================================
+   Notebook mode — Gemini NotebookLM-style redesign (2026-10-27)
+   ============================================================ */

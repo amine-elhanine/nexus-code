@@ -18,7 +18,7 @@ import { cancelCommandApprovals } from "../approval-service.js";
 import { recordDeliverable, isSubstantiveHomeTask, parseHomeMemory, addMemoryFact } from "../home-memory-service.js";
 import { resolveImageForModel, resolveAttachmentBytes } from "../attachment-utils.js";
 import { assertPayload, HomeRunSchema, AgentCancelSchema } from "./schemas.js";
-import { acquireRunSlot } from "./run-guard.js";
+import { acquireRunSlot, releaseRunSlot } from "./run-guard.js";
 import type { MainIpcContext } from "./context.js";
 
 export function registerHomeRunRoutes(ctx: MainIpcContext): void {
@@ -336,7 +336,7 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
 
       return result.response;
     } finally {
-      ctx.activeRunSessions.delete(sessionId);
+      releaseRunSlot(ctx.activeRunSessions, sessionId);
       endCommandRun(sessionId);
     }
   });

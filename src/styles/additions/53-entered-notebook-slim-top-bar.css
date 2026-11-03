@@ -1,0 +1,12 @@
+.nb-topbar{display:flex;align-items:center;gap:10px;padding:12px 20px 10px;flex:none}
+.nb-topbar-back{display:grid;place-items:center;width:30px;height:30px;border:0;border-radius:8px;background:transparent;color:var(--muted);flex:none}
+.nb-topbar-back:hover{background:var(--panel2);color:var(--text)}
+.nb-topbar-center{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.nb-topbar-title{border:0;background:transparent;color:var(--text);font-size:16px;font-weight:600;letter-spacing:-.01em;padding:2px 6px;margin-left:-6px;border-radius:6px;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:560px}
+.nb-topbar-title:hover{background:var(--panel2)}
+.nb-topbar-sub{font-size:10.5px;color:var(--muted);padding-left:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nb-topbar-actions{display:flex;align-items:center;gap:4px;flex:none}
+.nb-icon-btn{display:grid;place-items:center;width:28px;height:28px;border:0;border-radius:8px;background:transparent;color:var(--muted)}
+.nb-icon-btn:hover:not(:disabled){background:var(--panel2);color:var(--text)}
+.nb-icon-btn:disabled{opacity:.4;cursor:default}
+.notebook-rename-field{max-width:460px;font-size:14px}

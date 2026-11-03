@@ -1,0 +1,11 @@
+.activity-group {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  border-radius: 0;
+}
+
+.activity-group.running,
+.activity-group.error {
+  box-shadow: none !important;
+}

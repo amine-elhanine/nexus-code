@@ -1,0 +1,37 @@
+.model-row-item .model-context-badge-wrap {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.model-context-tag {
+  display: inline-flex;
+  align-items: center;
+  font-size: 9.5px;
+  font-family: "DM Mono", monospace;
+  padding: 3px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  background: var(--accent-soft, rgba(52, 211, 153, 0.1));
+  color: var(--nexus-green, #34d399);
+  border: 1px solid var(--nexus-glow, rgba(52, 211, 153, 0.25));
+  transition: all 0.15s ease;
+}
+
+.model-context-tag:hover {
+  background: var(--nexus-glow, rgba(52, 211, 153, 0.25));
+  border-color: var(--nexus-bright, #3ee695);
+}
+
+.model-context-tag.none {
+  background: var(--panel2, #0e151e);
+  color: var(--muted, #7b8ea3);
+  border: 1px dashed var(--line2, #27364b);
+}
+
+.model-context-tag.none:hover {
+  color: var(--text, #f0f4fc);
+  border-color: var(--nexus-green, #34d399);
+}

@@ -1,0 +1,74 @@
+.agent-view-head {
+  padding: 28px 40px 18px !important;
+}
+
+.agent-view-head h1 {
+  font-size: 22px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.03em !important;
+  margin: 6px 0 4px !important;
+}
+
+.home-suggestions {
+  display: grid !important;
+  grid-template-columns: repeat(2, 1fr) !important;
+  gap: 12px !important;
+  margin-top: 18px !important;
+  width: 100% !important;
+  max-width: 680px !important;
+}
+
+.home-suggestion {
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  padding: 12px 14px !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 9px !important;
+  background: var(--panel2) !important;
+  text-align: left !important;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  cursor: pointer !important;
+}
+
+.home-suggestion:hover {
+  border-color: var(--nexus-green) !important;
+  background: var(--panel) !important;
+  transform: translateY(-2px) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15) !important;
+}
+
+.home-suggestion-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  flex: none;
+}
+
+.suggestion-doc .home-suggestion-icon { background: rgba(96, 165, 250, 0.1); border-color: rgba(96, 165, 250, 0.25); }
+.suggestion-ppt .home-suggestion-icon { background: rgba(251, 191, 36, 0.1); border-color: rgba(251, 191, 36, 0.25); }
+.suggestion-table .home-suggestion-icon { background: rgba(52, 211, 153, 0.1); border-color: rgba(52, 211, 153, 0.25); }
+.suggestion-web .home-suggestion-icon { background: rgba(56, 189, 248, 0.1); border-color: rgba(56, 189, 248, 0.25); }
+
+.home-suggestion-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.home-suggestion-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.home-suggestion-desc {
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.3;
+}

@@ -1,0 +1,63 @@
+.slash-command-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  width: 380px;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--line2);
+  border-radius: 7px;
+  background: var(--panel);
+  box-shadow: 0 16px 45px rgba(0,0,0,0.7);
+  z-index: 40;
+  padding: 4px;
+}
+.slash-command-header {
+  padding: 4px 8px 6px;
+  font: 9px 'DM Mono', monospace;
+  text-transform: uppercase;
+  color: var(--faint);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 3px;
+}
+.slash-command-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 9px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.slash-command-item:hover, .slash-command-item.selected {
+  background: var(--accent-soft);
+}
+.slash-command-item:hover .slash-command-name, .slash-command-item.selected .slash-command-name {
+  color: var(--nexus-bright);
+}
+.slash-command-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  background: var(--panel2);
+  flex: none;
+}
+.slash-command-details {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.slash-command-name {
+  font: 11px 'DM Mono', monospace;
+  color: var(--text);
+  font-weight: 600;
+}
+.slash-command-desc {
+  font-size: 9.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

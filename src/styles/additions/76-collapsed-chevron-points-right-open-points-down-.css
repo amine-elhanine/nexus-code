@@ -1,0 +1,7 @@
+.activity-group-chevron {
+  transform: rotate(-90deg);
+}
+
+.activity-group-chevron.open {
+  transform: rotate(0deg);
+}

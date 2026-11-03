@@ -1,0 +1,73 @@
+.notebook-link-form {
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  padding: 8px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  animation: fadeIn 0.15s ease;
+}
+
+.notebook-link-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 2px 7px;
+}
+
+.notebook-link-kind-icon {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+
+.notebook-link-input-row input {
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  padding: 4px 0;
+}
+
+.notebook-link-cancel {
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  padding: 2px;
+}
+
+.notebook-link-cancel:hover {
+  color: var(--text);
+}
+
+.notebook-link-submit {
+  width: 100%;
+  border: 0;
+  background: var(--nexus-green);
+  color: #04140c;
+  font-weight: 600;
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+
+.notebook-link-submit:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.notebook-link-submit:disabled {
+  opacity: 0.45;
+  cursor: default;
+}

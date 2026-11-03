@@ -57,6 +57,7 @@ import { UsageAccumulator } from "./agent/usage.js";
 import { AgentContextRelaunch, MODE_LIMITS, SIMPLE_TASK_LIMIT, MAX_AGENT_ERROR_RECOVERIES, MAX_REPAIRS, isRecursionLimitError } from "./agent/loop-limits.js";
 import { snapshotHomeFiles, findFreshHomeFiles, type HomeFileSnapshot } from "./agent/home-files.js";
 import { appendEntryLog, PROJECT_MEMORY_RUN_LOG_CAP, SESSION_MEMORY_ENTRY_CAP, SESSION_MEMORY_CHAR_CAP } from "./agent/memory-log.js";
+import { prepareContextBudget } from "./agent/context-budget.js";
 
 // Backward-compatible re-exports: main.ts and tests import these from
 // agent-service; the implementations now live in the focused modules above.
@@ -770,88 +771,44 @@ export async function runProjectAgent(options: {
     provider.modelMaxOutputs?.[modelBasename] ??
     resolveModelMaxOutput(provider.id, modelName, provider);
 
-  const compactionThreshold = computeCompactionThreshold(modelContextWindow, modelMaxOutput);
-  const outputReserve = Math.min(Math.max(modelMaxOutput || 8192, 2048), 32_000);
-  const systemPromptTokens = Math.ceil((systemPromptText || "").length / 3.8);
-  // Prompt composition for the context breakdown (hover card) and budget math:
-  // tool schemas and the skill manifest ride along with every model call but
-  // live outside the system prompt text, so estimate them separately. Meta
-  // context (memory, rules, repo map, project instructions, plugin context) is
-  // embedded INSIDE the system prompt — estimate it from its inputs and
-  // subtract, so breakdown rows never double-count.
-  const mcpToolsTokens = estimateToolSchemaTokens(mcpTools);
-  const pluginToolsTokens = estimateToolSchemaTokens(pluginTools);
-  const mcpToolSet = new Set<any>(mcpTools);
-  const pluginToolSet = new Set<any>(pluginTools);
-  const systemToolsTokens = estimateToolSchemaTokens(boundTools.filter((t) => !mcpToolSet.has(t) && !pluginToolSet.has(t)));
-  const skillsTokens = mountedSkillCatalog.length
-    ? estimateTokens(mountedSkillCatalog.map((s) => `${s.name}\n${s.description}\n${skillDirVirtualPath(s)}`).join("\n")) + mountedSkillCatalog.length * 24
-    : 0;
-  const metaContextTokens = estimateTokens([
-    promptMemory.projectMemory,
-    promptMemory.sessionMemory,
-    promptMemory.facts,
-    rulesResult.combinedPromptSection,
-    repoMapSection,
-    projectInstructions.section,
-    subagentCatalogText,
-    dynamicPluginContext,
-  ].filter(Boolean).join("\n"));
-  const promptOverheadTokens = systemPromptTokens + systemToolsTokens + mcpToolsTokens + pluginToolsTokens + skillsTokens;
-  const targetBudget = Math.max(1500, Math.floor(compactionThreshold * 0.55 - promptOverheadTokens - outputReserve));
-      const estimatedHistoryTokens = history.reduce((sum, t) => sum + estimateTokens(t.text), 0);
-  const historyBudget = targetBudget;
-  const projectedHistoryTokens = estimatedHistoryTokens + promptOverheadTokens;
-
-  // Auto context compaction (like Claude Code & Codex):
-  // - If conversation history is within safe context bounds (< ~85%), keep full history verbatim
-  // - If conversation history reaches or nears the model's context window limit (>= threshold),
-  //   automatically compact older history down to targetBudget (~50%), preserving the last 4 turns verbatim.
-  let compactedHistory;
-  if (projectedHistoryTokens < compactionThreshold && !isSimple) {
-    compactedHistory = history
-      .filter((t) => t.role === "user" || t.role === "assistant")
-      .map((t) => ({ role: t.role as "user" | "assistant", text: t.text }));
-  } else if (isSimple) {
-      compactedHistory = compactHistory(history, Math.min(3000, historyBudget));
-  } else {
-    const pct = Math.round((projectedHistoryTokens / modelContextWindow) * 100);
-    emit("status", `Auto-compacting context (${formatTokenCount(estimatedHistoryTokens)} / ${formatContextWindow(modelContextWindow)} tokens, ~${pct}% capacity) — summarizing history…`);
-
-    compactedHistory = await compactHistoryWithModel(
-      history,
-      async (prompt) => {
-        try {
-          const taskAwarePrompt = isGeneral
-            ? prompt.replace("coding-session history", "general Home task history").replace("files changed, errors seen", "research findings, decisions, outputs created, errors seen")
-            : prompt;
-          const res: any = await llm.invoke(taskAwarePrompt);
-          const text = typeof res?.content === "string" ? res.content : Array.isArray(res?.content) ? res.content.map((p: any) => (typeof p === "string" ? p : p?.text || "")).join("\n") : String(res?.content || res?.text || "");
-          return text;
-        } catch {
-          throw new Error("summarizer failed");
-        }
-      },
-      historyBudget
-    ).catch(() => compactHistory(history, historyBudget));
-
-    const compactedTokens = compactedHistory.reduce((sum, t) => sum + estimateTokens(t.text), 0);
-    const freedTokens = Math.max(0, estimatedHistoryTokens - compactedTokens);
-
-    emit("status", `Context auto-compacted: ${formatTokenCount(estimatedHistoryTokens)} → ${formatTokenCount(compactedTokens)} tokens (${formatTokenCount(freedTokens)} freed)`);
-    onEvent({
+  // Context budget + auto-compaction: computed in agent/context-budget.ts
+  // (extracted verbatim; no behavior change). All downstream budget/breakdown
+  // consumers use the destructured values below.
+  const contextBudget = await prepareContextBudget({
+    modelContextWindow,
+    modelMaxOutput,
+    systemPromptText,
+    mcpTools,
+    pluginTools,
+    boundTools,
+    mountedSkillCatalog,
+    metaContextInputs: [
+      promptMemory.projectMemory,
+      promptMemory.sessionMemory,
+      promptMemory.facts,
+      rulesResult.combinedPromptSection,
+      repoMapSection,
+      projectInstructions.section,
+      subagentCatalogText,
+      dynamicPluginContext,
+    ],
+    history,
+    isSimple,
+    llm,
+    isGeneral,
+    emit,
+    onEvent: (e) => onEvent({
       type: "status",
-      sessionId: sessionId || "",
-      text: `Context auto-compacted: ${formatTokenCount(estimatedHistoryTokens)} → ${formatTokenCount(compactedTokens)} tokens (${formatTokenCount(freedTokens)} freed)`,
+      sessionId: e.sessionId,
+      text: e.text,
       timestamp: new Date().toISOString(),
-      usage: {
-        inputTokens: compactedTokens,
-        outputTokens: 0,
-        totalTokens: compactedTokens,
-        estimatedCost: null,
-      },
-    });
-  }
+      usage: { inputTokens: e.usage.inputTokens, outputTokens: e.usage.outputTokens, totalTokens: e.usage.totalTokens, estimatedCost: null },
+    }),
+    sessionId,
+  });
+  const { compactedHistory, promptOverheadTokens, compactionThreshold, outputReserve } = contextBudget;
+  const { systemPromptTokens, mcpToolsTokens, pluginToolsTokens, systemToolsTokens, skillsTokens, metaContextTokens } = contextBudget;
+  const { targetBudget, estimatedHistoryTokens, historyBudget, projectedHistoryTokens } = contextBudget;
   const priorMessages = compactedHistory.map((turn) =>
     turn.role === "assistant"
       ? new AIMessage(tail(turn.text, HISTORY_CHAR_CAP))

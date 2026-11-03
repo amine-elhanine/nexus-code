@@ -1,0 +1,299 @@
+.modal-layer {
+  backdrop-filter: blur(14px) !important;
+  -webkit-backdrop-filter: blur(14px) !important;
+  background: rgba(3, 6, 10, 0.78) !important;
+}
+
+.modal-card {
+  background: var(--panel) !important;
+  border: 1px solid var(--line2) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 24px 90px rgba(0, 0, 0, 0.85), inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
+  color: var(--text) !important;
+}
+
+.modal-card-head h2 {
+  color: var(--text) !important;
+}
+
+.modal-card-head p {
+  color: var(--muted) !important;
+}
+
+.modal-card label {
+  color: var(--text) !important;
+}
+
+.modal-card label small,
+.form-title small,
+.provider-form label small,
+.setting-card label small {
+  color: var(--muted) !important;
+}
+
+.modal-card input,
+.modal-card select,
+.modal-card textarea {
+  background: var(--bg) !important;
+  border: 1px solid var(--line2) !important;
+  color: var(--text) !important;
+}
+
+.modal-card input:focus,
+.modal-card select:focus,
+.modal-card textarea:focus {
+  border-color: var(--nexus-green) !important;
+  box-shadow: 0 0 0 2px var(--nexus-glow) !important;
+}
+
+.modal-card input::placeholder,
+.modal-card textarea::placeholder {
+  color: var(--faint) !important;
+}
+
+.secondary {
+  border: 1px solid var(--line2) !important;
+  background: var(--panel2) !important;
+  color: var(--text) !important;
+}
+
+.secondary:hover {
+  border-color: var(--nexus-green) !important;
+  background: var(--accent-soft) !important;
+  color: var(--nexus-bright) !important;
+}
+
+.model-row-item button {
+  background: var(--panel2) !important;
+  border: 1px solid var(--line2) !important;
+  color: var(--muted) !important;
+}
+
+.model-row-item button:hover {
+  background: rgba(239, 68, 68, 0.12) !important;
+  color: #ef4444 !important;
+  border-color: #ef4444 !important;
+}
+
+.model-row-item select.model-endpoint-select {
+  background: var(--bg) !important;
+  border: 1px solid var(--line2) !important;
+  color: var(--text) !important;
+}
+
+/* ==========================================================================
+   MCP SERVER CARDS & TOGGLE REDESIGN
+   ========================================================================== */
+.mcp-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel2);
+  padding: 10px 12px;
+  margin-bottom: 7px;
+  transition: all 0.15s ease;
+}
+
+.mcp-card:hover {
+  border-color: var(--line2);
+  background: var(--panel);
+}
+
+.mcp-card.enabled {
+  border-left: 3px solid var(--nexus-green);
+}
+
+.mcp-card.disabled {
+  opacity: 0.72;
+  border-left: 3px solid var(--line2);
+}
+
+.mcp-card-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mcp-card-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  flex: none;
+  transition: all 0.15s ease;
+}
+
+.mcp-card-icon.enabled {
+  background: var(--accent-soft);
+  color: var(--nexus-bright);
+  border-color: var(--nexus-green);
+}
+
+.mcp-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mcp-card-head-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mcp-card-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-status-badge {
+  font-size: 8.5px;
+  font-family: 'DM Mono', monospace;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+
+.mcp-status-badge.enabled {
+  background: var(--accent-soft);
+  color: var(--nexus-bright);
+  border: 1px solid var(--nexus-green);
+}
+
+.mcp-status-badge.disabled {
+  background: var(--panel);
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+
+.mcp-card-detail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.mcp-transport-chip {
+  font-size: 8.5px;
+  font-family: 'DM Mono', monospace;
+  text-transform: uppercase;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--muted);
+}
+
+.mcp-command-line {
+  font-family: 'DM Mono', monospace;
+  font-size: 9.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--faint);
+}
+
+.mcp-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+}
+
+.mcp-toggle-wrap {
+  display: flex;
+  align-items: center;
+}
+
+/* Fix and elevate toggle switch specifically so provider-card-actions button doesn't squish it */
+.switch,
+.provider-card-actions .switch,
+.mcp-card-actions .switch {
+  position: relative !important;
+  width: 36px !important;
+  height: 20px !important;
+  flex: none !important;
+  border-radius: 999px !important;
+  border: 1px solid var(--line2) !important;
+  background: var(--line2) !important;
+  padding: 0 !important;
+  cursor: pointer !important;
+  display: block !important;
+  transition: all 0.15s ease !important;
+}
+
+.switch .knob,
+.provider-card-actions .switch .knob,
+.mcp-card-actions .switch .knob {
+  position: absolute !important;
+  top: 2px !important;
+  left: 2px !important;
+  width: 14px !important;
+  height: 14px !important;
+  border-radius: 50% !important;
+  background: var(--panel) !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25) !important;
+  transition: left 0.15s ease, background 0.15s ease !important;
+}
+
+.switch.on,
+.provider-card-actions .switch.on,
+.mcp-card-actions .switch.on {
+  background: var(--accent-soft) !important;
+  border-color: var(--nexus-green) !important;
+}
+
+.switch.on .knob,
+.provider-card-actions .switch.on .knob,
+.mcp-card-actions .switch.on .knob {
+  left: 18px !important;
+  background: var(--nexus-bright) !important;
+  box-shadow: 0 0 6px var(--nexus-glow) !important;
+}
+
+.switch:disabled {
+  opacity: 0.4 !important;
+  cursor: not-allowed !important;
+}
+
+.mcp-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mcp-icon-btn:hover {
+  border-color: var(--line2);
+  color: var(--text);
+  background: var(--panel2);
+}
+
+.mcp-icon-btn.danger:hover {
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+}

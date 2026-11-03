@@ -1,0 +1,68 @@
+.worktree-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--nexus-green);
+  font-size: 11px;
+}
+.worktree-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.worktree-badge {
+  background: var(--accent-soft);
+  color: var(--nexus-bright);
+  border: 1px solid var(--nexus-green);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font: 9px 'DM Mono', monospace;
+  text-transform: uppercase;
+}
+.worktree-branch-name {
+  font: 11px 'DM Mono', monospace;
+  color: var(--text);
+}
+.worktree-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.worktree-status-msg {
+  font: 10px 'DM Mono', monospace;
+}
+.btn-worktree-merge {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--accent-soft);
+  border: 1px solid var(--nexus-green);
+  color: var(--nexus-bright);
+  border-radius: 4px;
+  padding: 4px 9px;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.btn-worktree-merge:hover:not(:disabled) {
+  background: var(--panel2);
+  color: #fff;
+}
+.btn-worktree-discard {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 1px solid #362228;
+  color: #a87980;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 10px;
+  cursor: pointer;
+}
+.btn-worktree-discard:hover:not(:disabled) {
+  background: #2a171c;
+  color: #f0858e;
+  border-color: #552731;
+}

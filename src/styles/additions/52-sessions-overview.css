@@ -1,0 +1,21 @@
+.nb-home-top{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:22px 26px 14px;flex:none}
+.nb-home-title{font-size:21px;font-weight:600;letter-spacing:-.02em;margin:0;color:var(--text)}
+.nb-home-actions{display:flex;align-items:center;gap:10px}
+.nb-home-search{display:flex;align-items:center;gap:8px;border:1px solid var(--line2);background:var(--panel2);border-radius:999px;padding:8px 14px;color:var(--muted);min-width:220px}
+.nb-home-search:focus-within{border-color:var(--nexus-green)}
+.nb-home-search input{flex:1;border:0;outline:0;background:transparent;color:var(--text);font-size:12px;min-width:0}
+.nb-home-search input::placeholder{color:var(--muted)}
+.nb-new-pill{display:flex;align-items:center;gap:7px;border:0;border-radius:999px;background:#3b74d6;color:#fff;font-size:12px;font-weight:600;padding:9px 16px;transition:filter .15s ease;flex:none}
+.nb-new-pill:hover{filter:brightness(1.12)}
+.nb-home-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;padding:4px 26px 26px;overflow-y:auto;flex:1;min-height:0;align-content:start}
+.nb-home-card{position:relative;display:flex;flex-direction:column;gap:10px;border:1px solid var(--line);border-radius:16px;background:var(--panel);padding:16px;cursor:pointer;min-height:150px;transition:background .15s ease,border-color .15s ease}
+.nb-home-card:hover{background:var(--panel2);border-color:var(--line2)}
+.nb-home-card-top{display:flex;align-items:flex-start;justify-content:space-between}
+.nb-home-card-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:10px;flex:none}
+.nb-home-card-menu{display:grid;place-items:center;width:24px;height:24px;border:0;border-radius:6px;background:transparent;color:var(--muted)}
+.nb-home-card-menu:hover{background:var(--line);color:var(--text)}
+.nb-home-card-name{font-size:14px;font-weight:600;color:var(--text);line-height:1.35;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.nb-home-card-meta{margin-top:auto;font-size:11px;color:var(--muted)}
+.nb-home-card-new{border-style:dashed;align-items:center;justify-content:center;color:var(--muted);font-size:12.5px;gap:8px}
+.nb-home-card-new:hover{color:var(--text);border-color:var(--line2)}
+.nb-home-card-new-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:10px;background:var(--panel2);color:var(--muted)}

@@ -38,7 +38,8 @@ console.log("=== 1. Packaged BrowserWindow configuration (static) ===");
 
 checkSource(/contextIsolation:\s*true/, true, "main window keeps contextIsolation: true");
 checkSource(/nodeIntegration:\s*false/, true, "main window keeps nodeIntegration: false");
-checkSource(/sandbox:\s*process\.env\.NEXUS_SANDBOX\s*===\s*"0"\s*\?\s*false\s*:\s*true/, true, "main window defaults sandbox: true (dev-only NEXUS_SANDBOX=0 escape hatch)");
+checkSource(/sandbox:[\s\S]{0,200}NEXUS_SANDBOX\s*===\s*"0"[\s\S]{0,120}isDevMode\(\)\s*\?[\s\S]{0,60}:\s*true/, true, "main window defaults sandbox: true (NEXUS_SANDBOX=0 escape hatch requires dev mode)");
+checkSource(/sandbox:[\s\S]{0,200}NEXUS_SANDBOX[\s\S]{0,400}$/, false, "NEXUS_SANDBOX must be dev-gated in the compiled bundle");
 checkSource(/will-attach-webview/, true, "will-attach-webview guard exists");
 checkSource(/webPreferences\.sandbox\s*=\s*true/, true, "attached webviews forced sandbox: true");
 checkSource(/setWindowOpenHandler/, true, "window-open guard exists");

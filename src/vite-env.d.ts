@@ -44,7 +44,11 @@ export interface NexusApi {
   createSession: (projectId: string, title?: string) => Promise<SessionRecord>;
   activateSession: (projectId: string, sessionId: string) => Promise<SessionRecord>;
   deleteSession: (projectId: string, sessionId: string, options?: { deleteFiles?: boolean }) => Promise<ProjectRecord>;
-  updateSession: (projectId: string, sessionId: string, patch: unknown) => Promise<SessionRecord>;
+  updateSession: (
+    projectId: string,
+    sessionId: string,
+    patch: Partial<Pick<SessionRecord, "title" | "memory" | "model" | "messages" | "usage" | "checkpointId" | "checkpointIds">>,
+  ) => Promise<SessionRecord>;
   updateProjectMemory: (projectId: string, memory: string) => Promise<ProjectRecord>;
   updateProjectFacts: (projectId: string, facts: string) => Promise<ProjectRecord>;
   removeProjectFact: (projectId: string, fact: string) => Promise<ProjectRecord>;

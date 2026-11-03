@@ -1,0 +1,6 @@
+.notebook-layout{gap:12px}
+.notebook-side{border-radius:16px;border-color:var(--line)}
+.notebook-side-head{border-bottom:0;padding:14px 16px 4px;background:transparent;align-items:center}
+.nb-panel-title{font-size:14px;font-weight:600;color:var(--text)}
+.nb-panel-count{font-size:10.5px;color:var(--muted);background:var(--panel2);border-radius:999px;padding:2px 8px}
+.notebook-side-body{padding:6px 12px 12px}
