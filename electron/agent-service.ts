@@ -1634,11 +1634,15 @@ export async function runProjectAgent(options: {
         const hasVisualBlocks = responseHasVisualBlocks(responseTextTrimmed);
         const requestWantsVisuals = /\b(chart|charts|graph|graphs|diagram|diagrams|plot|plots|visual|visuals|visualization)\b/i.test(request);
         const mdFilesWithCharts: Array<{ path: string }> = [];
+        // Contents cached during the scan so the chat-answer cleanup below can
+        // decide chart-dump deletion without re-reading the same files.
+        const mdContents = new Map<string, string>();
         if (!hasVisualBlocks && (!homeRequestNamesFileFormat(request) || requestWantsVisuals)) {
           for (const file of freshFiles) {
             if (/\.(md|markdown|txt)$/i.test(file)) {
               try {
                 const content = await fsPromises.readFile(path.join(projectRoot, file), "utf8");
+                mdContents.set(file, content);
                 if (matchChartFences(content).length) mdFilesWithCharts.push({ path: file });
               } catch { /* ignore */ }
             }
@@ -1674,17 +1678,22 @@ export async function runProjectAgent(options: {
           case "chat-answer": {
             if (decision.hasVisualBlocks) {
               // Clean up any unrequested .md/.txt chart dump files created
-              // alongside the chat response.
+              // alongside the chat response. The scan above only ran when the
+              // response had NO visual blocks, so its cache is empty here —
+              // fall back to reading the file (same as the original behavior).
               for (let i = freshFiles.length - 1; i >= 0; i--) {
                 const file = freshFiles[i];
                 if (/\.(md|markdown|txt)$/i.test(file)) {
-                  try {
-                    const content = await fsPromises.readFile(path.join(projectRoot, file), "utf8");
-                    if (hasChartFences(content)) {
-                      await fsPromises.unlink(path.join(projectRoot, file)).catch(() => {});
-                      freshFiles.splice(i, 1);
-                    }
-                  } catch { /* best effort */ }
+                  let chartDump = mdContents.has(file) ? hasChartFences(mdContents.get(file) || "") : null;
+                  if (chartDump === null) {
+                    try {
+                      chartDump = hasChartFences(await fsPromises.readFile(path.join(projectRoot, file), "utf8"));
+                    } catch { chartDump = false; }
+                  }
+                  if (chartDump) {
+                    await fsPromises.unlink(path.join(projectRoot, file)).catch(() => {});
+                    freshFiles.splice(i, 1);
+                  }
                 }
               }
             }
@@ -1776,6 +1785,12 @@ export async function runProjectAgent(options: {
       // changed files. If it passes on a simple task, skip the full project
       // typecheck entirely.
       const scoped = pickFileScopedVerification(projectRoot, changedPaths);
+      // Repair evidence: name the run's own changed files so the model fixes
+      // its work directly instead of re-exploring the repo to find where the
+      // error paths live.
+      const changedFilesNote = changedPaths.length
+        ? `\n\nFiles changed in this run: ${changedPaths.slice(0, 12).join(", ")}${changedPaths.length > 12 ? ` (+${changedPaths.length - 12} more)` : ""}. Fix the failures in these files (or in what they import) — do not restart exploration.`
+        : "";
       if (scoped) {
         emit("status", `Verifying changed files with \`${scoped}\``);
         const scopedResult = await runCommand(scoped);
@@ -1786,7 +1801,7 @@ export async function runProjectAgent(options: {
           if (currentRepairs < maxRepairs && scopedOutput) {
             return {
               repairs: currentRepairs + 1,
-              verifyFeedback: `The scoped check \`${scoped}\` failed (self-healing repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${extractDiagnosticFeedback(scopedOutput)}\n\nFix these failures with minimal, focused changes, then summarize what you changed.`,
+              verifyFeedback: `The scoped check \`${scoped}\` failed (self-healing repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${extractDiagnosticFeedback(scopedOutput)}${changedFilesNote}\n\nFix these failures with minimal, focused changes, then summarize what you changed.`,
             };
           }
           return { verification: "failed" };
@@ -1883,7 +1898,7 @@ export async function runProjectAgent(options: {
           if (currentRepairs < maxRepairs) {
             return {
               repairs: currentRepairs + 1,
-              verifyFeedback: `Parallel verification failed (${failures.length}/${verifyBatch.length}, repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${combined}\n\nFix these failures with minimal, focused changes, then summarize what you changed.`,
+              verifyFeedback: `Parallel verification failed (${failures.length}/${verifyBatch.length}, repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${combined}${changedFilesNote}\n\nFix these failures with minimal, focused changes, then summarize what you changed.`,
             };
           }
           return { verification: "failed" };
@@ -1900,7 +1915,7 @@ export async function runProjectAgent(options: {
           if (currentRepairs < maxRepairs && output) {
             return {
               repairs: currentRepairs + 1,
-              verifyFeedback: `The verification command \`${verificationCommand}\` failed (self-healing repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${extractDiagnosticFeedback(output)}\n\nFix these failures with minimal, focused changes, then summarize what you changed.`,
+              verifyFeedback: `The verification command \`${verificationCommand}\` failed (self-healing repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${extractDiagnosticFeedback(output)}${changedFilesNote}\n\nFix these failures with minimal, focused changes, then summarize what you changed.`,
             };
           }
           return { verification: "failed" };

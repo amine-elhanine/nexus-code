@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { writeFileAtomic, withFileLock } from "./atomic-write.js";
 import { safePath } from "./project-tools.js";
 import { snapshotArtifactVersion } from "./home-artifact-service.js";
+import { SCRATCH_SCRIPT_PATTERN } from "./agent/home-files.js";
 
 const electronRequire = createRequire(import.meta.url);
 type ElectronShim = {
@@ -378,7 +379,10 @@ export async function cleanupHomeGeneratorScripts(runStartMs: number, requestTex
   const deleted: string[] = [];
   for (const f of fresh) {
     const ext = f.name.split(".").pop()?.toLowerCase() || "";
-    if (!GENERATOR_EXTS.has(ext)) continue;
+    // Generator extensions OR the shared name-shaped scratch pattern
+    // (validate_*.txt, check_log.txt, …) so both cleanup paths catch the
+    // same throwaway files.
+    if (!GENERATOR_EXTS.has(ext) && !SCRATCH_SCRIPT_PATTERN.test(f.name)) continue;
     const abs = path.resolve(root, f.path);
     if (abs === root || !abs.startsWith(`${root}${path.sep}`)) continue;
     try {

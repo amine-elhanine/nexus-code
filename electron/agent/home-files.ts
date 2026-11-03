@@ -36,7 +36,11 @@ export async function findFreshHomeFiles(root: string, baseline: HomeFileSnapsho
     .sort();
 }
 
-const SCRATCH_SCRIPT_PATTERN = /^(?:gen|generate|validate|contrast|debug|inspect|scan|find|check|download|make|test)[a-z0-9_-]*\.(?:py|js|cjs|mjs|txt|log)$/i;
+// Name-shaped throwaway helper files (homemade validators, contrast checks,
+// debug scripts, logs). Shared with home-service's end-of-run generator
+// cleanup so both paths catch the same files — previously the two regexes
+// diverged and a scratch file could survive one path.
+export const SCRATCH_SCRIPT_PATTERN = /^(?:gen|generate|validate|contrast|debug|inspect|scan|find|check|download|make|test)[a-z0-9_-]*\.(?:py|js|cjs|mjs|txt|log)$/i;
 
 /**
  * Automatically clean up run-fresh throwaway helper scripts created during a Home

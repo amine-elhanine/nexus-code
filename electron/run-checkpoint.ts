@@ -100,6 +100,14 @@ function truncateForDisk(value: unknown, cap = 1500): unknown {
   return value;
 }
 
+// Disk checkpoints used to truncate EVERY string to 1,500 chars, so a
+// post-restart "continue" replayed stubbed read results and the model
+// re-read files it had already inspected — pure wasted steps and tokens.
+// Tool results (the read/search outputs that matter on resume) keep up to
+// 6,000 chars; everything else keeps the tight cap.
+const DISK_CAP_DEFAULT = 1500;
+const DISK_CAP_TOOL_RESULT = 6000;
+
 const CHECKPOINT_TYPE_BY_CLASS: Record<string, string> = {
   HumanMessage: "human",
   AIMessage: "ai",
@@ -117,7 +125,7 @@ function serializeCheckpointMessage(message: any): unknown {
     const className = Array.isArray(data.id) ? String(data.id[data.id.length - 1]) : "";
     const type = CHECKPOINT_TYPE_BY_CLASS[className] ?? (typeof data.type === "string" && ["human", "ai", "tool", "system"].includes(data.type) ? data.type : null);
     if (!type) return null;
-    return { type, kwargs: truncateForDisk(data.kwargs ?? {}) };
+    return { type, kwargs: truncateForDisk(data.kwargs ?? {}, type === "tool" ? DISK_CAP_TOOL_RESULT : DISK_CAP_DEFAULT) };
   } catch {
     return null;
   }
