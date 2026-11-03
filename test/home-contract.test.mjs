@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
+import { scratchBaseSync } from "./helpers/scratch.mjs";
 
 // Scratch Home workspace BEFORE imports — cleanupHomeGeneratorScripts reads
 // getHomeRoot(), which honors NEXUS_HOME_ROOT.
-const tempHome = path.join(os.tmpdir(), `nexus-test-home-contract-${Date.now()}`);
+const tempHome = path.join(scratchBaseSync(), `nexus-test-home-contract-${Date.now()}`);
 fs.mkdirSync(path.join(tempHome, ".nexus"), { recursive: true });
 process.env.NEXUS_HOME_ROOT = tempHome;
 

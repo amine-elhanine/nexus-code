@@ -1,7 +1,7 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import os from "node:os";
 import fs from "node:fs/promises";
 import { stripProjectRoot, normalizeVirtualPath, normalizeCommandPaths } from "../dist-electron/path-utils.js";
 import { getAgentBackend } from "../dist-electron/command-service.js";
@@ -115,7 +115,7 @@ test("normalizeCommandPaths strips host and pseudo-POSIX paths from cd statement
 });
 
 test("getAgentBackend intercepts resolvePath and prevents nested Users directory creation", async () => {
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-path-test-"));
+  const tmpDir = await mkdirScratch("nexus-path-test-");
   try {
     const project = { id: "test-proj", root: tmpDir, name: "test" };
     const { backend } = await getAgentBackend(project);
@@ -180,7 +180,7 @@ test("toolParameterNormalizationMiddleware normalizes hallucinated paths in tool
 });
 
 test("apply_patch handles hallucinated POSIX path without creating nested Users directory", async () => {
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-patch-test-"));
+  const tmpDir = await mkdirScratch("nexus-patch-test-");
   try {
     const { createEditTools } = await import("../dist-electron/edit-tools.js");
     const tools = createEditTools(tmpDir);

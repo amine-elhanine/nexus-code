@@ -1,8 +1,8 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 // Edit-approval gate tests: backend write/edit/delete gating in getAgentBackend
-// and the apply_patch beforeEdit hook. Imports from dist-electron — build first.
+// and the apply_patch beforeEdit hook. Imports from dist-electron â€” build first.
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { getAgentBackend } from '../dist-electron/command-service.js';
 import { setApprovalNotifier } from '../dist-electron/approval-service.js';
@@ -15,11 +15,11 @@ function test(name, fn) {
   return Promise.resolve()
     .then(fn)
     .then(() => {
-      console.log(`  ✓ ${name}`);
+      console.log(`  âœ“ ${name}`);
       passed++;
     })
     .catch((error) => {
-      console.error(`  ✗ ${name}`);
+      console.error(`  âœ— ${name}`);
       console.error(error);
       failed++;
     });
@@ -30,7 +30,7 @@ function projectRecord(root) {
 }
 
 await test('getAgentBackend auto policy: writes proceed with no approval prompt', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-gate-auto-'));
+  const tempDir = await mkdirScratch('nexus-gate-auto-');
   try {
     setApprovalNotifier(null);
     const saved = process.env.NEXUS_APPROVAL;
@@ -49,7 +49,7 @@ await test('getAgentBackend auto policy: writes proceed with no approval prompt'
 });
 
 await test('getAgentBackend ask policy: denial blocks the write; NEXUS_APPROVAL=allow passes', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-gate-ask-'));
+  const tempDir = await mkdirScratch('nexus-gate-ask-');
   try {
     setApprovalNotifier(null);
     const saved = process.env.NEXUS_APPROVAL;
@@ -75,7 +75,7 @@ await test('getAgentBackend ask policy: denial blocks the write; NEXUS_APPROVAL=
 });
 
 await test('apply_patch beforeEdit gate: denial text returned, file untouched; null allows', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-gate-patch-'));
+  const tempDir = await mkdirScratch('nexus-gate-patch-');
   try {
     await fs.writeFile(path.join(tempDir, 'app.ts'), 'const a = 1;\n', 'utf8');
     const patchText = '*** Update File: app.ts\nconst a = 2;\n';

@@ -1,7 +1,7 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runLimitedProcess } from '../scripts/eval-runner-utils.mjs';
@@ -71,7 +71,7 @@ test('agent eval corpus has unique, well-formed, checker-backed cases with safe 
 
 // Every checker must FAIL on the pristine fixture: if a checker passed the
 // untouched stub, the case proves nothing (a do-nothing agent passes it).
-// Load-shaped errors (SyntaxError, missing modules) also disqualify the case —
+// Load-shaped errors (SyntaxError, missing modules) also disqualify the case â€”
 // the checker must fail through real assertions, not broken code.
 // Nested `node --test` children silently skip execution when they inherit the
 // parent test runner's NODE_TEST_CONTEXT (they think they are reporting to a
@@ -82,7 +82,7 @@ delete cleanSpawnEnv.NODE_RUN_CHILD_PROCESS_ENV;
 delete cleanSpawnEnv.NODE_RUN_EXEC_ARGV;
 
 async function pristineCheckerFails(item, run) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), `nexus-eval-corpus-${item.id}-`));
+  const root = await mkdirScratch(`nexus-eval-corpus-${item.id}-`);
   try {
     const workspace = path.join(root, 'workspace');
     await fs.mkdir(workspace);
@@ -97,10 +97,10 @@ async function pristineCheckerFails(item, run) {
     const pristine = await run(process.execPath, ['--test', '--test-reporter', 'tap', 'eval.test.mjs'], { cwd: workspace, env: cleanSpawnEnv }, { timeoutMs: 60_000 });
     if (process.env.NEXUS_CORPUS_DEBUG) process.stderr.write(`DEBUG ${item.id}: code=${pristine.code} timedOut=${pristine.timedOut} dir=${await fs.readdir(workspace)}\n`);
     assert.ok(!pristine.timedOut, `${item.id}: pristine checker timed out`);
-    assert.notEqual(pristine.code, 0, `${item.id}: checker PASSED the untouched fixture — it discriminates nothing`);
+    assert.notEqual(pristine.code, 0, `${item.id}: checker PASSED the untouched fixture â€” it discriminates nothing`);
     assert.match(`${pristine.stdout}\n${pristine.stderr}`, /not ok/, `${item.id}: pristine run shows no executed failing test (skipped or swallowed?)`);
     const loadFailure = /(SyntaxError|ERR_MODULE_NOT_FOUND|ERR_UNSUPPORTED_ESM|ERR_UNKNOWN_FILE_EXTENSION)/i.test(pristine.stderr);
-    assert.equal(loadFailure, false, `${item.id}: pristine failure looks like a broken checker, not assertions — inspect stderr: ${pristine.stderr.slice(0, 300)}`);
+    assert.equal(loadFailure, false, `${item.id}: pristine failure looks like a broken checker, not assertions â€” inspect stderr: ${pristine.stderr.slice(0, 300)}`);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

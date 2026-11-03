@@ -1,9 +1,9 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 // Integration test for live cross-process event bus, dynamic context providers,
 // and slash command auto-discovery.
 
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import {
   startPluginProcess,
@@ -30,18 +30,18 @@ function test(name, fn) {
   return Promise.resolve()
     .then(fn)
     .then(() => {
-      console.log(`  ✓ ${name}`);
+      console.log(`  âœ“ ${name}`);
       passed++;
     })
     .catch((error) => {
-      console.error(`  ✗ ${name}`);
+      console.error(`  âœ— ${name}`);
       console.error(error);
       failed++;
     });
 }
 
 async function makePlugin(files) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-live-'));
+  const dir = await mkdirScratch('nexus-live-');
   const pluginDir = path.join(dir, 'plug');
   await fs.mkdir(pluginDir, { recursive: true });
   for (const [rel, content] of Object.entries(files)) {

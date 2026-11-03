@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { renderMarkdown } from "../../markdown.js";
+import { safeMarkdown } from "../../markdown.js";
 import { CheckCircle2, FileCode2, Play, Sparkles, X, RotateCcw, Eye, FileText } from "lucide-react";
 
 export type ArtifactStatus = "draft" | "pending_approval" | "approved" | "completed" | "rejected";
@@ -80,7 +80,7 @@ export const ArtifactViewer: React.FC<ArtifactViewerProps> = ({
             <div
               className="chat-message-text md artifact-rendered"
               style={{ padding: 0 }}
-              dangerouslySetInnerHTML={{ __html: renderMarkdown(artifact.content) }}
+              dangerouslySetInnerHTML={{ __html: safeMarkdown(artifact.content) }}
             />
           ) : (
             <pre className="artifact-raw">{artifact.content}</pre>

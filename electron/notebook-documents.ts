@@ -1,11 +1,12 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { composeContextBlock, toCitations } from "./notebook-text.js";
+import { composeContextBlock, toCitations, uid } from "./notebook-text.js";
 import { listNotebookSources, notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
 import { hybridRetrieve } from "./notebook-rag.js";
 import { loadLibrary, sessionOutline } from "./notebook-library.js";
 import { notebookGenerationInvokeOptions } from "./notebook-generation.js";
+import { writeFileAtomic } from "./atomic-write.js";
 
 // Grounded document generation for Notebook Mode: reports (docx/pdf) and
 // slide decks (pptx). Retrieval + outline reuse the isolated notebook store,
@@ -72,10 +73,6 @@ type SlidesPlan = {
   slides: SlidePlan[];
 };
 
-function uid(prefix: string) {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
 function docsPath(notebookId: string) {
   return path.join(notebookSessionDir(notebookId), "documents.json");
 }
@@ -98,8 +95,8 @@ async function readDocs(notebookId: string): Promise<NotebookDocument[]> {
   }
 }
 async function writeDocs(notebookId: string, docs: NotebookDocument[]) {
-  await fs.mkdir(path.dirname(docsPath(notebookId)), { recursive: true });
-  await fs.writeFile(docsPath(notebookId), JSON.stringify(docs, null, 2), "utf8");
+  // Atomic (temp + rename): a crash mid-write must not truncate the doc index.
+  await writeFileAtomic(docsPath(notebookId), JSON.stringify(docs, null, 2));
 }
 
 export async function listNotebookDocuments(notebookId: string): Promise<NotebookDocument[]> {

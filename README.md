@@ -15,7 +15,7 @@ Windows 10 / 11 (NSIS + Portable) · macOS & Linux configurable
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)
 ![LangGraph](https://img.shields.io/badge/LangGraph-1.x-1C3C3C)
 ![DeepAgents](https://img.shields.io/badge/DeepAgents-1.x-34d399)
-![Version](https://img.shields.io/badge/version-v0.4.5-blue)
+![Version](https://img.shields.io/badge/version-v0.5.0-blue)
 ![License](https://img.shields.io/badge/license-All_Rights_Reserved-lightgrey)
 
 **[Download the latest release](https://github.com/amine-elhanine/nexus/releases/latest)** ·

@@ -1,9 +1,9 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 // Regression tests for the 2026-10-24 audit fixes: binary-safe workspace
 // checkpoints and undo ordering (restore survives the Nexus-commit reset).
 // Plain Node against dist-electron (build:electron first).
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { createWorkspaceCheckpoint, restoreWorkspaceCheckpoint } from "../dist-electron/diff-service.js";
 import { boundedExecFile } from "../dist-electron/shell-subprocess.js";
@@ -30,13 +30,13 @@ async function git(cwd, ...args) {
 console.log("\n=== Checkpoint Binary Safety Tests ===");
 
 await test("undo restores a dirty binary file byte-exact (no utf8 mojibake)", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-chk-bin-"));
+  const root = await mkdirScratch("nexus-chk-bin-");
   try {
     await git(root, "init");
     await git(root, "config", "user.email", "t@t");
     await git(root, "config", "user.name", "t");
     // Bytes that decode lossily as utf8: NUL + invalid high bytes + a valid
-    // UTF-8 pair — the exact class the old utf8-read bug corrupted to U+FFFD.
+    // UTF-8 pair â€” the exact class the old utf8-read bug corrupted to U+FFFD.
     const binary = Buffer.from([0x00, 0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0xc3, 0xa9, 0x00, 0x42]);
     await fs.writeFile(path.join(root, "asset.bin"), Buffer.from([0x00, 0x01]));
     await fs.writeFile(path.join(root, "text.txt"), "line one\n", "utf8");
@@ -54,7 +54,7 @@ await test("undo restores a dirty binary file byte-exact (no utf8 mojibake)", as
 
     const ok = await restoreWorkspaceCheckpoint(root, checkpointId);
     assert.equal(ok, true);
-    // Undo restores the checkpoint-time state BYTE-EXACT — the utf8-read bug
+    // Undo restores the checkpoint-time state BYTE-EXACT â€” the utf8-read bug
     // would have round-tripped it through U+FFFD mojibake instead.
     const restoredBinary = await fs.readFile(path.join(root, "asset.bin"));
     assert.ok(Buffer.compare(restoredBinary, binary) === 0, `binary must round-trip byte-exact, got ${restoredBinary.toString("hex")} vs ${binary.toString("hex")}`);
@@ -65,7 +65,7 @@ await test("undo restores a dirty binary file byte-exact (no utf8 mojibake)", as
 });
 
 await test("restore keeps pre-run WIP even when the run auto-committed (reset happens before file restore)", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-chk-order-"));
+  const root = await mkdirScratch("nexus-chk-order-");
   try {
     await git(root, "init");
     await git(root, "config", "user.email", "t@t");

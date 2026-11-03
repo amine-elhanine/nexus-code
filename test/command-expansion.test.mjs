@@ -1,7 +1,7 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -18,7 +18,7 @@ test("placeholders: {{input}} and $ARGUMENTS both expand", () => {
 });
 
 test("expandSlashCommand: installed plugin command expands with input", async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-cmd-"));
+  const tmp = await mkdirScratch("nexus-cmd-");
   try {
     const cmdDir = path.join(tmp, ".nexus", "plugins", "code-review", "commands");
     await fs.mkdir(cmdDir, { recursive: true });
@@ -76,7 +76,7 @@ test("evaluation project-command cases expand in their declared assistant scope"
   ]);
 
   for (const benchmark of commandCases) {
-    const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-command-eval-"));
+    const projectRoot = await mkdirScratch("nexus-command-eval-");
     t.after(async () => fs.rm(projectRoot, { recursive: true, force: true }));
     for (const [relative, content] of Object.entries(benchmark.files)) {
       const target = path.join(projectRoot, relative);

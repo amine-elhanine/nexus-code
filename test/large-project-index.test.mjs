@@ -1,11 +1,11 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { getProjectIndexSection } from "../dist-electron/project-index-service.js";
 import { pickAffectedPackageCommands } from "../dist-electron/agent-service.js";
 
-const root = await mkdtemp(path.join(os.tmpdir(), "nexus-large-index-"));
+const root = await mkdirScratch("nexus-large-index-");
 try {
   await mkdir(path.join(root, "packages", "core", "src"), { recursive: true });
   await mkdir(path.join(root, "packages", "app", "src"), { recursive: true });

@@ -1,9 +1,9 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 // Hooks API tests: config parsing, hook dispatch (stdin JSON + exit codes),
-// and the deny-capable tool:before middleware. Imports from dist-electron —
+// and the deny-capable tool:before middleware. Imports from dist-electron â€”
 // run `npm run build:electron` first.
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { ToolMessage } from '@langchain/core/messages';
 import { parseHooksConfig, discoverHooks, dispatchHook, dispatchHooks, createHooksMiddleware } from '../dist-electron/hooks-service.js';
@@ -15,11 +15,11 @@ function test(name, fn) {
   return Promise.resolve()
     .then(fn)
     .then(() => {
-      console.log(`  ✓ ${name}`);
+      console.log(`  âœ“ ${name}`);
       passed++;
     })
     .catch((error) => {
-      console.error(`  ✗ ${name}`);
+      console.error(`  âœ— ${name}`);
       console.error(error);
       failed++;
     });
@@ -46,9 +46,9 @@ await test('parseHooksConfig: valid entries kept, malformed configs tolerated', 
 });
 
 await test('discoverHooks reads .nexus/hooks.json from the project', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-hooks-'));
+  const tempDir = await mkdirScratch('nexus-hooks-');
   try {
-    assert.deepEqual(await discoverHooks(tempDir), [], 'missing file → no hooks');
+    assert.deepEqual(await discoverHooks(tempDir), [], 'missing file â†’ no hooks');
     await fs.mkdir(path.join(tempDir, '.nexus'), { recursive: true });
     await fs.writeFile(
       path.join(tempDir, '.nexus', 'hooks.json'),
@@ -64,7 +64,7 @@ await test('discoverHooks reads .nexus/hooks.json from the project', async () =>
 });
 
 await test('dispatchHook pipes JSON on stdin and reports exit codes', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-hookrun-'));
+  const tempDir = await mkdirScratch('nexus-hookrun-');
   try {
     const scriptPath = path.join(tempDir, 'echo-hook.js');
     await fs.writeFile(
@@ -83,7 +83,7 @@ await test('dispatchHook pipes JSON on stdin and reports exit codes', async () =
     assert.ok(ok.output.includes('checked read_file'), `stderr captured, got: ${ok.output}`);
 
     const denied = await dispatchHook(tempDir, hook, { tool: 'write_file', args: {} });
-    assert.ok(!denied.ok, 'mismatched payload exits 3 → not ok');
+    assert.ok(!denied.ok, 'mismatched payload exits 3 â†’ not ok');
     assert.equal(denied.exitCode, 3);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
@@ -91,7 +91,7 @@ await test('dispatchHook pipes JSON on stdin and reports exit codes', async () =
 });
 
 await test('dispatchHooks returns the last matching outcome and skips other events', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-hookfan-'));
+  const tempDir = await mkdirScratch('nexus-hookfan-');
   try {
     const scriptPath = path.join(tempDir, 'deny.js');
     await fs.writeFile(scriptPath, 'process.exit(1);', 'utf8');
@@ -108,7 +108,7 @@ await test('dispatchHooks returns the last matching outcome and skips other even
 });
 
 await test('hooks middleware denies tool calls on hook failure via synthetic ToolMessage', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-hookmw-'));
+  const tempDir = await mkdirScratch('nexus-hookmw-');
   try {
     const denyPath = path.join(tempDir, 'deny.js');
     await fs.writeFile(denyPath, 'process.stderr.write("no writes allowed"); process.exit(1);', 'utf8');

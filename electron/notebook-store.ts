@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { validateUpload } from "./notebook-text.js";
+import { uid, validateUpload } from "./notebook-text.js";
 import { writeFileAtomic, withFileLock } from "./atomic-write.js";
 
 // Lazy Electron access: under plain node (unit tests) require("electron")
@@ -105,10 +105,6 @@ export type NotebookChat = {
   updatedAt: string;
   messages: NotebookChatMessage[];
 };
-
-function uid(prefix: string) {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
 
 function notebooksRoot(): string {
   const app = electronApp();

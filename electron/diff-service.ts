@@ -2,6 +2,7 @@ import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { boundedExecFile } from "./shell-subprocess.js";
 import { getHeadCommit, resetNexusCommitsOnly } from "./repo-service.js";
+import { writeFileAtomic } from "./atomic-write.js";
 
 const execFileAsync = boundedExecFile;
 export type WorkspaceDiffFile = { path: string; directory: string; name: string; additions: number; deletions: number; status: string; patch: string };
@@ -264,6 +265,13 @@ export async function revertWorkspaceHunk(projectRoot: string, relativePath: str
 // "Undo run" survives app restarts. Content is stored as utf8 text — the same
 // fidelity the in-memory snapshot had; binary files are not checkpointed.
 const MAX_CHECKPOINT_FILES = 2000;
+// Size guards: a huge dirty binary would otherwise be fully base64'd into
+// memory and one JSON manifest. Oversized files are skipped (restore falls
+// back to revert-to-HEAD for them, same as unreadable files) and `truncated`
+// is set so callers can tell the snapshot is partial. Per-file cap matches
+// the readWorkspaceFileBase64 limit; the total cap bounds the whole manifest.
+const MAX_CHECKPOINT_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_CHECKPOINT_TOTAL_BYTES = 256 * 1024 * 1024;
 
 // `content` is utf8 text; `binary` (base64 buffer) marks files that must be
 // restored byte-exact — reading binaries as utf8 round-trips to mojibake.
@@ -295,10 +303,16 @@ export async function createWorkspaceCheckpoint(projectRoot: string, checkpointI
   const diffs = await getWorkspaceDiffFiles(root);
   const files: CheckpointFileEntry[] = [];
   let truncated = false;
+  let totalBytes = 0;
   for (const file of diffs) {
     if (files.length >= MAX_CHECKPOINT_FILES) { truncated = true; break; }
     try {
       const buf = await fs.readFile(path.resolve(root, file.path));
+      if (buf.length > MAX_CHECKPOINT_FILE_BYTES || totalBytes + buf.length > MAX_CHECKPOINT_TOTAL_BYTES) {
+        truncated = true;
+        continue;
+      }
+      totalBytes += buf.length;
       // git's own binary heuristic: a NUL in the leading bytes means utf8
       // round-tripping would corrupt the file on restore.
       const sniffEnd = Math.min(buf.length, 8192);
@@ -324,8 +338,9 @@ export async function createWorkspaceCheckpoint(projectRoot: string, checkpointI
     }
   }
   const manifest: CheckpointManifest = { id: checkpointId, projectRoot: root, timestamp: new Date().toISOString(), truncated, headCommit, files };
-  await fs.mkdir(checkpointsDir(root), { recursive: true });
-  await fs.writeFile(checkpointPath(root, checkpointId), JSON.stringify(manifest), "utf8");
+  // Atomic (mkdirs internally): a crash mid-write must not leave a truncated
+  // manifest — the checkpoint would be silently unrestorable after a restart.
+  await writeFileAtomic(checkpointPath(root, checkpointId), JSON.stringify(manifest));
   checkpointRootIndex.set(checkpointId, root);
   return checkpointId;
 }
@@ -399,13 +414,13 @@ export async function restoreWorkspaceCheckpoint(projectRoot: string, checkpoint
     } else if (prior.binary !== undefined) {
       // Byte-exact restore for binary snapshots (utf8 round-trip = mojibake).
       await fs.mkdir(path.dirname(abs), { recursive: true });
-      await fs.writeFile(abs, Buffer.from(prior.binary, "base64"));
+      await writeFileAtomic(abs, Buffer.from(prior.binary, "base64"));
     } else if (prior.content === null) {
       // Did not exist before the run — remove it (also no-op if already gone).
       await fs.rm(abs, { force: true, recursive: true });
     } else {
       await fs.mkdir(path.dirname(abs), { recursive: true });
-      await fs.writeFile(abs, prior.content, "utf8");
+      await writeFileAtomic(abs, prior.content);
     }
   }
   return true;

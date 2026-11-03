@@ -172,6 +172,19 @@ function renderList(lines: string[], ordered: boolean, start: number): { html: s
   return { html: ordered ? `<ol>${items.join("")}</ol>` : `<ul>${items.join("")}</ul>`, next: index };
 }
 
+/**
+ * Never-throw variant for preview surfaces (file previews, artifact viewer):
+ * renderMarkdown itself is guarded internally, but a failure here must never
+ * unmount the React tree — a blank window is worse than raw text.
+ */
+export function safeMarkdown(source: string): string {
+  try {
+    return renderMarkdown(source ?? "");
+  } catch {
+    return `<pre class="md-raw-fallback">${escapeHtml(String(source ?? ""))}</pre>`;
+  }
+}
+
 export function renderMarkdown(source: string): string {
   const protectedMath = protectMath(source ?? "");
   const lines = escapeHtml(protectedMath.source).split(/\r?\n/);

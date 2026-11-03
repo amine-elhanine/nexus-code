@@ -1,7 +1,7 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import {
@@ -16,7 +16,7 @@ import {
 } from "../dist-electron/home-task-service.js";
 
 test("Home task journal persists generic progress and outputs", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-home-task-"));
+  const root = await mkdirScratch("nexus-home-task-");
   try {
     let journal = createHomeTaskJournal({
       sessionId: "homesess_test",
@@ -79,7 +79,7 @@ test("Home continuation is explicit and durable task context is bounded and task
 });
 
 test("Home v1 journals load and upgrade to the current resumable schema", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-home-task-v1-"));
+  const root = await mkdirScratch("nexus-home-task-v1-");
   try {
     const journal = createHomeTaskJournal({ sessionId: "legacy", goal: "Old task", expectsOutput: false, needsResearch: false });
     const legacy = { ...journal, version: 1 };

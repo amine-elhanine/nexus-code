@@ -1,10 +1,10 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 // Plugin UI contributions: manifest shape, file serving guards, calendar
 // sample end-to-end (tool side). Renderer iframe mounting is covered by
 // manual steps in docs (no DOM in unit tests).
-// Imports from dist-electron — build first.
+// Imports from dist-electron â€” build first.
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validatePluginManifest } from '../dist-electron/plugin-manifest.js';
@@ -31,11 +31,11 @@ function test(name, fn) {
   return Promise.resolve()
     .then(fn)
     .then(() => {
-      console.log(`  ✓ ${name}`);
+      console.log(`  âœ“ ${name}`);
       passed++;
     })
     .catch((error) => {
-      console.error(`  ✗ ${name}`);
+      console.error(`  âœ— ${name}`);
       console.error(error);
       failed++;
     });
@@ -77,7 +77,7 @@ await test('calendar UI file is served (exact manifest match)', async () => {
 });
 
 await test('UI serving rejects undeclared entries, traversal, and bad types', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-ui-'));
+  const tmp = await mkdirScratch('nexus-ui-');
   try {
     const dir = path.join(tmp, 'plug');
     await fs.mkdir(path.join(dir, 'ui'), { recursive: true });

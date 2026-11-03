@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { X, Download, FileText, Loader2, TriangleAlert } from "lucide-react";
-import { renderMarkdown } from "../../markdown.js";
+import { safeMarkdown } from "../../markdown.js";
 
 type PreviewKind =
   | "markdown" | "pdf" | "image" | "docx" | "xlsx" | "pptx" | "text" | "unsupported";
@@ -182,7 +182,7 @@ export function FilePreviewModal({
             </div>
           )}
           {status === "ready" && kind === "markdown" && (
-            <div className="md file-preview-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }} />
+            <div className="md file-preview-md" dangerouslySetInnerHTML={{ __html: safeMarkdown(text) }} />
           )}
           {status === "ready" && kind === "text" && (
             <pre className="file-preview-text">{text}</pre>

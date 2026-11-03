@@ -1,8 +1,8 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 // Plugins-as-bundles: discovery + automatic pickup by skills and hooks.
-// Imports from dist-electron — build first.
+// Imports from dist-electron â€” build first.
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { discoverPlugins, installMarketplacePlugin, normalizePluginModes, entryFromFolder, scanPluginRoot, pluginSkillDirs, pluginHookFiles, pluginAgentDirs, pluginCommandDirs, pluginRuleDirs, uninstallPlugin, detectPluginCapabilities } from '../dist-electron/plugins-service.js';
 import { listSkills, skillAppliesToMode, skillVirtualPath, skillDirVirtualPath, readSkillContent } from '../dist-electron/skills-service.js';
@@ -18,20 +18,20 @@ function test(name, fn) {
   return Promise.resolve()
     .then(fn)
     .then(() => {
-      console.log(`  ✓ ${name}`);
+      console.log(`  âœ“ ${name}`);
       passed++;
     })
     .catch((error) => {
-      console.error(`  ✗ ${name}`);
+      console.error(`  âœ— ${name}`);
       console.error(error);
       failed++;
     });
 }
 
 await test('discoverPlugins finds plugin dirs; manifest optional, malformed tolerated', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-plugins-'));
+  const tempDir = await mkdirScratch('nexus-plugins-');
   try {
-    assert.deepEqual(await discoverPlugins(tempDir), [], 'no plugins dir → empty');
+    assert.deepEqual(await discoverPlugins(tempDir), [], 'no plugins dir â†’ empty');
     const withManifest = path.join(tempDir, '.nexus', 'plugins', 'acme-tools');
     await fs.mkdir(withManifest, { recursive: true });
     await fs.writeFile(path.join(withManifest, 'manifest.json'), JSON.stringify({ name: 'Acme Tools', description: 'demo', version: '1.0.0' }), 'utf8');
@@ -53,7 +53,7 @@ await test('discoverPlugins finds plugin dirs; manifest optional, malformed tole
 });
 
 await test('plugin skills and hooks are picked up automatically', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-plugins2-'));
+  const tempDir = await mkdirScratch('nexus-plugins2-');
   try {
     const pluginDir = path.join(tempDir, '.nexus', 'plugins', 'acme-tools');
     const skillDir = path.join(pluginDir, 'skills', 'deploy-checklist');
@@ -80,7 +80,7 @@ await test('plugin skills and hooks are picked up automatically', async () => {
 });
 
 await test('Marketplace installs a local bundle transactionally and makes its skill available', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-market-install-'));
+  const tempDir = await mkdirScratch('nexus-market-install-');
   try {
     const source = path.join(tempDir, 'release-notes');
     await fs.mkdir(path.join(source, 'skills', 'release-notes'), { recursive: true });
@@ -104,7 +104,7 @@ await test('Marketplace installs a local bundle transactionally and makes its sk
 });
 
 await test('Plugin manifest modes scope skills by default; skill frontmatter overrides; hooks filtered by mode', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-plugin-modes-'));
+  const tempDir = await mkdirScratch('nexus-plugin-modes-');
   try {
     const pluginDir = path.join(tempDir, '.nexus', 'plugins', 'scoped');
     await fs.mkdir(path.join(pluginDir, 'skills', 'a-skill'), { recursive: true });
@@ -135,7 +135,7 @@ await test('Plugin manifest modes scope skills by default; skill frontmatter ove
 });
 
 await test('Plugin agents are discovered and available for subagent delegation and catalog', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-plugin-agents-'));
+  const tempDir = await mkdirScratch('nexus-plugin-agents-');
   try {
     const pluginDir = path.join(tempDir, '.nexus', 'plugins', 'db-tools');
     const agentsDir = path.join(pluginDir, 'agents');
@@ -164,7 +164,7 @@ await test('Plugin agents are discovered and available for subagent delegation a
 });
 
 await test('Plugin commands are discovered and parsed as custom slash commands', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-plugin-commands-'));
+  const tempDir = await mkdirScratch('nexus-plugin-commands-');
   try {
     const pluginDir = path.join(tempDir, '.nexus', 'plugins', 'devops-pack');
     const commandsDir = path.join(pluginDir, 'commands');
@@ -190,7 +190,7 @@ await test('Plugin commands are discovered and parsed as custom slash commands',
 });
 
 await test('Plugin rules are discovered and appended to prompt section', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-plugin-rules-'));
+  const tempDir = await mkdirScratch('nexus-plugin-rules-');
   try {
     const pluginDir = path.join(tempDir, '.nexus', 'plugins', 'team-standards');
     const rulesDir = path.join(pluginDir, 'rules');
@@ -217,7 +217,7 @@ await test('Plugin rules are discovered and appended to prompt section', async (
 });
 
 await test('detectPluginCapabilities auto-detects skills, agents, commands, rules, and hooks', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-plugin-caps-'));
+  const tempDir = await mkdirScratch('nexus-plugin-caps-');
   try {
     const pluginDir = path.join(tempDir, '.nexus', 'plugins', 'full-bundle');
     await fs.mkdir(path.join(pluginDir, 'skills'), { recursive: true });
@@ -239,7 +239,7 @@ await test('detectPluginCapabilities auto-detects skills, agents, commands, rule
 });
 
 await test('scanPluginRoot auto-lists folders with a manifest; others skipped', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-plugin-scan-'));
+  const tempDir = await mkdirScratch('nexus-plugin-scan-');
   try {
     const good = path.join(tempDir, 'my-plugin');
     await fs.mkdir(path.join(good, 'skills'), { recursive: true });
@@ -248,7 +248,7 @@ await test('scanPluginRoot auto-lists folders with a manifest; others skipped', 
     await fs.mkdir(path.join(tempDir, 'broken'), { recursive: true });
     await fs.writeFile(path.join(tempDir, 'broken', 'manifest.json'), '{not json', 'utf8');
 
-    assert.deepEqual(await scanPluginRoot(path.join(tempDir, 'missing')), [], 'missing root → empty');
+    assert.deepEqual(await scanPluginRoot(path.join(tempDir, 'missing')), [], 'missing root â†’ empty');
     const entries = await scanPluginRoot(tempDir);
     assert.equal(entries.length, 1, `only the valid bundle is listed, got ${entries.length}`);
     assert.equal(entries[0].id, 'my-plugin');
@@ -257,15 +257,15 @@ await test('scanPluginRoot auto-lists folders with a manifest; others skipped', 
     assert.ok(entries[0].capabilities.includes('skills'), 'capabilities auto-detected');
     assert.ok(entries[0].source.endsWith('my-plugin'), 'source points at the folder');
 
-    assert.equal(await entryFromFolder(path.join(tempDir, 'empty-folder')), null, 'no manifest → null');
-    assert.equal(await entryFromFolder(path.join(tempDir, 'broken')), null, 'invalid manifest → null');
+    assert.equal(await entryFromFolder(path.join(tempDir, 'empty-folder')), null, 'no manifest â†’ null');
+    assert.equal(await entryFromFolder(path.join(tempDir, 'broken')), null, 'invalid manifest â†’ null');
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
 
 await test('scanPluginRoot supports the sectioned library layout (skills/<item>/)', async () => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-plugin-sections-'));
+  const tempDir = await mkdirScratch('nexus-plugin-sections-');
   try {
     const skill = path.join(tempDir, 'skills', 'my-skill');
     await fs.mkdir(path.join(skill, 'skills', 'my-skill'), { recursive: true });

@@ -6,6 +6,7 @@ import path from "node:path";
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import { describeToolCall } from "./tool-describe.js";
 import { sanitizeResumeCheckpoint } from "./rate-limit.js";
+import { writeFileAtomic } from "./atomic-write.js";
 import type { PlanItem } from "./agent-types.js";
 
 // Checkpoint of the last run per session: full LangChain message history
@@ -125,7 +126,10 @@ export async function persistLastRunCheckpoint(telemetryRoot: string, sessionId:
     },
     messages: checkpoint.messages.slice(-80).map(serializeCheckpointMessage).filter(Boolean),
   };
-  await fsPromises.writeFile(filePath, JSON.stringify(payload), "utf8");
+  // Atomic write: a crash mid-write must not leave a truncated checkpoint —
+  // loadLastRunCheckpoint would silently return null and "continue" would
+  // lose the whole run instead of resuming.
+  await writeFileAtomic(filePath, JSON.stringify(payload));
 }
 
 function reviveCheckpointMessage(stored: any): any | null {

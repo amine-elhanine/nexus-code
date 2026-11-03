@@ -544,6 +544,44 @@ export function toCitations(results: Array<{ sourceId: string; sourceName: strin
   }));
 }
 
+/** Short unique ID for generated artifacts (quiz ids, card ids, notes…).
+ *  Time+random is enough here: IDs are only correlated within one session,
+ *  and stable content-addressed IDs (uuid5 above) cover everything else. */
+export function uid(prefix: string): string {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** [Sn] markers the model echoed back, deduped and capped like the UI shows them. */
+export function parseCitationRefs(text: string): number[] {
+  const out: number[] = [];
+  const re = /\[S(\d+)\]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text || ""))) {
+    const n = Number(m[1]);
+    if (Number.isFinite(n) && n > 0 && !out.includes(n)) out.push(n);
+  }
+  return out.slice(0, 4);
+}
+
+export function citationByIndex(citations: NotebookCitationLike[], index: number): NotebookCitationLike | undefined {
+  return citations.find((c) => c.index === index);
+}
+
+/**
+ * Wires a generated item (question, card, node) to its sources: markers the
+ * model actually echoed are verified citations; when it echoed none, the
+ * positional fallback keeps every item traceable — an unverified guess the
+ * UI renders dimmed.
+ */
+export function attachCitations(text: string, citations: NotebookCitationLike[], fallbackPosition: number): NotebookCitationLike[] {
+  const linked = parseCitationRefs(text)
+    .map((n) => citationByIndex(citations, n))
+    .filter((c): c is NotebookCitationLike => Boolean(c));
+  const fallbackCite = citations[fallbackPosition % Math.max(1, citations.length)];
+  const linkedCitations = linked.map((c) => ({ ...c, verified: true }));
+  const fallbackCitations = fallbackCite ? [{ ...fallbackCite, verified: false }] : [];
+  return (linkedCitations.length ? linkedCitations : fallbackCitations).slice(0, 2);
+}
 
 
 /**

@@ -1,3 +1,4 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 // Granular provider CRUD: the key can only change through updateProviderKey,
 // and connection/model edits can never touch it (the whole-record save path
 // that lost keys is gone). Runs against a scratch APPDATA. A fake safeStorage
@@ -6,11 +7,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 test("provider CRUD: key survives every edit path except explicit key update", async () => {
-  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-providers-"));
+  const scratch = await mkdirScratch("nexus-providers-");
   process.env.APPDATA = scratch;
   const {
     createProviderConnection, updateProviderConnection, updateProviderKey, setProviderEnabled,
@@ -54,12 +54,12 @@ test("provider CRUD: key survives every edit path except explicit key update", a
     assert.equal(enabled.enabled, true);
     assert.equal(enabled.apiKey, "sk-live-123");
 
-    // Explicit key replacement — the only path that changes the key.
+    // Explicit key replacement â€” the only path that changes the key.
     const rekeyed = await updateProviderKey(created.id, "sk-rotated-456");
     assert.equal(rekeyed.apiKey, "sk-rotated-456");
     await assert.rejects(() => updateProviderKey(created.id, "  "), "empty key replacement is rejected");
 
-    // Everything persisted to disk — encrypted, never plaintext.
+    // Everything persisted to disk â€” encrypted, never plaintext.
     const stateFile = path.join(scratch, "nexus", "nexus-state.json");
     const onDisk = JSON.parse(await fs.readFile(stateFile, "utf8"));
     const diskProvider = onDisk.providers.find((p) => p.id === created.id);

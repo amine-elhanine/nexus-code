@@ -1,3 +1,4 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 // Project instructions (AGENTS.md / CLAUDE.md) discovery: order, fallback,
 // global level, cap truncation, and the prompt section format.
 import test from "node:test";
@@ -8,8 +9,8 @@ import path from "node:path";
 
 import { discoverProjectInstructions, buildInstructionsSection, PROJECT_INSTRUCTIONS_CAP } from "../dist-electron/project-instructions.js";
 
-test("project instructions: nothing found → empty section", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-instr-"));
+test("project instructions: nothing found â†’ empty section", async () => {
+  const root = await mkdirScratch("nexus-instr-");
   try {
     const result = await discoverProjectInstructions(root);
     assert.equal(result.files.length, 0);
@@ -20,7 +21,7 @@ test("project instructions: nothing found → empty section", async () => {
 });
 
 test("project instructions: AGENTS.md preferred over CLAUDE.md", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-instr-"));
+  const root = await mkdirScratch("nexus-instr-");
   try {
     await fs.writeFile(path.join(root, "AGENTS.md"), "use pnpm only");
     await fs.writeFile(path.join(root, "CLAUDE.md"), "claude only");
@@ -38,7 +39,7 @@ test("project instructions: AGENTS.md preferred over CLAUDE.md", async () => {
 });
 
 test("project instructions: CLAUDE.md fallback", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-instr-"));
+  const root = await mkdirScratch("nexus-instr-");
   try {
     await fs.writeFile(path.join(root, "CLAUDE.md"), "claude fallback content");
     const result = await discoverProjectInstructions(root);
@@ -51,8 +52,8 @@ test("project instructions: CLAUDE.md fallback", async () => {
 });
 
 test("project instructions: global ~/.nexus file loads alongside project file", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-instr-"));
-  const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-home-"));
+  const root = await mkdirScratch("nexus-instr-");
+  const fakeHome = await mkdirScratch("nexus-home-");
   const prevUserProfile = process.env.USERPROFILE;
   const prevHome = process.env.HOME;
   try {
@@ -78,7 +79,7 @@ test("project instructions: global ~/.nexus file loads alongside project file", 
 });
 
 test("project instructions: oversized file truncated at cap with marker", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-instr-"));
+  const root = await mkdirScratch("nexus-instr-");
   try {
     await fs.writeFile(path.join(root, "AGENTS.md"), "x".repeat(PROJECT_INSTRUCTIONS_CAP + 5000));
     const result = await discoverProjectInstructions(root);
@@ -92,7 +93,7 @@ test("project instructions: oversized file truncated at cap with marker", async 
 });
 
 test("project instructions: empty files skipped, section builder empty-safe", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-instr-"));
+  const root = await mkdirScratch("nexus-instr-");
   try {
     await fs.writeFile(path.join(root, "AGENTS.md"), "   \n  ");
     const result = await discoverProjectInstructions(root);

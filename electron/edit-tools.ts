@@ -147,6 +147,43 @@ function parseAttachedFile(source: string): { mime: string; data: Buffer; sugges
   return { mime, data, suggestedName };
 }
 
+// Typographic → ASCII normalization for FUZZY MATCHING ONLY (never applied to
+// output). Weak models copy smart quotes, em-dashes and non-breaking spaces
+// out of rendered content; the file usually contains the plain ASCII forms.
+const TYPOGRAPHIC_MAP: Array<[RegExp, string]> = [
+  [/[\u2018\u2019\u201A\u201B\u2032]/g, "'"],
+  [/[\u201C\u201D\u201E\u201F\u2033]/g, '"'],
+  [/[\u2013\u2014\u2212]/g, "-"],
+  [/[\u00A0\u2007\u202F]/g, " "],
+  [/\u2026/g, "..."],
+];
+
+function normalizeTypographic(text: string): string {
+  let out = text;
+  for (const [pattern, replacement] of TYPOGRAPHIC_MAP) out = out.replace(pattern, replacement);
+  return out;
+}
+
+const indentOf = (line: string): string => (line.match(/^[ \t]*/) || [""])[0];
+
+/**
+ * Splice a fuzzy-matched region while PRESERVING the file's indentation:
+ * when the search block was matched with stripped leading whitespace, the
+ * replacement's first line inherits the matched file line's indent. Without
+ * this, fuzzy tiers silently de-indent edited code (a pre-existing bug the
+ * G5 tests caught).
+ */
+function spliceFuzzy(resultLines: string[], matchIdx: number, searchLines: string[], replace: string): string[] {
+  const replaceLines = replace.split("\n");
+  const fileIndent = indentOf(resultLines[matchIdx] ?? "");
+  const searchIndent = indentOf(searchLines[0] ?? "");
+  if (searchIndent !== fileIndent && replaceLines.length && replaceLines[0].trim()) {
+    replaceLines[0] = fileIndent + replaceLines[0].trimStart();
+  }
+  resultLines.splice(matchIdx, searchLines.length, replaceLines.join("\n"));
+  return resultLines;
+}
+
 export function applySearchReplaceBlocks(original: string, updateBody: string): string | null {
   const blockRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>>/g;
   const matches = [...updateBody.matchAll(blockRegex)];
@@ -163,9 +200,10 @@ export function applySearchReplaceBlocks(original: string, updateBody: string): 
       continue;
     }
 
-    // 2. Trailing whitespace & line-ending normalized match
     const resultLines = result.split("\n");
     const searchLines = search.split("\n");
+
+    // 2. Trailing whitespace & line-ending normalized match
     const cleanSearchLines = searchLines.map((l) => l.trimEnd());
 
     let matchIdx = -1;
@@ -184,8 +222,7 @@ export function applySearchReplaceBlocks(original: string, updateBody: string): 
     }
 
     if (matchIdx !== -1) {
-      resultLines.splice(matchIdx, searchLines.length, replace);
-      result = resultLines.join("\n");
+      result = spliceFuzzy(resultLines, matchIdx, searchLines, replace).join("\n");
       continue;
     }
 
@@ -206,12 +243,62 @@ export function applySearchReplaceBlocks(original: string, updateBody: string): 
     }
 
     if (matchIdx !== -1) {
-      resultLines.splice(matchIdx, searchLines.length, replace);
-      result = resultLines.join("\n");
+      result = spliceFuzzy(resultLines, matchIdx, searchLines, replace).join("\n");
       continue;
     }
 
-    throw new Error(`Search block not found in target file:\n${search.slice(0, 200)}`);
+    // 4. Typographic normalization: match on quote/dash/space-normalized
+    // lines, splice the ORIGINAL lines (replacement is used verbatim).
+    const normResultLines = resultLines.map(normalizeTypographic);
+    const normSearchLines = searchLines.map(normalizeTypographic);
+    for (let i = 0; i <= resultLines.length - searchLines.length; i++) {
+      let matched = true;
+      for (let j = 0; j < searchLines.length; j++) {
+        if (normResultLines[i + j].trim() !== normSearchLines[j].trim()) {
+          matched = false;
+          break;
+        }
+      }
+      if (matched) {
+        matchIdx = i;
+        break;
+      }
+    }
+
+    if (matchIdx !== -1) {
+      result = spliceFuzzy(resultLines, matchIdx, searchLines, replace).join("\n");
+      continue;
+    }
+
+    // All tiers missed. Miss hints (OpenCode parity): tell the model whether
+    // the edit is already applied and where the closest region is, so a
+    // failed edit costs one informed retry instead of blind re-reads.
+    const hints: string[] = [];
+    const normResult = normalizeTypographic(result);
+    const normReplace = normalizeTypographic(replace);
+    if (replace.trim() && (result.includes(replace) || normResult.includes(normReplace))) {
+      hints.push("The replacement text is ALREADY PRESENT in the file — this edit may have been applied already. Re-read the region before retrying, or move on.");
+    }
+    if (searchLines.length > 0) {
+      let bestIdx = -1;
+      let bestScore = -1;
+      for (let i = 0; i <= Math.max(0, resultLines.length - searchLines.length); i++) {
+        let score = 0;
+        for (let j = 0; j < searchLines.length; j++) {
+          if (resultLines[i + j]?.trim() === searchLines[j]?.trim()) score++;
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          bestIdx = i;
+        }
+      }
+      if (bestIdx >= 0 && bestScore > 0) {
+        const near = resultLines.slice(bestIdx, bestIdx + searchLines.length).map((l) => l.slice(0, 120));
+        hints.push(`Closest match near line ${bestIdx + 1} (${bestScore} of ${searchLines.length} lines matched):\n${near.join("\n")}`);
+      }
+    }
+    const hintBlock = hints.length ? `\n\nHints:\n- ${hints.join("\n- ")}` : "";
+    throw new Error(`Search block not found in target file:\n${search.slice(0, 200)}${hintBlock}`);
   }
 
   return result.replace(/\s+$/, "") + "\n";

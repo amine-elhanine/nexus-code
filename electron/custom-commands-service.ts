@@ -230,7 +230,11 @@ export async function discoverCustomCommands(projectRoot?: string, scope?: Exclu
   }
 
   if (projectRoot) {
+    // Compat dirs FIRST so a native .nexus command with the same name wins
+    // (later entries overwrite earlier ones on name collision).
     const customDirs = [
+      path.join(projectRoot, ".claude", "commands"),
+      path.join(projectRoot, ".agents", "commands"),
       path.join(projectRoot, ".nexus", "commands"),
     ];
 

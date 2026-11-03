@@ -1,9 +1,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { composeContextBlock } from "./notebook-text.js";
+import { composeContextBlock, uid } from "./notebook-text.js";
 import { collectDocumentEvidence, extractDocumentJson, fallbackTitle } from "./notebook-documents.js";
 import { assertNotebookGenerationActive, planNotebookWithLlm } from "./notebook-generation.js";
 import { notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
+import { writeFileAtomic } from "./atomic-write.js";
 
 // Rich summary generation for Notebook Mode: an overview plus themed
 // sections with flowing prose, key points, and takeaways — a full study-grade
@@ -52,10 +53,6 @@ const SECTIONS_BY_LENGTH: Record<NotebookSummaryLength, { sections: number; body
   detailed: { sections: 7, body: "three flowing paragraphs with depth and examples" },
 };
 
-function uid(prefix: string) {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
 function summariesPath(notebookId: string) {
   return path.join(notebookSessionDir(notebookId), "summaries.json");
 }
@@ -69,8 +66,8 @@ async function readSummaries(notebookId: string): Promise<NotebookSummary[]> {
 }
 
 async function writeSummaries(notebookId: string, summaries: NotebookSummary[]) {
-  await fs.mkdir(path.dirname(summariesPath(notebookId)), { recursive: true });
-  await fs.writeFile(summariesPath(notebookId), JSON.stringify(summaries, null, 2), "utf8");
+  // Atomic (temp + rename): a crash mid-write must not truncate the summary store.
+  await writeFileAtomic(summariesPath(notebookId), JSON.stringify(summaries, null, 2));
 }
 
 export async function listNotebookSummaries(notebookId: string): Promise<NotebookSummary[]> {

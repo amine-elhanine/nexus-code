@@ -1,7 +1,7 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { classifyCommand } from "../dist-electron/permissions.js";
 import { executeCommand } from "../dist-electron/command-service.js";
@@ -22,7 +22,7 @@ test("full access: user ask-policy rules are skipped too", () => {
 test("full access: destructive guardrails are still DENIED", () => {
   // Only catastrophic patterns are hard-denied guardrails (disk/home/system
   // wipes, machine kill, registry deletes, privilege escalation). Git history
-  // operations like `git reset --hard` are consent-gated ("ask"), not denied —
+  // operations like `git reset --hard` are consent-gated ("ask"), not denied â€”
   // Full Access intentionally skips consent gates, so they become allow.
   assert.equal(classifyCommand("rm -rf /", {}, { fullAccess: true }), "deny");
   assert.equal(classifyCommand("mkfs.ext4 /dev/sda1", {}, { fullAccess: true }), "deny");
@@ -41,7 +41,7 @@ test("full access: user deny rules still apply", () => {
 });
 
 test("full access executeCommand: denied command blocked without approval, benign command runs", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "nexus-full-access-"));
+  const root = await mkdirScratch("nexus-full-access-");
   const denied = await executeCommand(root, "rm -rf /", { requireApproval: true, fullAccess: true, runId: "full-access-test" });
   assert.equal(denied.exitCode, 1);
   assert.match(denied.output, /blocked/i);

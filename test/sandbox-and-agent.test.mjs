@@ -1,3 +1,4 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -52,11 +53,11 @@ function test(name, fn) {
   return Promise.resolve()
     .then(fn)
     .then(() => {
-      console.log(`  ✓ ${name}`);
+      console.log(`  âœ“ ${name}`);
       passed++;
     })
     .catch((error) => {
-      console.error(`  ✗ ${name}`);
+      console.error(`  âœ— ${name}`);
       console.error(error);
       failed++;
     });
@@ -66,16 +67,16 @@ app.whenReady().then(async () => {
   console.log('\n=== 1. Command Execution Tests (direct execution, sandbox removed) ===');
 
   await test('executeCommand runs arbitrary commands directly and returns their output and exit code', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-cmd-'));
+    const tempDir = await mkdirScratch('nexus-cmd-');
     const project = await upsertProject({ id: 'test-cmd', name: 'cmd-test', root: tempDir });
     beginCommandRun();
 
-    // Arbitrary tools run — that is the point of removing the sandbox.
+    // Arbitrary tools run â€” that is the point of removing the sandbox.
     const echoResult = await runProjectCommand(project, 'node -e "console.log(42)"');
     assert.equal(echoResult.exitCode, 0);
     assert.match(String(echoResult.output), /42/);
 
-    // Shell features work too — the old policy used to block them.
+    // Shell features work too â€” the old policy used to block them.
     const piped = await runProjectCommand(project, 'node -e "console.log(1;)" 2>&1 || echo failed');
     assert.equal(piped.exitCode, 0);
 
@@ -104,7 +105,7 @@ app.whenReady().then(async () => {
   });
 
   await test('Process Tree Termination: Long running command is killed via cancelCommandRun()', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-cancel-'));
+    const tempDir = await mkdirScratch('nexus-cancel-');
     const scriptPath = path.join(tempDir, 'loop.js');
     await fs.writeFile(scriptPath, 'const t = Date.now(); while(Date.now() - t < 30000) {}', 'utf8');
 
@@ -115,8 +116,8 @@ app.whenReady().then(async () => {
 
     // Cancellation rejects the run promise with RunCancelledError (the old
     // exit-code-130 result object predates per-run cancellation). The child
-    // may not have spawned yet when the first cancel lands — under load the
-    // spawn can trail the fixed sleep — so retry the idempotent cancel until
+    // may not have spawned yet when the first cancel lands â€” under load the
+    // spawn can trail the fixed sleep â€” so retry the idempotent cancel until
     // the run settles and measure promptness from the FIRST cancel. A prompt
     // tree kill must stay far below the script's 30s runtime.
     const startTime = Date.now();
@@ -134,7 +135,7 @@ app.whenReady().then(async () => {
   });
 
   await test('Agent-run commands inherit a scrubbed environment (no secret-shaped vars)', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-env-'));
+    const tempDir = await mkdirScratch('nexus-env-');
     const scriptPath = path.join(tempDir, 'print-env.js');
     await fs.writeFile(
       scriptPath,
@@ -161,7 +162,7 @@ app.whenReady().then(async () => {
 
   console.log('\n=== 3. Read-Only Backend Tests (Plan Mode) ===');
   await test('Read-only backend blocks write, edit, delete, and execute with descriptive message', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-readonly-'));
+    const tempDir = await mkdirScratch('nexus-readonly-');
     const project = await upsertProject({ id: 'test-readonly', name: 'readonly-test', root: tempDir });
 
     const { backend } = await getAgentBackend(project, { readOnly: true });
@@ -227,7 +228,7 @@ app.whenReady().then(async () => {
   console.log('\n=== 3b. Transactional Patch Tests ===');
 
   await test('apply_patch rolls back earlier operations when a later operation fails', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-patch-'));
+    const tempDir = await mkdirScratch('nexus-patch-');
     await fs.writeFile(path.join(tempDir, 'existing.txt'), 'original\n');
     const [patchTool] = createEditTools(tempDir);
     const result = await patchTool.invoke({ patchText: '*** Update File: existing.txt\nchanged\n*** Update File: missing.txt\nshould fail' });
@@ -236,7 +237,7 @@ app.whenReady().then(async () => {
   });
 
   await test('apply_patch rejects add-overwrite and update-missing conflicts', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-patch-conflict-'));
+    const tempDir = await mkdirScratch('nexus-patch-conflict-');
     await fs.writeFile(path.join(tempDir, 'existing.txt'), 'original\n');
     const [patchTool] = createEditTools(tempDir);
     const add = await patchTool.invoke({ patchText: '*** Add File: existing.txt\nreplacement' });
@@ -247,7 +248,7 @@ app.whenReady().then(async () => {
   });
 
   await test('apply_patch rejects stale hash-guarded updates without changing the file', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-patch-stale-'));
+    const tempDir = await mkdirScratch('nexus-patch-stale-');
     const file = path.join(tempDir, 'existing.txt');
     await fs.writeFile(file, 'current\n');
     const [patchTool] = createEditTools(tempDir);
@@ -259,8 +260,8 @@ app.whenReady().then(async () => {
   });
 
   await test('apply_patch rejects symlink paths that escape the project root', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-patch-symlink-'));
-    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-patch-outside-'));
+    const tempDir = await mkdirScratch('nexus-patch-symlink-');
+    const outsideDir = await mkdirScratch('nexus-patch-outside-');
     try {
       await fs.writeFile(path.join(outsideDir, 'secret.txt'), 'secret\n');
       try {
@@ -280,7 +281,7 @@ app.whenReady().then(async () => {
   });
 
   await test('attached images can be imported only when the agent chooses a project path', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-attachment-import-'));
+    const tempDir = await mkdirScratch('nexus-attachment-import-');
     try {
       const [patchTool, importTool] = createEditTools(tempDir, { attachedImages: ['data:image/png;base64,aGVsbG8='] });
       assert.equal(patchTool.name, 'apply_patch');
@@ -297,7 +298,7 @@ app.whenReady().then(async () => {
   console.log('\n=== 4. Verification Command Selection Tests ===');
 
   await test('Verification command picks npm run typecheck when typecheck script exists', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-verify-'));
+    const tempDir = await mkdirScratch('nexus-verify-');
     await fs.writeFile(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { typecheck: 'tsc', check: 'npm run lint' } }), 'utf8');
     await fs.writeFile(path.join(tempDir, 'tsconfig.json'), '{}', 'utf8');
 
@@ -307,7 +308,7 @@ app.whenReady().then(async () => {
   });
 
   await test('Verification command picks npm run check over bare tsc when a check script exists', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-verify-'));
+    const tempDir = await mkdirScratch('nexus-verify-');
     await fs.writeFile(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { check: 'tsc -p a && tsc -p b' } }), 'utf8');
     await fs.writeFile(path.join(tempDir, 'tsconfig.json'), '{}', 'utf8');
 
@@ -319,7 +320,7 @@ app.whenReady().then(async () => {
   });
 
   await test('Verification command picks tsc --noEmit when tsconfig.json exists without scripts', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-verify-'));
+    const tempDir = await mkdirScratch('nexus-verify-');
     await fs.writeFile(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { start: 'node app.js' } }), 'utf8');
     await fs.writeFile(path.join(tempDir, 'tsconfig.json'), '{}', 'utf8');
 
@@ -331,7 +332,7 @@ app.whenReady().then(async () => {
   });
 
   await test('Verification command picks npm run lint when lint script is only check script', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-verify-'));
+    const tempDir = await mkdirScratch('nexus-verify-');
     await fs.writeFile(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { lint: 'eslint .' } }), 'utf8');
 
     const cmd = pickVerificationCommand(tempDir);
@@ -340,7 +341,7 @@ app.whenReady().then(async () => {
   });
 
   await test('Verification command picks cargo check when Cargo.toml exists', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-verify-rust-'));
+    const tempDir = await mkdirScratch('nexus-verify-rust-');
     await fs.writeFile(path.join(tempDir, 'Cargo.toml'), '[package]\nname = "test"\nversion = "0.1.0"', 'utf8');
 
     const cmd = pickVerificationCommand(tempDir);
@@ -349,7 +350,7 @@ app.whenReady().then(async () => {
   });
 
   await test('Verification command picks go vet ./... when go.mod exists', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-verify-go-'));
+    const tempDir = await mkdirScratch('nexus-verify-go-');
     await fs.writeFile(path.join(tempDir, 'go.mod'), 'module example.com/test\ngo 1.21', 'utf8');
 
     const cmd = pickVerificationCommand(tempDir);
@@ -358,7 +359,7 @@ app.whenReady().then(async () => {
   });
 
   await test('Verification command picks ruff check when pyproject.toml exists', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-verify-py-'));
+    const tempDir = await mkdirScratch('nexus-verify-py-');
     await fs.writeFile(path.join(tempDir, 'pyproject.toml'), '[tool.ruff]\nline-length = 88', 'utf8');
 
     const cmd = pickVerificationCommand(tempDir);
@@ -367,7 +368,7 @@ app.whenReady().then(async () => {
   });
 
   await test('Verification command picks mvn test when pom.xml exists', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-verify-mvn-'));
+    const tempDir = await mkdirScratch('nexus-verify-mvn-');
     await fs.writeFile(path.join(tempDir, 'pom.xml'), '<project></project>', 'utf8');
 
     const cmd = pickVerificationCommand(tempDir);
@@ -376,7 +377,7 @@ app.whenReady().then(async () => {
   });
 
   await test('Verification command picks gradle build, preferring the wrapper', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-verify-gradle-'));
+    const tempDir = await mkdirScratch('nexus-verify-gradle-');
     await fs.writeFile(path.join(tempDir, 'build.gradle'), 'plugins { id "java" }', 'utf8');
 
     assert.equal(pickVerificationCommand(tempDir), 'gradle build');
@@ -386,7 +387,7 @@ app.whenReady().then(async () => {
   });
 
   await test('Verification command picks dotnet test when a project file exists', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-verify-dotnet-'));
+    const tempDir = await mkdirScratch('nexus-verify-dotnet-');
     await fs.writeFile(path.join(tempDir, 'App.csproj'), '<Project Sdk="Microsoft.NET.Sdk"></Project>', 'utf8');
 
     const cmd = pickVerificationCommand(tempDir);
@@ -395,7 +396,7 @@ app.whenReady().then(async () => {
   });
 
   await test('Verification command picks pytest when Python tests exist', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-verify-pytest-'));
+    const tempDir = await mkdirScratch('nexus-verify-pytest-');
     await fs.mkdir(path.join(tempDir, 'tests'), { recursive: true });
     await fs.writeFile(path.join(tempDir, 'requirements.txt'), 'flask\n', 'utf8');
 
@@ -405,7 +406,7 @@ app.whenReady().then(async () => {
   });
 
   await test('Verification command picks Django check when manage.py exists', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-verify-django-'));
+    const tempDir = await mkdirScratch('nexus-verify-django-');
     await fs.writeFile(path.join(tempDir, 'manage.py'), '# django', 'utf8');
 
     const cmd = pickVerificationCommand(tempDir);
@@ -414,7 +415,7 @@ app.whenReady().then(async () => {
   });
 
   await test('Verification command falls back to compileall for bare Python projects', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-verify-pybare-'));
+    const tempDir = await mkdirScratch('nexus-verify-pybare-');
     await fs.writeFile(path.join(tempDir, 'requirements.txt'), 'fastapi\n', 'utf8');
 
     const cmd = pickVerificationCommand(tempDir);
@@ -423,7 +424,7 @@ app.whenReady().then(async () => {
   });
 
   await test('Verification command returns null when no matching script, tsconfig, or manifest exists', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-verify-'));
+    const tempDir = await mkdirScratch('nexus-verify-');
     await fs.writeFile(path.join(tempDir, 'package.json'), JSON.stringify({ scripts: { start: 'node app.js' } }), 'utf8');
 
     const cmd = pickVerificationCommand(tempDir);
@@ -432,7 +433,7 @@ app.whenReady().then(async () => {
   });
 
   await test('Project verification configuration overrides heuristics and supports multiple gates', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-verification-config-'));
+    const tempDir = await mkdirScratch('nexus-verification-config-');
     try {
       await fs.mkdir(path.join(tempDir, '.nexus'), { recursive: true });
       await fs.writeFile(path.join(tempDir, '.nexus', 'verification.json'), JSON.stringify({ commands: ['npm run build', 'npm test', 'npm run integration'] }), 'utf8');
@@ -452,7 +453,7 @@ app.whenReady().then(async () => {
   console.log('\n=== 5. Checkpointing & Revert Tests ===');
 
   await test('revertWorkspaceFile discards single modified and untracked files', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-git-revert-'));
+    const tempDir = await mkdirScratch('nexus-git-revert-');
     const { execSync } = await import('node:child_process');
     execSync('git init && git config user.name "Test" && git config user.email "test@test.com"', { cwd: tempDir, stdio: 'ignore' });
     await fs.writeFile(path.join(tempDir, 'file1.txt'), 'original file 1\n', 'utf8');
@@ -478,13 +479,13 @@ app.whenReady().then(async () => {
   });
 
   await test('createWorkspaceCheckpoint and restoreWorkspaceCheckpoint roll back entire workspace state, and survive an app restart', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-checkpoint-'));
+    const tempDir = await mkdirScratch('nexus-checkpoint-');
     const { execSync } = await import('node:child_process');
     execSync('git init && git config user.name "Test" && git config user.email "test@test.com"', { cwd: tempDir, stdio: 'ignore' });
     await fs.writeFile(path.join(tempDir, 'app.ts'), 'export const a = 1;\n', 'utf8');
     execSync('git add . && git commit -m "init"', { cwd: tempDir, stdio: 'ignore' });
 
-    // Create pre-run checkpoint — it must be written to disk under .nexus/.
+    // Create pre-run checkpoint â€” it must be written to disk under .nexus/.
     const checkpointId = await createWorkspaceCheckpoint(tempDir, 'chk-1');
     assert.equal(checkpointId, 'chk-1');
     const checkpointFile = path.join(tempDir, '.nexus', 'checkpoints', 'chk-1.json');
@@ -507,7 +508,7 @@ app.whenReady().then(async () => {
 
     // "Restart" simulation: the module-level state is gone, but the
     // disk-persisted checkpoint still restores (file unchanged, so restore
-    // simply rewrites the same content — the point is it does not throw
+    // simply rewrites the same content â€” the point is it does not throw
     // "unknown checkpoint").
     const restoredAgain = await restoreWorkspaceCheckpoint(tempDir, checkpointId);
     assert.equal(restoredAgain, true, 'disk-persisted checkpoint survives restart');
@@ -517,7 +518,7 @@ app.whenReady().then(async () => {
   });
 
   await test('checkpoint restore also reverts files the checkpoint recorded as clean but which no longer differ from HEAD', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-cp-union-'));
+    const tempDir = await mkdirScratch('nexus-cp-union-');
     const { execSync } = await import('node:child_process');
     execSync('git init && git config user.name "Test" && git config user.email "test@test.com"', { cwd: tempDir, stdio: 'ignore' });
     await fs.writeFile(path.join(tempDir, 'a.txt'), 'clean a\n', 'utf8');
@@ -538,7 +539,7 @@ app.whenReady().then(async () => {
   });
 
   await test('revertAllWorkspaceChanges clears all uncommitted changes', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-revertall-'));
+    const tempDir = await mkdirScratch('nexus-revertall-');
     const { execSync } = await import('node:child_process');
     execSync('git init && git config user.name "Test" && git config user.email "test@test.com"', { cwd: tempDir, stdio: 'ignore' });
     await fs.writeFile(path.join(tempDir, 'main.ts'), 'console.log("hello");\n', 'utf8');
@@ -558,7 +559,7 @@ app.whenReady().then(async () => {
   });
 
   await test('restoreWorkspaceCheckpoint restores the snapshot\'s own root regardless of caller path', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-cp-root-'));
+    const tempDir = await mkdirScratch('nexus-cp-root-');
     const { execSync } = await import('node:child_process');
     execSync('git init && git config user.name "Test" && git config user.email "test@test.com"', { cwd: tempDir, stdio: 'ignore' });
     await fs.writeFile(path.join(tempDir, 'file.txt'), 'original content\n', 'utf8');
@@ -576,7 +577,7 @@ app.whenReady().then(async () => {
   });
 
   await test('restoreWorkspaceCheckpoint throws (does not silently return false) when checkpoint is unknown', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-cp-unknown-'));
+    const tempDir = await mkdirScratch('nexus-cp-unknown-');
     const { execSync } = await import('node:child_process');
     execSync('git init && git config user.name "Test" && git config user.email "test@test.com"', { cwd: tempDir, stdio: 'ignore' });
     await fs.writeFile(path.join(tempDir, 'keep.txt'), 'uncommitted keep\n', 'utf8');
@@ -601,7 +602,7 @@ app.whenReady().then(async () => {
   });
 
   await test('getWorkspaceDiffFiles ignores .nexus and .deepagents files', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-diff-ignore-'));
+    const tempDir = await mkdirScratch('nexus-diff-ignore-');
     const { execSync } = await import('node:child_process');
     execSync('git init && git config user.name "Test" && git config user.email "test@test.com"', { cwd: tempDir, stdio: 'ignore' });
     await fs.writeFile(path.join(tempDir, 'src.ts'), 'export const x = 1;\n', 'utf8');
@@ -722,7 +723,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   });
 
   await test('read_file_range extracts targeted line slices with line numbers', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-range-'));
+    const tempDir = await mkdirScratch('nexus-range-');
     const filePath = path.join(tempDir, 'sample.txt');
     const content = Array.from({ length: 50 }, (_, i) => `Line ${i + 1}`).join('\n');
     await fs.writeFile(filePath, content, 'utf8');
@@ -740,7 +741,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   });
 
   await test('grep_search finds matching regex patterns across workspace files', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-grep-'));
+    const tempDir = await mkdirScratch('nexus-grep-');
     await fs.writeFile(path.join(tempDir, 'file1.ts'), 'export const SECRET_KEY = "alpha";\n', 'utf8');
     await fs.writeFile(path.join(tempDir, 'file2.js'), 'const other = 123;\nconst SECRET_KEY = "beta";\n', 'utf8');
 
@@ -759,7 +760,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   console.log('\n=== 7. Targeted Test Resolution Tests ===');
 
   await test('findTargetedTests matches modified files to existing test files', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-targeted-tests-'));
+    const tempDir = await mkdirScratch('nexus-targeted-tests-');
     await fs.mkdir(path.join(tempDir, 'src'), { recursive: true });
     await fs.mkdir(path.join(tempDir, 'test'), { recursive: true });
 
@@ -779,7 +780,7 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.equal(testsForNone, null);
 
     // Fallback returns null when no test runner or script is configured
-    const tempDirNoPkg = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-no-test-runner-'));
+    const tempDirNoPkg = await mkdirScratch('nexus-no-test-runner-');
     await fs.mkdir(path.join(tempDirNoPkg, 'src'), { recursive: true });
     await fs.writeFile(path.join(tempDirNoPkg, 'src', 'auth.ts'), 'export const auth = true;', 'utf8');
     const testsNoRunner = findTargetedTests(tempDirNoPkg, ['src/auth.ts']);
@@ -816,7 +817,7 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.equal(getModelPricing('gpt-4.1-mini').inputPerMillion, 0.15);
 
     // Unknown model (local Ollama model, free tier, aggregator catalogue):
-    // no invented dollar figure — the UI renders "—".
+    // no invented dollar figure â€” the UI renders "â€”".
     assert.equal(getModelPricing('qwen3-coder'), null);
     assert.equal(getModelPricing(undefined), null);
     assert.equal(getModelPricing('z-ai/glm-5.3-free'), null);
@@ -840,7 +841,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   });
 
   await test('Researcher subagent backend blocks write operations in read-only mode', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-subagent-'));
+    const tempDir = await mkdirScratch('nexus-subagent-');
     const project = await upsertProject({ id: 'test-subagent-proj', name: 'subagent-test', root: tempDir });
 
     const { backend } = await getAgentBackend(project, { readOnly: true });
@@ -891,7 +892,7 @@ pub async fn execute_task(task: &str) -> bool { true }
     const p2 = p2List.find((p) => p.label === 'Anthropic Retained');
     assert.ok(p1 && p2);
 
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-session-prov-'));
+    const tempDir = await mkdirScratch('nexus-session-prov-');
     const project = await upsertProject({ name: 'Provider Lifecycle Project', root: tempDir });
     const session = await createSession(project.id, 'Session with P1');
     const updated = await updateSession(project.id, session.id, {
@@ -918,7 +919,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   console.log('\n=== 10. Skills Service Lifecycle & Import Tests ===');
 
   await test('createSkill creates a valid skill with frontmatter and instructions', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-skill-proj-'));
+    const tempDir = await mkdirScratch('nexus-skill-proj-');
     const skill = await createSkill(tempDir, {
       name: 'react-testing-guide',
       description: 'Guide for writing unit tests with vitest',
@@ -942,8 +943,8 @@ pub async fn execute_task(task: &str) -> bool { true }
   });
 
   await test('importSkill imports a SKILL.md file or folder into library', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-skill-import-'));
-    const externalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-ext-skill-'));
+    const tempDir = await mkdirScratch('nexus-skill-import-');
+    const externalDir = await mkdirScratch('nexus-ext-skill-');
     const externalSkillMd = path.join(externalDir, 'SKILL.md');
     await fs.writeFile(
       externalSkillMd,
@@ -964,8 +965,8 @@ pub async fn execute_task(task: &str) -> bool { true }
   });
 
   await test('importSkill imports arbitrary named markdown and text files (e.g. guidelines.md, notes.txt)', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-skill-any-'));
-    const externalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-ext-any-'));
+    const tempDir = await mkdirScratch('nexus-skill-any-');
+    const externalDir = await mkdirScratch('nexus-ext-any-');
     
     // 1. Arbitrary named .md file without frontmatter
     const customMd = path.join(externalDir, 'react-performance-tips.md');
@@ -1001,7 +1002,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   });
 
   await test('skills:read and skills:delete reject paths outside allowed directories', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-skill-sec-'));
+    const tempDir = await mkdirScratch('nexus-skill-sec-');
     const outsideFile = path.join(tempDir, 'secret.txt');
     await fs.writeFile(outsideFile, 'secret content', 'utf8');
 
@@ -1019,7 +1020,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   });
 
   await test('project skills live in .nexus/skills and .deepagents is never created', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-skill-loc-'));
+    const tempDir = await mkdirScratch('nexus-skill-loc-');
     await ensureSkillSourceDirs(tempDir);
     assert.equal(await fs.stat(path.join(tempDir, '.nexus', 'skills')).then((s) => s.isDirectory()).catch(() => false), true);
     assert.equal(await fs.stat(path.join(tempDir, '.deepagents')).then(() => true).catch(() => false), false);
@@ -1032,7 +1033,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   });
 
   await test('legacy .deepagents/skills are still listed, readable and removable', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-skill-legacy-'));
+    const tempDir = await mkdirScratch('nexus-skill-legacy-');
     const legacyDir = path.join(tempDir, '.deepagents', 'skills', 'old-guide');
     await fs.mkdir(legacyDir, { recursive: true });
     await fs.writeFile(path.join(legacyDir, 'SKILL.md'), '---\nname: old-guide\ndescription: legacy skill\n---\n\nLegacy body.', 'utf8');
@@ -1057,7 +1058,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   console.log('\n=== 11. Consumed Tokens & Session Tracking Tests ===');
 
   await test('session accumulates total tokens across multiple requests while messages store per-turn usage', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-token-proj-'));
+    const tempDir = await mkdirScratch('nexus-token-proj-');
     const project = await upsertProject({ name: 'Token Tracking Project', root: tempDir });
     const session = await createSession(project.id, 'Token Session');
 
@@ -1118,7 +1119,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   });
 
   await test('appendSessionMessages persists several messages in one write (batch transcript)', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-batch-'));
+    const tempDir = await mkdirScratch('nexus-batch-');
     const project = await upsertProject({ name: 'Batch Project', root: tempDir });
     const session = await createSession(project.id, 'Batch Session');
 
@@ -1149,7 +1150,7 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.equal(computed.totalTokens, 2500);
     assert.equal(computed.estimatedCost, 0.0006);
 
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-legacy-sess-'));
+    const tempDir = await mkdirScratch('nexus-legacy-sess-');
     const project = await upsertProject({ name: 'Legacy Project', root: tempDir });
     const session = await createSession(project.id, 'Legacy Session');
     
@@ -1167,7 +1168,7 @@ pub async fn execute_task(task: &str) -> bool { true }
     const runUsage = { inputTokens: 500, outputTokens: 100, totalTokens: 600, estimatedCost: 0.0001 };
     const messagesWithEventAndAssistant = [
       { role: 'user', text: 'Hello' },
-      { role: 'event', kind: 'usage', text: 'Token usage · 600 tokens', usage: runUsage },
+      { role: 'event', kind: 'usage', text: 'Token usage Â· 600 tokens', usage: runUsage },
       { role: 'assistant', text: 'Hi there', usage: runUsage },
     ];
     const computed = calculateSessionUsage(messagesWithEventAndAssistant);
@@ -1195,7 +1196,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   console.log('\n=== 12. Git Worktree Isolation & Lifecycle Tests ===');
 
   await test('createSessionWorktree creates isolated worktree directory and branch in a git repository', async () => {
-    const tempRepo = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-wt-repo-'));
+    const tempRepo = await mkdirScratch('nexus-wt-repo-');
     try {
       await execFileAsync('git', ['init', '-b', 'main'], { cwd: tempRepo });
       await execFileAsync('git', ['config', 'user.email', 'test@test.com'], { cwd: tempRepo });
@@ -1277,16 +1278,16 @@ pub async fn execute_task(task: &str) -> bool { true }
   await test('buildToolContextBlock merges call/result pairs and skips noise', () => {
     const items = [
       { role: 'user', text: 'Fix the login bug' },
-      { role: 'event', kind: 'status', text: 'Preparing context…' },
-      { role: 'event', kind: 'tool', text: 'read_file · src/auth.ts:1-100' },
-      { role: 'event', kind: 'tool', text: 'read_file ✓', detail: 'export function login() {}' },
-      { role: 'event', kind: 'tool', text: 'grep_search · "redirect" in src' },
-      { role: 'event', kind: 'tool', text: 'grep_search ✓', detail: 'src/auth.ts:42: redirect uri' },
+      { role: 'event', kind: 'status', text: 'Preparing contextâ€¦' },
+      { role: 'event', kind: 'tool', text: 'read_file Â· src/auth.ts:1-100' },
+      { role: 'event', kind: 'tool', text: 'read_file âœ“', detail: 'export function login() {}' },
+      { role: 'event', kind: 'tool', text: 'grep_search Â· "redirect" in src' },
+      { role: 'event', kind: 'tool', text: 'grep_search âœ“', detail: 'src/auth.ts:42: redirect uri' },
       { role: 'assistant', text: 'Found it.' },
     ];
     const block = buildToolContextBlock(items);
     assert.ok(block);
-    assert.match(block, /read_file · src\/auth\.ts/);
+    assert.match(block, /read_file Â· src\/auth\.ts/);
     assert.match(block, /export function login/);
     assert.match(block, /redirect uri/);
     assert.match(block, /Do NOT re-run/);
@@ -1298,7 +1299,7 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.equal(buildToolContextBlock([]), null);
     assert.equal(buildToolContextBlock([{ role: 'user', text: 'hi' }]), null);
     assert.equal(
-      buildToolContextBlock([{ role: 'event', kind: 'status', text: 'Working…' }]),
+      buildToolContextBlock([{ role: 'event', kind: 'status', text: 'Workingâ€¦' }]),
       null
     );
     const block = buildToolContextBlock([
@@ -1313,8 +1314,8 @@ pub async fn execute_task(task: &str) -> bool { true }
   await test('buildToolContextBlock keeps newest entries under a tight budget', () => {
     const items = [];
     for (let i = 0; i < 20; i++) {
-      items.push({ role: 'event', kind: 'tool', text: `read_file · src/file${i}.ts` });
-      items.push({ role: 'event', kind: 'tool', text: 'read_file ✓', detail: `content of file${i} `.repeat(20) });
+      items.push({ role: 'event', kind: 'tool', text: `read_file Â· src/file${i}.ts` });
+      items.push({ role: 'event', kind: 'tool', text: 'read_file âœ“', detail: `content of file${i} `.repeat(20) });
     }
     const tiny = buildToolContextBlock(items, 200);
     assert.ok(tiny);
@@ -1337,16 +1338,16 @@ pub async fn execute_task(task: &str) -> bool { true }
 
   await test('buildToolContextBlock preserves verification failure details for resumed runs', () => {
     const block = buildToolContextBlock([
-      { role: 'event', kind: 'tool', text: 'Verification failed · npm run check', detail: 'TS2322: Type string is not assignable to type number' },
+      { role: 'event', kind: 'tool', text: 'Verification failed Â· npm run check', detail: 'TS2322: Type string is not assignable to type number' },
     ]);
-    assert.match(block, /Verification failed · npm run check/);
+    assert.match(block, /Verification failed Â· npm run check/);
     assert.match(block, /TS2322/);
   });
 
   console.log('\n=== 14. Artifacts Lifecycle & Status Tests ===');
 
   await test('saveArtifact, getArtifact, listArtifacts and updateArtifactStatus work end-to-end', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-art-'));
+    const tempDir = await mkdirScratch('nexus-art-');
     try {
       const sessionId = 'session_art_test';
       const plan = await saveArtifact(tempDir, sessionId, 'implementation_plan.md', '# Objective\n\nBuild feature X\n', {
@@ -1374,7 +1375,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   console.log('\n=== 15. Trajectory JSONL Logger Tests ===');
 
   await test('TrajectoryLogger records step-by-step events in valid JSONL format', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-traj-'));
+    const tempDir = await mkdirScratch('nexus-traj-');
     try {
       const sessionId = 'session_traj_test';
       const logger = new TrajectoryLogger(tempDir, sessionId);
@@ -1400,7 +1401,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   console.log('\n=== 16. Enhanced Code Intelligence Tests ===');
 
   await test('find_symbol_references locates symbol references across files', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-symref-'));
+    const tempDir = await mkdirScratch('nexus-symref-');
     try {
       await fs.writeFile(path.join(tempDir, 'user.ts'), 'export interface UserProfile {\n  id: string;\n  name: string;\n}\n');
       await fs.writeFile(path.join(tempDir, 'service.ts'), 'import { UserProfile } from "./user";\nexport function getUser(): UserProfile { return { id: "1", name: "A" }; }\n');
@@ -1419,7 +1420,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   console.log('\n=== 17. Project Rules Auto-Discovery Tests ===');
 
   await test('discoverProjectRules finds .cursorrules, AGENT.md, and .nexus/rules/*.md', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-rules-'));
+    const tempDir = await mkdirScratch('nexus-rules-');
     try {
       await fs.writeFile(path.join(tempDir, '.cursorrules'), 'Always write clean TypeScript with strict types.\n');
       await fs.writeFile(path.join(tempDir, 'AGENT.md'), '# Project Conventions\nUse functional React components.\n');
@@ -1504,7 +1505,7 @@ pub async fn execute_task(task: &str) -> bool { true }
       // Invalid dimensions are rejected.
       assert.equal(terminalService.resize(sessionId, 0, 0), false);
     } else {
-      console.log('    (pipes fallback active — PTY host unavailable in this environment)');
+      console.log('    (pipes fallback active â€” PTY host unavailable in this environment)');
     }
 
     // Kill session
@@ -1536,7 +1537,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   console.log('\n=== 20. Custom Extensible Slash Commands Tests ===');
 
   await test('discoverCustomCommands discovers built-in and project-defined slash commands with placeholder substitutions', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-custom-cmds-'));
+    const tempDir = await mkdirScratch('nexus-custom-cmds-');
     try {
       await fs.mkdir(path.join(tempDir, '.nexus', 'commands'), { recursive: true });
       await fs.writeFile(
@@ -1718,7 +1719,7 @@ pub async fn execute_task(task: &str) -> bool { true }
 
   await test('agent browser without a wired renderer fails fast instead of hanging', async () => {
     const { agentBrowserService } = await import('../dist-electron/browser-service.js');
-    // No sender in tests (main.ts wires it at startup) → immediate error,
+    // No sender in tests (main.ts wires it at startup) â†’ immediate error,
     // which the browser_act tool / fetch fallback converts, never a hang.
     await assert.rejects(agentBrowserService.act({ action: 'snapshot' }), /not available/);
   });
@@ -1747,7 +1748,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   console.log('\n=== 23. Repo Map Tests ===');
 
   await test('getRepoMapSection outlines symbols, skips ignored dirs, and caches incrementally', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-repomap-'));
+    const tempDir = await mkdirScratch('nexus-repomap-');
     try {
       await fs.mkdir(path.join(tempDir, 'src'), { recursive: true });
       await fs.mkdir(path.join(tempDir, 'node_modules', 'dep'), { recursive: true });
@@ -1789,11 +1790,11 @@ pub async fn execute_task(task: &str) -> bool { true }
     cancelCommandRun('sess-a');
     assert.equal(isCommandRunCancelled('sess-a'), true);
     assert.equal(isCommandRunCancelled('sess-b'), false);
-    // Starting a new run elsewhere must not clear sess-a's cancel…
+    // Starting a new run elsewhere must not clear sess-a's cancelâ€¦
     beginCommandRun('sess-c');
     assert.equal(isCommandRunCancelled('sess-a'), true);
     assert.equal(isCommandRunCancelled('sess-c'), false);
-    // …and global cancel still reaches every live run (fallback path).
+    // â€¦and global cancel still reaches every live run (fallback path).
     cancelCommandRun();
     assert.equal(isCommandRunCancelled('sess-b'), true);
     assert.equal(isCommandRunCancelled('sess-c'), true);
@@ -1804,7 +1805,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   });
 
   await test("Cancelling another session does not kill this session's command", async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-cancel-scope-'));
+    const tempDir = await mkdirScratch('nexus-cancel-scope-');
     const project = await upsertProject({ id: 'test-cancel-scope', name: 'cancel-scope-test', root: tempDir });
     try {
       beginCommandRun('sess-x');
@@ -1868,7 +1869,7 @@ pub async fn execute_task(task: &str) -> bool { true }
 
   await test('legacy .deepagents writes are blocked: shell commands, backend writes, and edit paths never create it', async () => {
     const { guardAgainstLegacyStateDir, isLegacyStatePath } = await import('../dist-electron/state-guard.js');
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-deepagents-guard-'));
+    const tempDir = await mkdirScratch('nexus-deepagents-guard-');
     try {
       // Shell commands that would create or write .deepagents are denied.
       for (const cmd of [
@@ -1885,7 +1886,7 @@ pub async fn execute_task(task: &str) -> bool { true }
       assert.equal(isDeniedCommand('npm install deepagents'), false);
       assert.equal(isDeniedCommand('ls .my.deepagents-folder'), false);
 
-      // Backend write/edit guard refuses virtual .deepagents paths…
+      // Backend write/edit guard refuses virtual .deepagents pathsâ€¦
       assert.equal(isLegacyStatePath('.deepagents/skills/x/SKILL.md'), true);
       assert.equal(isLegacyStatePath('/.deepagents/agent.md'), true);
       assert.equal(isLegacyStatePath('.nexus/skills/x/SKILL.md'), false);
@@ -1907,7 +1908,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   console.log('\n=== 26. Revert-All Exclusion Tests ===');
 
   await test('revertAllWorkspaceChanges restores tracked files but never deletes protected paths', async () => {
-    const tempRepo = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-revertall-'));
+    const tempRepo = await mkdirScratch('nexus-revertall-');
     try {
       await execFileAsync('git', ['init', '-b', 'main'], { cwd: tempRepo });
       await execFileAsync('git', ['config', 'user.email', 'test@test.com'], { cwd: tempRepo });

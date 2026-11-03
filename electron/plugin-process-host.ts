@@ -13,10 +13,15 @@
 //   bounded restart (default: no auto-restart — the lifecycle manager decides).
 // - dispose() kills the process and removes all tracking (no orphans).
 // - Entry path must resolve inside the plugin dir (traversal rejected).
+// - The child never inherits secret-shaped env vars (scrubSecretEnv) — the
+//   runner is the least-trusted code path, so it gets the same policy as
+//   terminals and daemons, not the raw process environment.
 
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { scrubSecretEnv } from "./child-env.js";
 
 export type RunnerToolDef = {
   name: string;
@@ -77,7 +82,10 @@ export class PluginProcess {
     this.buffer = "";
     const child = spawn(process.execPath, [this.runnerPath], {
       cwd: path.resolve(this.pluginDir),
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+      // Same env policy as terminals/daemons: everything the user environment
+      // offers EXCEPT secret-shaped variables. plugin-runner.cjs is the least
+      // trusted code path in the app — never hand it the raw process.env.
+      env: { ...scrubSecretEnv(), ELECTRON_RUN_AS_NODE: "1" },
       stdio: ["pipe", "pipe", "inherit"],
       windowsHide: true,
     });

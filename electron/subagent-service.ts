@@ -146,8 +146,25 @@ export function discoverPluginAgentsSync(projectRoot?: string, mode?: string): M
   return map;
 }
 
+// Claude-compatible agent directories (G11 parity): project-local custom
+// agents written for Claude Code work as Nexus subagents. Lowest priority —
+// bundled system agents and plugin agents override on name collision.
+export function discoverCompatAgents(projectRoot?: string): Map<string, SubagentDefinition> {
+  const map = new Map<string, SubagentDefinition>();
+  if (!projectRoot) return map;
+  for (const dir of [path.join(projectRoot, ".claude", "agents"), path.join(projectRoot, ".agents", "agents")]) {
+    for (const [key, config] of loadAgentsFromDirectory(dir, "plugin")) {
+      if (!map.has(key)) map.set(key, config);
+    }
+  }
+  return map;
+}
+
 export function getAvailableAgents(projectRoot?: string, mode?: string): Map<string, SubagentDefinition> {
-  const map = new Map<string, SubagentDefinition>(getSystemAgents());
+  const map = new Map<string, SubagentDefinition>(discoverCompatAgents(projectRoot));
+  for (const [key, config] of getSystemAgents()) {
+    map.set(key, config);
+  }
   const pluginAgents = discoverPluginAgentsSync(projectRoot, mode);
   for (const [key, config] of pluginAgents) {
     map.set(key, config);

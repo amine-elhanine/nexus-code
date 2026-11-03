@@ -1,3 +1,4 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 // Code-mode memory parity: entry-based rolling logs (appendEntryLog),
 // boundary-aware prompt tails (tailEntries), the memory item cap
 // (capMemoryItems), and the project facts store (updateProjectFacts RMW +
@@ -5,7 +6,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import { appendEntryLog } from "../dist-electron/agent-service.js";
@@ -20,7 +20,7 @@ test("appendEntryLog: keeps whole entries, never cuts mid-entry", () => {
   assert.ok(!out.includes("aaaa"));
   assert.ok(!out.includes("bbbb"), "older entries are dropped WHOLE");
   assert.ok(out.includes("cccc") && out.includes("dddd"));
-  // Every surviving entry is intact — no fragment at the start.
+  // Every surviving entry is intact â€” no fragment at the start.
   assert.equal(out.split(separator).every((p) => p.length > 0), true);
 });
 
@@ -36,7 +36,7 @@ test("appendEntryLog: entry cap and separator handling", () => {
 test("tailEntries: drops oldest whole entries instead of char-cutting", () => {
   const value = ["e".repeat(30), "f".repeat(30), "g".repeat(30)].join("\n\n");
   const out = tailEntries(value, 64);
-  assert.ok(out.length <= 64 + "…[older memory trimmed]\n".length);
+  assert.ok(out.length <= 64 + "â€¦[older memory trimmed]\n".length);
   assert.ok(out.includes("g".repeat(30)), "newest entry always survives");
   assert.ok(!out.includes("e".repeat(30)), "oldest dropped first");
   // Under-cap text passes through untouched.
@@ -86,7 +86,7 @@ test("capMemoryItems: evicts oldest from least-durable sections first", () => {
 // Store-level tests run against a scratch APPDATA (statePath() reads the env
 // per call in plain node) so the real user's nexus-state.json is never touched.
 test("updateProjectFacts: locked RMW, persistence, and parallel-merge safety", async () => {
-  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-facts-"));
+  const scratch = await mkdirScratch("nexus-facts-");
   process.env.APPDATA = scratch;
   const { upsertProject, updateProjectFacts, getProject } = await import("../dist-electron/store.js");
   try {

@@ -20,6 +20,11 @@ import { globalPluginsDir, pluginsDir, pluginSkillDirsWithModes } from "./plugin
 // other Nexus telemetry; the old location is still READ (never written) so
 // existing skills keep working.
 export const PROJECT_SKILLS_DIR = ".nexus/skills";
+// Compatibility skill roots (G11 parity with OpenCode/ZCode's Claude-dir
+// readers): skills in a project's Claude/agents directories are DISCOVERABLE
+// and READABLE but never writable or deletable from Nexus — they are a
+// foreign library we consume, not ours to manage.
+export const COMPAT_PROJECT_SKILL_DIRS = [".claude/skills", ".agents/skills"];
 const LEGACY_PROJECT_SKILLS_DIR = ".deepagents/skills";
 export const GLOBAL_SKILLS_ROUTE = "/global-skills";
 export const SYSTEM_SKILLS_ROUTE = "/system-skills";
@@ -196,6 +201,11 @@ export async function listSkills(projectRoot?: string | null): Promise<SkillInfo
   if (projectRoot) {
     roots.push({ root: projectSkillsDir(projectRoot), scope: "project" });
     roots.push({ root: legacyProjectSkillsDir(projectRoot), scope: "project" });
+    // Compat roots last: seenProject dedupe means a native .nexus skill with
+    // the same name always wins over a Claude-dir copy.
+    for (const compatDir of COMPAT_PROJECT_SKILL_DIRS) {
+      roots.push({ root: path.join(projectRoot, compatDir), scope: "project" });
+    }
     // Plugin-contributed skills (.nexus/plugins/<name>/skills/<skill>)
     const projectPluginSkills = await pluginSkillDirsWithModes(projectRoot).catch(() => [] as Array<{ dir: string; modes: SkillMode[] }>);
     const globalDirs = new Set(globalPluginSkills.map((e) => path.resolve(e.dir)));
@@ -561,6 +571,15 @@ function validateSkillPathAllowed(skillPath: string, projectRoot?: string | null
   const legacyRootResolved = projectRoot ? canonicalPathExisting(legacyProjectSkillsDir(projectRoot)) : null;
   const pluginsRootResolved = projectRoot ? canonicalPathExisting(pluginsDir(projectRoot)) : null;
   const sysRoot = canonicalPathExisting(systemSkillsDir());
+  // Compat roots (.claude/skills, .agents/skills) are READ-ONLY: admitting
+  // them for reads (allowSystem path) never makes them writable/deleteable —
+  // deleteSkill authorizes against an explicit root list that excludes them.
+  const compatRootsResolved = projectRoot
+    ? COMPAT_PROJECT_SKILL_DIRS.map((dir) => canonicalPathExisting(path.join(projectRoot, dir))).filter((root): root is string => Boolean(root))
+    : [];
+  const isInsideCompat = compatRootsResolved.some(
+    (root) => resolved === root || resolved.startsWith(`${root}${path.sep}`)
+  );
 
   const isInsideGlobal =
     resolved === globalRoot ||
@@ -582,7 +601,7 @@ function validateSkillPathAllowed(skillPath: string, projectRoot?: string | null
     : false;
   const isInsideSystem = allowSystem && (resolved === sysRoot || resolved.startsWith(`${sysRoot}${path.sep}`));
 
-  if (!isInsideGlobal && !isInsideProject && !isInsideLegacy && !isInsidePlugins && !isInsideSystem) {
+  if (!isInsideGlobal && !isInsideProject && !isInsideLegacy && !isInsidePlugins && !isInsideSystem && !(isInsideCompat && allowSystem)) {
     throw new Error(`Security violation: skill path '${skillPath}' is outside the authorized skills directories.`);
   }
   return resolved;
@@ -643,6 +662,12 @@ export function skillVirtualPath(skill: SkillInfo): string {
   const normalized = skill.path.replace(/\\/g, "/");
   const legacy = normalized.match(/\.deepagents\/skills\/([^/]+)\/SKILL\.md$/);
   if (legacy) return `${LEGACY_PROJECT_SKILLS_DIR}/${legacy[1]}/SKILL.md`;
+  // Compat skills read through the workspace backend at their real relative
+  // path (the workspace root covers the whole project).
+  for (const compatDir of COMPAT_PROJECT_SKILL_DIRS) {
+    const compat = normalized.match(new RegExp(`${compatDir.replace(/\//g, "\\/")}/([^/]+)/SKILL\\.md$`));
+    if (compat) return `${compatDir}/${compat[1]}/SKILL.md`;
+  }
   const pluginMatch = normalized.match(/\.nexus\/plugins\/([^/]+)\/skills\/([^/]+)\/SKILL\.md$/);
   if (pluginMatch) return `.nexus/plugins/${pluginMatch[1]}/skills/${pluginMatch[2]}/SKILL.md`;
   return `${PROJECT_SKILLS_DIR}/${folder}/SKILL.md`;

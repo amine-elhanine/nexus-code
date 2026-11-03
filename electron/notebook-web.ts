@@ -12,6 +12,7 @@
  */
 
 import { assertPublicHttpUrl, isPublicHttpUrl } from "./net-guard.js";
+import { decodeHtmlEntities, htmlToText } from "./html-text.js";
 
 export interface CrawledPage {
   url: string;
@@ -88,38 +89,17 @@ function canonicalKey(url: string): string {
   }
 }
 
-function decodeEntities(text: string): string {
-  return text
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&#(\d+);/g, (_m, n) => {
-      try {
-        return String.fromCharCode(Number(n));
-      } catch {
-        return "";
-      }
-    });
-}
-
-function stripTags(fragment: string): string {
-  return decodeEntities(fragment.replace(/<[^>]*>/g, " ")).replace(/\s+/g, " ").trim();
-}
-
 function pageTitle(html: string): string {
   const og = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']{1,200})/i);
-  if (og) return decodeEntities(og[1]).trim();
+  if (og) return decodeHtmlEntities(og[1]).trim();
   const t = html.match(/<title[^>]*>([\s\S]{1,300}?)<\/title>/i);
   if (t) {
-    const clean = stripTags(t[1]).replace(/\s+/g, " ").trim();
+    const clean = htmlToText(t[1]).replace(/\s+/g, " ").trim();
     if (clean) return clean;
   }
   const h1 = html.match(/<h1[^>]*>([\s\S]{1,300}?)<\/h1>/i);
   if (h1) {
-    const clean = stripTags(h1[1]);
+    const clean = htmlToText(h1[1]);
     if (clean) return clean;
   }
   return "";
@@ -165,7 +145,7 @@ export function extractMainText(html: string): string {
     const cls = attrs.match(/(class|id)=["']([^"']*)["']/i);
     if (cls && BOILERPLATE_CLASS.test(cls[2])) continue;
     // Skip in-page anchor links without real text later via length check.
-    const text = stripTags(inner);
+    const text = htmlToText(inner);
     if (text.length < 2) continue;
     if (/^h[1-6]$/.test(tag)) {
       const level = Number(tag[1]);
@@ -187,7 +167,7 @@ export function extractMainText(html: string): string {
   // Fallback for pages without clean block markup: whole-body text.
   if (!lines.length) {
     const body = root.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
-    const text = stripTags(body ? body[1] : root);
+    const text = htmlToText(body ? body[1] : root);
     if (text.length > 40) return text.slice(0, DEFAULTS.maxCharsPerPage);
     return "";
   }

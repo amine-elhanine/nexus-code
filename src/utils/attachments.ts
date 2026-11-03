@@ -8,6 +8,23 @@ export function isImageAttachment(attachment: Pick<ChatAttachment, "mimeType" | 
   return /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(attachment.name || "");
 }
 
+/**
+ * Open a chat attachment: prefer the full preview callback, falling back to
+ * the legacy image-only preview callback. Shared by the Home and Agent views.
+ */
+export function openChatAttachment(
+  attachment: ChatAttachment,
+  onOpenAttachment?: (attachment: ChatAttachment) => void,
+  onOpenImage?: (src: string) => void,
+): void {
+  if (onOpenAttachment) {
+    onOpenAttachment(attachment);
+    return;
+  }
+  // Back-compat: image-only preview callback.
+  if (isImageAttachment(attachment)) onOpenImage?.(attachment.url);
+}
+
 export function attachmentKind(fileName: string): "image" | "pdf" | "docx" | "xlsx" | "pptx" | "markdown" | "text" | "unsupported" {
   const ext = (fileName.split(".").pop() || "").toLowerCase();
   if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"].includes(ext)) return "image";

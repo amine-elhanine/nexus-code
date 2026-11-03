@@ -1,9 +1,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { composeContextBlock } from "./notebook-text.js";
+import { attachCitations, composeContextBlock, uid } from "./notebook-text.js";
 import { collectDocumentEvidence, extractDocumentJson, fallbackTitle } from "./notebook-documents.js";
 import { assertNotebookGenerationActive, planNotebookWithLlm } from "./notebook-generation.js";
 import { notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
+import { writeFileAtomic } from "./atomic-write.js";
 
 // Grounded mindmap generation for Notebook Mode: a topic tree (roots with
 // nested children) covering the main topics and subtopics of the in-scope
@@ -44,10 +45,6 @@ export type GenerateMindmapInput = {
   onStatus?: (text: string) => void;
 };
 
-function uid(prefix: string) {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
 function mindmapsPath(notebookId: string) {
   return path.join(notebookSessionDir(notebookId), "mindmaps.json");
 }
@@ -61,8 +58,8 @@ async function readMaps(notebookId: string): Promise<NotebookMindmap[]> {
 }
 
 async function writeMaps(notebookId: string, maps: NotebookMindmap[]) {
-  await fs.mkdir(path.dirname(mindmapsPath(notebookId)), { recursive: true });
-  await fs.writeFile(mindmapsPath(notebookId), JSON.stringify(maps, null, 2), "utf8");
+  // Atomic (temp + rename): a crash mid-write must not truncate the map store.
+  await writeFileAtomic(mindmapsPath(notebookId), JSON.stringify(maps, null, 2));
 }
 
 export async function listNotebookMindmaps(notebookId: string): Promise<NotebookMindmap[]> {
@@ -81,21 +78,6 @@ export function clampMindmapNodes(raw: unknown): number {
   const n = typeof raw === "number" ? raw : Number(raw);
   if (!Number.isFinite(n)) return 24;
   return Math.min(60, Math.max(8, Math.round(n)));
-}
-
-function citationByIndex(citations: NotebookSourceCitation[], index: number): NotebookSourceCitation | undefined {
-  return citations.find((c) => c.index === index);
-}
-
-function parseCitationRefs(text: string): number[] {
-  const out: number[] = [];
-  const re = /\[S(\d+)\]/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text || ""))) {
-    const n = Number(m[1]);
-    if (Number.isFinite(n) && n > 0 && !out.includes(n)) out.push(n);
-  }
-  return out.slice(0, 4);
 }
 
 type RawMindmapNode = {
@@ -122,9 +104,11 @@ function sanitizeNode(
   const label = String(raw.label || "").trim().slice(0, 120);
   if (!label) return null;
   const detail = String(raw.detail || "").trim().slice(0, 300);
-  const refs = parseCitationRefs(`${label} ${detail} ${Array.isArray(raw.citations) ? (raw.citations as unknown[]).join(" ") : ""}`);
-  const linked = refs.map((n) => citationByIndex(citations, n)).filter((c): c is NotebookSourceCitation => Boolean(c));
-  const fallbackCite = citations.length ? citations[citeCursor.i % citations.length] : undefined;
+  const nodeCitations = attachCitations(
+    `${label} ${detail} ${Array.isArray(raw.citations) ? (raw.citations as unknown[]).join(" ") : ""}`,
+    citations,
+    citeCursor.i
+  );
   citeCursor.i++;
   budget.remaining--;
   const children: NotebookMindmapNode[] = [];
@@ -135,11 +119,7 @@ function sanitizeNode(
       if (budget.remaining <= 0) break;
     }
   }
-  // Model-cited passages are verified; the positional fallback is an
-  // unverified guess that the UI renders dimmed.
-  const linkedCitations = linked.map((c) => ({ ...c, verified: true }));
-  const fallbackCitations = fallbackCite ? [{ ...fallbackCite, verified: false }] : [];
-  return { id: uid("node"), label, detail, citations: (linkedCitations.length ? linkedCitations : fallbackCitations).slice(0, 2), children };
+  return { id: uid("node"), label, detail, citations: nodeCitations, children };
 }
 
 function countNodes(nodes: NotebookMindmapNode[]): number {

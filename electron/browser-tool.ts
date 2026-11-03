@@ -1,5 +1,6 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
+import { decodeHtmlEntities } from "./html-text.js";
 
 function cleanHtmlToText(html: string): string {
   // Strip script and style blocks
@@ -9,14 +10,8 @@ function cleanHtmlToText(html: string): string {
   text = text.replace(/<(?:p|div|h[1-6]|li|tr)[^>]*>/gi, "\n");
   text = text.replace(/<br\s*[\/]?>/gi, "\n");
   text = text.replace(/<[^>]+>/g, " ");
-  // Decode common HTML entities
-  text = text
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+  // Decode HTML entities (named + numeric, shared superset)
+  text = decodeHtmlEntities(text);
   // Collapse whitespace
   return text
     .split("\n")

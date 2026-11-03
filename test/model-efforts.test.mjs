@@ -1,7 +1,7 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import {
   KNOWN_MODEL_EFFORTS,
@@ -228,7 +228,7 @@ test("autoDiscoverModelEfforts discovers reasoning efforts automatically", async
 });
 
 test("store CRUD persists model reasoning efforts and context windows, and preserves them on rename", async () => {
-  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-effort-test-"));
+  const scratch = await mkdirScratch("nexus-effort-test-");
   process.env.APPDATA = scratch;
   const {
     createProviderConnection,
@@ -315,7 +315,7 @@ test("store CRUD persists model reasoning efforts and context windows, and prese
 });
 
 test("computeCompactionThreshold triggers auto-compaction at a flat 85% of the context window", () => {
-  // 1. Claude 3.7 Sonnet (200k context) — max output no longer moves the threshold
+  // 1. Claude 3.7 Sonnet (200k context) â€” max output no longer moves the threshold
   const claudeThreshold = computeCompactionThreshold(200_000, 64_000);
   assert.equal(claudeThreshold, 170_000);
 

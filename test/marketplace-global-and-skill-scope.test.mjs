@@ -1,6 +1,6 @@
+import { mkdirScratch } from "./helpers/scratch.mjs";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import {
   globalPluginsDir,
@@ -29,19 +29,19 @@ function test(name, fn) {
   return Promise.resolve()
     .then(fn)
     .then(() => {
-      console.log(`  ✓ ${name}`);
+      console.log(`  âœ“ ${name}`);
       passed++;
     })
     .catch((error) => {
-      console.error(`  ✗ ${name}`);
+      console.error(`  âœ— ${name}`);
       console.error(error);
       failed++;
     });
 }
 
 // Set up temporary directories for testing global and project plugins/skills
-const testGlobalDir = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-global-test-"));
-const testProjectDir = await fs.mkdtemp(path.join(os.tmpdir(), "nexus-proj-test-"));
+const testGlobalDir = await mkdirScratch("nexus-global-test-");
+const testProjectDir = await mkdirScratch("nexus-proj-test-");
 process.env.NEXUS_GLOBAL_PLUGINS_DIR = path.join(testGlobalDir, "plugins");
 process.env.NEXUS_GLOBAL_SKILLS_DIR = path.join(testGlobalDir, "skills");
 

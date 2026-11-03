@@ -1,9 +1,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { composeContextBlock } from "./notebook-text.js";
+import { attachCitations, composeContextBlock, uid } from "./notebook-text.js";
 import { collectDocumentEvidence, extractDocumentJson, fallbackTitle } from "./notebook-documents.js";
 import { assertNotebookGenerationActive, planNotebookWithLlm } from "./notebook-generation.js";
 import { notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
+import { writeFileAtomic } from "./atomic-write.js";
 
 // Grounded quiz generation for Notebook Mode: MCQ (4 options), True/False,
 // or a mixed blend. Retrieval reuses the isolated notebook store via
@@ -51,10 +52,6 @@ export type GenerateQuizInput = {
   onStatus?: (text: string) => void;
 };
 
-function uid(prefix: string) {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
 function quizzesPath(notebookId: string) {
   return path.join(notebookSessionDir(notebookId), "quizzes.json");
 }
@@ -68,8 +65,8 @@ async function readQuizzes(notebookId: string): Promise<NotebookQuiz[]> {
 }
 
 async function writeQuizzes(notebookId: string, quizzes: NotebookQuiz[]) {
-  await fs.mkdir(path.dirname(quizzesPath(notebookId)), { recursive: true });
-  await fs.writeFile(quizzesPath(notebookId), JSON.stringify(quizzes, null, 2), "utf8");
+  // Atomic (temp + rename): a crash mid-write must not truncate the quiz store.
+  await writeFileAtomic(quizzesPath(notebookId), JSON.stringify(quizzes, null, 2));
 }
 
 export async function listNotebookQuizzes(notebookId: string): Promise<NotebookQuiz[]> {
@@ -93,21 +90,6 @@ export function clampQuizCount(raw: unknown): number {
 export function normalizeQuizType(raw: unknown): NotebookQuizType {
   if (raw === "mcq" || raw === "truefalse" || raw === "mixed") return raw;
   return "mixed";
-}
-
-function citationByIndex(citations: NotebookSourceCitation[], index: number): NotebookSourceCitation | undefined {
-  return citations.find((c) => c.index === index);
-}
-
-function parseCitationRefs(text: string): number[] {
-  const out: number[] = [];
-  const re = /\[S(\d+)\]/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text || ""))) {
-    const n = Number(m[1]);
-    if (Number.isFinite(n) && n > 0 && !out.includes(n)) out.push(n);
-  }
-  return out.slice(0, 4);
 }
 
 type RawQuizQuestion = {
@@ -141,14 +123,11 @@ export function sanitizeQuestions(
     const question = String(raw.question || "").trim().slice(0, 500);
     if (!question) throw new Error(`Question ${i + 1} is missing text.`);
     const explanation = String(raw.explanation || "").trim().slice(0, 600) || "See the cited passage.";
-    const refs = parseCitationRefs(`${question} ${explanation} ${Array.isArray(raw.citations) ? (raw.citations as unknown[]).join(" ") : ""}`);
-    const linked = refs.map((n) => citationByIndex(citations, n)).filter((c): c is NotebookSourceCitation => Boolean(c));
-    const fallbackCite = citations[i % Math.max(1, citations.length)];
-    // Model-cited passages are verified; the positional fallback is an
-    // unverified guess that the UI renders dimmed.
-    const linkedCitations = linked.map((c) => ({ ...c, verified: true }));
-    const fallbackCitations = fallbackCite ? [{ ...fallbackCite, verified: false }] : [];
-    const questionCitations = (linkedCitations.length ? linkedCitations : fallbackCitations).slice(0, 2);
+    const questionCitations = attachCitations(
+      `${question} ${explanation} ${Array.isArray(raw.citations) ? (raw.citations as unknown[]).join(" ") : ""}`,
+      citations,
+      i
+    );
     if (isBoolean) {
       let correctBoolean: boolean | null = null;
       if (typeof raw.correctBoolean === "boolean") correctBoolean = raw.correctBoolean;
