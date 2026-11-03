@@ -10,6 +10,7 @@ import { requestCommandApproval } from "./approval-service.js";
 import { guardAgainstLegacyStateDir } from "./state-guard.js";
 import { scrubSecretEnv } from "./child-env.js";
 import type { ProjectRecord } from "./store.js";
+import { collectPostEditDiagnostics } from "./lsp-service.js";
 
 const DEFAULT_COMMAND_TIMEOUT_SECONDS = 180;
 
@@ -114,7 +115,27 @@ export function cancelCommandRun(runId?: string) {
     killChildren(state);
   }
 }
-export function endCommandRun(runId: string = DEFAULT_RUN_ID) { runStates.delete(runId); }
+export function endCommandRun(runId: string = DEFAULT_RUN_ID) {
+  runStates.delete(runId);
+  sessionShellState.delete(runId);
+}
+
+// Session-level shell state tracking (CWD and env persistence across execute tool calls)
+const sessionShellState = new Map<string, { cwd: string }>();
+
+export function getSessionShellCwd(runId?: string): string | undefined {
+  if (!runId) return undefined;
+  return sessionShellState.get(runId)?.cwd;
+}
+
+export function setSessionShellCwd(runId: string, cwd: string): void {
+  sessionShellState.set(runId, { cwd });
+}
+
+export function clearSessionShellState(runId?: string): void {
+  if (runId) sessionShellState.delete(runId);
+  else sessionShellState.clear();
+}
 
 function runProcess(shell: string, args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv; timeout?: number; maxBuffer?: number; onOutput?: (chunk: string) => void }, state: RunState) {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
@@ -195,8 +216,9 @@ export function capModelOutput(output: string): { output: string; truncated: boo
   };
 }
 
-function commandLeavesProjectRoot(projectRoot: string, command: string): boolean {
+function commandLeavesProjectRoot(projectRoot: string, command: string, baseDir?: string): boolean {
   const root = path.resolve(projectRoot).toLowerCase();
+  const base = path.resolve(baseDir || projectRoot).toLowerCase();
   const matches = [...command.matchAll(/(?:^|[&|;])\s*(?:cd|pushd)\s+["']?([^"'&|;]+)/gi)];
   for (const match of matches) {
     const target = match[1].trim();
@@ -204,9 +226,8 @@ function commandLeavesProjectRoot(projectRoot: string, command: string): boolean
     // Shell-expandable forms (~, %VAR%, $VAR, `cd -`) resolve outside the
     // workspace at runtime — the lexical check cannot follow them, so refuse.
     if (target === "-" || /^~/.test(target) || /%[^%]+%/.test(target) || /\$\{?\w/.test(target)) return true;
-    // Absolute AND relative targets both resolve against the command cwd
-    // (= project root): `cd ../..` must trip the same guard as `cd c:\`.
-    const resolved = path.resolve(root, target).toLowerCase();
+    // Absolute AND relative targets both resolve against the active baseDir:
+    const resolved = path.resolve(base, target).toLowerCase();
     if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) return true;
   }
   return false;
@@ -220,7 +241,11 @@ export async function executeCommand(projectRoot: string, command: string, optio
   const trimmed = command.trim();
   if (!trimmed) return { output: "Command is empty.", exitCode: 1, truncated: false };
   const normalized = normalizeCommandPaths(trimmed, projectRoot);
-  if (commandLeavesProjectRoot(projectRoot, normalized)) {
+  const activeCwd = (options.runId && sessionShellState.get(options.runId)?.cwd)
+    ? sessionShellState.get(options.runId)!.cwd
+    : path.resolve(projectRoot);
+
+  if (commandLeavesProjectRoot(projectRoot, normalized, activeCwd)) {
     return { output: "Command blocked: do not cd outside the selected project workspace. Commands already run with the correct project cwd; use relative paths instead.", exitCode: 1, truncated: false };
   }
   const { policy, trustedAllow } = options.policy !== undefined
@@ -234,8 +259,52 @@ export async function executeCommand(projectRoot: string, command: string, optio
     if (decision === "deny") return { output: "Command denied or approval timed out.", exitCode: 126, truncated: false, approvalDenied: true };
   }
 
+  // Wrap command with working directory tracker sentinel so sticky cwd works across execute tool calls
+  const sentinelTag = `__NEXUS_PWD_${Date.now()}__`;
+  const wrappedCommand = process.platform === "win32"
+    ? `${normalized} && (echo ${sentinelTag}& cd) || (echo ${sentinelTag}& cd & exit /b 1)`
+    : `{ ${normalized}; }; __ex=$?; echo "${sentinelTag}"; pwd; exit $__ex`;
+
+  const extractAndApplySentinel = (rawStdout: string): string => {
+    const sentinelIdx = rawStdout.lastIndexOf(sentinelTag);
+    if (sentinelIdx === -1) return rawStdout;
+    const afterSentinel = rawStdout.slice(sentinelIdx + sentinelTag.length).trim();
+    const cleaned = rawStdout.slice(0, sentinelIdx);
+    if (afterSentinel) {
+      const newCwdLine = afterSentinel.split(/\r?\n/)[0]?.trim();
+      if (newCwdLine) {
+        const resolvedNewCwd = path.resolve(activeCwd, newCwdLine);
+        const resolvedRoot = path.resolve(projectRoot);
+        const isWindows = process.platform === "win32";
+        const rootCmp = isWindows ? resolvedRoot.toLowerCase() : resolvedRoot;
+        const newCwdCmp = isWindows ? resolvedNewCwd.toLowerCase() : resolvedNewCwd;
+        if (newCwdCmp === rootCmp || newCwdCmp.startsWith(rootCmp + path.sep)) {
+          if (options.runId) {
+            sessionShellState.set(options.runId, { cwd: resolvedNewCwd });
+          }
+        }
+      }
+    }
+    return cleaned;
+  };
+
+  let sentinelSeenInStream = false;
+  const filteredOnOutput = options.onOutput
+    ? (chunk: string) => {
+        if (sentinelSeenInStream) return;
+        const idx = chunk.indexOf(sentinelTag);
+        if (idx !== -1) {
+          sentinelSeenInStream = true;
+          const before = chunk.slice(0, idx);
+          if (before) options.onOutput!(before);
+          return;
+        }
+        options.onOutput!(chunk);
+      }
+    : undefined;
+
   const shell = process.platform === "win32" ? (process.env.ComSpec || "cmd.exe") : "/bin/sh";
-  const args = process.platform === "win32" ? ["/d", "/s", "/c", normalized] : ["-c", normalized];
+  const args = process.platform === "win32" ? ["/d", "/s", "/c", wrappedCommand] : ["-c", wrappedCommand];
   const appNodeModules = path.resolve(process.cwd(), "node_modules");
   const existingNodePath = process.env.NODE_PATH || "";
   const nodePath = [existingNodePath, appNodeModules].filter(Boolean).join(path.delimiter);
@@ -260,20 +329,24 @@ export async function executeCommand(projectRoot: string, command: string, optio
 
   try {
     const result = await runProcess(shell, args, {
-      cwd: path.resolve(projectRoot),
+      cwd: activeCwd,
       env,
       timeout: Math.max(10, options.timeoutSeconds || DEFAULT_COMMAND_TIMEOUT_SECONDS) * 1000,
       maxBuffer: 8_000_000,
-      onOutput: options.onOutput,
+      onOutput: filteredOnOutput,
     }, state);
     if (state.cancelled || state.abortController.signal.aborted) throw new RunCancelledError();
-    const capped = capModelOutput([result.stdout, result.stderr].filter(Boolean).join("\n"));
+
+    const cleanStdout = extractAndApplySentinel(result.stdout);
+    const capped = capModelOutput([cleanStdout, result.stderr].filter(Boolean).join("\n"));
     return { output: capped.output, exitCode: 0, truncated: capped.truncated };
   } catch (error: any) {
     if (error instanceof RunCancelledError || state.cancelled || state.abortController.signal.aborted) {
       throw new RunCancelledError();
     }
-    const output = [error?.stdout, error?.stderr, error?.message].filter(Boolean).join("\n");
+    const cleanStdout = extractAndApplySentinel(error?.stdout || "");
+    const cleanErrMsg = error?.message ? String(error.message).replace(wrappedCommand, normalized) : "";
+    const output = [cleanStdout, error?.stderr, cleanErrMsg].filter(Boolean).join("\n");
     const capped = capModelOutput(output);
     return { output: capped.output, exitCode: typeof error?.code === "number" ? error.code : 1, truncated: capped.truncated };
   }
@@ -350,6 +423,20 @@ export async function getAgentBackend(project: ProjectRecord, options: { readOnl
       for (const action of ["write", "edit", "delete"] as const) {
         const original = backend[action]?.bind(backend);
         if (original) backend[action] = gate(action, original);
+      }
+    }
+    for (const action of ["write", "edit"] as const) {
+      const orig = backend[action]?.bind(backend);
+      if (orig) {
+        backend[action] = async (filePath: string, ...rest: any[]) => {
+          const res = await orig(filePath, ...rest);
+          const diags = await collectPostEditDiagnostics(project.root, [filePath]).catch(() => null);
+          if (diags) {
+            if (typeof res === "string") return res + diags;
+            if (typeof res === "object" && res !== null) return { ...res, lspDiagnostics: diags };
+          }
+          return res;
+        };
       }
     }
   }

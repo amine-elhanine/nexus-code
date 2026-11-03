@@ -5,6 +5,7 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { stripProjectRoot } from "./path-utils.js";
 import { LEGACY_STATE_REJECTION } from "./state-guard.js";
+import { collectPostEditDiagnostics } from "./lsp-service.js";
 
 async function safePath(projectRoot: string, requested: string) {
   const root = await fs.realpath(path.resolve(projectRoot));
@@ -513,7 +514,13 @@ export function createEditTools(projectRoot: string, options: { attachedImages?:
             applied.push(`updated ${op.file}`);
           }
         }
-        return `Applied ${applied.length} patch operation(s):\n${applied.map((a) => `- ${a}`).join("\n")}`;
+        const diagPaths = resolvedOps
+          .filter((op) => op.kind !== "delete")
+          .map((op) => op.kind === "move" ? op.toPath : op.targetPath);
+        const diagReport = await collectPostEditDiagnostics(projectRoot, diagPaths).catch(() => null);
+        let returnMsg = `Applied ${applied.length} patch operation(s):\n${applied.map((a) => `- ${a}`).join("\n")}`;
+        if (diagReport) returnMsg += diagReport;
+        return returnMsg;
       } catch (error) {
         // Restore in reverse order so moves and dependent edits unwind safely.
         for (const entry of [...snapshots.values()].reverse()) {

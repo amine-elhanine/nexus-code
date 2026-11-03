@@ -82,6 +82,9 @@ const UNIT_TESTS = [
   "test/compat-readers.test.mjs",
   "test/builtin-tool-catalog.test.mjs",
   "test/context-budget.test.mjs",
+  "test/command-sticky-cwd.test.mjs",
+  "test/session-fork-truncate.test.mjs",
+  "test/notebook-audio.test.mjs",
 ];
 
 console.log(`Running ${UNIT_TESTS.length} unit tests...\n`);

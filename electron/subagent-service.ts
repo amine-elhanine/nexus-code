@@ -577,7 +577,7 @@ export async function executeSubagentTask(options: {
     });
 
     const llm = await createChatModel(provider, modelName);
-    const codeTools = createCodeIntelligenceTools(projectRoot);
+    const codeTools = createCodeIntelligenceTools(projectRoot, { readOnly: config.readOnly });
     const tools = [...codeTools, ...(mcpTools || [])];
 
     const subAgent = await createDeepAgent({

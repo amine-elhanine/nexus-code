@@ -78,6 +78,8 @@ export function HomeView({
   customCommands,
   skills,
   onRefreshSkills,
+  onTruncateSession,
+  onForkSession,
 }: {
   messages: ChatItem[];
   draft: string;
@@ -112,6 +114,8 @@ export function HomeView({
   customCommands?: SlashCommand[];
   skills?: SkillInfo[];
   onRefreshSkills?: () => void;
+  onTruncateSession?: (fromIndex: number) => Promise<any>;
+  onForkSession?: (fromIndex: number) => Promise<any>;
 }) {
   const api = window.nexus;
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -160,7 +164,20 @@ export function HomeView({
     else {
       flushActivity();
       transcriptNodes.push(
-        <ChatItemView key={`${message.createdAt}-${index}`} message={message} onOpenImage={onOpenImage} onOpenAttachment={onOpenAttachment} />
+        <ChatItemView
+          key={`${message.createdAt}-${index}`}
+          message={message}
+          index={index}
+          onOpenImage={onOpenImage}
+          onOpenAttachment={onOpenAttachment}
+          onEditMessage={running ? undefined : (idx, text) => {
+            setDraft(text);
+            void onTruncateSession?.(idx);
+          }}
+          onForkChat={running ? undefined : (idx) => {
+            void onForkSession?.(idx);
+          }}
+        />
       );
     }
   });

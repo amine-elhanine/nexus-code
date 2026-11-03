@@ -24,6 +24,7 @@ import { AgentBrowserHost } from "./components/browser/AgentBrowserHost.js";
 import { VisualFullscreenLayer } from "./components/common/VisualFullscreen.js";
 import { AgentView } from "./views/AgentView.js";
 const HomeView = lazy(() => import("./views/HomeView.js").then((module) => ({ default: module.HomeView })));
+import { HomeCanvasDrawer } from "./components/home/HomeCanvasDrawer.js";
 const NotebookView = lazy(() => import("./views/NotebookView.js").then((module) => ({ default: module.NotebookView })));
 const MonacoEditorView = lazy(() => import("./components/editor/MonacoEditorView.js").then((module) => ({ default: module.MonacoEditorView })));
 import { useNotebookController } from "./state/useNotebookController.js";
@@ -450,6 +451,8 @@ function App() {
     clearSessionMemory,
     submit,
     stopAgent,
+    truncateSession,
+    forkSession,
     setActiveFile,
     setOpenFiles,
   } = useAppController();
@@ -678,6 +681,35 @@ function App() {
       try {
         localStorage.setItem("nexus-context-width", String(Math.round(latest)));
       } catch { /* private mode — width just won't persist */ }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  const [canvasWidth, setCanvasWidth] = useState(() => {
+    try {
+      const saved = Number(localStorage.getItem("nexus-canvas-width"));
+      return saved >= 300 && saved <= 900 ? saved : 480;
+    } catch {
+      return 480;
+    }
+  });
+
+  function startCanvasResize(event: React.PointerEvent) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startW = canvasWidth;
+    let latest = startW;
+    const move = (ev: PointerEvent) => {
+      latest = Math.min(900, Math.max(300, startW + (startX - ev.clientX)));
+      setCanvasWidth(latest);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      try {
+        localStorage.setItem("nexus-canvas-width", String(Math.round(latest)));
+      } catch { /* ignore */ }
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -1133,6 +1165,19 @@ function App() {
                       void notebook.removeSummary(summary.id);
                     },
                   })}
+                  audioOverviews={notebook.audioOverviews}
+                  generatingAudio={notebook.generatingAudio}
+                  onGenerateAudio={(topic) => void notebook.generateAudioOverview(topic, selectedProviderId, selectedModel)}
+                  onDeleteAudio={(audio) => setConfirmDialog({
+                    title: `Delete audio overview "${audio.title}"?`,
+                    message: "This permanently deletes the audio overview script. It can't be undone.",
+                    confirmLabel: "Delete audio overview",
+                    danger: true,
+                    onConfirm: () => {
+                      setConfirmDialog(null);
+                      void notebook.removeAudioOverview(audio.id);
+                    },
+                  })}
                   onDownloadDocument={(id) => void notebook.downloadDocument(id)}
                   onDeleteDocument={(doc) => setConfirmDialog({
                     title: `Delete document "${doc.title}"?`,
@@ -1238,6 +1283,14 @@ function App() {
                   onAsk={() => void notebook.ask(selectedProviderId, selectedModel, selectedEffort)}
                   onStop={() => void notebook.stopAsk()}
                   onExitToSessions={() => notebook.exitToSessions()}
+                  onHandoffToCode={(prompt) => {
+                    void enterCode();
+                    setDraft(prompt);
+                  }}
+                  onHandoffToHome={(prompt) => {
+                    enterHome();
+                    home.setDraft(prompt);
+                  }}
                   selectedProviderId={selectedProviderId}
                   selectedModel={selectedModel}
                   selectedEffort={selectedEffort}
@@ -1251,6 +1304,7 @@ function App() {
                 />
               </section>
             ) : area === "home" ? (
+              <>
               <section className="center-pane">
               <HomeView
                 messages={home.currentMessages}
@@ -1273,6 +1327,8 @@ function App() {
                 contextUsage={getSessionContextUsage(home.activeSession)}
                 activeSessionId={home.activeSession?.id}
                 sessionTitle={home.activeSession?.title}
+                onTruncateSession={(idx) => home.truncateChat(idx)}
+                onForkSession={(idx) => home.forkChat(idx)}
                 topbarLeading={
                   !showSessions ? (
                     <button className="icon-plain topbar-reopen" onClick={() => setShowSessions(true)} title="Show sidebar">
@@ -1307,6 +1363,20 @@ function App() {
                 onRefreshSkills={refreshSkills}
               />
               </section>
+              {homePreviewPath && (
+                <HomeCanvasDrawer
+                  filePath={homePreviewPath}
+                  width={canvasWidth}
+                  onResizeStart={startCanvasResize}
+                  refreshToken={home.homeFiles.find((f) => f.path === homePreviewPath)?.modified}
+                  onClose={() => setHomePreviewPath(null)}
+                  onDownload={(p) => void api.downloadHomeFile(p)}
+                  onRefine={(instr) => {
+                    void home.submit(instr, { providerId: selectedProviderId, model: selectedModel, effort: selectedEffort });
+                  }}
+                />
+              )}
+            </>
             ) : (
             <section className="center-pane">
               {view === "chat" ? (
@@ -1371,6 +1441,8 @@ function App() {
                   customCommands={customCommands.filter((c) => !c.scope || c.scope === "all" || c.scope === "code")}
                   skills={installedSkills}
                   onRefreshSkills={refreshSkills}
+                  onTruncateSession={(idx) => truncateSession(idx)}
+                  onForkSession={(idx) => forkSession(idx)}
                 />
               ) : (
                 <MonacoEditorView
@@ -1831,7 +1903,7 @@ function App() {
           </div>
         </div>
       )}
-      {homePreviewPath && (
+      {homePreviewPath && area !== "home" && (
         <Suspense fallback={null}>
         <FilePreviewModal
           filePath={homePreviewPath}

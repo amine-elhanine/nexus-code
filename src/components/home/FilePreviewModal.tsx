@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState } from "react";
-import { X, Download, FileText, Loader2, TriangleAlert } from "lucide-react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
+import { X, Download, FileText, Loader2, TriangleAlert, History } from "lucide-react";
 import { safeMarkdown } from "../../markdown.js";
+import type { ArtifactVersionManifest } from "../../types.js";
 
 type PreviewKind =
   | "markdown" | "pdf" | "image" | "docx" | "xlsx" | "pptx" | "text" | "unsupported";
@@ -55,6 +56,9 @@ export function FilePreviewModal({
   const [text, setText] = useState("");
   const [sheets, setSheets] = useState<Array<{ name: string; html: string }>>([]);
   const [activeSheet, setActiveSheet] = useState(0);
+  const [manifest, setManifest] = useState<ArtifactVersionManifest | null>(null);
+  const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
+  const [restoring, setRestoring] = useState(false);
   // Library-rendered kinds (docx/pptx) paint into a dedicated container
   // React never touches — clearing bodyRef would wipe React's own children
   // and corrupt reconciliation.
@@ -62,68 +66,85 @@ export function FilePreviewModal({
   const viewerRef = useRef<{ destroy?: () => void } | null>(null);
   const urlsRef = useRef<string[]>([]);
 
+  const loadVersions = useCallback(async () => {
+    if (typeof api?.getArtifactVersions === "function") {
+      try {
+        const m = await api.getArtifactVersions(filePath);
+        setManifest(m as ArtifactVersionManifest | null);
+      } catch {
+        setManifest(null);
+      }
+    }
+  }, [api, filePath]);
+
   useEffect(() => {
+    void loadVersions();
+  }, [loadVersions]);
+
+  const loadFileContent = useCallback(async () => {
     let cancelled = false;
     const trackUrl = (url: string) => {
       urlsRef.current.push(url);
       return url;
     };
-    (async () => {
-      try {
-        const file = load ? await load() : await api.readHomeFile(filePath);
+    try {
+      setStatus("loading");
+      const file = load ? await load() : await api.readHomeFile(filePath);
+      if (cancelled) return;
+      const bytes = base64ToBytes(file.base64);
+      if (kind === "markdown" || kind === "text") {
+        if (file.size > TEXT_RENDER_CAP) {
+          throw new Error("File is too large to display. Download it instead.");
+        }
+        setText(new TextDecoder().decode(bytes));
+      } else if (kind === "pdf") {
+        const blob = new Blob([bytes.buffer as ArrayBuffer], { type: "application/pdf" });
+        setBlobUrl(trackUrl(URL.createObjectURL(blob)));
+      } else if (kind === "image") {
+        const blob = new Blob([bytes.buffer as ArrayBuffer]);
+        setBlobUrl(trackUrl(URL.createObjectURL(blob)));
+      } else if (kind === "docx") {
+        const { renderAsync } = await import("docx-preview");
+        if (cancelled || !libRef.current) return;
+        libRef.current.innerHTML = "";
+        await renderAsync(bytes.buffer as ArrayBuffer, libRef.current);
+      } else if (kind === "xlsx") {
+        const XLSX = await import("xlsx");
         if (cancelled) return;
-        const bytes = base64ToBytes(file.base64);
-        if (kind === "markdown" || kind === "text") {
-          if (file.size > TEXT_RENDER_CAP) {
-            throw new Error("File is too large to display. Download it instead.");
-          }
-          setText(new TextDecoder().decode(bytes));
-        } else if (kind === "pdf") {
-          const blob = new Blob([bytes.buffer as ArrayBuffer], { type: "application/pdf" });
-          setBlobUrl(trackUrl(URL.createObjectURL(blob)));
-        } else if (kind === "image") {
-          const blob = new Blob([bytes.buffer as ArrayBuffer]);
-          setBlobUrl(trackUrl(URL.createObjectURL(blob)));
-        } else if (kind === "docx") {
-          const { renderAsync } = await import("docx-preview");
-          if (cancelled || !libRef.current) return;
-          libRef.current.innerHTML = "";
-          await renderAsync(bytes.buffer as ArrayBuffer, libRef.current);
-        } else if (kind === "xlsx") {
-          const XLSX = await import("xlsx");
-          if (cancelled) return;
-          const ext = fileName.split(".").pop()?.toLowerCase();
-          const workbook =
-            ext === "csv"
-              ? XLSX.read(new TextDecoder().decode(bytes), { type: "string" })
-              : XLSX.read(bytes, { type: "array" });
-          const rendered = workbook.SheetNames.map((name) => ({
-            name,
-            html: XLSX.utils.sheet_to_html(workbook.Sheets[name] || {}),
-          }));
-          if (cancelled) return;
-          setSheets(rendered);
-          setActiveSheet(0);
-        } else if (kind === "pptx") {
-          const { PptxViewer, RECOMMENDED_ZIP_LIMITS } = await import("@aiden0z/pptx-renderer");
-          if (cancelled || !libRef.current) return;
-          libRef.current.innerHTML = "";
-          const viewer = await PptxViewer.open(bytes.buffer as ArrayBuffer, libRef.current, {
-            zipLimits: RECOMMENDED_ZIP_LIMITS,
-            listOptions: { windowed: true },
-          });
-          viewerRef.current = viewer as { destroy?: () => void };
-        }
-        if (!cancelled) setStatus("ready");
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err));
-          setStatus("error");
-        }
+        const ext = fileName.split(".").pop()?.toLowerCase();
+        const workbook =
+          ext === "csv"
+            ? XLSX.read(new TextDecoder().decode(bytes), { type: "string" })
+            : XLSX.read(bytes, { type: "array" });
+        const rendered = workbook.SheetNames.map((name) => ({
+          name,
+          html: XLSX.utils.sheet_to_html(workbook.Sheets[name] || {}),
+        }));
+        if (cancelled) return;
+        setSheets(rendered);
+        setActiveSheet(0);
+      } else if (kind === "pptx") {
+        const { PptxViewer, RECOMMENDED_ZIP_LIMITS } = await import("@aiden0z/pptx-renderer");
+        if (cancelled || !libRef.current) return;
+        libRef.current.innerHTML = "";
+        const viewer = await PptxViewer.open(bytes.buffer as ArrayBuffer, libRef.current, {
+          zipLimits: RECOMMENDED_ZIP_LIMITS,
+          listOptions: { windowed: true },
+        });
+        viewerRef.current = viewer as { destroy?: () => void };
       }
-    })();
+      if (!cancelled) setStatus("ready");
+    } catch (err) {
+      if (!cancelled) {
+        setError(err instanceof Error ? err.message : String(err));
+        setStatus("error");
+      }
+    }
+  }, [api, filePath, fileName, kind, load]);
+
+  useEffect(() => {
+    void loadFileContent();
     return () => {
-      cancelled = true;
       try {
         viewerRef.current?.destroy?.();
       } catch { /* ignore teardown errors */ }
@@ -131,7 +152,24 @@ export function FilePreviewModal({
       for (const url of urlsRef.current) URL.revokeObjectURL(url);
       urlsRef.current = [];
     };
-  }, [filePath]);
+  }, [loadFileContent]);
+
+  const handleRollback = async () => {
+    if (!selectedVersion || restoring || typeof api?.restoreArtifactVersion !== "function") return;
+    setRestoring(true);
+    try {
+      const ok = await api.restoreArtifactVersion(filePath, selectedVersion);
+      if (ok) {
+        await loadFileContent();
+        await loadVersions();
+        setSelectedVersion(null);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRestoring(false);
+    }
+  };
 
   const needsLibContainer = (kind === "docx" || kind === "pptx") && status !== "error";
 
@@ -144,6 +182,46 @@ export function FilePreviewModal({
             <strong>{fileName}</strong>
             <small>{filePath}</small>
           </div>
+          {manifest && manifest.versions.length > 0 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, margin: "0 8px" }}>
+              <History size={13} style={{ opacity: 0.7 }} />
+              <select
+                aria-label="File version history"
+                value={selectedVersion ?? ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setSelectedVersion(val ? Number(val) : null);
+                }}
+                style={{
+                  fontSize: 11,
+                  background: "var(--bg-input, #1e1e1e)",
+                  color: "var(--fg, #eee)",
+                  border: "1px solid var(--border-subtle, #333)",
+                  borderRadius: 4,
+                  padding: "3px 6px",
+                  cursor: "pointer",
+                }}
+              >
+                <option value="">v{manifest.currentVersion} (current)</option>
+                {manifest.versions.slice().reverse().map((v) => (
+                  <option key={v.version} value={v.version}>
+                    v{v.version} · {new Date(v.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} ({Math.round(v.sizeBytes / 1024)} KB)
+                  </option>
+                ))}
+              </select>
+              {selectedVersion !== null && selectedVersion !== manifest.currentVersion && (
+                <button
+                  className="top-link"
+                  onClick={() => void handleRollback()}
+                  disabled={restoring}
+                  title={`Rollback to v${selectedVersion}`}
+                  style={{ fontSize: 11, padding: "2px 8px" }}
+                >
+                  {restoring ? "Reverting…" : `Revert to v${selectedVersion}`}
+                </button>
+              )}
+            </div>
+          )}
           <button className="top-link" onClick={() => onDownload(filePath)} title="Download this file">
             <Download size={13} /> Download
           </button>

@@ -462,7 +462,6 @@ export async function runProjectAgent(options: {
     : [];
   const hooksMiddleware = createHooksMiddleware({ projectRoot, hooks, runId: sessionId });
 
-  const allCodeTools = createCodeIntelligenceTools(projectRoot);
   const wantsBrowser = isWebTask(request);
   // Adaptive research budget: tasks that need the latest docs/facts get room
   // to browse (20), produce-from-local-context tasks get a tight budget (8)
@@ -500,6 +499,7 @@ export async function runProjectAgent(options: {
           : null;
       }
     : undefined;
+  const allCodeTools = createCodeIntelligenceTools(projectRoot, { readOnly: mode === "plan", beforeEdit: editGate });
   const browserTools = wantsBrowser || isGeneral
     ? createBrowserTools(projectRoot, {
         agentBrowser: {

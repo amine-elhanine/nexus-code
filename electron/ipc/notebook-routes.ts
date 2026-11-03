@@ -278,6 +278,38 @@ export function registerNotebookRoutes(ctx: MainIpcContext): void {
     const { deleteNotebookSummary } = await import("../notebook-summaries.js");
     return deleteNotebookSummary(notebookId, summaryId);
   });
+
+  // ── Audio Overview IPC (NotebookLM Parity) ──
+  ipcMain.handle("notebook:audio:list", async (_event, notebookId: string) => {
+    const { listNotebookAudioOverviews } = await import("../notebook-audio.js");
+    return listNotebookAudioOverviews(notebookId);
+  });
+  ipcMain.handle("notebook:audio:generate", async (_event, payload: { notebookId: string; topic?: string; fileIds?: string[]; providerId?: string; model?: string }) => {
+    assertPayload(NotebookGeneratePayloadSchema, payload, "notebook:audio:generate");
+    const statusKey = `nbaudio:${payload.notebookId}`;
+    const audio = await runNotebookGeneration(ctx, statusKey, async (isCancelled) => {
+      const { generateNotebookAudioOverview } = await import("../notebook-audio.js");
+      const notebookSettings = await getNotebookSettings(payload.notebookId);
+      if (isCancelled()) throw new RunCancelledError();
+      ctx.emitFor(statusKey, { type: "status", text: "Scripting podcast episode…" });
+      return generateNotebookAudioOverview(payload.notebookId, {
+        topic: payload.topic,
+        fileIds: payload.fileIds?.length ? payload.fileIds : undefined,
+        providerId: payload.providerId,
+        model: payload.model,
+        instructions: notebookSettings.instructions,
+        runId: statusKey,
+        isCancelled,
+        onStatus: (text) => ctx.emitFor(statusKey, { type: "status", text }),
+      });
+    });
+    ctx.emitFor(statusKey, { type: "status", text: `Saved ${audio.title}` });
+    return { audio };
+  });
+  ipcMain.handle("notebook:audio:delete", async (_event, notebookId: string, audioId: string) => {
+    const { deleteNotebookAudioOverview } = await import("../notebook-audio.js");
+    return deleteNotebookAudioOverview(notebookId, audioId);
+  });
   ipcMain.handle("notebook:passage", (_event, notebookId: string, chunkId: string) => getChunkPassage(notebookId, chunkId));
   ipcMain.handle("notebook:chats", (_event, notebookId: string) => listNotebookChats(notebookId));
   ipcMain.handle("notebook:createChat", (_event, notebookId: string, title?: string) => createNotebookChat(notebookId, title));
