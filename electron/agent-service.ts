@@ -25,7 +25,7 @@ import { GLOBAL_SKILLS_ROUTE, PROJECT_SKILLS_DIR, SKILL_SOURCE_PRIORITY, SYSTEM_
 import { createPluginAgentTools } from "./tool-executor.js";
 import { collectDynamicPluginContext } from "./plugin-lifecycle.js";
 import type { PluginMode } from "./plugin-manifest.js";
-import { computeCompactionThreshold, compactHistory, compactHistoryWithModel, estimateTokens, estimateMessagesTokens, estimateToolSchemaTokens, isContextWindowError, trimRunMessages, trimRunMessagesWithRecoveryBrief } from "./context-service.js";
+import { computeCompactionThreshold, compactHistory, compactHistoryWithModel, estimateTokens, estimateMessagesTokens, estimateMessageTokens, estimateToolSchemaTokens, isContextWindowError, trimRunMessages, trimRunMessagesWithRecoveryBrief } from "./context-service.js";
 import { microcompactToolResults, shrinkToBudget, shrinkWithBrief } from "./agent/compaction.js";
 import { saveArtifact, type ArtifactItem } from "./artifacts-service.js";
 import { TrajectoryLogger } from "./trajectory-service.js";
@@ -261,8 +261,11 @@ export async function runProjectAgent(options: {
     getSkillsConfig().then((config) => ({ ...config, enabled: config.enabled && assetsEnabled("skills") })),
     // Code runs get a symbol-outline map so the model orients without
     // re-listing the tree every task. Home/doc runs skip it (a documents
-    // folder has no useful symbols). Never fails the run.
-    (isGeneral
+    // folder has no useful symbols). Simple runs skip it too: question-shaped
+    // and one-file tasks orient with read/grep directly, and the repo map +
+    // project index ride EVERY model call of the run as prompt payload.
+    // Never fails the run.
+    (isGeneral || effectiveComplexity === "simple"
       ? Promise.resolve("")
       : Promise.all([
         getRepoMapSection(projectRoot, request).catch(() => ""),
@@ -945,6 +948,25 @@ export async function runProjectAgent(options: {
   // Composition of the outgoing prompt payload, largest category first with
   // Messages pinned last (even at 0) — the hover-card breakdown. Shares are
   // computed against the row total in the renderer.
+  // Per-run token-estimate memo: LangGraph emits the FULL message array on
+  // every superstep ("values" mode), and the meter + relaunch projection
+  // re-estimated every message each time — O(n) per superstep, O(n²) per run.
+  // Message objects are immutable and reused across supersteps, so a WeakMap
+  // estimate makes the repeated scans O(n) total. A recreated object simply
+  // misses the cache and is estimated as before.
+  const messageTokensMemo = new WeakMap<object, number>();
+  const estimateMessageTokensMemo = (message: any): number => {
+    if (message && typeof message === "object") {
+      const hit = messageTokensMemo.get(message);
+      if (hit !== undefined) return hit;
+      const tokens = estimateMessageTokens(message);
+      messageTokensMemo.set(message, tokens);
+      return tokens;
+    }
+    return estimateMessageTokens(message);
+  };
+  const estimateMessagesTokensMemo = (messages: any[]): number =>
+    (messages || []).reduce((sum, m) => sum + estimateMessageTokensMemo(m), 0);
   const contextBreakdown = (messages: any[]): AgentContextBreakdownEntry[] => {
     const rows = [
       { label: "System tools", tokens: systemToolsTokens },
@@ -955,11 +977,11 @@ export async function runProjectAgent(options: {
       ...(metaContextTokens > 0 ? [{ label: "Meta context", tokens: metaContextTokens }] : []),
     ].filter((row) => row.tokens > 0);
     rows.sort((a, b) => b.tokens - a.tokens);
-    rows.push({ label: "Messages", tokens: estimateMessagesTokens(messages) });
+    rows.push({ label: "Messages", tokens: estimateMessagesTokensMemo(messages) });
     return rows;
   };
   const currentContext = (messages: any[]) => {
-    const estimatedTokens = promptOverheadTokens + estimateMessagesTokens(messages);
+    const estimatedTokens = promptOverheadTokens + estimateMessagesTokensMemo(messages);
     // Keep the session's context meter on the same retained-context scale the
     // automatic trigger uses (no output reserve on either side), so compaction
     // fires exactly when the meter reads the threshold. Exact provider input
@@ -991,11 +1013,11 @@ export async function runProjectAgent(options: {
   };
   const emitContext = (messages: any[], compacted = false) => {
     const snapshot = currentContext(messages);
-    if (compacted) snapshot.usedTokens = Math.max(estimateMessagesTokens(messages), Math.min(snapshot.usedTokens, compactionThreshold));
+    if (compacted) snapshot.usedTokens = Math.max(estimateMessagesTokensMemo(messages), Math.min(snapshot.usedTokens, compactionThreshold));
     emit("context", "", undefined, undefined, undefined, undefined, undefined, snapshot);
   };
   if (!isSimple && runMessages.length > 0) {
-    const initialTokens = estimateMessagesTokens(runMessages);
+    const initialTokens = estimateMessagesTokensMemo(runMessages);
     if (promptOverheadTokens + initialTokens >= compactionThreshold) {
       const pct = Math.round(((promptOverheadTokens + initialTokens) / Math.max(1, modelContextWindow)) * 100);
       emit("status", `Context near limit at start (~${pct}% of ${formatContextWindow(modelContextWindow)}) — condensing earlier context…`);
@@ -1005,7 +1027,7 @@ export async function runProjectAgent(options: {
         );
       }
       runMessages = shrinkToBudget(runMessages, contextMessageBudget).messages;
-      const afterTokens = estimateMessagesTokens(runMessages);
+      const afterTokens = estimateMessagesTokensMemo(runMessages);
       const freedTokens = Math.max(0, initialTokens - afterTokens);
       emit("status", `Context condensed: ~${formatTokenCount(initialTokens)} → ~${formatTokenCount(afterTokens)} tokens (${formatTokenCount(freedTokens)} freed)`);
     }
@@ -1201,7 +1223,7 @@ export async function runProjectAgent(options: {
           // is expected to fail. Stop at this consistent superstep boundary,
           // condense, and relaunch — tool results already committed are kept.
           if (!isSimple) {
-            const projectedTokens = promptOverheadTokens + estimateMessagesTokens(payload.messages);
+            const projectedTokens = promptOverheadTokens + estimateMessagesTokensMemo(payload.messages);
             const measuredTokens = usage.observedInputTokens;
             if (measuredTokens >= compactionThreshold || projectedTokens >= compactionThreshold) {
               throw new AgentContextRelaunch(
@@ -1429,7 +1451,7 @@ export async function runProjectAgent(options: {
       // them before each stream attempt keeps the retry/resume/continue payload
       // small without losing any recent context — the newest user turns keep
       // verbatim results, older ones become bounded stubs (ZCode-style).
-      const preAttemptTokens = estimateMessagesTokens(runMessages);
+      const preAttemptTokens = estimateMessagesTokensMemo(runMessages);
       if (preAttemptTokens > contextMessageBudget * 0.5) {
         const micro = microcompactToolResults(runMessages);
         if (micro.cleared > 0) {
@@ -1517,7 +1539,7 @@ export async function runProjectAgent(options: {
           );
         }
         relaunches++;
-        const preTokens = estimateMessagesTokens(runMessages);
+        const preTokens = estimateMessagesTokensMemo(runMessages);
         if (contextMessageBudget <= 1500) {
           throw new Error(
             `Model context window (${formatContextWindow(modelContextWindow)}) is too small for this run even after context condensation — the system prompt plus output reserve need more headroom. Pick a model with a larger context window or adjust the context limit in Settings → Providers.`
@@ -1556,7 +1578,7 @@ export async function runProjectAgent(options: {
           runMessages = shrunk.messages;
           compactLevel = shrunk.level;
         }
-        const condensedTokens = estimateMessagesTokens(runMessages);
+        const condensedTokens = estimateMessagesTokensMemo(runMessages);
         emit("status", `Condensed via ${compactLevel} — freeing the deepest tier that fit the budget`);
         emitContext(runMessages);
         const nextProjected = promptOverheadTokens + condensedTokens;
