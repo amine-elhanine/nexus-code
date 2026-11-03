@@ -47,7 +47,7 @@ import type { AgentContextBreakdownEntry, AgentEvent, AgentMemoryContext, AgentM
 import type { TaskComplexity } from "./task-routing.js";
 import { buildSystemPrompt, homeRequestNamesFileFormat, inferHomeOutputFormats, inferHomeTaskContract } from "./agent-prompt.js";
 import { DoomLoopError, RESEARCH_BUDGET_BASE, RESEARCH_BUDGET_WITH_RESEARCH, loopPreventionMiddleware, resolveResearchBudget, toolParameterNormalizationMiddleware } from "./loop-prevention.js";
-import { buildVerificationBatch, classifyTaskComplexity, detectPackageManager, findTargetedTests, isContinueRequest, isNewProjectTask, isWebTask, pickAffectedPackageCommands, pickFileScopedVerification, pickVerificationCommands, shouldSkipMcpForTask } from "./task-routing.js";
+import { buildVerificationBatch, classifyTaskComplexity, detectPackageManager, findTargetedTests, isContinueRequest, isNewProjectTask, isWebTask, pickAffectedPackageCommands, pickFileScopedVerification, pickVerificationCommands, readPackageJsonCached, shouldSkipMcpForTask } from "./task-routing.js";
 import { describeToolCall, extractGithubLogin, extractSkillNameFromPath, loadedSkillNamesFromMessages, toolCallSummary, toolResultExcerpt } from "./tool-describe.js";
 import { saveLastRunCheckpoint, summarizeCompletedSteps } from "./run-checkpoint.js";
 import type { AgentPromptAsset } from "./prompt-assets.js";
@@ -128,10 +128,19 @@ export async function runProjectAgent(options: {
   onProjectMemoryUpdate?: (mutate: (current: string) => string) => void | Promise<unknown>;
   /** Blocking clarifying-question handler: return the user's answers or null to best-guess. */
   onUserQuestion?: (questions: Array<{ header: string; question: string; options: string[] }>) => Promise<string | null>;
+  /**
+   * Home runs only: receive extracted long-term-memory candidates OFF the
+   * run's critical path. When provided, the post-run extraction LLM call
+   * (up to ~20s) is detached — the run returns immediately after the answer
+   * is complete and the callback applies candidates in the background.
+   * Without it, extraction stays inline and candidates are returned in the
+   * result payload (headless/eval behavior).
+   */
+  onMemoryCandidates?: (candidates: MemoryCandidate[]) => Promise<void>;
   /** Controlled evaluation only: omit selected prompt assets from this run. */
   disabledPromptAssets?: AgentPromptAsset[];
 }) {
-  const { projectRoot, telemetryRoot, sessionId, request: rawRequest, images, attachments, attachmentDocs, importableAttachments, settings, memory, history, agentBackend, onEvent, isCancelled, onHomeMemoryUpdate, onProjectMemoryUpdate, onUserQuestion } = options;
+  const { projectRoot, telemetryRoot, sessionId, request: rawRequest, images, attachments, attachmentDocs, importableAttachments, settings, memory, history, agentBackend, onEvent, isCancelled, onHomeMemoryUpdate, onProjectMemoryUpdate, onUserQuestion, onMemoryCandidates } = options;
   // Full Access mode runs every non-denied command without approval prompts.
   // Behaviorally it IS Auto (verify loop, walkthrough artifact, auto-repair),
   // so the mode is normalized for all the generic branches below — only the
@@ -302,22 +311,28 @@ export async function runProjectAgent(options: {
   // server's get_me tool once (read-only) and hand the login to the run as
   // fact. Gated on GitHub-flavored requests so unrelated runs pay nothing.
   // Advisory only — any failure degrades to the old behavior.
+  // Started as a detached promise here and awaited only at prompt assembly:
+  // it used to add its full latency (up to 15s) serially to setup, but it is
+  // independent of skill scanning / tool assembly, which now overlap it.
   let identityNote: string | null = null;
   // Note: "repositories" must match — repos?\b alone fails on it ("repos"
   // is followed by "i", not a word boundary), hence the repositor alternative.
-  if (/github|repositor|\brepos?\b|pull request|\bprs?\b|issues?|gists?/i.test(request)) {
-    const meTool = mcpTools.find((t: any) => typeof t?.name === "string" && /^get_me$/i.test(t.name));
-    if (meTool && typeof meTool.invoke === "function") {
-      try {
-        const raw = await withSetupTimeout(Promise.resolve(meTool.invoke({})), 15000, "GitHub identity");
-        const login = extractGithubLogin(raw);
-        if (login) {
-          identityNote = `[Authenticated GitHub user (resolved via the GitHub MCP get_me tool — do NOT ask the user for their username): ${login}]`;
-          emit("status", `GitHub identity · ${login}`);
-        }
-      } catch { /* identity stays unknown; model falls back to tools */ }
-    }
-  }
+  const identityNotePromise: Promise<string | null> =
+    /github|repositor|\brepos?\b|pull request|\bprs?\b|issues?|gists?/i.test(request)
+      ? (async () => {
+          const meTool = mcpTools.find((t: any) => typeof t?.name === "string" && /^get_me$/i.test(t.name));
+          if (!meTool || typeof meTool.invoke !== "function") return null;
+          try {
+            const raw = await withSetupTimeout(Promise.resolve(meTool.invoke({})), 15000, "GitHub identity");
+            const login = extractGithubLogin(raw);
+            if (login) {
+              emit("status", `GitHub identity · ${login}`);
+              return `[Authenticated GitHub user (resolved via the GitHub MCP get_me tool — do NOT ask the user for their username): ${login}]`;
+            }
+          } catch { /* identity stays unknown; model falls back to tools */ }
+          return null;
+        })()
+      : Promise.resolve(null);
   if (rulesResult.hasRules && !isGeneral) {
     emit("status", `Loaded ${rulesResult.ruleFiles.length} project rule file${rulesResult.ruleFiles.length === 1 ? "" : "s"} (${rulesResult.ruleFiles.map((r) => r.filename).join(", ")})`);
   }
@@ -467,18 +482,10 @@ export async function runProjectAgent(options: {
   // Adaptive research budget: tasks that need the latest docs/facts get room
   // to browse (20), produce-from-local-context tasks get a tight budget (8)
   // so the agent switches to creating. Non-deliverable tasks are unbudgeted.
-  const homeResearchBudget = isGeneral
-    ? resolveResearchBudget({ outputRequired: Boolean(homeTaskContract?.expectsOutput), needsResearch: homeTaskContract?.needsResearch })
-    : null;
-  let homeResearchToolCalls = 0;
-  const beforeHomeResearch = () => {
-    if (homeResearchBudget === null) return null;
-    homeResearchToolCalls++;
-    if (homeResearchToolCalls > homeResearchBudget) {
-      return `[SUPERVISOR INTERVENTION] The research budget for this task has been reached (${homeResearchBudget} web lookups). Use the evidence already collected and take the next result-producing action. Do not perform another web search or page fetch unless it directly unblocks creation of the requested output.`;
-    }
-    return null;
-  };
+  // Enforced SOLELY by loopPreventionMiddleware (isResearchTool covers
+  // web_search, web_image_search, and the browser tools): the old
+  // beforeSearch/beforeRead closure counted the same calls a second time,
+  // halving the effective budget and duplicating the intervention message.
   // Home general runs always get the browser + free web search: research is
   // core to that mode, not an edge case.
   // Edit-approval gate (opt-in via AppSettings.editPolicy or the run options):
@@ -507,9 +514,9 @@ export async function runProjectAgent(options: {
           inspect: (url) => agentBrowserService.inspect(url, { sessionId, scope: isGeneral ? "home" : "code" }),
           act: (input) => agentBrowserService.act(input, projectRoot, { sessionId, scope: isGeneral ? "home" : "code", openInBrowser: input.openInBrowser }),
         },
-        beforeRead: beforeHomeResearch,
       })
     : [];
+
   // Browser actions and non-GET API calls can mutate external state. Plan mode
   // may inspect pages, but must not click, fill, navigate, or send requests.
   const safeBrowserTools = mode === "plan"
@@ -520,7 +527,6 @@ export async function runProjectAgent(options: {
   // researching unfamiliar or recently-released libraries beats hallucinating
   // their APIs. Every search is mirrored into the built-in browser.
   const webSearchTools = createWebSearchTools({
-    beforeSearch: beforeHomeResearch,
     // Mirror every search into the built-in browser so it is visible there
     // (Watching follows it live, otherwise the follow banner shows it).
     // Fire-and-forget: results come from the search API, never the mirror.
@@ -529,8 +535,9 @@ export async function runProjectAgent(options: {
     },
   });
   // Home can search for illustrative image results and embed selected ones
-  // in its Markdown response. Charge image lookups to the same research cap.
-  const webImageSearchTools = isGeneral ? createWebImageSearchTools({ beforeSearch: beforeHomeResearch }) : [];
+  // in its Markdown response. Image lookups are charged to the same research
+  // cap by loopPreventionMiddleware (isResearchTool).
+  const webImageSearchTools = isGeneral ? createWebImageSearchTools({}) : [];
   const usage = new UsageAccumulator();
   let recursionLimit = isSimple
     ? SIMPLE_TASK_LIMIT
@@ -882,6 +889,10 @@ export async function runProjectAgent(options: {
       homeRecoveryContext = priorHomeTask.contextSummary || buildHomeTaskContextSummary(priorHomeTask);
     }
   }
+  // GitHub identity note resolved here (fire-and-forget until now) so its
+  // latency overlapped skill scanning and tool assembly instead of adding to
+  // setup serially.
+  identityNote = await identityNotePromise;
   const requestText = [request, homeRecoveryContext, identityNote, resumeNote, skillNote, imageNote, docNote, importNote].filter(Boolean).join("\n\n");
   let initialHumanMessage: HumanMessage;
   if (images && images.length > 0) {
@@ -1816,10 +1827,8 @@ export async function runProjectAgent(options: {
             return { verification: "failed" };
           }
           emit("tool", `Dependency installation completed · ${pm.install}`);
-          try {
-            const scripts = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).scripts ?? {};
-            if (typeof scripts.build === "string") staticCommand = `${pm.run} build`;
-          } catch { /* fall through to default selection */ }
+          const scripts = readPackageJsonCached(root)?.scripts ?? {};
+          if (typeof scripts.build === "string") staticCommand = `${pm.run} build`;
         }
       }
 
@@ -1834,9 +1843,7 @@ export async function runProjectAgent(options: {
       const pickFormatterCommand = ((): string | null => {
         try {
           const root = path.resolve(projectRoot);
-          const pkg = existsSync(path.join(root, "package.json"))
-            ? JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"))
-            : null;
+          const pkg = readPackageJsonCached(root);
           const deps = { ...(pkg?.dependencies ?? {}), ...(pkg?.devDependencies ?? {}) };
           if (!deps.prettier && typeof pkg?.scripts?.format !== "string") return null;
           if (!changedPaths.some((p) => /\.(ts|tsx|js|jsx|mjs|cjs|json|css|md)$/i.test(p))) return null;
@@ -2111,9 +2118,12 @@ export async function runProjectAgent(options: {
         effectiveComplexity = "complex";
         isSimple = false;
       }
-      recursionLimit = (isGeneral && homeTaskContract?.expectsOutput)
-        ? HOME_DELIVERABLE_LIMIT
-        : MODE_LIMITS[fullAccess ? "full" : mode];
+      // Delta extension instead of a full budget reset: the old reset restored
+      // the complete mode limit every time, so a run at 149/150 auto steps
+      // could wander for up to 4×150 before pausing. A consumed budget earns
+      // a bounded continuation window; the deliverable-ready short-circuit
+      // and the user-ask path still cover genuinely larger remaining work.
+      recursionLimit = isGeneral ? 40 : 60;
       outerLimit = Math.max(recursionLimit, 50);
       saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
       emit("status", `Step budget reached — extending automatically (${budgetExtensions}/${maxBudgetExtensions}) and continuing from where the run stopped…`);
@@ -2362,30 +2372,43 @@ export async function runProjectAgent(options: {
   // lists, numbers) is filtered by parseCandidateFacts. Best-effort, never
   // fails the run; main auto-applies them with a visible notice (the user
   // can forget any item in the Memory tab).
+  // When onMemoryCandidates is provided (Home IPC), the call runs DETACHED:
+  // it is independent of the answer the user is waiting on, and awaiting it
+  // here delayed transcript persistence and cleanup by up to 20s on slow
+  // providers. Without a callback (headless/eval) extraction stays inline.
   let memoryCandidates: MemoryCandidate[] = [];
-  if (isGeneral && mode !== "plan") {
+  const extractMemoryCandidates = async (): Promise<MemoryCandidate[]> => {
+    const responseText = String(result.response || "");
+    const requestText = String(request || "").trim();
+    if (!shouldExtractMemory(requestText, responseText)) return [];
+    const extractPrompt =
+      `Extract durable long-term memory candidates from this assistant turn. ` +
+      `Return JSON ONLY: {"candidates":[{"category":"profile|preference|fact|context","fact":"..."}]}. ` +
+      `Rules: at most 3 candidates; each fact one sentence, 8-200 chars, enduring (identity, role, lasting preference, stable personal fact, ongoing project goal). ` +
+      `NEVER include transient data: greetings, tables, lists, counts, URLs, file names, numbers from tool output, or anything already answered in full. ` +
+      `Return {"candidates":[]} when nothing is worth remembering.\n\n` +
+      `User: ${requestText.slice(0, 800)}\nAssistant: ${responseText.slice(0, 2500)}`;
+    const raw: any = await Promise.race([
+      Promise.resolve(llm.invoke(extractPrompt)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("memory extract timeout")), 20000)),
+    ]);
+    const content = typeof raw?.content === "string"
+      ? raw.content
+      : Array.isArray(raw?.content)
+        ? raw.content.map((p: any) => (typeof p === "string" ? p : p?.text || "")).join("\n")
+        : String(raw?.content || raw?.text || "");
+    return parseCandidateFacts(content);
+  };
+  if (isGeneral && mode !== "plan" && onMemoryCandidates) {
+    const runIdForLog = sessionId;
+    void extractMemoryCandidates()
+      .then((candidates) => (candidates.length ? onMemoryCandidates(candidates) : undefined))
+      .catch((error) => {
+        if (runIdForLog) trajectory?.log({ source: "SYSTEM", type: "STATUS", content: `Background memory extraction skipped: ${error instanceof Error ? error.message : String(error)}` }).catch(() => {});
+      });
+  } else if (isGeneral && mode !== "plan") {
     try {
-      const responseText = String(result.response || "");
-      const requestText = String(request || "").trim();
-      if (shouldExtractMemory(requestText, responseText)) {
-        const extractPrompt =
-          `Extract durable long-term memory candidates from this assistant turn. ` +
-          `Return JSON ONLY: {"candidates":[{"category":"profile|preference|fact|context","fact":"..."}]}. ` +
-          `Rules: at most 3 candidates; each fact one sentence, 8-200 chars, enduring (identity, role, lasting preference, stable personal fact, ongoing project goal). ` +
-          `NEVER include transient data: greetings, tables, lists, counts, URLs, file names, numbers from tool output, or anything already answered in full. ` +
-          `Return {"candidates":[]} when nothing is worth remembering.\n\n` +
-          `User: ${requestText.slice(0, 800)}\nAssistant: ${responseText.slice(0, 2500)}`;
-        const raw: any = await Promise.race([
-          Promise.resolve(llm.invoke(extractPrompt)),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("memory extract timeout")), 20000)),
-        ]);
-        const content = typeof raw?.content === "string"
-          ? raw.content
-          : Array.isArray(raw?.content)
-            ? raw.content.map((p: any) => (typeof p === "string" ? p : p?.text || "")).join("\n")
-            : String(raw?.content || raw?.text || "");
-        memoryCandidates = parseCandidateFacts(content);
-      }
+      memoryCandidates = await extractMemoryCandidates();
     } catch { /* extraction is best-effort */ }
   }
 

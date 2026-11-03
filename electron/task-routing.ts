@@ -1,6 +1,6 @@
 // Request-routing and verification-command heuristics (pure functions over
 // the request string and project files). Extracted from agent-service.ts.
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 
 export type PackageManagerName = "npm" | "pnpm" | "yarn" | "bun";
@@ -11,8 +11,45 @@ export type PackageManager = { name: PackageManagerName; run: string; exec: stri
  * lockfiles. Order matters: pnpm-lock.yaml / yarn.lock / bun.lock[b] win
  * over package-lock.json so monorepos with multiple lockfiles resolve to
  * the most specific one present.
+ *
+ * Memoized per project root with a short TTL: the verify cascade re-detects
+ * the package manager 5+ times per run (scoped lint, affected-package
+ * commands, formatter pick, targeted tests, scaffold detection), and the
+ * answer cannot legitimately change mid-run. The TTL keeps cross-run
+ * switches (user swaps the lockfile between sessions) safe.
  */
+const PM_DETECTION_TTL_MS = 30_000;
+const pmDetectionCache = new Map<string, { pm: PackageManager; at: number }>();
+
 export function detectPackageManager(projectRoot: string): PackageManager {
+  const root = path.resolve(projectRoot);
+  const hit = pmDetectionCache.get(root);
+  if (hit && Date.now() - hit.at < PM_DETECTION_TTL_MS) return hit.pm;
+  const pm = detectPackageManagerUncached(root);
+  pmDetectionCache.set(root, { pm, at: Date.now() });
+  return pm;
+}
+
+/** mtime-keyed cached package.json reader shared by the verify-cascade heuristics. */
+const pkgJsonCache = new Map<string, { pkg: any; statMtimeMs: number }>();
+
+export function readPackageJsonCached(projectRoot: string): any | null {
+  const root = path.resolve(projectRoot);
+  const pkgPath = path.join(root, "package.json");
+  if (!existsSync(pkgPath)) return null;
+  try {
+    const statMtimeMs = statSync(pkgPath).mtimeMs;
+    const hit = pkgJsonCache.get(pkgPath);
+    if (hit && hit.statMtimeMs === statMtimeMs) return hit.pkg;
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    pkgJsonCache.set(pkgPath, { pkg, statMtimeMs });
+    return pkg;
+  } catch {
+    return null;
+  }
+}
+
+function detectPackageManagerUncached(root: string): PackageManager {
   const fallback: PackageManager = {
     name: "npm",
     run: "npm run",
@@ -21,7 +58,6 @@ export function detectPackageManager(projectRoot: string): PackageManager {
     testFile: (rel: string) => `npm test -- ${rel}`,
   };
   try {
-    const root = path.resolve(projectRoot);
     // Explicit override: .nexus/package-manager.json { "name": "pnpm" } or
     // NEXUS_PACKAGE_MANAGER env (useful for tests / containers).
     const envName = (process.env.NEXUS_PACKAGE_MANAGER || "").toLowerCase();
@@ -67,9 +103,9 @@ export function pickVerificationCommand(projectRoot: string): string | null {
   try {
     const root = path.resolve(projectRoot);
     const pm = detectPackageManager(root);
-    const pkgPath = path.join(root, "package.json");
-    if (existsSync(pkgPath)) {
-      const scripts = JSON.parse(readFileSync(pkgPath, "utf8")).scripts ?? {};
+    const pkg = readPackageJsonCached(root);
+    if (pkg) {
+      const scripts = pkg.scripts ?? {};
       // Named typecheck scripts are the source of truth; `check` scripts often
       // cover more tsconfigs than a bare `tsc --noEmit` would (multiple
       // projects), so prefer them over running tsc directly.
@@ -132,9 +168,8 @@ export function pickVerificationCommands(projectRoot: string): string[] {
   try {
     const root = path.resolve(projectRoot);
     const candidates = [path.join(root, ".nexus", "verification.json")];
-    const pkgPath = path.join(root, "package.json");
-    if (existsSync(pkgPath)) {
-      const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    const pkg = readPackageJsonCached(root);
+    if (pkg) {
       if (pkg?.nexus?.verification) candidates.push("package.json:nexus.verification");
       for (const candidate of candidates) {
         const raw = candidate === "package.json:nexus.verification" ? pkg.nexus.verification : JSON.parse(readFileSync(candidate, "utf8"));
