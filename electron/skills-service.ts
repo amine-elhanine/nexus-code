@@ -930,11 +930,17 @@ function recommendedSkills(catalog: SkillInfo[], evidenceOf: (skill: SkillInfo) 
 
 /** Descriptions are trimmed for the note; SKILL.md holds the full text. */
 const SKILL_NOTE_DESCRIPTION_CAP = 320;
+// The full catalog note rides along on EVERY model call of every run, and the
+// mounted-skill listing in the system message repeats each description — so
+// entries not flagged READ FIRST get a tight one-line description to keep the
+// duplicated surface small. READ FIRST / forced entries keep the full cap:
+// the model must judge those at a glance.
+const SKILL_NOTE_NON_RECOMMENDED_CAP = 120;
 
-function skillNoteDescription(skill: SkillInfo): string {
+function skillNoteDescription(skill: SkillInfo, cap: number = SKILL_NOTE_DESCRIPTION_CAP): string {
   const description = (skill.description || "").replace(/\s+/g, " ").trim();
-  if (description.length <= SKILL_NOTE_DESCRIPTION_CAP) return description;
-  return `${description.slice(0, SKILL_NOTE_DESCRIPTION_CAP).trimEnd()}…`;
+  if (description.length <= cap) return description;
+  return `${description.slice(0, cap).trimEnd()}…`;
 }
 
 /**
@@ -960,7 +966,8 @@ export function formatSkillNote(
     .map((source) => `${catalog.filter((skill) => skill.source === source).length} ${source}`)
     .join(", ");
   const lines = catalog.map((skill) => {
-    const description = skillNoteDescription(skill);
+    const highlighted = forcedNames.has(skill.name) || recommendedNames.has(skill.name);
+    const description = skillNoteDescription(skill, highlighted ? SKILL_NOTE_DESCRIPTION_CAP : SKILL_NOTE_NON_RECOMMENDED_CAP);
     const marker = forcedNames.has(skill.name)
       ? "FORCED BY USER — MUST USE THIS SKILL"
       : recommendedNames.has(skill.name)

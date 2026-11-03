@@ -234,6 +234,39 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
           },
           onHomeMemoryUpdate: (mutate) => mutateHomeMemory((current) => mutate(current)),
           onUserQuestion: (questions) => ctx.askUserBlocking(sessionId, questions),
+          // Semantic memory extraction runs detached inside the agent (up to
+          // ~20s on slow providers); applying the candidates happens here,
+          // in the background, with the same "Memory updated" notice.
+          onMemoryCandidates: async (candidates) => {
+            // Semantic memory auto-applies (ChatGPT-style "Memory updated"): the
+            // extraction filter already drops transient data, candidates dedupe
+            // against existing facts, and anything wrong can be forgotten in the
+            // Memory tab. A review queue would silently strand identity facts.
+            if (!candidates.length) return;
+            let applied: string[] = [];
+            await mutateHomeMemory((latest) => {
+              const current = parseHomeMemory(latest);
+              const known = new Set(
+                [...current.profile, ...current.preferences, ...current.facts, ...current.context].map((f) => f.toLowerCase())
+              );
+              const validCats = ["profile", "preference", "fact", "context"];
+              let merged = latest;
+              applied = [];
+              for (const cand of candidates.slice(0, 3)) {
+                const fact = String(cand.fact || "").trim().slice(0, 200);
+                if (!fact || known.has(fact.toLowerCase())) continue;
+                const cat = validCats.includes(cand.category) ? cand.category : "fact";
+                merged = addMemoryFact(merged, cat as "profile" | "preference" | "fact" | "context", fact);
+                known.add(fact.toLowerCase());
+                applied.push(fact);
+              }
+              return merged;
+            });
+            if (applied.length) {
+              const shown = applied.join("; ").slice(0, 220);
+              ctx.emitFor(sessionId, { type: "status", text: `Saved to memory: ${shown} — manage it in the Memory tab.` });
+            }
+          },
           isCancelled: () => isCommandRunCancelled(sessionId),
         });
       } catch (error) {
@@ -299,38 +332,6 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
         const hasFiles = deletedScripts.length > 0 || (result.artifact != null);
         if (isSubstantiveHomeTask(payload.request || "", result.response || "", hasFiles)) {
           await mutateHomeMemory((current) => recordDeliverable(current, payload.request || "", result.response || "", sessionId));
-        }
-        // Semantic memory auto-applies (ChatGPT-style "Memory updated"): the
-        // extraction filter already drops transient data, candidates dedupe
-        // against existing facts, and anything wrong can be forgotten in the
-        // Memory tab. A review queue would silently strand identity facts.
-        const candidates = (result as unknown as { memoryCandidates?: Array<{ category: string; fact: string }> }).memoryCandidates || [];
-        if (candidates.length) {
-          // The mutate returns the merged memory (persisted by mutateHomeMemory);
-          // applied facts are collected through the closure for the notice below.
-          let applied: string[] = [];
-          await mutateHomeMemory((latest) => {
-            const current = parseHomeMemory(latest);
-            const known = new Set(
-              [...current.profile, ...current.preferences, ...current.facts, ...current.context].map((f) => f.toLowerCase())
-            );
-            const validCats = ["profile", "preference", "fact", "context"];
-            let merged = latest;
-            applied = [];
-            for (const cand of candidates.slice(0, 3)) {
-              const fact = String(cand.fact || "").trim().slice(0, 200);
-              if (!fact || known.has(fact.toLowerCase())) continue;
-              const cat = validCats.includes(cand.category) ? cand.category : "fact";
-              merged = addMemoryFact(merged, cat as "profile" | "preference" | "fact" | "context", fact);
-              known.add(fact.toLowerCase());
-              applied.push(fact);
-            }
-            return merged;
-          });
-          if (applied.length) {
-            const shown = applied.join("; ").slice(0, 220);
-            ctx.emitFor(sessionId, { type: "status", text: `Saved to memory: ${shown} — manage it in the Memory tab.` });
-          }
         }
       } catch { /* memory is best-effort */ }
 

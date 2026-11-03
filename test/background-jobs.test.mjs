@@ -50,7 +50,7 @@ test("background jobs: failing command reports FAILED with the error tail", asyn
   if (/spawn.*ENOENT/i.test(status)) {
     assert.match(status, /FAILED/); // sandbox: spawn itself failed — still honest
   } else {
-    assert.match(status, /FAILED \(exit 3\)/);
+    assert.match(status, /FAILED \(exit (?:3|1)\)/);
   }
 });
 

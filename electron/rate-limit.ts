@@ -86,9 +86,45 @@ export function parseRetryAfterMs(error: unknown): number | null {
 export function sanitizeResumeCheckpoint(messages: any[]): any[] {
   const checkpoint = [...messages];
   while (checkpoint.length > 0) {
-    const last = checkpoint[checkpoint.length - 1];
-    if (Array.isArray(last?.tool_calls) && last.tool_calls.length > 0) checkpoint.pop();
+    const first = checkpoint[0];
+    const isTool = (first as any)?.type === "tool" || (first as any)?._getType?.() === "tool" || (first as any)?.constructor?.name === "ToolMessage";
+    if (isTool) checkpoint.shift();
     else break;
+  }
+  while (checkpoint.length > 0) {
+    const last = checkpoint[checkpoint.length - 1];
+    if (Array.isArray(last?.tool_calls) && last.tool_calls.length > 0) {
+      checkpoint.pop();
+      continue;
+    }
+    let lastAiIdx = -1;
+    for (let j = checkpoint.length - 1; j >= 0; j--) {
+      const m = checkpoint[j];
+      const isAi = (m as any)?.type === "ai" || (m as any)?._getType?.() === "ai" || (m as any)?.constructor?.name === "AIMessage";
+      if (isAi && Array.isArray((m as any)?.tool_calls) && (m as any).tool_calls.length > 0) {
+        lastAiIdx = j;
+        break;
+      }
+    }
+    if (lastAiIdx >= 0) {
+      const aiMsg = checkpoint[lastAiIdx];
+      const callIds = new Set(aiMsg.tool_calls.map((c: any) => c?.id).filter(Boolean));
+      let toolMsgCount = 0;
+      for (let j = lastAiIdx + 1; j < checkpoint.length; j++) {
+        const isTool = (checkpoint[j] as any)?.type === "tool" || (checkpoint[j] as any)?._getType?.() === "tool" || (checkpoint[j] as any)?.constructor?.name === "ToolMessage";
+        if (isTool) {
+          toolMsgCount++;
+          const tId = (checkpoint[j] as any)?.tool_call_id;
+          if (tId) callIds.delete(tId);
+        }
+      }
+      const hasUnanswered = callIds.size > 0 && toolMsgCount < aiMsg.tool_calls.length;
+      if (hasUnanswered) {
+        checkpoint.splice(lastAiIdx);
+        continue;
+      }
+    }
+    break;
   }
 
   let i = checkpoint.length - 1;

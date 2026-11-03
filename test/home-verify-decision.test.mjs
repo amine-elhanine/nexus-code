@@ -89,7 +89,39 @@ test("order 3: structure failures produce repair feedback naming the artifacts",
     invalidArtifacts: [{ path: "broken.pptx", error: "invalid ZIP-based document header" }],
   });
   assert.equal(decision.outcome, "failed-structure");
+  assert.equal(decision.repairs, 1);
   assert.match(decision.verifyFeedback, /broken\.pptx \(invalid ZIP-based document header\)/);
+});
+
+test("order 3b: structure repairs count against MAX_REPAIRS (no unbounded no-file loop)", () => {
+  // First structure repair escalates when it is the last allowed one.
+  const lastChance = decideHomeVerification({ ...base, currentRepairs: 1, maxRepairs: 2 });
+  assert.equal(lastChance.outcome, "failed-structure");
+  assert.equal(lastChance.repairs, 2);
+  assert.match(lastChance.verifyFeedback, /FINAL repair/);
+  // Exhausted repairs with still no valid output → honest terminal failure,
+  // NOT another identical repair prompt.
+  const exhausted = decideHomeVerification({ ...base, currentRepairs: 2, maxRepairs: 2 });
+  assert.equal(exhausted.outcome, "failed-terminal");
+});
+
+test("order 3c: structure feedback carries content findings for the valid siblings", () => {
+  const decision = decideHomeVerification({
+    ...base,
+    freshFiles: ["broken.pptx", "report.docx"],
+    createdDeliverable: true,
+    artifactValid: false,
+    invalidArtifacts: [{ path: "broken.pptx", error: "invalid ZIP-based document header" }],
+    contentInspections: [
+      { path: "report.docx", kind: "docx", ok: false, metrics: { kind: "docx", primaryCount: 1, wordCount: 12, titles: [], textSample: "" }, problems: ["document has only 12 words"], summary: "12 words" },
+    ],
+  });
+  assert.equal(decision.outcome, "failed-structure");
+  // One repair round reports BOTH failure classes instead of discovering
+  // content problems only after structure passes.
+  assert.match(decision.verifyFeedback, /broken\.pptx/);
+  assert.match(decision.verifyFeedback, /Content inspection of the valid files also found/);
+  assert.match(decision.verifyFeedback, /report\.docx: document has only 12 words/);
 });
 
 test("order 4: content inspection failures come with per-file targeted problems", () => {
