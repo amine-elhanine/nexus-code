@@ -34,7 +34,7 @@ import { RunCancelledError, getRunAbortSignal } from "./command-service.js";
 import { requestCommandApproval } from "./approval-service.js";
 import { createHomeMemoryTool, addMemoryFact, removeMemoryFactWithCount, selectRelevantHomeMemory, parseCandidateFacts, capMemoryItems, shouldExtractMemory, type MemoryCandidate } from "./home-memory-service.js";
 import { buildHomeTaskContextSummary, createHomeTaskJournal, finishHomeTaskJournal, isHomeTaskContinuation, loadHomeTaskJournal, recordHomeTaskAction, saveHomeTaskJournal, updateHomeTaskContextSummary, type HomeTaskJournal, type HomeTaskPhase } from "./home-task-service.js";
-import { validateHomeArtifactContract, selectHomeArtifactCandidates } from "./home-artifact-service.js";
+import { validateHomeArtifactContract, selectHomeArtifactCandidates, createArtifactValidationCache } from "./home-artifact-service.js";
 import { inspectDeliverables, planItemEvidence, type DeliverableInspection } from "./deliverable-inspect.js";
 import { buildFailoverChain, type FailoverTarget } from "./agent/provider-failover.js";
 import { createHomeResearchTool } from "./home-research-agent.js";
@@ -567,6 +567,11 @@ export async function runProjectAgent(options: {
   // (research, explanations) are exempt — no todo plan needed there.
   // runStartMs initialized earlier before buildDeepAgent
   let initialHomeFiles: HomeFileSnapshot = new Map();
+  // Memoizes jszip/pdf-parse validation results per (path, size, mtime) for
+  // the three Home validation sites below (loop gate, verify node,
+  // recursion short-circuit) so a deliverable is fully parsed at most once
+  // per (re)write instead of on every modify tool call.
+  const homeArtifactCache = isGeneral ? createArtifactValidationCache(projectRoot) : null;
   if (isGeneral) {
     try {
       initialHomeFiles = await snapshotHomeFiles(projectRoot);
@@ -589,10 +594,10 @@ export async function runProjectAgent(options: {
     : null;
 
   const checkDeliverableReady = async () => {
-    if (!isGeneral || !homeTaskContract?.expectsOutput) return null;
+    if (!isGeneral || !homeTaskContract?.expectsOutput || !homeArtifactCache) return null;
     const currentFresh = await findFreshHomeFiles(projectRoot, initialHomeFiles, runStartMs);
     if (!currentFresh.length) return null;
-    const contract = await validateHomeArtifactContract(projectRoot, currentFresh, homeTaskContract?.expectedFormats);
+    const contract = await homeArtifactCache.contract(currentFresh, homeTaskContract?.expectedFormats);
     if (contract.valid) {
       return {
         ready: true,
@@ -1601,13 +1606,18 @@ export async function runProjectAgent(options: {
           ? await findFreshHomeFiles(projectRoot, initialHomeFiles, runStartMs)
           : [];
         const createdDeliverable = freshFiles.length > 0;
-        const artifactContract = await validateHomeArtifactContract(projectRoot, freshFiles, homeTaskContract?.expectedFormats);
+        const artifactContract = await homeArtifactCache!.contract(freshFiles, homeTaskContract?.expectedFormats);
         const validatedDeliverable = createdDeliverable && artifactContract.valid;
         // Content-level inspection on top of structure validation: a valid
         // package with placeholder titles / thin text / no topical coverage
         // must fail with TARGETED feedback, not get announced as done.
-        const contentInspections: DeliverableInspection[] = validatedDeliverable
-          ? await inspectDeliverables(projectRoot, selectHomeArtifactCandidates(freshFiles), request)
+        // Structurally-valid candidates are inspected even when the contract
+        // has missing formats or invalid siblings, so one repair round sees
+        // every failure class at once instead of discovering them one at a
+        // time (each discovery otherwise costs a full deep_agent round-trip).
+        const validCandidates = artifactContract.checks.filter((check) => check.valid).map((check) => check.path);
+        const contentInspections: DeliverableInspection[] = validCandidates.length
+          ? await inspectDeliverables(projectRoot, validCandidates, request)
           : [];
         const responseTextTrimmed = String(state.response || "").trimEnd();
         const hasVisualBlocks = responseHasVisualBlocks(responseTextTrimmed);
@@ -1674,9 +1684,12 @@ export async function runProjectAgent(options: {
           case "failed-plan":
             return { verification: "failed", repairs: decision.repairs, verifyFeedback: decision.verifyFeedback };
           case "failed-structure":
-            // NOTE: deliberately no `repairs` increment (pre-existing contract:
-            // structure retries are bounded by the recursion limit, not MAX_REPAIRS).
-            return { verification: "failed", verifyFeedback: decision.verifyFeedback };
+            // Structure failures increment repairs like every other failure:
+            // unbounded structure retries (the old contract) let a model that
+            // never produces a file cycle until the recursion limit. When
+            // MAX_REPAIRS is exhausted with no valid output, the decision
+            // falls through to failed-terminal and the run ends honestly.
+            return { verification: "failed", repairs: decision.repairs, verifyFeedback: decision.verifyFeedback };
           case "passed":
           case "passed-with-warnings":
             return { verification: "passed" };
@@ -2060,7 +2073,7 @@ export async function runProjectAgent(options: {
         try {
           const fresh = await findFreshHomeFiles(projectRoot, initialHomeFiles, runStartMs);
           if (fresh.length > 0) {
-            const contract = await validateHomeArtifactContract(projectRoot, fresh, homeTaskContract?.expectedFormats);
+            const contract = await homeArtifactCache!.contract(fresh, homeTaskContract?.expectedFormats);
             if (contract.valid) {
               emit("status", "Deliverable verified on disk — completing run without unnecessary budget extension.");
               await cleanupHomeScratchFiles(projectRoot, fresh).catch(() => {});
@@ -2229,7 +2242,9 @@ export async function runProjectAgent(options: {
     }
   }
 
-  const homeArtifactContract = await validateHomeArtifactContract(projectRoot, homeFreshFiles, homeTaskContract?.expectedFormats);
+  const homeArtifactContract = homeArtifactCache
+    ? await homeArtifactCache.contract(homeFreshFiles, homeTaskContract?.expectedFormats)
+    : await validateHomeArtifactContract(projectRoot, homeFreshFiles, homeTaskContract?.expectedFormats);
   const homeInvalidArtifacts = homeArtifactContract.invalidArtifacts;
   const homeMissingFormats = homeArtifactContract.missingFormats;
   if (isGeneral && homeTaskContract?.expectsOutput && result?.verification === "failed") {

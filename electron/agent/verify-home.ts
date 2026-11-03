@@ -43,7 +43,7 @@ export type HomeVerifyDecisionInput = {
 export type HomeVerifyDecision =
   | { outcome: "chat-answer"; hasVisualBlocks: boolean; telemetry: string }
   | { outcome: "failed-charts"; repairs: number; verifyFeedback: string; telemetry: string }
-  | { outcome: "failed-structure"; verifyFeedback: string; telemetry: string }
+  | { outcome: "failed-structure"; repairs: number; verifyFeedback: string; telemetry: string }
   | { outcome: "failed-content"; repairs: number; verifyFeedback: string; telemetry: string }
   | { outcome: "failed-plan"; repairs: number; verifyFeedback: string; telemetry: string }
   | { outcome: "passed"; telemetry: string }
@@ -114,24 +114,38 @@ export function decideHomeVerification(input: HomeVerifyDecisionInput): HomeVeri
     };
   }
 
+  const contentProblems = contentInspections.filter((inspection) => !inspection.ok);
+
   // 3. Structure validation: output missing or structurally invalid.
+  // Structure failures DO count against MAX_REPAIRS: without an increment,
+  // repairsLeft stays true forever and a model that keeps answering without
+  // producing a file cycles deep_agent→verify with the identical prompt until
+  // the recursion limit (~hundreds of steps). After the last structure
+  // repair, verification ends as failed-terminal (honest failure).
   if (wantsDeliverable && (!createdDeliverable || !artifactValid) && repairsLeft) {
     const validationDetails = [
       ...invalidArtifacts.map((check) => `${check.path} (${check.error || "invalid"})`),
       ...(missingFormats.length ? [`missing requested format${missingFormats.length > 1 ? "s" : ""}: ${missingFormats.map((format) => `.${format}`).join(", ")}`] : []),
     ];
     const validationNote = validationDetails.length ? ` Output validation failed: ${validationDetails.join("; ")}.` : " No new workspace output was created.";
+    // Content findings for the structurally-valid files ride along: one
+    // repair round should see every failure class, not discover content
+    // problems only after structure passes (each discovery costs a full
+    // deep_agent round-trip).
+    const contentNote = contentProblems.length
+      ? ` Content inspection of the valid files also found:\n${contentProblems.flatMap((inspection) => inspection.problems.map((problem) => `- ${inspection.path}: ${problem}`)).join("\n")}`
+      : "";
     const failedSkillsNote = failedSkillNames.length
       ? ` Skills already loaded this run — do NOT re-read any SKILL.md (${failedSkillNames.join(", ")}): go straight to write_file + execute.`
       : "";
+    const finalStructureAttempt = currentRepairs + 1 >= maxRepairs;
     return {
       outcome: "failed-structure",
+      repairs: currentRepairs + 1,
       telemetry: `Verification · output check failed.${validationNote}`,
-      verifyFeedback: `The request has an observable output contract, but the output is missing or failed validation.${validationNote} You are in AUTO mode: do NOT stop to talk or narrate future steps.${homeReadOnlyStreak >= 7 ? " The supervisor detected a prolonged read-only/research streak. Change strategy now and use the evidence already collected." : ""}${failedSkillsNote} Create or repair the requested result now, then inspect the created path and confirm it is readable. Do not perform another research/read-only action unless it is required to unblock creation.`,
+      verifyFeedback: `The request has an observable output contract, but the output is missing or failed validation.${validationNote} You are in AUTO mode: do NOT stop to talk or narrate future steps.${homeReadOnlyStreak >= 7 ? " The supervisor detected a prolonged read-only/research streak. Change strategy now and use the evidence already collected." : ""}${failedSkillsNote} Create or repair the requested result now, then inspect the created path and confirm it is readable. Do not perform another research/read-only action unless it is required to unblock creation.${contentNote}${finalStructureAttempt ? " This is your FINAL repair: if the output is still missing or invalid on the next check, the run ends as failed." : ""}`,
     };
   }
-
-  const contentProblems = contentInspections.filter((inspection) => !inspection.ok);
 
   // 4. Content inspection: targeted per-file repair round.
   if (contentProblems.length > 0 && repairsLeft) {

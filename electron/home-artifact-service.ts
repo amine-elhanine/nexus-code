@@ -173,6 +173,55 @@ export async function validateHomeArtifactContract(
   };
 }
 
+// ── Per-run validation cache ─────────────────────────────────────────────────
+// One Home run validates the same deliverable up to 4 times: the loop-
+// prevention gate on every modify tool call, the verify node, the
+// recursion-limit short-circuit, and post-run recording. jszip/pdf-parse
+// reparsing is the expensive part, so results are memoized per
+// (path, size, mtime) — one cheap stat per call, a full re-parse only after
+// the file actually changed on disk.
+export type ArtifactValidationCache = {
+  artifact: (relativePath: string) => Promise<HomeArtifactCheck>;
+  contract: (freshPaths: string[], expectedFormats?: string[]) => Promise<HomeArtifactContractCheck>;
+};
+
+export function createArtifactValidationCache(root: string): ArtifactValidationCache {
+  const cache = new Map<string, { statKey: string; check: HomeArtifactCheck }>();
+  const statKeyFor = async (full: string): Promise<string> => {
+    try {
+      const stat = await fs.stat(full);
+      return `${stat.size}:${stat.mtimeMs}`;
+    } catch {
+      return "missing";
+    }
+  };
+  const artifact = async (relativePath: string): Promise<HomeArtifactCheck> => {
+    const normalized = relativePath.replace(/\\/g, "/");
+    const full = path.resolve(path.resolve(root), normalized);
+    const statKey = await statKeyFor(full);
+    const hit = cache.get(normalized);
+    if (hit && hit.statKey === statKey) return hit.check;
+    const check = await validateHomeArtifact(root, normalized);
+    cache.set(normalized, { statKey, check });
+    return check;
+  };
+  const contract = async (freshPaths: string[], expectedFormats: string[] = []): Promise<HomeArtifactContractCheck> => {
+    const candidates = selectHomeArtifactCandidates(freshPaths);
+    const unique = [...new Set(candidates.map((p) => p.replace(/\\/g, "/")))];
+    const checks = unique.length ? await Promise.all(unique.map(artifact)) : [];
+    const invalidArtifacts = checks.filter((check) => !check.valid);
+    const missingFormats = [...new Set(expectedFormats.map((format) => (format.startsWith(".") ? format.slice(1) : format).toLowerCase()))]
+      .filter((format) => !freshPaths.some((file) => path.extname(file).toLowerCase() === `.${format}`));
+    return {
+      valid: freshPaths.length > 0 && invalidArtifacts.length === 0 && missingFormats.length === 0,
+      checks,
+      invalidArtifacts,
+      missingFormats,
+    };
+  };
+  return { artifact, contract };
+}
+
 /** Prefer final-looking outputs when a run also leaves a generator script. */
 export function selectHomeArtifactCandidates(relativePaths: string[]): string[] {
   const final = relativePaths.filter((p) => !isGeneratedSource(p));
