@@ -39,9 +39,24 @@ function countToolCalls(messages: any[]): number {
   return count;
 }
 
+function sliceAlignedMessages(messages: any[], maxCount: number): any[] {
+  const all = messages || [];
+  if (all.length <= maxCount) return all;
+  let startIdx = all.length - maxCount;
+  while (startIdx < all.length) {
+    const m = all[startIdx];
+    const isTool = (m as any)?.type === "tool" || (m as any)?._getType?.() === "tool" || (m as any)?.constructor?.name === "ToolMessage";
+    if (isTool) startIdx++;
+    else break;
+  }
+  return all.slice(startIdx);
+}
+
+
 export function saveLastRunCheckpoint(sessionId: string | undefined, checkpoint: RunCheckpoint, telemetryRoot?: string): void {
   if (!sessionId) return;
-  const messages = (checkpoint.messages || []).slice(-100);
+
+  const messages = sliceAlignedMessages(checkpoint.messages, 100);
   const ledger = checkpoint.ledger ?? {
     updatedAt: new Date().toISOString(),
     planItems: checkpoint.planItems ?? null,
@@ -124,7 +139,7 @@ export async function persistLastRunCheckpoint(telemetryRoot: string, sessionId:
       changedFiles: [],
       verification: "none",
     },
-    messages: checkpoint.messages.slice(-80).map(serializeCheckpointMessage).filter(Boolean),
+    messages: sliceAlignedMessages(checkpoint.messages, 80).map(serializeCheckpointMessage).filter(Boolean),
   };
   // Atomic write: a crash mid-write must not leave a truncated checkpoint —
   // loadLastRunCheckpoint would silently return null and "continue" would

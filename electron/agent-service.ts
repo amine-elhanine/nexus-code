@@ -54,7 +54,8 @@ import type { AgentPromptAsset } from "./prompt-assets.js";
 import { extractDiagnosticFeedback, VERIFY_OUTPUT_CAP, HISTORY_CHAR_CAP, textFromMessage, chunkText, tail, compactTablesForMemory, truncateOnLines, firstMeaningfulLine, flattenToolMessageContent } from "./agent/message-utils.js";
 import { planItemsFromArgs, buildToolContextBlock } from "./agent/tool-context.js";
 import { UsageAccumulator } from "./agent/usage.js";
-import { AgentContextRelaunch, MODE_LIMITS, SIMPLE_TASK_LIMIT, MAX_AGENT_ERROR_RECOVERIES, MAX_REPAIRS, isRecursionLimitError } from "./agent/loop-limits.js";
+import { AgentContextRelaunch, MODE_LIMITS, SIMPLE_TASK_LIMIT, HOME_DELIVERABLE_LIMIT, MAX_AGENT_ERROR_RECOVERIES, MAX_BUDGET_EXTENSIONS, MAX_REPAIRS, isRecursionLimitError } from "./agent/loop-limits.js";
+import { cleanupHomeScratchFiles } from "./agent/home-files.js";
 import { snapshotHomeFiles, findFreshHomeFiles, type HomeFileSnapshot } from "./agent/home-files.js";
 import { appendEntryLog, PROJECT_MEMORY_RUN_LOG_CAP, SESSION_MEMORY_ENTRY_CAP, SESSION_MEMORY_CHAR_CAP } from "./agent/memory-log.js";
 import { prepareContextBudget } from "./agent/context-budget.js";
@@ -531,7 +532,11 @@ export async function runProjectAgent(options: {
   // in its Markdown response. Charge image lookups to the same research cap.
   const webImageSearchTools = isGeneral ? createWebImageSearchTools({ beforeSearch: beforeHomeResearch }) : [];
   const usage = new UsageAccumulator();
-  let recursionLimit = isSimple ? SIMPLE_TASK_LIMIT : MODE_LIMITS[fullAccess ? "full" : mode];
+  let recursionLimit = isSimple
+    ? SIMPLE_TASK_LIMIT
+    : (isGeneral && homeTaskContract?.expectsOutput)
+      ? HOME_DELIVERABLE_LIMIT
+      : MODE_LIMITS[fullAccess ? "full" : mode];
   // Opencode core: ripgrep-like grep + range-read only for simple tasks.
   const codeTools = pickRuntimeCodeTools(allCodeTools, effectiveComplexity);
   // The backend is also read-only in Plan mode, but keep the invariant at the
@@ -560,13 +565,43 @@ export async function runProjectAgent(options: {
   // requests, and Home requests whose contract expects an observable output
   // (document, dataset, multi-part deliverable). Chat-shaped Home questions
   // (research, explanations) are exempt — no todo plan needed there.
+  // runStartMs initialized earlier before buildDeepAgent
+  let initialHomeFiles: HomeFileSnapshot = new Map();
+  if (isGeneral) {
+    try {
+      initialHomeFiles = await snapshotHomeFiles(projectRoot);
+    } catch { /* baseline is best effort */ }
+  }
+
+  // Plan phase gate for complex work: Code changes require a plan gate.
+  // Home tasks require a plan gate ONLY when multiple deliverables are expected.
+  // Single-deliverable Home tasks (e.g. 1 pptx/docx deck) should generate directly without forcing multi-phase todos.
   const requiresPlanGate =
     mode !== "plan" &&
     effectiveComplexity === "complex" &&
-    Boolean(isGeneral ? homeTaskContract?.expectsOutput : codeTaskContract?.expectsChanges);
+    Boolean(
+      isGeneral
+        ? (homeTaskContract?.expectsOutput && (homeTaskContract?.expectedFormats?.length ?? 0) > 1)
+        : codeTaskContract?.expectsChanges
+    );
   const beforeCodeModify = () => requiresPlanGate && !codePlanReady
     ? "[PHASE GATE] This is a complex request and no execution plan exists yet. Create a concrete todo plan with write_todos first, then implement the first item. Do not produce the deliverable before the plan is recorded."
     : null;
+
+  const checkDeliverableReady = async () => {
+    if (!isGeneral || !homeTaskContract?.expectsOutput) return null;
+    const currentFresh = await findFreshHomeFiles(projectRoot, initialHomeFiles, runStartMs);
+    if (!currentFresh.length) return null;
+    const contract = await validateHomeArtifactContract(projectRoot, currentFresh, homeTaskContract?.expectedFormats);
+    if (contract.valid) {
+      return {
+        ready: true,
+        files: currentFresh,
+        summary: `verified format(s): ${(homeTaskContract?.expectedFormats || []).join(", ") || "document"}`,
+      };
+    }
+    return null;
+  };
   const subagentTool = createSubagentDelegationTool({
     projectRoot,
     provider,
@@ -739,7 +774,13 @@ export async function runProjectAgent(options: {
       backend: compositeBackend as any,
       middleware: [
         toolParameterNormalizationMiddleware(projectRoot),
-        loopPreventionMiddleware({ general: isGeneral, outputRequired: Boolean(homeTaskContract?.expectsOutput), needsResearch: homeTaskContract?.needsResearch, beforeModify: beforeCodeModify }),
+        loopPreventionMiddleware({
+          general: isGeneral,
+          outputRequired: Boolean(homeTaskContract?.expectsOutput),
+          needsResearch: homeTaskContract?.needsResearch,
+          beforeModify: beforeCodeModify,
+          checkDeliverableReady,
+        }),
         ...(isSimple ? [] : [todoListMiddleware()]),
         ...(hooksMiddleware ? [hooksMiddleware] : []),
       ],
@@ -1029,13 +1070,12 @@ export async function runProjectAgent(options: {
   };
   const diffFingerprint = (d: { path: string; additions: number; deletions: number }) => `${d.additions}/${d.deletions}`;
   const initialDiff = new Map<string, string>();
-  let initialHomeFiles: HomeFileSnapshot = new Map();
   if (!isGeneral) {
     try {
       const before = await getWorkspaceDiffFiles(projectRoot);
       for (const d of before) initialDiff.set(d.path, diffFingerprint(d));
     } catch { /* baseline is best-effort; verify falls back to full diff */ }
-  } else {
+  } else if (!initialHomeFiles.size) {
     try {
       initialHomeFiles = await snapshotHomeFiles(projectRoot);
     } catch { /* baseline is best-effort */ }
@@ -1116,6 +1156,20 @@ export async function runProjectAgent(options: {
       { messages: messagesToStream },
       { streamMode: ["values", "updates", "messages"], recursionLimit, signal }
     );
+    const seenToolCallIds = new Set<string>();
+    const seenToolResultIds = new Set<string>();
+    let lastCheckpointSaveMs = 0;
+    for (const msg of (messagesToStream as any[]) ?? []) {
+      if (Array.isArray(msg?.tool_calls)) {
+        for (const tc of msg.tool_calls) {
+          if (tc?.id) seenToolCallIds.add(String(tc.id));
+        }
+      }
+      if (msg?.type === "tool" || (msg as any)?._getType?.() === "tool") {
+        const trId = String(msg?.tool_call_id || msg?.id || "");
+        if (trId) seenToolResultIds.add(trId);
+      }
+    }
     try {
       for await (const item of stream as AsyncIterable<any>) {
         if (isCancelled() || signal?.aborted) throw new RunCancelledError();
@@ -1144,8 +1198,14 @@ export async function runProjectAgent(options: {
         if (streamMode === "updates" && payload && typeof payload === "object") {
           for (const delta of Object.values<any>(payload)) {
             for (const message of delta?.messages ?? []) {
+              if (message?.constructor?.name === "RemoveMessage" || (message as any)?._getType?.() === "remove" || message?.type === "remove") {
+                continue;
+              }
               if (Array.isArray(message?.tool_calls)) {
                 for (const call of message.tool_calls) {
+                  const callId = String(call?.id || "");
+                  if (callId && seenToolCallIds.has(callId)) continue;
+                  if (callId) seenToolCallIds.add(callId);
                   toolCallCount++;
                   const name = call?.name || "tool";
                   lastActiveToolName = name;
@@ -1211,7 +1271,10 @@ export async function runProjectAgent(options: {
                   }
                 }
               }
-              if (message?.type === "tool") {
+              if (message?.type === "tool" || (message as any)?._getType?.() === "tool") {
+                const resultId = String(message.tool_call_id || message.id || "");
+                if (resultId && seenToolResultIds.has(resultId)) continue;
+                if (resultId) seenToolResultIds.add(resultId);
                 // Persist a truncated result excerpt alongside the ✓ marker so
                 // future runs in this session can reuse what was already read
                 // instead of re-reading the same files. The UI renders only
@@ -1260,7 +1323,11 @@ export async function runProjectAgent(options: {
                 }
                 progress.noteToolResult();
                 if (isGeneral && sessionId) {
-                  saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
+                  const now = Date.now();
+                  if (now - lastCheckpointSaveMs > 2000) {
+                    lastCheckpointSaveMs = now;
+                    saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
+                  }
                 }
                 if (trajectory) {
                   void trajectory.log({ source: "TOOL", type: "TOOL_RESULT", content: `${message.name || lastActiveToolName || "tool"} finished` });
@@ -1499,6 +1566,7 @@ export async function runProjectAgent(options: {
     emit("status", `run:start hook failed (exit ${startOutcome.exitCode ?? "timeout"}): ${startOutcome.output.slice(0, 200)}`);
   }
 
+  let codeReviewsDone = 0;
   const graph = new StateGraph(AgentState as any)
     .addNode("deep_agent", async (state: any) => {
       if (isCancelled() || signal?.aborted) throw new RunCancelledError();
@@ -1854,13 +1922,21 @@ export async function runProjectAgent(options: {
 
       // Auto mode gets one bounded, read-only review after verification and
       // before completion. Blocking findings return the task to implementation.
+      const changedFilesCount = changedPaths.length;
+      const changedLinesApprox = (diffFiles || []).reduce((acc: number, f: any) => acc + (Number(f?.insertions || 0) + Number(f?.deletions || 0)), 0);
+      const isHighImpact = changedPaths.some((p: string) => /auth|security|payment|migration|schema|secret|token|gateway/i.test(p));
       if (shouldRunCodeReview({
         agentsEnabled: assetsEnabled("agents"),
         mode,
         expectsChanges: Boolean(codeTaskContract?.expectsChanges),
         currentRepairs,
         maxRepairs,
+        changedFiles: changedFilesCount,
+        changedLines: changedLinesApprox,
+        highImpact: isHighImpact,
+        reviewsDone: codeReviewsDone,
       })) {
+        codeReviewsDone++;
         emit("status", "Reviewing the completed work with a read-only reviewer…");
         if (codeJournal) {
           queueCodeJournalWrite(recordCodeTaskAction(codeJournal, {
@@ -1944,7 +2020,7 @@ export async function runProjectAgent(options: {
   // until the task finishes. Bounded by MAX_BUDGET_EXTENSIONS so a wandering
   // model cannot burn API spend forever; the doom-loop breaker and a user
   // cancel still stop the run immediately.
-  const MAX_BUDGET_EXTENSIONS = 10;
+  const maxBudgetExtensions = isGeneral ? MAX_BUDGET_EXTENSIONS.home : MAX_BUDGET_EXTENSIONS.code;
   let budgetExtensions = 0;
   // G9: one user-sanctioned extra extension via the structured question UI,
   // asked exactly once when the automatic budget is exhausted.
@@ -1975,11 +2051,30 @@ export async function runProjectAgent(options: {
       }
       const isDoom = runError instanceof DoomLoopError || (runError as any)?.name === "DoomLoopError";
       const isBudget = isRecursionLimitError(runError);
-      // Misclassified simple tasks die at the 50-step wall; every budget hit
-      // (simple or complex) just extends in place. Tools stay simple-scoped,
-      // but the verify node flips to the full cascade via isSimple below.
       if (result !== undefined || !isBudget || isDoom) break;
-      if (budgetExtensions >= MAX_BUDGET_EXTENSIONS) {
+
+      // Deliverable-ready short-circuit on recursion limit:
+      // If the requested deliverable already exists on disk and passes artifact contract validation,
+      // do not auto-extend another 80-150 steps of endless QA/tweaking. Complete the run cleanly.
+      if (isGeneral && homeTaskContract?.expectsOutput) {
+        try {
+          const fresh = await findFreshHomeFiles(projectRoot, initialHomeFiles, runStartMs);
+          if (fresh.length > 0) {
+            const contract = await validateHomeArtifactContract(projectRoot, fresh, homeTaskContract?.expectedFormats);
+            if (contract.valid) {
+              emit("status", "Deliverable verified on disk — completing run without unnecessary budget extension.");
+              await cleanupHomeScratchFiles(projectRoot, fresh).catch(() => {});
+              result = {
+                verification: "passed",
+                response: `I have generated and verified the requested deliverable: ${fresh.join(", ")}.`,
+              };
+              break;
+            }
+          }
+        } catch { /* best effort */ }
+      }
+
+      if (budgetExtensions >= maxBudgetExtensions) {
         // G9/G13: instead of silently pausing at the hard cap, ask once —
         // the user can sanction another extension or take over. Unavailable
         // bridge or dismiss = the checkpointed pause (previous behavior).
@@ -1989,7 +2084,7 @@ export async function runProjectAgent(options: {
           emit("status", "Step budget exhausted — asking how to proceed…");
           const answer = await onUserQuestion([{
             header: "Step budget",
-            question: `This run has used its step budget and was auto-extended ${MAX_BUDGET_EXTENSIONS}× (${toolCallCount} tool calls so far). How should I proceed?`,
+            question: `This run has used its step budget and was auto-extended ${maxBudgetExtensions}× (${toolCallCount} tool calls so far). How should I proceed?`,
             options: ["Extend the budget again and continue", "Stop here (progress is checkpointed)"],
           }]).catch(() => null);
           if (!answer || !/extend/i.test(answer)) break;
@@ -2003,11 +2098,13 @@ export async function runProjectAgent(options: {
         effectiveComplexity = "complex";
         isSimple = false;
       }
-      recursionLimit = MODE_LIMITS[fullAccess ? "full" : mode];
+      recursionLimit = (isGeneral && homeTaskContract?.expectsOutput)
+        ? HOME_DELIVERABLE_LIMIT
+        : MODE_LIMITS[fullAccess ? "full" : mode];
       outerLimit = Math.max(recursionLimit, 50);
       saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
-      emit("status", `Step budget reached — extending automatically (${budgetExtensions}/${MAX_BUDGET_EXTENSIONS}) and continuing from where the run stopped…`);
-      if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: `Recursion limit hit at ${outerLimit}; auto-extended budget ${budgetExtensions}/${MAX_BUDGET_EXTENSIONS}.` });
+      emit("status", `Step budget reached — extending automatically (${budgetExtensions}/${maxBudgetExtensions}) and continuing from where the run stopped…`);
+      if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: `Recursion limit hit at ${outerLimit}; auto-extended budget ${budgetExtensions}/${maxBudgetExtensions}.` });
       // The model must not have to infer that it should continue: the pruned
       // checkpoint can end on a tool result, so say it explicitly.
       runMessages = [...runMessages, new HumanMessage("[System Note: The step budget was extended automatically. All preceding tool actions are complete. Continue the task directly from where it stopped — do not repeat completed steps or re-read files you already inspected.]")];
@@ -2202,6 +2299,9 @@ export async function runProjectAgent(options: {
   emit("assistant", result.response, undefined, finalUsage, undefined, undefined, undefined, finalContext);
   emit("usage", `Token usage · ${finalUsage.totalTokens} tokens${finalUsage.estimatedCost == null ? "" : ` (~$${finalUsage.estimatedCost})`}`, undefined, finalUsage);
 
+  if (isGeneral && result?.verification !== "failed") {
+    await cleanupHomeScratchFiles(projectRoot, homeFreshFiles).catch(() => {});
+  }
   const hookEvent = result?.verification === "failed" ? "verify:fail" : "run:end";
   void dispatchHooks(projectRoot, hooks, hookEvent, {
     request, mode, projectRoot, runId: sessionId,

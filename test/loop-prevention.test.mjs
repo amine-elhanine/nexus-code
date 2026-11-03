@@ -268,5 +268,64 @@ await test("repeated web_search query is steered; banned calls don't consume bud
   assert.ok(String(third.content).includes("BANNED"));
 });
 
+await test("binary file read guard blocks reading binary/archive formats into context", async () => {
+  const middleware = loopPreventionMiddleware();
+  let executed = false;
+  const handler = async () => {
+    executed = true;
+    return new ToolMessage({ content: "PK...", tool_call_id: "c1", name: "read_file" });
+  };
+  const result = await middleware.wrapToolCall(
+    { toolCall: { name: "read_file", args: { file_path: "presentation.pptx" }, id: "c1" }, tool: { name: "read_file" } },
+    handler
+  );
+  assert.equal(executed, false, "handler must not execute on binary file read");
+  assert.equal(result.status, "error");
+  assert.ok(/binary file and cannot be read as text/i.test(String(result.content)));
+});
+
+await test("checkDeliverableReady completion gate blocks post-deliverable QA scripts", async () => {
+  let ready = true;
+  const middleware = loopPreventionMiddleware({
+    general: true,
+    outputRequired: true,
+    checkDeliverableReady: async () => ready ? { ready: true, files: ["deck.pptx"], summary: "verified deck" } : null,
+  });
+  let executed = false;
+  const handler = async () => {
+    executed = true;
+    return new ToolMessage({ content: "QA passed", tool_call_id: "qa1", name: "execute" });
+  };
+  const result = await middleware.wrapToolCall(
+    { toolCall: { name: "execute", args: { command: "py validate_deck.py" }, id: "qa1" }, tool: { name: "execute" } },
+    handler
+  );
+  assert.equal(executed, false, "QA script must be blocked when deliverable is ready");
+  assert.equal(result.status, "error");
+  assert.ok(String(result.content).includes("[DELIVERABLE ALREADY VERIFIED]"));
+});
+
+await test("modify-churn detector steers the agent forward when target repeats 5+ times", async () => {
+  const middleware = loopPreventionMiddleware({ general: true });
+  let executedCount = 0;
+  const handler = async () => {
+    executedCount++;
+    return new ToolMessage({ content: "ok", tool_call_id: "m" + executedCount, name: "write_file" });
+  };
+  for (let i = 1; i <= 4; i++) {
+    await middleware.wrapToolCall(
+      { toolCall: { name: "write_file", args: { file_path: "generate.py", content: "code " + i }, id: "m" + i }, tool: { name: "write_file" } },
+      handler
+    );
+  }
+  assert.equal(executedCount, 4);
+  const fifth = await middleware.wrapToolCall(
+    { toolCall: { name: "write_file", args: { file_path: "generate.py", content: "code 5" }, id: "m5" }, tool: { name: "write_file" } },
+    handler
+  );
+  assert.equal(executedCount, 4, "handler must not be executed once churn cap is reached");
+  assert.ok(String(fifth.content).includes("[EDIT/EXECUTION CHURN DETECTED]"));
+});
+
 console.log(`\nSummary: ${passed} passed, ${failed} failed.`);
 process.exit(failed > 0 ? 1 : 0);

@@ -147,7 +147,14 @@ export function decideHomeVerification(input: HomeVerifyDecisionInput): HomeVeri
   // 5. Plan-as-hard-contract: unfinished items and unevidenced "completed"
   // items block completion (weak models mark everything done to escape).
   if (wantsDeliverable && repairsLeft && (planItems?.length || 0) > 0) {
-    const pendingItems = planItems!.filter((item) => item.status !== "completed");
+    const deliverableReady = createdDeliverable && artifactValid && contentProblems.length === 0 && missingFormats.length === 0;
+    const pendingItems = planItems!.filter((item) => {
+      if (item.status === "completed") return false;
+      if (deliverableReady && /\b(qa|quality|inspect|verify|check|review|deliver|summary|convert)\b/i.test(item.content)) {
+        return false;
+      }
+      return true;
+    });
     const unevidencedItems = planItems!.filter(
       (item) => item.status === "completed" && !planItemEvidence(item.content, freshFiles, evidenceActions)
     );

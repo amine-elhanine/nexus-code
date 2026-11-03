@@ -97,6 +97,10 @@ export function resolveResearchBudget(options: { outputRequired?: boolean; needs
   return options.needsResearch ? RESEARCH_BUDGET_WITH_RESEARCH : RESEARCH_BUDGET_BASE;
 }
 
+export type DeliverableReadyCheck = () => Promise<{ ready: boolean; files: string[]; summary: string } | null>;
+
+const BINARY_FILE_EXT = /\.(png|jpe?g|gif|webp|ico|svgz|pdf|pptx|docx|xlsx|zip|tar|gz|7z|rar|mp3|mp4|wav|mov|bin|exe|dll)$/i;
+
 /**
  * Loop Prevention Middleware:
  * Detects and breaks repetitive read/inspection tool loops (e.g., repeatedly calling
@@ -116,12 +120,21 @@ export function resolveResearchBudget(options: { outputRequired?: boolean; needs
  * on other plan items. The doom-loop breaker stays as the final circuit
  * breaker for models that ignore the bans entirely.
  */
-export function loopPreventionMiddleware(options: { general?: boolean; outputRequired?: boolean; needsResearch?: boolean; beforeModify?: () => string | null } = {}) {
+export function loopPreventionMiddleware(options: {
+  general?: boolean;
+  outputRequired?: boolean;
+  needsResearch?: boolean;
+  beforeModify?: () => string | null;
+  checkDeliverableReady?: DeliverableReadyCheck;
+} = {}) {
   let lastReadSig: string | null = null;
   let consecutiveCount = 0;
   let researchCallCount = 0;
   const researchBudget = options.general ? resolveResearchBudget(options) : null;
   const inspectionCounts = new Map<string, number>();
+  const modifyTargetCounts = new Map<string, number>();
+  let postDeliverableModifyCount = 0;
+
   // SKILL.md content never changes mid-run: the first read loads it, every
   // repeat is pure waste (observed as skill→plan→todos→repair→skill testing
   // loops on slow endpoints). Track by skill NAME (not path) so virtual-path
@@ -207,6 +220,44 @@ export function loopPreventionMiddleware(options: { general?: boolean; outputReq
             content: gate,
           });
         }
+
+        // Post-deliverable completion gate for Home deliverable runs:
+        // Once the requested deliverable is already verified on disk, allow at most 1
+        // rebuild. Block subsequent QA/diagnostic scripts or endless generator tweaking.
+        if (options.general && options.outputRequired && options.checkDeliverableReady) {
+          try {
+            const readyInfo = await options.checkDeliverableReady();
+            if (readyInfo && readyInfo.ready) {
+              postDeliverableModifyCount++;
+              const rawTarget = String(args.file_path || args.filePath || args.command || "");
+              const isDiagnosticOrTemp = /validate|contrast|inspect|scan|debug|find|check|test/i.test(rawTarget);
+              if (isDiagnosticOrTemp || postDeliverableModifyCount >= 3) {
+                return new ToolMessage({
+                  tool_call_id: toolCallId,
+                  name: toolName,
+                  status: "error",
+                  content: `[DELIVERABLE ALREADY VERIFIED]: Your output (${readyInfo.files.join(", ")}: ${readyInfo.summary}) already exists on disk and passed structural and content verification. Stop writing validation/debug scripts or tweaking the generator. Delete any temporary helper scripts (.py/.js) you created in this run, mark any remaining todos as completed, and present your final response to the user now.`,
+                });
+              }
+            }
+          } catch { /* best effort */ }
+        }
+
+        // Edit-run churn detector: track repeated edits/runs on the same target
+        const modTarget = normalizePath(args) || String(args.command || "").slice(0, 80);
+        if (modTarget) {
+          const modCount = (modifyTargetCounts.get(modTarget) ?? 0) + 1;
+          modifyTargetCounts.set(modTarget, modCount);
+          if (modCount >= 5 && options.general) {
+            return new ToolMessage({
+              tool_call_id: toolCallId,
+              name: toolName,
+              status: "error",
+              content: `[EDIT/EXECUTION CHURN DETECTED]: Target '${modTarget}' has been modified or executed ${modCount} times without concluding the task. Stop tweaking minor parameters. If the deliverable exists, verify it with 'ls' and present your result immediately.`,
+            });
+          }
+        }
+
         inspectionCounts.clear();
         lastReadSig = null;
         consecutiveCount = 0;
@@ -272,11 +323,20 @@ export function loopPreventionMiddleware(options: { general?: boolean; outputReq
         }
       }
 
-      // Skill reads bypass the generic inspection counters (a plan/todos call
-      // in between would reset them): first read executes, repeats get a
-      // cached steer-forward instead of the file content.
+      // Binary / archive file read guard: reading binary files into LLM context as text
+      // corrupts context, triggers token errors, or stalls the run.
       if (isFileRead(toolName)) {
-        const skill = extractSkillNameFromPath(normalizePath(args));
+        const filePath = normalizePath(args);
+        if (BINARY_FILE_EXT.test(filePath)) {
+          return new ToolMessage({
+            tool_call_id: toolCallId,
+            name: toolName,
+            status: "error",
+            content: `[BINARY FILE]: '${filePath}' is a binary file and cannot be read as text. If this is an image or deliverable, reference it by path or check its size/existence with 'ls'. Do not call read_file on binary or archive files.`,
+          });
+        }
+
+        const skill = extractSkillNameFromPath(filePath);
         if (skill) {
           const key = skill.toLowerCase();
           if (loadedSkills.has(key)) {

@@ -18,6 +18,12 @@ export class AgentContextRelaunch extends Error {
 // 60/160/300: unbounded budgets let the model wander on trivial tasks.
 // Simple tasks get a tight budget via SIMPLE_TASK_LIMIT instead.
 export const MODE_LIMITS: Record<AgentMode, number> = { plan: 40, ask: 100, auto: 150, full: 200 };
+// Home document deliverable tasks get a focused budget of 80 steps
+// (more than enough for research + 1 generator write + execute + cleanup).
+export const HOME_DELIVERABLE_LIMIT = 80;
+// Maximum recursion limit budget extensions per mode: Home gets max 2 auto-extensions;
+// Code gets max 3 auto-extensions before asking user or pausing.
+export const MAX_BUDGET_EXTENSIONS: { home: number; code: number } = { home: 2, code: 3 };
 // Fast-path budget for single-lookup / single-edit tasks: enough to
 // read 1-2 files and write. Note this feeds LangGraph's recursionLimit,
 // where one tool call costs several supersteps — keep it >= 50 or trivial
@@ -27,7 +33,7 @@ export const SIMPLE_TASK_LIMIT = 50;
 // the error back into the conversation and continues, before honestly pausing
 // with the checkpointed partial result.
 export const MAX_AGENT_ERROR_RECOVERIES = 3;
-export const MAX_REPAIRS: Record<AgentMode, number> = { plan: 0, ask: 3, auto: 5, full: 5 };
+export const MAX_REPAIRS: Record<AgentMode, number> = { plan: 0, ask: 2, auto: 2, full: 3 };
 
 export function isRecursionLimitError(error: unknown): boolean {
   const text = [error instanceof Error ? error.message : String(error), String((error as any)?.name ?? "")].join(" ");

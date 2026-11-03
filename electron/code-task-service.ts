@@ -15,9 +15,21 @@ export function shouldRunCodeReview(input: {
   expectsChanges: boolean;
   currentRepairs: number;
   maxRepairs: number;
+  changedFiles?: number;
+  changedLines?: number;
+  highImpact?: boolean;
+  reviewsDone?: number;
 }): boolean {
-  // Full Access shares Auto's self-healing review/repair loop.
-  return input.agentsEnabled && (input.mode === "auto" || input.mode === "full") && input.expectsChanges && input.currentRepairs < input.maxRepairs;
+  if (!input.agentsEnabled || (input.mode !== "auto" && input.mode !== "full") || !input.expectsChanges) return false;
+  if (input.currentRepairs >= input.maxRepairs) return false;
+  if (typeof input.reviewsDone === "number" && input.reviewsDone >= 1) return false;
+  if (input.highImpact) return true;
+  const files = input.changedFiles ?? 0;
+  const lines = input.changedLines ?? 0;
+  if (files > 0 || lines > 0) {
+    return files >= 3 || lines >= 80;
+  }
+  return true;
 }
 
 /** A skipped required check prevents the run from claiming full verification. */

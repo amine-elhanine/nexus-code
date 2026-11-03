@@ -104,4 +104,11 @@ test("code review runs only when AUTO changes have agents enabled and repair bud
   assert.equal(shouldRunCodeReview({ ...base, mode: "ask" }), false);
   assert.equal(shouldRunCodeReview({ ...base, expectsChanges: false }), false);
   assert.equal(shouldRunCodeReview({ ...base, currentRepairs: 2 }), false);
+
+  // Proportional review checks:
+  assert.equal(shouldRunCodeReview({ ...base, reviewsDone: 1 }), false);
+  assert.equal(shouldRunCodeReview({ ...base, changedFiles: 1, changedLines: 20 }), false);
+  assert.equal(shouldRunCodeReview({ ...base, changedFiles: 3, changedLines: 20 }), true);
+  assert.equal(shouldRunCodeReview({ ...base, changedFiles: 1, changedLines: 85 }), true);
+  assert.equal(shouldRunCodeReview({ ...base, changedFiles: 1, changedLines: 10, highImpact: true }), true);
 });
