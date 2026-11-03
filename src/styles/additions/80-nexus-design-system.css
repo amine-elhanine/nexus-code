@@ -83,6 +83,39 @@ html {
   margin: 0 0 var(--space-6);
 }
 
+/* Turns ease in — keeps streaming and history renders feeling alive. */
+@keyframes message-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.chat-message {
+  animation: message-in 0.22s var(--ease-out);
+}
+
+/* Streaming answer: blinking accent caret at the growth point. */
+.chat-message-text.streaming::after {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 15px;
+  margin-left: 3px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  border-radius: 1.5px;
+  animation: caret-blink 1s steps(2, start) infinite;
+}
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
 /* Turn rhythm breathes: consistent vertical cadence in both chat feeds. */
 .chat-history,
 .chat-feed,
@@ -115,14 +148,25 @@ html {
   padding: 0;
 }
 
-/* User turn: ChatGPT-style right-aligned bubble, theme-aware.
-   (Base hardcodes a stale #162438/#263d5c that ignores data-themes.) */
+/* User turn: ChatGPT-style right-aligned bubble that hugs its content,
+   theme-aware. (Base hardcodes a stale #162438/#263d5c that ignores
+   data-themes, and stretches the bubble full-width.) */
+.chat-message.user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
 .chat-message.user .chat-message-text {
+  width: fit-content;
+  max-width: min(78%, 640px);
+  margin-left: 0;
   border-radius: var(--radius-lg);
   background: var(--surface-2);
   border-color: var(--border-strong);
   padding: 10px 16px;
   font-size: var(--text-body) !important;
+  box-shadow: var(--shadow-sm);
 }
 
 /* Links, quotes and rules inside answers: accent-driven, not stale purple. */
@@ -523,9 +567,13 @@ button.secondary:hover,
 
 /* ── 9. Chat activity feed ─────────────────────────────────────────────── */
 
-/* Tool/activity rows: quieter than the answer, hover reveals emphasis. */
+/* Tool/activity rows: quieter than the answer, hover reveals emphasis.
+   Token surfaces so light themes stop inheriting the hardcoded dark bar. */
 .chat-event-row {
   border-radius: var(--radius-sm);
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-secondary);
   transition: background 0.12s var(--ease-out);
 }
 .chat-event-row:hover {
