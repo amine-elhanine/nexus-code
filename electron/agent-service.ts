@@ -56,7 +56,7 @@ import { planItemsFromArgs, buildToolContextBlock } from "./agent/tool-context.j
 import { UsageAccumulator } from "./agent/usage.js";
 import { AgentContextRelaunch, MODE_LIMITS, SIMPLE_TASK_LIMIT, HOME_DELIVERABLE_LIMIT, MAX_AGENT_ERROR_RECOVERIES, MAX_BUDGET_EXTENSIONS, MAX_REPAIRS, isRecursionLimitError } from "./agent/loop-limits.js";
 import { cleanupHomeScratchFiles } from "./agent/home-files.js";
-import { snapshotHomeFiles, findFreshHomeFiles, type HomeFileSnapshot } from "./agent/home-files.js";
+import { snapshotHomeFiles, findFreshHomeFiles, SCRATCH_SCRIPT_PATTERN, type HomeFileSnapshot } from "./agent/home-files.js";
 import { appendEntryLog, PROJECT_MEMORY_RUN_LOG_CAP, SESSION_MEMORY_ENTRY_CAP, SESSION_MEMORY_CHAR_CAP } from "./agent/memory-log.js";
 import { prepareContextBudget } from "./agent/context-budget.js";
 
@@ -2099,6 +2099,10 @@ export async function runProjectAgent(options: {
       }
       return err;
     };
+    // One-shot wrap-up for the deliverable-ready short-circuit: if the wrap-up
+    // invoke itself hits the recursion limit, fall back to the canned response
+    // instead of looping wrap-up → limit → wrap-up forever.
+    let wrapUpUsed = false;
     for (;;) {
       const isCancel = runError instanceof RunCancelledError || (runError as any)?.name === "AbortError" || isCancelled() || signal?.aborted;
       if (isCancel) {
@@ -2120,11 +2124,37 @@ export async function runProjectAgent(options: {
             const contract = await homeArtifactCache!.contract(fresh, homeTaskContract?.expectedFormats);
             if (contract.valid) {
               emit("status", "Deliverable verified on disk — completing run without unnecessary budget extension.");
+              // The contract only knows THAT files exist — not whether they
+              // answer the request. Never fabricate the final response here:
+              // the canned file list once announced unrelated leftovers
+              // ("generate_ml_course.py…") as "the requested deliverable".
+              // Ask the model to wrap up through the graph instead, so the
+              // answer is honest and the verify node still gates it.
+              if (!wrapUpUsed) {
+                wrapUpUsed = true;
+                emit("status", "Asking the agent to wrap up and summarize the verified deliverable…");
+                try {
+                  result = await graph.invoke(
+                    {
+                      projectRoot,
+                      request,
+                      verifyFeedback: "[System Note: Your step budget was reached, but your deliverable has been verified complete on disk. Do NOT continue working and do NOT run any more tools. Produce your final user-facing response NOW: answer the original request directly and briefly state what was created and where.]",
+                    },
+                    { recursionLimit: 16, signal }
+                  );
+                  if (!String((result as any)?.response || "").trim()) throw new Error("empty wrap-up response");
+                } catch { /* fall through to the canned response below */ }
+              }
+              // Scratch helpers are deleted either way; the canned fallback
+              // must not list files that no longer exist.
               await cleanupHomeScratchFiles(projectRoot, fresh).catch(() => {});
-              result = {
-                verification: "passed",
-                response: `I have generated and verified the requested deliverable: ${fresh.join(", ")}.`,
-              };
+              if (!result || !String((result as any)?.response || "").trim()) {
+                const kept = fresh.filter((file) => !SCRATCH_SCRIPT_PATTERN.test(path.basename(file)));
+                result = {
+                  verification: "passed",
+                  response: `I have generated and verified the requested deliverable: ${(kept.length ? kept : fresh).join(", ")}.`,
+                };
+              }
               break;
             }
           }

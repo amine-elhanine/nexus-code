@@ -38,6 +38,13 @@ function daemonEnvironment(): NodeJS.ProcessEnv {
   return env;
 }
 
+// CSI sequences (colors, bold) plus OSC sequences (hyperlinks). Dev servers
+// colorize their output because the daemon forces FORCE_COLOR=1, and e.g.
+// Vite emits "http://localhost:<ESC>[1m5173<ESC>[22m/" — the escape sits
+// BETWEEN "localhost:" and the digits, so anything matching on the raw line
+// (port detection, log display) never sees a usable port number.
+const ANSI_PATTERN = /\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
 export class DaemonService {
   private daemons = new Map<string, ActiveDaemon>();
 
@@ -100,17 +107,25 @@ export class DaemonService {
       const handleData = (chunk: Buffer | string) => {
         const text = chunk.toString();
         const lines = text.split("\n");
-        for (const line of lines) {
-          if (!line.trim()) continue;
+        for (const rawLine of lines) {
+          if (!rawLine.trim()) continue;
+          // Store and match against the ANSI-stripped line: colored log output
+          // is unreadable as-is, and port detection can't see through escapes.
+          const line = rawLine.replace(ANSI_PATTERN, "");
           active.logs.push(line);
           if (active.logs.length > 1000) active.logs.shift();
 
           // Port detection e.g. "localhost:5173", "127.0.0.1:3000", "port 8080"
-          const portMatch = line.match(/(?:localhost|127\.0\.0\.1):(\d{4,5})|port\s+(\d{4,5})/i);
-          if (portMatch) {
-            const detectedPort = parseInt(portMatch[1] || portMatch[2], 10);
-            if (!isNaN(detectedPort)) {
-              info.port = detectedPort;
+          // "Port X is in use" announces the port the server could NOT take
+          // (it picked another one) — recording it would point the preview
+          // chip at a dead URL, so those lines are excluded from matching.
+          if (!/in use|already in use|address already/i.test(line)) {
+            const portMatch = line.match(/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):(\d{4,5})|port\s+(\d{4,5})/i);
+            if (portMatch) {
+              const detectedPort = parseInt(portMatch[1] || portMatch[2], 10);
+              if (!isNaN(detectedPort)) {
+                info.port = detectedPort;
+              }
             }
           }
         }
