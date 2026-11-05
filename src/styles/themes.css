@@ -18,6 +18,65 @@ html[data-theme="nexus"] {
   --nexus-bright: #3ee695;
   --nexus-glow: rgba(52, 211, 153, 0.25);
   --accent-soft: rgba(52, 211, 153, 0.12);
+
+  /* ── Nexus design system: semantic aliases + scales ────────────────────────
+     Defined ONCE here on :root; every value that references another token
+     resolves per element, so all 10 data-themes inherit these automatically
+     (a theme only re-points --nexus-green/--panel/… and the aliases follow).
+     New UI should prefer these names over raw hex and legacy vars. */
+  --font-sans: Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, "DM Mono", ui-monospace, monospace;
+
+  --accent: var(--nexus-green);
+  --accent-strong: var(--nexus-bright);
+  --success: var(--nexus-green);
+  --warning: var(--orange);
+  --danger: var(--red);
+
+  --surface: var(--bg);
+  --surface-1: var(--panel);
+  --surface-2: var(--panel2);
+  --border: var(--line);
+  --border-strong: var(--line2);
+  --text-primary: var(--text);
+  --text-secondary: var(--muted);
+  --text-tertiary: var(--faint);
+
+  /* Type scale — reading surfaces (chat, composer) use --text-body/--text-ui;
+     dense utility surfaces keep their compact sizes. */
+  --text-body: 14px;
+  --text-ui: 12.5px;
+  --text-caption: 11px;
+  --text-kicker: 10.5px;
+  --text-title: 17px;
+  --text-display: 26px;
+
+  /* Radius scale — pill for controls, lg for elevated cards, md for panels. */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-pill: 999px;
+
+  /* Spacing scale (4px base rhythm). */
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 8px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 48px;
+
+  /* Elevation — layered soft shadows instead of one heavy black. */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.38);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.35);
+  --shadow-pop: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--line);
+  --focus-ring: 0 0 0 2px var(--nexus-glow);
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 html[data-theme="dark-white"] {

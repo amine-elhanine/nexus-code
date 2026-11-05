@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
-import { Copy, Download, Check, Maximize2, X, Image as ImageIcon, ZoomIn, ZoomOut, AlertCircle, RefreshCw, ExternalLink } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Copy, Download, Check, Maximize2, X, Image as ImageIcon, ZoomIn, ZoomOut, AlertCircle, RefreshCw, ExternalLink, BarChart2, Layers } from "lucide-react";
 import { renderMarkdown } from "../../markdown.js";
 import { openVisualFullscreen } from "./VisualFullscreen.js";
 import {
@@ -860,11 +861,42 @@ function ChatImageBlock({ alt, src }: { alt: string; src: string }) {
 
   const rawPath = (src || "").trim();
   const cleanPath = rawPath.replace(/^file:\/\/\/?/, "").replace(/^\/+/, "").replace(/^\.\//, "");
-  const filename = cleanPath.split(/[/\\]/).pop() || cleanPath;
+  const filename = cleanPath.split(/[\/\\]/).pop() || cleanPath;
 
-  const displayTitle = alt?.trim()
+  const rawTitle = alt?.trim()
     ? alt.trim()
     : filename.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
+
+  // Classify visual type for contextual badge and icon
+  const isDataChart =
+    /\b(chart|graph|plot|metric|analytics|trend|histogram|pie|bar|scatter|radar)\b/i.test(filename) ||
+    /\b(plot|graph|metric|trend|histogram|pie chart|bar chart|line chart)\b/i.test(alt);
+
+  const isDiagram =
+    /\b(diagram|flowchart|architecture|workflow|schema|sequence|er-diagram|wireframe)\b/i.test(filename) ||
+    /\b(diagram|flowchart|architecture|workflow|schema|sequence)\b/i.test(alt);
+
+  const visualType: "chart" | "diagram" | "image" = isDataChart
+    ? "chart"
+    : isDiagram
+    ? "diagram"
+    : "image";
+
+  const badgeText = visualType === "chart" ? "CHART" : visualType === "diagram" ? "DIAGRAM" : "IMAGE";
+  const badgeIcon =
+    visualType === "chart" ? (
+      <BarChart2 size={11} />
+    ) : visualType === "diagram" ? (
+      <Layers size={11} />
+    ) : (
+      <ImageIcon size={11} />
+    );
+
+  // Clean auto-suffixed " Chart" when the visual is not an actual data chart (e.g. "Mha Deku Chart" -> "Mha Deku")
+  const displayTitle =
+    visualType !== "chart" && /\s+Chart$/i.test(rawTitle)
+      ? rawTitle.replace(/\s+Chart$/i, "")
+      : rawTitle;
 
   const loadCounterRef = useRef(0);
 
@@ -991,7 +1023,7 @@ function ChatImageBlock({ alt, src }: { alt: string; src: string }) {
     if (dataUrl) {
       const a = document.createElement("a");
       a.href = dataUrl;
-      a.download = filename || "chart.png";
+      a.download = filename || "image.png";
       a.click();
       setDownloaded(true);
       setTimeout(() => setDownloaded(false), 1800);
@@ -1002,9 +1034,9 @@ function ChatImageBlock({ alt, src }: { alt: string; src: string }) {
     <div className="rich-chart chat-inline-image-card" role="figure" aria-label={displayTitle}>
       <div className="chat-inline-image-header">
         <div className="chat-inline-image-title-group">
-          <span className="chat-inline-image-badge">
-            <ImageIcon size={11} />
-            <span>GRAPH EVIDENCE</span>
+          <span className={`chat-inline-image-badge badge-${visualType}`}>
+            {badgeIcon}
+            <span>{badgeText}</span>
           </span>
           <span className="chat-inline-image-title" title={displayTitle}>
             {displayTitle}
@@ -1012,7 +1044,7 @@ function ChatImageBlock({ alt, src }: { alt: string; src: string }) {
         </div>
         <div className="rich-chart-actions" style={{ position: "static", opacity: 1 }}>
           {dataUrl && (
-              <button
+            <button
               type="button"
               className="rich-chart-btn"
               onClick={() => { setZoomed(true); setLightboxScale(1); }}
@@ -1038,7 +1070,7 @@ function ChatImageBlock({ alt, src }: { alt: string; src: string }) {
         {loading ? (
           <div className="chat-inline-image-loading">
             <div className="chat-inline-image-spinner" />
-            <span>Loading graph {filename}…</span>
+            <span>Loading {badgeText.toLowerCase()} {filename}…</span>
           </div>
         ) : error ? (
           <div className="chat-inline-image-error">
@@ -1062,6 +1094,11 @@ function ChatImageBlock({ alt, src }: { alt: string; src: string }) {
               alt={displayTitle}
               className="chat-inline-image-img"
               loading="lazy"
+              onLoad={() => {
+                if (typeof window !== "undefined") {
+                  window.dispatchEvent(new CustomEvent("nexus:chat-image-loaded"));
+                }
+              }}
             />
             <div className="chat-inline-image-zoom-overlay">
               <ZoomIn size={16} />
@@ -1071,13 +1108,13 @@ function ChatImageBlock({ alt, src }: { alt: string; src: string }) {
         )}
       </div>
 
-      {alt && alt !== filename && (
+      {alt && alt.trim() !== displayTitle && alt.trim() !== filename && alt.trim().replace(/\s+Chart$/i, "") !== displayTitle && (
         <div className="chat-inline-image-caption">
           {alt}
         </div>
       )}
 
-      {zoomed && dataUrl && (
+{zoomed && dataUrl && createPortal(
         <div className="chat-image-lightbox-overlay" onClick={() => setZoomed(false)}>
           <div className="chat-image-lightbox-content" onClick={(e) => e.stopPropagation()}>
             <div className="chat-image-lightbox-header">
@@ -1139,13 +1176,14 @@ function ChatImageBlock({ alt, src }: { alt: string; src: string }) {
                 onClick={() => (lightboxScale > 1 ? setLightboxScale(1) : setZoomed(false))}
               />
             </div>
-            {alt && (
+            {alt && alt.trim() !== displayTitle && alt.trim().replace(/\s+Chart$/i, "") !== displayTitle && (
               <div className="chat-image-lightbox-caption">
                 {alt}
               </div>
             )}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
@@ -1199,7 +1237,11 @@ function SearchImageLightbox({
 
   if (!item) return null;
 
-  return (
+  // Portal to <body>: the overlay must always cover the viewport above all
+  // content. Rendered inline inside a chat message, any ancestor stacking /
+  // containing context (animations, blurs, transforms) can trap the
+  // position:fixed overlay — the stacked-viewers bug.
+  return createPortal(
     <div className="chat-image-lightbox-overlay" onClick={onClose}>
       <div className="chat-image-lightbox-content web-image-lightbox" onClick={(e) => e.stopPropagation()}>
         <div className="chat-image-lightbox-header">
@@ -1263,7 +1305,8 @@ function SearchImageLightbox({
           {items.length > 1 ? `${index + 1} / ${items.length} — use ←/→ to browse` : "Scroll to zoom"}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 

@@ -116,6 +116,7 @@ export const SidebarBrowser: React.FC<{
   const [agentBanner, setAgentBanner] = useState<string | null>(null);
   const [servers, setServers] = useState<DaemonServer[]>([]);
   const [startingServer, setStartingServer] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
   const webviews = useRef<Record<string, MiniWebview | null>>({});
 
   const headlessRef = useRef(true);
@@ -183,10 +184,12 @@ export const SidebarBrowser: React.FC<{
 
   async function startDevServer() {
     const api = window.nexus as unknown as {
-      startDaemon?: (name: string, command: string, cwd?: string) => Promise<unknown>;
+      startDaemon?: (name: string, command: string, cwd?: string) => Promise<{ id: string }>;
+      listDaemons?: () => Promise<Array<{ id: string; status: string; port?: number }>>;
     };
     if (typeof api.startDaemon !== "function") return;
     setStartingServer(true);
+    setStartError(null);
     try {
       const packageFiles = files.filter((file) => file.kind === "file" && /(^|\/)package\.json$/i.test(file.path));
       const rootPackage = packageFiles.find((file) => file.path === "package.json");
@@ -195,9 +198,31 @@ export const SidebarBrowser: React.FC<{
       const command = packageDir
         ? `npm --prefix "${packageDir}" run dev`
         : "npm run dev";
-      await api.startDaemon("Dev Server", command, projectRoot || "");
+      const created = await api.startDaemon("Dev Server", command, projectRoot || "");
+      // startDaemon resolves as soon as the process is spawned — the server
+      // itself takes seconds to bind a port (or crash). Waiting here keeps
+      // the button honest ("Starting…" until it's actually up) instead of
+      // flashing back to "Run project" with no idea what happened.
+      const pollDeadline = Date.now() + 20000;
+      while (Date.now() < pollDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        const daemon = await api
+          .listDaemons?.()
+          .then((list) => (list || []).find((d) => d.id === created?.id))
+          .catch(() => undefined);
+        if (!daemon || daemon.status === "crashed" || daemon.status === "stopped") {
+          setStartError("Dev server failed to start — check its logs in Services.");
+          return;
+        }
+        if (daemon.port) return; // chip appears via the servers poll
+      }
+      // Still no port after 20s: leave it running (slow builds exist) but stop
+      // pretending the click is in flight — the chip will appear on its own.
+      setStartError("Still starting… if it never appears, check the Services dialog.");
     } catch { /* error surfaces in Services dialog */ }
-    setStartingServer(false);
+    finally {
+      setStartingServer(false);
+    }
   }
 
   // Daemons + headless preference + agent activity subscription.
@@ -401,11 +426,13 @@ export const SidebarBrowser: React.FC<{
               type="button"
               className="bookmark-chip server-chip"
               onClick={() => void startDevServer()}
+              disabled={startingServer}
               title="Start npm run dev as a background service"
             >
               <Play size={11} />
               <span>{startingServer ? "Starting…" : "Run project"}</span>
             </button>
+            {startError && <span className="browser-start-error">{startError}</span>}
           </div>
         )
       )}

@@ -1,0 +1,110 @@
+/* ==========================================================================
+   NEXUS HOME — ChatGPT surface (loads after part 81)
+   Scoped entirely to .area-home: Code and Notebook are untouched.
+   Reference: ChatGPT conversation view — flat near-black rail, plain text
+   session rows, no author labels in the transcript, gray user bubbles,
+   one large pill composer, chrome that blends into the canvas.
+   ========================================================================== */
+
+/* ── 12. HOME — ChatGPT surface (scoped to .area-home) ───────────────────
+   Reference: ChatGPT conversation view — flat near-black rail, plain text
+   session rows, no author labels in the transcript, quiet gray user
+   bubbles, one large pill composer, chrome that blends into the canvas.
+   Everything here is scoped to .area-home; Code and Notebook are untouched. */
+
+/* Sidebar: flat rail, no border, no card chrome. */
+.area-home .session-pane {
+  background: var(--bg);
+  border-right: 0;
+}
+.area-home .ds-new-chat {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  color: var(--text-secondary) !important;
+  font-weight: 500 !important;
+  justify-content: flex-start;
+  padding: 9px 10px !important;
+  border-radius: var(--radius-sm) !important;
+}
+.area-home .ds-new-chat:hover {
+  background: var(--surface-2) !important;
+  color: var(--text-primary) !important;
+}
+.area-home .ds-search {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+.area-home .session-row {
+  border-left: 0 !important;
+  padding-left: 10px !important;
+  min-height: 36px;
+  font-size: 13px;
+  border-radius: var(--radius-sm) !important;
+  color: var(--text-secondary);
+}
+.area-home .session-row:hover {
+  background: var(--surface-2) !important;
+  color: var(--text-primary) !important;
+}
+.area-home .session-row.active {
+  background: var(--surface-2) !important;
+  color: var(--text-primary) !important;
+}
+.area-home .sessions-label,
+.area-home .ds-session-list ~ .context-kicker,
+.area-home .pane-top {
+  color: var(--text-tertiary);
+}
+
+/* Top chrome blends into the canvas (ChatGPT has no visible top bar). */
+.area-home .product-topbar {
+  background: var(--bg) !important;
+  border-bottom: 0 !important;
+  box-shadow: none !important;
+}
+.area-home .home-topbar {
+  background: transparent !important;
+  border-bottom: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Transcript: plain full-width reading column, no author labels. */
+.area-home .chat-message.assistant .chat-author,
+.area-home .chat-message.user .chat-author {
+  display: none !important; /* beats part 81's display:flex !important (later cascade position) */
+  margin: 0 !important;
+}
+.area-home .chat-message-text {
+  padding-left: 0 !important;
+  margin-left: 0 !important;
+  font-size: 15px !important;
+  line-height: 1.75 !important;
+}
+.area-home .chat-message.user .chat-message-text {
+  border: 0 !important;
+  background: var(--line2) !important;
+  border-radius: 22px !important;
+  padding: 12px 18px !important;
+  font-size: 15px !important;
+  box-shadow: none !important;
+}
+
+/* Composer: one large borderless pill on the canvas. */
+.area-home .agent-input {
+  border: 1px solid transparent !important;
+  border-radius: 26px !important;
+  background: var(--surface-2) !important;
+  box-shadow: var(--shadow-md) !important;
+  padding: 12px 16px !important;
+}
+.area-home .agent-input:focus-within {
+  border-color: var(--border-strong) !important;
+  box-shadow: var(--shadow-md) !important;
+}
+.area-home .agent-input textarea {
+  font-size: 15px !important;
+}

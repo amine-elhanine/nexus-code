@@ -1607,6 +1607,30 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.equal(stopped, true);
   });
 
+  await test('DaemonService detects ports through ANSI-colored output and ignores "port in use" decoys', async () => {
+    // Regression: the daemon forces FORCE_COLOR=1, and Vite emits its URL as
+    // "http://localhost:<ESC>[1m5174<ESC>[22m/" — the bold escape sits between
+    // "localhost:" and the digits, so port detection never matched and the
+    // browser pane's "Run project" chip never appeared. A "Port X is in use"
+    // line (the port the server could NOT take) must also never be recorded.
+    const customDaemonService = new DaemonService();
+    const ESC = String.fromCharCode(27);
+    const cmd = `node -e "const o=process.stdout; o.write('Port 59130 is in use, trying another one...\\n'); o.write('  Local:   ${ESC}[36mhttp://localhost:${ESC}[1m59131${ESC}[22m/${ESC}[39m\\n'); setInterval(() => {}, 1000)"`;
+
+    const info = customDaemonService.startDaemon('Mock Colored Server', cmd, process.cwd());
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+
+    const server = customDaemonService.listDaemons().find((d) => d.id === info.id);
+    assert.notEqual(server, undefined);
+    assert.equal(server.port, 59131, 'port after ANSI strip must win over the in-use decoy');
+
+    const logs = customDaemonService.getDaemonLogs(info.id);
+    assert.ok(logs.some((l) => l.includes('http://localhost:59131/')), 'stored logs are ANSI-stripped');
+    assert.ok(!logs.some((l) => l.includes(ESC)), 'no raw escape sequences kept in logs');
+
+    await customDaemonService.stopDaemon(info.id);
+  });
+
   console.log('\n=== 22. Integrated Live Browser & Navigation Validation Tests ===');
 
   await test('Browser URL normalizer and protocol guard validate localhost and web URLs', async () => {

@@ -1,0 +1,13 @@
+/* Run project button feedback (browser pane): inline status under the chip. */
+.side-browser-servers .browser-start-error {
+  font-size: var(--text-kicker, 10.5px);
+  line-height: 1.35;
+  color: var(--text-tertiary, #8b98a9);
+  padding: 2px 2px 0;
+  white-space: normal;
+}
+
+.side-browser-servers .server-chip:disabled {
+  opacity: 0.7;
+  cursor: default;
+}

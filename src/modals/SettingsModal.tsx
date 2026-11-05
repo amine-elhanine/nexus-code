@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Eye, EyeOff, KeyRound, FolderOpen, ChevronRight, Globe, Puzzle, Server, Terminal, Download, RefreshCw, Loader2, Check, BookOpen, Plus, Settings2, Trash2, X, Palette, FileText, Shield, ShieldCheck } from "lucide-react";
+import { Eye, EyeOff, KeyRound, FolderOpen, ChevronRight, Globe, Puzzle, Server, Terminal, Download, RefreshCw, Loader2, Check, BookOpen, Plus, Settings2, Trash2, X, Palette, FileText, Shield, ShieldCheck, Search, Sparkles, SlidersHorizontal, Store } from "lucide-react";
 import { Modal } from "../components/common/Modal.js";
 import { Toggle } from "../components/common/Toggle.js";
 import { ProviderManager } from "../components/settings/ProviderManager.js";
@@ -48,6 +48,7 @@ export function SettingsModal({
 }) {
   const api = window.nexus;
   const [section, setSection] = useState<SettingsSection>("appearance");
+  const [navSearch, setNavSearch] = useState("");
   const [themeId, setThemeId] = useState(() => getStoredThemeId());
   const [themeNote, setThemeNote] = useState("");
   const [headless, setHeadless] = useState(true);
@@ -472,55 +473,83 @@ export function SettingsModal({
   return (
     <Modal
       title="Settings"
-      subtitle="Application preferences and configurations."
+      subtitle="Unified preferences for ChatGPT Home, Codex Engineering, and NotebookLM Studio."
       onClose={onClose}
       className="settings-modal-card"
     >
       <div className="settings-layout">
         <aside className="settings-side">
-          {navGroups.map((group) => {
-            const visibleItems = group.items.filter((item) => !item.hidden);
-            if (!visibleItems.length) return null;
-            return (
-              <div key={group.title} className="settings-side-group">
-                <span className="settings-side-title">{group.title}</span>
-                {visibleItems.map((item) => {
-                  const isActive = section === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={`settings-side-btn${isActive ? " active" : ""}`}
-                      onClick={() => setSection(item.id)}
-                    >
-                      <span className="settings-side-btn-icon">{item.icon}</span>
-                      <span className="settings-side-btn-label">{item.label}</span>
-                      {item.badge != null && (
-                        <span className={`settings-side-badge ${item.badgeType === "active" ? "active-badge" : item.badgeType === "alert" ? "alert-badge" : ""}`}>
-                          {item.badge}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            );
-          })}
+          <div className="settings-side-search">
+            <Search size={13} />
+            <input
+              value={navSearch}
+              onChange={(e) => setNavSearch(e.target.value)}
+              placeholder="Filter settings…"
+              aria-label="Filter settings sections"
+            />
+            {navSearch && (
+              <button type="button" className="settings-side-search-clear" onClick={() => setNavSearch("")} title="Clear">
+                <X size={11} />
+              </button>
+            )}
+          </div>
+          <div className="settings-side-nav">
+            {navGroups.map((group) => {
+              const q = navSearch.trim().toLowerCase();
+              const visibleItems = group.items.filter(
+                (item) => !item.hidden && (!q || item.label.toLowerCase().includes(q) || group.title.toLowerCase().includes(q))
+              );
+              if (!visibleItems.length) return null;
+              return (
+                <div key={group.title} className="settings-side-group">
+                  <span className="settings-side-title">{group.title}</span>
+                  {visibleItems.map((item) => {
+                    const isActive = section === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={`settings-side-btn${isActive ? " active" : ""}`}
+                        onClick={() => setSection(item.id)}
+                      >
+                        <span className="settings-side-btn-icon">{item.icon}</span>
+                        <span className="settings-side-btn-label">{item.label}</span>
+                        {item.badge != null && (
+                          <span className={`settings-side-badge ${item.badgeType === "active" ? "active-badge" : item.badgeType === "alert" ? "alert-badge" : ""}`}>
+                            {item.badge}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+          <div className="settings-side-footer">
+            <div className="settings-side-footer-meta">
+              <strong>Nexus Unified Suite</strong>
+              <small>{appVersion ? `v${appVersion}` : "Desktop Edition"} · {APP_THEMES.find((t) => t.id === themeId)?.name || "Theme"}</small>
+            </div>
+          </div>
         </aside>
         <section className="settings-body">
           <div className="settings-hero">
-            <span className="settings-hero-kicker">{SECTION_METAS[section]?.kicker || "Settings"}</span>
+            <div className="settings-hero-top">
+              <span className="settings-hero-kicker">{SECTION_METAS[section]?.kicker || "Settings"}</span>
+            </div>
             <h3 className="settings-hero-title">{SECTION_METAS[section]?.title || section}</h3>
             <p className="settings-hero-subtitle">{SECTION_METAS[section]?.subtitle || ""}</p>
           </div>
           {section === "appearance" && (
             <div className="setting-card">
               <div className="setting-row">
-                <span className="setting-icon"><Palette size={14} /></span>
+                <span className="setting-icon"><Palette size={15} /></span>
                 <div className="setting-text">
-                  <strong>Color theme</strong>
-                  <small>Pick a palette for the whole app. Changes apply immediately and are saved.</small>
+                  <strong>Interface Color Theme</strong>
+                  <small>Choose a curated visual palette for Chat, Codex, and NotebookLM. Applies immediately.</small>
                 </div>
+                <span className="setting-status-pill">{APP_THEMES.find((t) => t.id === themeId)?.name || themeId}</span>
               </div>
               <div className="theme-grid">
                 {APP_THEMES.map((theme) => {
@@ -572,71 +601,72 @@ export function SettingsModal({
 
           {section === "browser" && (
             <div className="setting-card">
-              <div className="setting-row">
-                <span className="setting-icon">{headless ? <EyeOff size={14} /> : <Eye size={14} />}</span>
+              <div className="setting-row setting-row-inline">
+                <span className="setting-icon">{headless ? <EyeOff size={15} /> : <Eye size={15} />}</span>
                 <div className="setting-text">
                   <strong>Agent browser visibility</strong>
                   <small>
                     {headless
-                      ? "Hidden — the agent inspects and operates pages in the background."
-                      : "Watching — the built-in Browser tab follows the agent live."}
+                      ? "Hidden — the agent inspects and operates pages silently in the background."
+                      : "Watching — the built-in Browser drawer follows the agent live."}
                   </small>
                 </div>
+                <div className="seg seg-inline" role="group" aria-label="Agent browser visibility">
+                  <button
+                    type="button"
+                    className={headless ? "active" : ""}
+                    onClick={() => void setHeadlessValue(true)}
+                  >
+                    <EyeOff size={12} /> Headless
+                  </button>
+                  <button
+                    type="button"
+                    className={!headless ? "active" : ""}
+                    onClick={() => void setHeadlessValue(false)}
+                  >
+                    <Eye size={12} /> Watching
+                  </button>
+                </div>
               </div>
-              <div className="seg" role="group" aria-label="Agent browser visibility">
-                <button
-                  type="button"
-                  className={headless ? "active" : ""}
-                  onClick={() => void setHeadlessValue(true)}
-                >
-                  <EyeOff size={12} /> Headless
-                </button>
-                <button
-                  type="button"
-                  className={!headless ? "active" : ""}
-                  onClick={() => void setHeadlessValue(false)}
-                >
-                  <Eye size={12} /> Watching
-                </button>
-              </div>
-              <div className="settings-note" style={{ marginTop: "10px" }}>
+              <div className="settings-note" style={{ marginTop: "12px" }}>
                 <Globe size={12} />
-                <span>Same switch lives in the Browser tab toolbar. Follow the agent with the Follow banner there.</span>
+                <span>Same switch lives in the Browser drawer toolbar. Follow the agent with the Follow banner there.</span>
               </div>
             </div>
           )}
 
           {section === "browser" && (
             <div className="setting-card">
-              <div className="setting-row">
-                <span className="setting-icon">{editPolicy === "ask" ? <ShieldCheck size={14} /> : <Shield size={14} />}</span>
+              <div className="setting-row setting-row-inline">
+                <span className="setting-icon">{editPolicy === "ask" ? <ShieldCheck size={15} /> : <Shield size={15} />}</span>
                 <div className="setting-text">
-                  <strong>Edit approval</strong>
+                  <strong>Code file-edit approval policy</strong>
                   <small>
                     {editPolicy === "ask"
-                      ? "Every file change in Code runs waits for your confirmation."
-                      : "The agent changes files directly — Undo and diffs still cover you."}
+                      ? "Every file change in Codex runs pauses and waits for your confirmation."
+                      : "Codex modifies files directly — instant Undo and Git Diffs always protect your work."}
                   </small>
                 </div>
-              </div>
-              <div className="seg" role="group" aria-label="Edit approval">
-                <button
-                  type="button"
-                  className={editPolicy === "ask" ? "active" : ""}
-                  onClick={() => void saveEditPolicy("ask")}
-                >
-                  <ShieldCheck size={12} /> Ask first
-                </button>
-                <button
-                  type="button"
-                  className={editPolicy === "auto" ? "active" : ""}
-                  onClick={() => void saveEditPolicy("auto")}
-                >
-                  <Shield size={12} /> Auto
-                </button>
+                <div className="seg seg-inline" role="group" aria-label="Edit approval">
+                  <button
+                    type="button"
+                    className={editPolicy === "ask" ? "active" : ""}
+                    onClick={() => void saveEditPolicy("ask")}
+                  >
+                    <ShieldCheck size={12} /> Ask first
+                  </button>
+                  <button
+                    type="button"
+                    className={editPolicy === "auto" ? "active" : ""}
+                    onClick={() => void saveEditPolicy("auto")}
+                  >
+                    <Shield size={12} /> Auto edit
+                  </button>
+                </div>
               </div>
               {editPolicyNote ? (
-                <div className="settings-note" style={{ marginTop: "10px" }}>
+                <div className="settings-note" style={{ marginTop: "12px" }}>
+                  <Check size={12} />
                   <span>{editPolicyNote}</span>
                 </div>
               ) : null}

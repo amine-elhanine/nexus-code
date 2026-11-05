@@ -15,7 +15,7 @@
 .home-topbar-title {
   font-size: 13px;
   font-weight: 600;
-  color: #dfe5ef;
+  color: var(--text-primary);
   letter-spacing: -0.01em;
   overflow: hidden;
   text-overflow: ellipsis;

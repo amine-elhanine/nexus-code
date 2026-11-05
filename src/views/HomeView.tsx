@@ -136,12 +136,61 @@ export function HomeView({
     return () => window.removeEventListener("nexus:widget-ask", onWidgetAsk);
   }, [setDraft]);
 
+  // Pinned scroll on session switch or initial open
+  useEffect(() => {
+    stickToBottomRef.current = true;
+    const el = transcriptRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+      const t = setTimeout(() => {
+        if (transcriptRef.current) {
+          transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+        }
+      }, 50);
+      return () => clearTimeout(t);
+    }
+  }, [activeSessionId]);
+
   useEffect(() => {
     const el = transcriptRef.current;
     if (el && stickToBottomRef.current) {
       el.scrollTop = el.scrollHeight;
     }
   }, [messages, liveEvents, streamingText]);
+
+  // Keep pinned to bottom when lazy visual content (e.g. images, charts, diagrams) loads or resizes
+  useEffect(() => {
+    const el = transcriptRef.current;
+    if (!el) return;
+
+    const handleImageLoaded = () => {
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (stickToBottomRef.current || distFromBottom < 400) {
+        stickToBottomRef.current = true;
+        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      }
+    };
+    window.addEventListener("nexus:chat-image-loaded", handleImageLoaded);
+
+    let prevHeight = el.scrollHeight;
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(() => {
+        const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+        if ((stickToBottomRef.current || distFromBottom < 300) && el.scrollHeight !== prevHeight) {
+          el.scrollTop = el.scrollHeight;
+        }
+        prevHeight = el.scrollHeight;
+      });
+      observer.observe(el);
+      Array.from(el.children).forEach((child) => observer?.observe(child));
+    }
+
+    return () => {
+      window.removeEventListener("nexus:chat-image-loaded", handleImageLoaded);
+      observer?.disconnect();
+    };
+  }, [messages.length, liveEvents.length, streamingText]);
 
   const transcriptNodes: ReactNode[] = [];
   let pendingActivity: ChatItem[] = [];
@@ -527,7 +576,11 @@ export function HomeView({
 
       {isEmpty ? (
         <div className="home-hero">
-          <h1 className="home-hero-greeting">{greeting}</h1>
+          <div className="home-hero-brand-pill">
+            <Sparkles size={13} />
+            <span>Nexus Chat · Research & Document Studio</span>
+          </div>
+          <h1 className="home-hero-greeting">{greeting} What can I help with?</h1>
           {composer}
           <div className="home-hero-chips">
             {SUGGESTIONS.map((s) => (
@@ -540,8 +593,11 @@ export function HomeView({
                 }}
                 title={s.desc}
               >
-                {s.icon}
-                <span>{s.label}</span>
+                <span className="hero-chip-icon">{s.icon}</span>
+                <span className="hero-chip-text">
+                  <strong>{s.label}</strong>
+                  <small>{s.desc}</small>
+                </span>
               </button>
             ))}
           </div>
@@ -555,7 +611,7 @@ export function HomeView({
               onScroll={() => {
                 const el = transcriptRef.current;
                 if (!el) return;
-                stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+                stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 240;
               }}
             >
               {transcriptNodes}
