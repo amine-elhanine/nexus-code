@@ -1,4 +1,6 @@
 import { getRunAbortSignal } from "./command-service.js";
+import { invokeChatText } from "./agentcore/llm/invoke.js";
+import { systemMsg, userMsg } from "./agentcore/messages.js";
 
 /** Use the same run-scoped abort signal for every direct Notebook model call. */
 export function notebookGenerationInvokeOptions(runId?: string): { signal?: AbortSignal } {
@@ -38,10 +40,7 @@ export async function planNotebookWithLlm(system: string, user: string, input: N
   if (!modelName) throw new Error("No chat model selected.");
   const llm = await createChatModel(provider, modelName);
   assertNotebookGenerationActive(input);
-  const res = await llm.invoke([
-    { role: "system", content: system } as never,
-    { role: "user", content: user } as never,
-  ], notebookGenerationInvokeOptions(input.runId));
+  const text = await invokeChatText(llm, [systemMsg(system), userMsg(user)], notebookGenerationInvokeOptions(input.runId));
   assertNotebookGenerationActive(input);
-  return typeof res.content === "string" ? res.content : JSON.stringify(res.content);
+  return text;
 }

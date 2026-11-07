@@ -53,13 +53,18 @@ async function openDb(root: string): Promise<any> {
   return db;
 }
 
-function toBlob(vector: number[]): Buffer {
-  return Buffer.from(new Float64Array(vector).buffer);
+function toBlob(vector: number[] | Float64Array): Buffer {
+  const f64 = vector instanceof Float64Array ? vector : new Float64Array(vector);
+  // Copy into a standalone Buffer: the source view may be a window into a
+  // larger pooled buffer, so byteOffset must be honored.
+  return Buffer.from(f64.buffer, f64.byteOffset, f64.byteLength);
 }
 
-function fromBlob(blob: Uint8Array): number[] {
+function fromBlob(blob: Uint8Array): Float64Array {
   const bytes = Buffer.from(blob.buffer, blob.byteOffset, blob.byteLength);
-  return Array.from(new Float64Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 8));
+  // Zero-copy view — the whole point of the sqlite store (the old
+  // Array.from<number[]> doubled heap usage on every snapshot load).
+  return new Float64Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 8);
 }
 
 /** node:sqlite has no transaction helper — explicit BEGIN/COMMIT/ROLLBACK. */
@@ -139,7 +144,7 @@ export async function loadVectorsSqlite(root: string, sessionId: string): Promis
   const db = await openDb(root);
   try {
     if (readMeta(db, "session_id") && readMeta(db, "session_id") !== sessionId) return emptyPartition(sessionId);
-    const vectors: Record<string, number[]> = {};
+    const vectors: Record<string, Float64Array> = {};
     for (const row of db.prepare("SELECT chunk_id, embedding FROM chunks").all() as Array<{ chunk_id: string; embedding: Uint8Array }>) {
       vectors[row.chunk_id] = fromBlob(row.embedding);
     }

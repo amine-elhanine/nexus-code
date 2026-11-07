@@ -13,8 +13,7 @@ Windows 10 / 11 (NSIS + Portable) · macOS & Linux configurable
 ![Electron](https://img.shields.io/badge/Electron-44-47848F?logo=electron&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)
-![LangGraph](https://img.shields.io/badge/LangGraph-1.x-1C3C3C)
-![DeepAgents](https://img.shields.io/badge/DeepAgents-1.x-34d399)
+![agentcore](https://img.shields.io/badge/runtime-self--built%20agentcore-34d399)
 ![Version](https://img.shields.io/badge/version-v0.5.0-blue)
 ![License](https://img.shields.io/badge/license-All_Rights_Reserved-lightgrey)
 
@@ -26,10 +25,10 @@ Windows 10 / 11 (NSIS + Portable) · macOS & Linux configurable
 
 ---
 
-Nexus is an **autonomous AI desktop agent** engineered with **Electron + React + TypeScript**. It brings together:
-- **LangChain** for model orchestration and tool interfaces,
-- **LangGraph** for deterministic outer loop execution, session checkpointing, and verify/repair supervision,
-- **DeepAgents** for planning, multi-step agentic execution, and virtual filesystem manipulation.
+Nexus is an **autonomous AI desktop agent** engineered with **Electron + React + TypeScript**. Its agentic runtime is **self-built** (no agent framework):
+- **agentcore** (`electron/agentcore/`) — messages, tool model, ReAct loop, virtual filesystem backend, middleware and the streaming LLM client (OpenAI-compatible / Anthropic Messages / Google Gemini adapters),
+- a plain-function **supervisor loop** for deterministic outer execution, disk checkpointing, and verify/repair self-healing,
+- **progressive-disclosure skills**, todo planning and subagent delegation built directly into the loop.
 
 Everything executes on your local machine: your API keys (safely encrypted via OS keychain/DPAPI), your choice of 15+ cloud or local models (including offline Ollama), and all session storage residing on disk — with **zero proprietary telemetry or middleman cloud**.
 
@@ -208,7 +207,7 @@ To publish to the official registry, add the plugin to `plugins/` and add a list
                                                  │
                                                  ▼
                      ┌─────────────────────────────────────────────────────────┐
-                     │ 2. DEEP AGENT LOOP (DeepAgents + LangChain)             │
+                     │ 2. DEEP AGENT LOOP (self-built agentcore)               │
                      │    - Tool calls: Filesystem, Bash, AST / LSP, Browser,  │
                      │      Web search, Memory, MCP, Subagents, ask_user       │
                      │    - Loop prevention & Doom loop circuit breakers       │
@@ -217,7 +216,7 @@ To publish to the official registry, add the plugin to `plugins/` and add a list
                                                  │
                                                  ▼
                      ┌─────────────────────────────────────────────────────────┐
-                     │ 3. VERIFICATION (LangGraph outer supervisor node)        │
+                     │ 3. VERIFICATION (outer supervisor loop)                  │
                      │    - Diff-first inspection                              │
                      │    - Diagnostics cascade (Typechecks / Tests / Lints)   │
                      │    - Deliverable schema & magic-byte contract check     │
@@ -422,8 +421,6 @@ nexus/
 
 ## References & Credits
 
-- [LangChain](https://js.langchain.com) — Model integration and tool routing
-- [LangGraph](https://langchain-ai.github.io/langgraphjs) — Outer state machine workflows and human-in-the-loop controls
-- [DeepAgents](https://github.com/langchain-ai/deepagents) — Long-running agent loops and virtual filesystem manipulation
-- [Model Context Protocol (MCP)](https://modelcontextprotocol.io) — Open tool interoperability
+- [Model Context Protocol (MCP)](https://modelcontextprotocol.io) — Open tool interoperability (raw SDK, `@modelcontextprotocol/sdk`)
+- [zod](https://zod.dev) — Tool schema authoring and validation
 - [Monaco Editor](https://microsoft.github.io/monaco-editor/) & [xterm.js](https://xtermjs.org/) — In-app editor and terminal interfaces

@@ -12,18 +12,18 @@ const { mkdirScratch } = await import("./helpers/scratch.mjs");
 
 async function waitSettled(jobStatus, jobId, tries = 60) {
   for (let i = 0; i < tries; i++) {
-    const status = String(await jobStatus.invoke({ jobId }));
+    const status = String(await jobStatus.execute({ jobId }));
     if (/completed \(exit|FAILED \(exit/.test(status)) return status;
     await new Promise((r) => setTimeout(r, 100));
   }
-  return String(await jobStatus.invoke({ jobId }));
+  return String(await jobStatus.execute({ jobId }));
 }
 
 test("background jobs: returns immediately and settles with an honest status", async () => {
   const root = await mkdirScratch("nx-bg-jobs-");
   const [runBackground, jobStatus] = createBackgroundTools({ projectRoot: root, requireApproval: false });
   const started = Date.now();
-  const startMsg = await runBackground.invoke({ command: "node -e \"console.log('bg-output-marker')\"" });
+  const startMsg = await runBackground.execute({ command: "node -e \"console.log('bg-output-marker')\"" });
   assert.ok(Date.now() - started < 5_000, "run_background must return immediately");
   assert.match(String(startMsg), /Background job bg_1 started/);
   assert.match(String(startMsg), /Do NOT sleep or poll/);
@@ -39,13 +39,13 @@ test("background jobs: returns immediately and settles with an honest status", a
     assert.match(status, /bg-output-marker/);
   }
   // jobId-less summary also works.
-  assert.match(String(await jobStatus.invoke({})), /bg_1 ·/);
+  assert.match(String(await jobStatus.execute({})), /bg_1 ·/);
 });
 
 test("background jobs: failing command reports FAILED with the error tail", async () => {
   const root = await mkdirScratch("nx-bg-fail-");
   const [runBackground, jobStatus] = createBackgroundTools({ projectRoot: root, requireApproval: false });
-  await runBackground.invoke({ command: "node -e \"process.exit(3)\"" });
+  await runBackground.execute({ command: "node -e \"process.exit(3)\"" });
   const status = await waitSettled(jobStatus, "bg_1");
   if (/spawn.*ENOENT/i.test(status)) {
     assert.match(status, /FAILED/); // sandbox: spawn itself failed — still honest
@@ -57,19 +57,19 @@ test("background jobs: failing command reports FAILED with the error tail", asyn
 test("background jobs: unknown id and empty registry produce honest messages", async () => {
   const root = await mkdirScratch("nx-bg-empty-");
   const [, jobStatus] = createBackgroundTools({ projectRoot: root, requireApproval: false });
-  assert.match(String(await jobStatus.invoke({})), /no background jobs/);
-  assert.match(String(await jobStatus.invoke({ jobId: "bg_99" })), /unknown job "bg_99"/);
+  assert.match(String(await jobStatus.execute({})), /no background jobs/);
+  assert.match(String(await jobStatus.execute({ jobId: "bg_99" })), /unknown job "bg_99"/);
 });
 
 test("background jobs: refuses to exceed the concurrency cap", async () => {
   const root = await mkdirScratch("nx-bg-cap-");
   const [runBackground] = createBackgroundTools({ projectRoot: root, requireApproval: false });
   const slow = "node -e \"setTimeout(()=>{}, 3000)\"";
-  const first = await runBackground.invoke({ command: slow });
+  const first = await runBackground.execute({ command: slow });
   assert.match(String(first), /bg_1 started/);
-  const second = await runBackground.invoke({ command: slow });
-  const third = await runBackground.invoke({ command: slow });
-  const fourth = await runBackground.invoke({ command: slow });
+  const second = await runBackground.execute({ command: slow });
+  const third = await runBackground.execute({ command: slow });
+  const fourth = await runBackground.execute({ command: slow });
   assert.match(String(second), /bg_2 started/);
   assert.match(String(third), /bg_3 started/);
   assert.match(String(fourth), /refused: 3 jobs are already running/);

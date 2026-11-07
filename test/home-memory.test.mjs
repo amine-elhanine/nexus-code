@@ -232,10 +232,10 @@ await test("removeMemoryFactWithCount reports how many entries were removed", ()
 
 await test("manage_memory forget reports no-match honestly instead of success", async () => {
   const hit = createHomeMemoryTool({ onRemember: () => {}, onForget: () => 2 });
-  const okMsg = await hit.invoke({ action: "forget", fact: "Lives in Paris" });
+  const okMsg = await hit.execute({ action: "forget", fact: "Lives in Paris" });
   assert.match(okMsg, /Removed 2 item/);
   const miss = createHomeMemoryTool({ onRemember: () => {}, onForget: () => 0 });
-  const missMsg = await miss.invoke({ action: "forget", fact: "Something not stored" });
+  const missMsg = await miss.execute({ action: "forget", fact: "Something not stored" });
   assert.match(missMsg, /No exact match/);
   assert.doesNotMatch(missMsg, /Successfully removed/);
 });

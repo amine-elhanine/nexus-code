@@ -1,7 +1,7 @@
 import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import { boundedExecFile } from "./shell-subprocess.js";
-import { tool } from "@langchain/core/tools";
+import { tool } from "./agentcore/tools.js";
 import { z } from "zod";
 import { stripProjectRoot } from "./path-utils.js";
 import { ensureSymbolParsersReady, parseSymbolsWithTreeSitterSync, startSymbolParserWarmup, type SymbolEntry } from "./symbol-parser.js";

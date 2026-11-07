@@ -109,7 +109,9 @@ export interface NexusApi {
   callPluginTool: (input: { pluginId: string; tool: string; args?: Record<string, unknown>; mode: string }) => Promise<{ ok: boolean; result?: unknown; error?: string; code?: string }>;
   getSettings: () => Promise<Record<string, unknown>>;
   saveSettings: (settings: unknown) => Promise<unknown>;
-  getAppSettings: () => Promise<{ browserHeadless?: boolean; notebookRerankEnabled?: boolean; notebookRerankProviderId?: string; notebookRerankModel?: string; notebookVisionEnabled?: boolean; notebookVisionProviderId?: string; notebookVisionModel?: string; theme?: string }>;
+  getAppSettings: () => Promise<{ browserHeadless?: boolean; notebookRerankEnabled?: boolean; notebookRerankProviderId?: string; notebookRerankModel?: string; notebookVisionEnabled?: boolean; notebookVisionProviderId?: string; notebookVisionModel?: string; theme?: string; commandSandbox?: string }>;
+  getSearchConfig?: () => Promise<{ backend?: string; searxngBaseUrl?: string; hasTavilyKey?: boolean; hasBraveKey?: boolean; hasExaKey?: boolean }>;
+  saveSearchConfig?: (input: { backend?: string; tavilyKey?: string | null; braveKey?: string | null; exaKey?: string | null; searxngBaseUrl?: string | null }) => Promise<unknown>;
   saveAppSettings: (settings: unknown) => Promise<unknown>;
   getNotebookParser: () => Promise<{ provider: "local" | "llamaparse"; enabled: boolean; apiKey: string; baseUrl: string; tier: string; version: string; timeoutSeconds: number }>;
   saveNotebookParser: (config: unknown) => Promise<unknown>;
@@ -259,6 +261,8 @@ export interface NexusApi {
   removeEmbeddingProvider: (providerId: string) => Promise<Array<{ id: string; name: string; kind: string; baseUrl?: string; apiKey: string; models: string[] }>>;
   testEmbeddingProvider: (input: { id?: string; kind: string; baseUrl?: string; apiKey?: string; model: string }) => Promise<{ dims: number }>;
   notebookAudioList: (notebookId: string) => Promise<Array<any>>;
+  notebookAudioRead: (notebookId: string, audioId: string) => Promise<{ base64: string; mimeType: string } | null>;
+  notebookAudioDownload: (notebookId: string, audioId: string) => Promise<string | null>;
   notebookAudioGenerate: (payload: { notebookId: string; topic?: string; fileIds?: string[]; providerId?: string; model?: string }) => Promise<{ audio: any; fallbackReason: string | null }>;
   notebookAudioDelete: (notebookId: string, audioId: string) => Promise<Array<any>>;
 

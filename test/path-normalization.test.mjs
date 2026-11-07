@@ -5,7 +5,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { stripProjectRoot, normalizeVirtualPath, normalizeCommandPaths } from "../dist-electron/path-utils.js";
 import { getAgentBackend } from "../dist-electron/command-service.js";
-import { toolParameterNormalizationMiddleware } from "../dist-electron/loop-prevention.js";
+import { normalizeToolCallArgs } from "../dist-electron/loop-prevention.js";
 
 test("stripProjectRoot strips Windows drive host paths", () => {
   const root = "C:\\Users\\melha_eay78bj\\Desktop\\test2";
@@ -144,38 +144,31 @@ test("getAgentBackend intercepts resolvePath and prevents nested Users directory
   }
 });
 
-test("toolParameterNormalizationMiddleware normalizes hallucinated paths in tool calls", async () => {
+test("normalizeToolCallArgs normalizes hallucinated paths in tool calls", async () => {
   const root = "C:\\Users\\melha_eay78bj\\Desktop\\test2";
-  const mw = toolParameterNormalizationMiddleware(root);
 
-  // Test wrapModelCall
-  const mockResponse = {
-    tool_calls: [
-      {
-        name: "write_file",
-        args: {
-          filePath: "/Users/melha_eay78bj/Desktop/test2/dahab-coffee/src/Hero.tsx",
-          content: "export const Hero = () => null;",
-        },
-      },
-      {
-        name: "execute",
-        args: {
-          command: "cd /Users/melha_eay78bj/Desktop/test2/dahab-coffee && npm run dev",
-        },
-      },
-    ],
+  const tc1 = {
+    id: "call_1",
+    name: "write_file",
+    args: {
+      filePath: "/Users/melha_eay78bj/Desktop/test2/dahab-coffee/src/Hero.tsx",
+      content: "export const Hero = () => null;",
+    },
+  };
+  const tc2 = {
+    id: "call_2",
+    name: "execute",
+    args: {
+      command: "cd /Users/melha_eay78bj/Desktop/test2/dahab-coffee && npm run dev",
+    },
   };
 
-  const handler = async () => mockResponse;
-  const wrapped = mw.wrapModelCall;
-  const result = await wrapped({}, handler);
+  normalizeToolCallArgs(tc1, root);
+  normalizeToolCallArgs(tc2, root);
 
-  const tc1 = result.tool_calls[0];
   assert.equal(tc1.args.file_path, "/dahab-coffee/src/Hero.tsx");
   assert.equal(tc1.args.filePath, "/dahab-coffee/src/Hero.tsx");
 
-  const tc2 = result.tool_calls[1];
   assert.equal(tc2.args.command, "cd dahab-coffee && npm run dev");
 });
 
@@ -192,7 +185,7 @@ test("apply_patch handles hallucinated POSIX path without creating nested Users 
 export const NewComponent = () => <div>Hello</div>;
 `;
 
-    const res = await applyPatch.invoke({ patchText });
+    const res = await applyPatch.execute({ patchText });
     assert.match(String(res), /added/i);
 
     const targetFile = path.resolve(tmpDir, "src/NewComponent.tsx");

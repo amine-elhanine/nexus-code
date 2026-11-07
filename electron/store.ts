@@ -43,10 +43,19 @@ export type McpServerConfig = { id: string; name: string; enabled: boolean; tran
 export type SkillsConfig = { enabled: boolean };
 export type HooksConfig = { enabled: boolean };
 export type RulesConfig = { enabled: boolean };
+export type SearchBackend = "auto" | "tavily" | "brave" | "exa" | "searxng" | "ddg";
+
 export type AppSettings = {
   browserHeadless?: boolean;
   /** Opt-in edit approval for Code runs: "ask" gates every file mutation behind the approval UI. */
   editPolicy?: "auto" | "ask";
+  /** Web search backend for the web_search tool. "auto" = first configured API key, else DDG. */
+  searchBackend?: SearchBackend;
+  /** OS-level command sandbox for agent shell runs. "auto" = macOS sandbox-exec / Linux bwrap when available; Windows degrades to env scoping. */
+  commandSandbox?: "off" | "auto";
+  searchSearxngBaseUrl?: string;
+  /** safeStorage-sealed API keys (ENCRYPTED_PREFIX values). */
+  searchApiKeys?: Partial<Record<"tavily" | "brave" | "exa", string>>;
   notebookRerankEnabled?: boolean;
   notebookRerankProviderId?: string;
   notebookRerankModel?: string;
@@ -1096,6 +1105,56 @@ export async function saveHooksConfig(input: HooksConfig) { const state = await 
 export async function getRulesConfig(): Promise<RulesConfig> { return { enabled: (await ensureLoaded()).rules?.enabled !== false }; }
 export async function saveRulesConfig(input: RulesConfig) { const state = await ensureLoaded(); state.rules = { enabled: input.enabled !== false }; await persist(); return state.rules; }
 export async function getAppSettings(): Promise<AppSettings> { return { ...(await ensureLoaded()).appSettings }; }
+
+export type SearchConfig = {
+  backend: SearchBackend;
+  tavilyKey?: string;
+  braveKey?: string;
+  exaKey?: string;
+  searxngBaseUrl?: string;
+};
+
+/** Resolved search configuration: sealed keys are decrypted for use and
+ *  re-sealed on save. Missing/undecryptable keys come back undefined. */
+export async function getSearchConfig(): Promise<SearchConfig> {
+  const app = await getAppSettings();
+  const unseal = (value?: string) => {
+    if (!value) return undefined;
+    try {
+      const out = decryptSecret(value);
+      return out || undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  return {
+    backend: app.searchBackend || "auto",
+    tavilyKey: unseal(app.searchApiKeys?.tavily),
+    braveKey: unseal(app.searchApiKeys?.brave),
+    exaKey: unseal(app.searchApiKeys?.exa),
+    searxngBaseUrl: app.searchSearxngBaseUrl?.trim() || undefined,
+  };
+}
+
+export async function saveSearchConfig(input: { backend?: SearchBackend; tavilyKey?: string | null; braveKey?: string | null; exaKey?: string | null; searxngBaseUrl?: string | null }): Promise<AppSettings> {
+  const state = await ensureLoaded();
+  const app: AppSettings = { ...(state.appSettings || {}) };
+  if (input.backend) app.searchBackend = input.backend;
+  if (input.searxngBaseUrl !== undefined) app.searchSearxngBaseUrl = input.searxngBaseUrl?.trim() || undefined;
+  const keys: Partial<Record<"tavily" | "brave" | "exa", string>> = { ...(app.searchApiKeys || {}) };
+  const apply = (slot: "tavily" | "brave" | "exa", value?: string | null) => {
+    if (value === undefined) return;
+    if (value === null || value === "") delete keys[slot];
+    else if (!isMaskedSecret(value)) keys[slot] = encryptSecret(value);
+  };
+  apply("tavily", input.tavilyKey);
+  apply("brave", input.braveKey);
+  apply("exa", input.exaKey);
+  app.searchApiKeys = Object.keys(keys).length ? keys : undefined;
+  state.appSettings = app;
+  await persist();
+  return { ...app };
+}
 export async function saveAppSettings(input: AppSettings) { const state = await ensureLoaded(); state.appSettings = { ...state.appSettings, ...input }; await persist(); return state.appSettings; }
 export async function getPluginRegistryConfig(): Promise<PluginRegistryConfig> {
   const value = (await ensureLoaded()).pluginRegistry;

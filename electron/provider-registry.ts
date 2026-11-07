@@ -103,14 +103,16 @@ export async function createRegisteredChatModel(config: ProviderConfig, modelNam
   if (entry.owner !== "builtin") {
     // Plugin providers speak OpenAI-compatible chat completions. Accurate
     // capability reporting matters: we only claim what this path supports.
-    const { ChatOpenAI } = await import("@langchain/openai");
+    const { createOpenAICompatClient } = await import("./agentcore/llm/openai-compat.js");
     const baseUrl = (config.baseUrl || (entry.definition as { defaultBaseUrl?: string }).defaultBaseUrl || "").trim();
     if (!baseUrl) throw new Error(`Provider "${entry.id}" needs a base URL.`);
-    return new ChatOpenAI({
+    return createOpenAICompatClient({
+      providerId: entry.id,
+      label: entry.definition?.label || entry.id,
+      baseUrl,
       apiKey: config.apiKey || "not-needed",
       model: modelName,
-      temperature: 0.1,
-      configuration: { baseURL: baseUrl },
+      reasoningStyle: "effort",
     });
   }
   return createChatModelImpl(config, modelName);

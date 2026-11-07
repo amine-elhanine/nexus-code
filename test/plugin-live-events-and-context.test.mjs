@@ -21,7 +21,6 @@ import { clearAllCapabilities } from '../dist-electron/capability-registry.js';
 import { discoverCustomCommands } from '../dist-electron/custom-commands-service.js';
 import { buildSystemPrompt } from '../dist-electron/agent-prompt.js';
 import { createHooksMiddleware } from '../dist-electron/hooks-service.js';
-import { ToolMessage } from '@langchain/core/messages';
 
 let passed = 0;
 let failed = 0;
@@ -269,18 +268,18 @@ await test('executable plugin tool:before listener intercepts built-in agent too
 
     let executed = false;
     const deniedResult = await mw.wrapToolCall(
-      { tool: { name: 'write_file' }, toolCall: { id: 'call_env', args: { file_path: '.env.production' } } },
+      { call: { id: 'call_env', name: 'write_file', args: { file_path: '.env.production' } }, toolCallId: 'call_env' },
       async () => {
         executed = true;
         return 'ok';
       }
     );
     assert.equal(executed, false, 'denied built-in tool call must not execute');
-    assert.ok(deniedResult instanceof ToolMessage);
+    assert.equal(deniedResult.isError, true, 'denial rides an error result');
     assert.match(String(deniedResult.content), /Refusing to overwrite \.env file/);
 
     const allowedResult = await mw.wrapToolCall(
-      { tool: { name: 'write_file' }, toolCall: { id: 'call_src', args: { file_path: 'src/index.ts' } } },
+      { call: { id: 'call_src', name: 'write_file', args: { file_path: 'src/index.ts' } }, toolCallId: 'call_src' },
       async () => 'written-ok'
     );
     assert.equal(allowedResult, 'written-ok');

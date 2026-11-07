@@ -6,7 +6,7 @@
 // keep verbatim tool results.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
+import { assistantMsg, userMsg, toolMsg } from "../dist-electron/agentcore/messages.js";
 
 const { microcompactToolResults, shrinkToBudget, shrinkWithBrief, buildDroppedWorkDigest } = await import("../dist-electron/agent/compaction.js");
 const { estimateMessagesTokens } = await import("../dist-electron/context-service.js");
@@ -15,16 +15,16 @@ const { estimateMessagesTokens } = await import("../dist-electron/context-servic
 function buildTranscript(resultChars = 4000) {
   const big = (i) => `result-${i}: ` + "x".repeat(resultChars);
   const exchange = (i) => [
-    new AIMessage({ content: "", tool_calls: [{ id: `call_${i}`, name: "web_search", args: { q: `troy ${i}` } }] }),
-    new ToolMessage({ content: big(i), tool_call_id: `call_${i}`, name: "web_search" }),
+    assistantMsg("", [{ id: `call_${i}`, name: "web_search", args: { q: `troy ${i}` } }]),
+    toolMsg(`call_${i}`, big(i), "web_search"),
   ];
   return [
-    new HumanMessage("Generate me a presentation about the Battle of Troy"),
+    userMsg("Generate me a presentation about the Battle of Troy"),
     ...exchange(1), ...exchange(2), ...exchange(3),
-    new HumanMessage("continue"),
+    userMsg("continue"),
     ...exchange(4), ...exchange(5),
-    new HumanMessage("wrap it up soon"),
-    new AIMessage("Working on the deck now."),
+    userMsg("wrap it up soon"),
+    assistantMsg("Working on the deck now."),
   ];
 }
 
@@ -39,16 +39,16 @@ test("microcompact: old tool results become stubs, recent turns keep verbatim", 
   assert.ok(String(messages[2].content).length < 400);
   assert.equal(messages[9].content, `result-4: ` + "x".repeat(4000)); // recent turn verbatim
   // Pairing preserved.
-  assert.equal(messages[2].tool_call_id, "call_1");
+  assert.equal(messages[2].toolCallId, "call_1");
   // Pure: input untouched.
   assert.equal(transcript[2].content, `result-1: ` + "x".repeat(4000));
 });
 
 test("microcompact: small results and results within the recent window are never touched", () => {
   const transcript = [
-    new HumanMessage("task"),
-    new AIMessage({ content: "", tool_calls: [{ id: "c1", name: "ls", args: {} }] }),
-    new ToolMessage({ content: "a.txt\nb.txt", tool_call_id: "c1", name: "ls" }),
+    userMsg("task"),
+    assistantMsg("", [{ id: "c1", name: "ls", args: {} }]),
+    toolMsg("c1", "a.txt\nb.txt", "ls"),
   ];
   const { messages, cleared } = microcompactToolResults(transcript, { keepUserTurns: 2 });
   assert.equal(cleared, 0);
@@ -63,7 +63,7 @@ test("microcompact: no-op when there are fewer user turns than the keep window",
 });
 
 test("shrink ladder: returns 'none' when the transcript already fits", () => {
-  const small = [new HumanMessage("hi"), new AIMessage("hello")];
+  const small = [userMsg("hi"), assistantMsg("hello")];
   const result = shrinkToBudget(small, 10_000);
   assert.equal(result.level, "none");
   assert.equal(result.messages, small);
@@ -88,9 +88,9 @@ test("shrink ladder: escalates through tiers and always preserves the original r
   // Newest exchange (last AI message) survives.
   assert.equal(result.messages[result.messages.length - 1].content, "Working on the deck now.");
   // Pairing: every tool message's call id still appears in some AI tool_calls.
-  const callIds = new Set(result.messages.flatMap((m) => (Array.isArray(m.tool_calls) ? m.tool_calls.map((c) => c.id) : [])));
+  const callIds = new Set(result.messages.flatMap((m) => (Array.isArray(m.toolCalls) ? m.toolCalls.map((c) => c.id) : [])));
   for (const m of result.messages) {
-    if ((m?._getType?.() ?? m?.type) === "tool") assert.ok(callIds.has(m.tool_call_id), `orphan tool result ${m.tool_call_id}`);
+    if (m?.role === "tool") assert.ok(callIds.has(m.toolCallId), `orphan tool result ${m.toolCallId}`);
   }
 });
 

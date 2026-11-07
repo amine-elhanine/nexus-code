@@ -275,6 +275,19 @@ class LspServer {
     });
   }
 
+  /**
+   * Drops the server's cached buffer for a file the runtime just rewrote on
+   * disk (didClose + eviction): the next ensureOpened sends a fresh
+   * textDocument/didOpen with the updated contents instead of serving
+   * diagnostics/renames against stale text.
+   */
+  async notifyFileChanged(filePath: string): Promise<void> {
+    const uri = toLspUri(path.resolve(filePath));
+    if (!this.openedUris.has(uri)) return;
+    this.openedUris.delete(uri);
+    await this.notify("textDocument/didClose", { textDocument: { uri } }).catch(() => undefined);
+  }
+
   /** didOpen the file so the server has content for position queries. */
   private async ensureOpened(filePath: string, forceRefresh = false): Promise<string | null> {
     const abs = path.resolve(filePath);
@@ -506,6 +519,42 @@ export function resetLspForTests(): void {
   unavailable.clear();
 }
 
+export interface LspTextEdit {
+  range: { start: { line: number; character: number }; end: { line: number; character: number } };
+  newText: string;
+}
+
+/**
+ * Applies LSP TextDocumentEdits to file content, preserving the file's
+ * dominant line ending. LSP positions are UTF-16 offsets into lines WITHOUT
+ * their terminators, so the content is split on /\r?\n/ and rejoined with
+ * the detected EOL — the old split("\n")/join("\n") pair silently rewrote
+ * every CRLF file to LF on Windows.
+ */
+export function applyTextDocumentEdits(content: string, edits: LspTextEdit[]): string {
+  const eol = content.includes("\r\n") ? "\r\n" : "\n";
+  const lines = content.split(/\r?\n/);
+  // Sort edits in reverse document order (bottom to top, right to left) so
+  // earlier offsets remain valid while applying.
+  const sorted = [...edits].sort((a, b) => {
+    if (a.range.start.line !== b.range.start.line) return b.range.start.line - a.range.start.line;
+    return b.range.start.character - a.range.start.character;
+  });
+  for (const edit of sorted) {
+    const startL = edit.range.start.line;
+    const startC = edit.range.start.character;
+    const endL = edit.range.end.line;
+    const endC = edit.range.end.character;
+    if (startL <= endL && lines[startL] !== undefined && lines[endL] !== undefined) {
+      const prefix = lines[startL].slice(0, startC);
+      const suffix = lines[endL].slice(endC);
+      const replacementLines = (prefix + edit.newText + suffix).split(/\r?\n/);
+      lines.splice(startL, endL - startL + 1, ...replacementLines);
+    }
+  }
+  return lines.join(eol);
+}
+
 export interface LspLocation { path: string; line: number; col: number }
 
 /** Type-aware definition lookup. Returns null whenever the language server
@@ -598,31 +647,14 @@ export async function lspRename(
       guardAgainstLegacyStateDir(resolvedFile);
       if (!fs.existsSync(resolvedFile)) continue;
       const content = fs.readFileSync(resolvedFile, "utf8");
-      const lines = content.split("\n");
-
-      // Sort edits in reverse document order (bottom to top, right to left) so earlier offsets remain valid
-      const sorted = [...edits].sort((a, b) => {
-        if (a.range.start.line !== b.range.start.line) return b.range.start.line - a.range.start.line;
-        return b.range.start.character - a.range.start.character;
-      });
-
-      for (const edit of sorted) {
-        const startL = edit.range.start.line;
-        const startC = edit.range.start.character;
-        const endL = edit.range.end.line;
-        const endC = edit.range.end.character;
-
-        if (startL <= endL && lines[startL] !== undefined && lines[endL] !== undefined) {
-          const prefix = lines[startL].slice(0, startC);
-          const suffix = lines[endL].slice(endC);
-          const replacementLines = (prefix + edit.newText + suffix).split("\n");
-          lines.splice(startL, endL - startL + 1, ...replacementLines);
-          totalEdits++;
-        }
-      }
-
-      fs.writeFileSync(resolvedFile, lines.join("\n"), "utf8");
+      const next = applyTextDocumentEdits(content, edits);
+      if (next === content) continue;
+      totalEdits++;
+      fs.writeFileSync(resolvedFile, next, "utf8");
       modifiedFiles.push(path.relative(resolvedRoot, resolvedFile).replace(/\\/g, "/"));
+      // The server's cached buffer is now stale: drop it so follow-up
+      // diagnostics/renames re-open the file with the new contents.
+      await server.notifyFileChanged(resolvedFile).catch(() => undefined);
     }
 
     return { success: true, modifiedFiles, totalEdits };
@@ -651,6 +683,15 @@ export async function collectPostEditDiagnostics(
 ): Promise<string | null> {
   if (process.env.NEXUS_DISABLE_POST_EDIT_LSP === "1") return null;
   const resolvedRoot = path.resolve(projectRoot);
+  // The agent's backend writes bypass the LSP: drop stale buffers first so
+  // diagnostics reflect what is on disk now, not what was last didOpen'd.
+  for (const relOrAbs of modifiedPaths) {
+    const absPath = path.isAbsolute(relOrAbs) ? relOrAbs : path.resolve(resolvedRoot, relOrAbs);
+    const language = languageForFile(absPath);
+    if (!language) continue;
+    const server = servers.get(serverKey(resolvedRoot, language));
+    if (server) await server.notifyFileChanged(absPath).catch(() => undefined);
+  }
   const reports: string[] = [];
   for (const relOrAbs of modifiedPaths) {
     const absPath = path.isAbsolute(relOrAbs) ? relOrAbs : path.resolve(resolvedRoot, relOrAbs);

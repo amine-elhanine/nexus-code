@@ -115,3 +115,76 @@ export async function isPublicHttpUrl(raw: string, resolve: DnsResolver = defaul
     return false;
   }
 }
+
+const MAX_SAFE_REDIRECTS = 5;
+
+/**
+ * SSRF-hardened fetch for user-supplied (or source-document-supplied) URLs.
+ * Two layers beyond assertPublicHttpUrl:
+ *
+ * 1. CONNECT-TIME validation: a custom DNS lookup runs the same
+ *    private-address check inside the socket connect, closing the
+ *    check-then-fetch TOCTOU window (DNS rebinding) — a hostname that
+ *    re-resolves to an internal IP between validation and connect fails
+ *    right there, for every connection attempt including redirects.
+ * 2. MANUAL redirect hops: each Location target is re-validated as a public
+ *    http(s) URL before following (redirects can never smuggle the request
+ *    to loopback/link-local/metadata targets).
+ *
+ * Uses the undici package explicitly so the dispatcher (pinned lookup) is
+ * honored regardless of the runtime's bundled fetch internals.
+ */
+export async function safePublicFetch(
+  raw: string,
+  options: { headers?: Record<string, string>; timeoutMs?: number; resolve?: DnsResolver; method?: string } = {}
+): Promise<Response> {
+  const { fetch: undiciFetch, Agent } = await import("undici");
+  const resolver = options.resolve ?? defaultResolver;
+  // Connect-time guard: every socket this agent opens re-checks the resolved
+  // addresses, so DNS rebinding between URL validation and connect fails here.
+  const agent = new Agent({
+    connect: {
+      lookup: (hostname: string, opts: any, callback: any) => {
+        resolver(hostname)
+          .then((addresses) => {
+            if (!addresses.length) {
+              callback(new Error(`Could not resolve "${hostname}"`));
+              return;
+            }
+            if (addresses.some((entry) => addressIsPrivate(entry.address) || isBlockedHostname(hostname))) {
+              callback(new Error("This address is local or private — only public websites can be fetched."));
+              return;
+            }
+            // Hand undici the validated addresses only.
+            callback(null, addresses.map((a) => ({ address: a.address, family: a.family })));
+          })
+          .catch((error) => callback(error instanceof Error ? error : new Error(String(error))));
+      },
+    },
+  });
+
+  let current = await assertPublicHttpUrl(raw, resolver);
+  const timeoutMs = options.timeoutMs ?? 15_000;
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  for (let hop = 0; hop <= MAX_SAFE_REDIRECTS; hop++) {
+    const response = await undiciFetch(current, {
+      method: options.method ?? "GET",
+      headers: options.headers,
+      redirect: "manual",
+      dispatcher: agent,
+      signal: timeoutSignal,
+    } as never);
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location");
+      if (!location) return response as unknown as Response;
+      try {
+        await response.body?.cancel();
+      } catch { /* body already consumed */ }
+      const next = new URL(location, current);
+      current = await assertPublicHttpUrl(next.toString(), resolver);
+      continue;
+    }
+    return response as unknown as Response;
+  }
+  throw new Error(`Too many redirects (${MAX_SAFE_REDIRECTS}) while fetching a public URL.`);
+}

@@ -35,7 +35,7 @@ test("browser_act forwards explicit open-in-browser intent", async () => {
   });
   const browserAct = tools.find((candidate) => candidate.name === "browser_act");
   assert.ok(browserAct);
-  assert.equal(await browserAct.invoke({ action: "navigate", url: "http://localhost:5173", openInBrowser: true }), "opened");
+  assert.equal(await browserAct.execute({ action: "navigate", url: "http://localhost:5173", openInBrowser: true }), "opened");
   assert.equal(calls[0].openInBrowser, true);
 });
 

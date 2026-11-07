@@ -63,10 +63,12 @@ export function loadedSkillNamesFromMessages(messages: any[]): string[] {
   };
   for (const message of messages || []) {
     if (!message || typeof message !== "object") continue;
-    const direct = (message as { tool_calls?: unknown }).tool_calls;
+    const direct = (message as { toolCalls?: unknown }).toolCalls ?? (message as { tool_calls?: unknown }).tool_calls;
     if (Array.isArray(direct)) {
       for (const call of direct) scanArgs((call as { args?: unknown })?.args);
     }
+    // Legacy LangChain-shaped calls carried raw JSON args under
+    // additional_kwargs.tool_calls[].function.arguments.
     const extra = (message as { additional_kwargs?: { tool_calls?: unknown } }).additional_kwargs?.tool_calls;
     if (Array.isArray(extra)) {
       for (const call of extra) {

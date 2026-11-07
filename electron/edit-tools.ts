@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
-import { tool } from "@langchain/core/tools";
+import { tool } from "./agentcore/tools.js";
 import { z } from "zod";
 import { stripProjectRoot } from "./path-utils.js";
 import { LEGACY_STATE_REJECTION } from "./state-guard.js";

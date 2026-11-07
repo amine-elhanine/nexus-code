@@ -5,7 +5,6 @@ import { mkdirScratch } from "./helpers/scratch.mjs";
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { ToolMessage } from '@langchain/core/messages';
 import { parseHooksConfig, discoverHooks, dispatchHook, dispatchHooks, createHooksMiddleware } from '../dist-electron/hooks-service.js';
 
 let passed = 0;
@@ -120,15 +119,14 @@ await test('hooks middleware denies tool calls on hook failure via synthetic Too
 
     let handlerRan = false;
     const result = await middleware.wrapToolCall(
-      { tool: { name: 'write_file' }, toolCall: { id: 'call_1', args: { file_path: 'x.ts' } } },
+      { call: { id: 'call_1', name: 'write_file', args: { file_path: 'x.ts' } }, toolCallId: 'call_1' },
       async () => {
         handlerRan = true;
-        return new ToolMessage({ tool_call_id: 'call_1', name: 'write_file', content: 'written' });
+        return 'written';
       }
     );
     assert.ok(!handlerRan, 'denied call never reaches the real handler');
-    assert.ok(result instanceof ToolMessage);
-    assert.equal(result.status, 'error');
+    assert.equal(result.isError, true);
     assert.match(String(result.content), /HOOK DENIED/);
     assert.match(String(result.content), /no writes allowed/);
 
@@ -140,7 +138,7 @@ await test('hooks middleware denies tool calls on hook failure via synthetic Too
       hooks: [{ event: 'tool:before', command: `node "${allowPath}"` }],
     });
     const passed = await allowing.wrapToolCall(
-      { tool: { name: 'write_file' }, toolCall: { id: 'call_2', args: {} } },
+      { call: { id: 'call_2', name: 'write_file', args: {} }, toolCallId: 'call_2' },
       async () => 'ok-result'
     );
     assert.equal(passed, 'ok-result');

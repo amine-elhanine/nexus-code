@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { IpcRendererEvent } from "electron";
 
 type PlanItem = { content: string; status: "pending" | "in_progress" | "completed" };
-type AgentEvent = { type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact" | "thinking"; text: string; timestamp: string; items?: PlanItem[]; artifact?: any };
+type AgentEvent = { type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact" | "thinking" | "context" | "stream-reset"; text: string; timestamp: string; items?: PlanItem[]; artifact?: any };
 // Mirrors the server-side session:update patch contract (store.ts updateSession).
 type SessionPatch = { title?: string; memory?: string; model?: unknown; messages?: unknown; usage?: unknown; checkpointId?: string; checkpointIds?: string[] };
 const invoke = (channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
@@ -85,6 +85,8 @@ const nexusApi = {
   getSettings: () => invoke("settings:get"),
   saveSettings: (settings: unknown) => invoke("settings:save", settings),
   getAppSettings: () => invoke("app-settings:get"),
+  getSearchConfig: () => invoke("search-config:get"),
+  saveSearchConfig: (input: unknown) => invoke("search-config:save", input),
   saveAppSettings: (settings: unknown) => invoke("app-settings:save", settings),
   getNotebookParser: () => invoke("notebook:parser:get"),
   saveNotebookParser: (config: unknown) => invoke("notebook:parser:save", config),
@@ -276,6 +278,8 @@ const nexusApi = {
   notebookAudioList: (notebookId: string) => invoke("notebook:audio:list", notebookId),
   notebookAudioGenerate: (payload: { notebookId: string; topic?: string; fileIds?: string[]; providerId?: string; model?: string }) => invoke("notebook:audio:generate", payload),
   notebookAudioDelete: (notebookId: string, audioId: string) => invoke("notebook:audio:delete", notebookId, audioId),
+  notebookAudioRead: (notebookId: string, audioId: string) => invoke("notebook:audio:read", notebookId, audioId),
+  notebookAudioDownload: (notebookId: string, audioId: string) => invoke("notebook:audio:download", notebookId, audioId),
 
   runAgent: (payload: { request: string; images?: string[]; attachments?: Array<{ url: string; name: string; mimeType: string; size: number }>; providerId?: string; model?: string; effort?: string; contextWindow?: number; maxOutput?: number; mode?: string; sessionId?: string; projectId?: string }) => invoke("agent:run", payload),
   cancelAgent: (sessionId?: string) => invoke("agent:cancel", sessionId),

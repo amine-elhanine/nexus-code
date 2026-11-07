@@ -72,55 +72,68 @@ export function parseRetryAfterMs(error: unknown): number | null {
 /**
  * A stream can die after the model emitted tool calls but before the tools ran;
  * replaying that state makes providers reject the resumed request. Keep the
- * checkpoint at the last complete superstep by dropping trailing unanswered
- * tool calls. Supersteps are atomic in LangGraph, so tool results always
- * arrive complete — only the model's final, unexecuted calls need pruning.
+ * checkpoint at the last complete loop step by dropping trailing unanswered
+ * tool calls. Loop steps are atomic (the agent loop appends the assistant
+ * message and its tool results together), so tool results always arrive
+ * complete — only the model's final, unexecuted calls need pruning.
  *
  * In addition, when an agent run was interrupted due to a repetitive read/inspection
  * loop (e.g. repeating read_file on the same target), the tail of the checkpoint
- * contains multiple identical [AIMessage(tool_call), ToolMessage(result)] pairs.
+ * contains multiple identical [assistant(tool_call), tool(result)] pairs.
  * Leaving those pairs in place primes the model on resume to immediately repeat
  * that same inspection pattern. We prune duplicate trailing inspection pairs so
  * at most one representative pair remains at the tail.
  */
+const kindOfMessage = (message: any): string => (
+  message?.role
+    || (typeof message?.type === "string"
+      ? (message.type === "human" ? "user" : message.type === "ai" ? "assistant" : message.type)
+      : "")
+);
+
+const toolCallsOf = (message: any): any[] => {
+  if (Array.isArray(message?.toolCalls)) return message.toolCalls;
+  if (Array.isArray(message?.tool_calls)) return message.tool_calls;
+  return [];
+};
+
 export function sanitizeResumeCheckpoint(messages: any[]): any[] {
   const checkpoint = [...messages];
   while (checkpoint.length > 0) {
-    const first = checkpoint[0];
-    const isTool = (first as any)?.type === "tool" || (first as any)?._getType?.() === "tool" || (first as any)?.constructor?.name === "ToolMessage";
-    if (isTool) checkpoint.shift();
+    if (kindOfMessage(checkpoint[0]) === "tool") checkpoint.shift();
     else break;
   }
   while (checkpoint.length > 0) {
     const last = checkpoint[checkpoint.length - 1];
-    if (Array.isArray(last?.tool_calls) && last.tool_calls.length > 0) {
+    const lastCalls = toolCallsOf(last);
+    if (lastCalls.length > 0) {
       checkpoint.pop();
       continue;
     }
-    let lastAiIdx = -1;
+    let lastAssistantIdx = -1;
     for (let j = checkpoint.length - 1; j >= 0; j--) {
       const m = checkpoint[j];
-      const isAi = (m as any)?.type === "ai" || (m as any)?._getType?.() === "ai" || (m as any)?.constructor?.name === "AIMessage";
-      if (isAi && Array.isArray((m as any)?.tool_calls) && (m as any).tool_calls.length > 0) {
-        lastAiIdx = j;
+      const calls = toolCallsOf(m);
+      if (kindOfMessage(m) === "assistant" && calls.length > 0) {
+        lastAssistantIdx = j;
         break;
       }
     }
-    if (lastAiIdx >= 0) {
-      const aiMsg = checkpoint[lastAiIdx];
-      const callIds = new Set(aiMsg.tool_calls.map((c: any) => c?.id).filter(Boolean));
+    if (lastAssistantIdx >= 0) {
+      const assistantMessage = checkpoint[lastAssistantIdx];
+      const assistantCalls = toolCallsOf(assistantMessage);
+      const callIds = new Set(assistantCalls.map((c: any) => c?.id).filter(Boolean));
       let toolMsgCount = 0;
-      for (let j = lastAiIdx + 1; j < checkpoint.length; j++) {
-        const isTool = (checkpoint[j] as any)?.type === "tool" || (checkpoint[j] as any)?._getType?.() === "tool" || (checkpoint[j] as any)?.constructor?.name === "ToolMessage";
-        if (isTool) {
+      for (let j = lastAssistantIdx + 1; j < checkpoint.length; j++) {
+        if (kindOfMessage(checkpoint[j]) === "tool") {
           toolMsgCount++;
-          const tId = (checkpoint[j] as any)?.tool_call_id;
+          const tId = (checkpoint[j] as any)?.toolCallId ?? (checkpoint[j] as any)?.tool_call_id;
           if (tId) callIds.delete(tId);
         }
       }
-      const hasUnanswered = callIds.size > 0 && toolMsgCount < aiMsg.tool_calls.length;
+      const hasUnanswered = callIds.size > 0 && toolMsgCount < assistantCalls.length;
       if (hasUnanswered) {
-        checkpoint.splice(lastAiIdx);
+        checkpoint.splice(lastAssistantIdx);
         continue;
       }
     }
@@ -132,13 +145,10 @@ export function sanitizeResumeCheckpoint(messages: any[]): any[] {
 
   while (i >= 1) {
     const maybeToolMsg = checkpoint[i];
-    const maybeAiMsg = checkpoint[i - 1];
+    const maybeAssistantMsg = checkpoint[i - 1];
+    const toolCalls = toolCallsOf(maybeAssistantMsg);
 
-    const isTool = (maybeToolMsg as any)?.type === "tool" || (maybeToolMsg as any)?._getType?.() === "tool" || (maybeToolMsg as any)?.constructor?.name === "ToolMessage";
-    const isAi = (maybeAiMsg as any)?.type === "ai" || (maybeAiMsg as any)?._getType?.() === "ai" || (maybeAiMsg as any)?.constructor?.name === "AIMessage";
-    const toolCalls = Array.isArray((maybeAiMsg as any)?.tool_calls) ? (maybeAiMsg as any).tool_calls : [];
-
-    if (isTool && isAi && toolCalls.length === 1) {
+    if (kindOfMessage(maybeToolMsg) === "tool" && kindOfMessage(maybeAssistantMsg) === "assistant" && toolCalls.length === 1) {
       const tc = toolCalls[0];
       const name = String(tc?.name || "");
       const isInspection = /^(read_file|read_file_range|grep_search|glob|ls|view_file|search_code)$/i.test(name);
@@ -170,13 +180,14 @@ export function sanitizeResumeCheckpoint(messages: any[]): any[] {
  * Some OpenAI-compatible backends reject anything but a plain string in a
  * tool result's content ("data did not match any variant of untagged enum
  * ChatCompletionRequestToolMessageContent"). Coerce every message's content
- * into the shape ALL providers accept: a plain string — except human
+ * into the shape ALL providers accept: a plain string — except user
  * messages carrying image parts, which stay structured for vision models.
  */
 export function normalizeMessageContent(message: any): any {
   if (!message || typeof message !== "object") return message;
-  const kwargs = (message.kwargs ??= {}) as Record<string, unknown>;
-  const target: Record<string, unknown> | null = "content" in kwargs ? kwargs : typeof message.content !== "undefined" ? message : null;
+  // Legacy LangChain checkpoint dumps carry content inside kwargs.
+  const kwargs: Record<string, unknown> | null = message.kwargs && typeof message.kwargs === "object" ? message.kwargs : null;
+  const target: Record<string, unknown> | null = kwargs && "content" in kwargs ? kwargs : typeof message.content !== "undefined" ? message : null;
   if (!target) return message;
   const content = target.content;
   if (content === null || content === undefined) {
@@ -185,9 +196,9 @@ export function normalizeMessageContent(message: any): any {
   }
   if (typeof content === "string") return message;
   if (Array.isArray(content)) {
-    const hasImagePart = content.some((part: any) => part?.type === "image_url" || part?.image_url?.url);
-    const isHuman = message.type === "human" || message._getType?.() === "human";
-    if (hasImagePart && isHuman) return message;
+    const hasImagePart = content.some((part: any) => part?.type === "image" || part?.type === "image_url" || part?.image_url?.url);
+    const isUser = message.role === "user" || message.type === "human";
+    if (hasImagePart && isUser) return message;
     const text = content
       .map((part: any) => (typeof part === "string" ? part : String(part?.text ?? part?.thinking ?? part?.content ?? "")))
       .filter(Boolean)

@@ -10,6 +10,8 @@
 import { computeCompactionThreshold, compactHistory, compactHistoryWithModel, estimateTokens, estimateToolSchemaTokens } from "../context-service.js";
 import { formatContextWindow, formatTokenCount } from "../providers.js";
 import { skillDirVirtualPath, type SkillInfo } from "../skills-service.js";
+import type { ChatClient } from "../agentcore/llm/types.js";
+import { userMsg } from "../agentcore/messages.js";
 import type { HistoryInput } from "../agent-types.js";
 
 export type ContextBudgetInput = {
@@ -27,8 +29,8 @@ export type ContextBudgetInput = {
   metaContextInputs: Array<string | undefined | null>;
   history: HistoryInput[];
   isSimple: boolean;
-  /** Chat model used to summarize history when compaction is needed. */
-  llm: { invoke: (input: any, options?: any) => Promise<any> };
+  /** Chat client used to summarize history when compaction is needed. */
+  llm: ChatClient;
   isGeneral: boolean;
   emit: (type: "status", text: string) => void;
   onEvent: (event: { type: "status"; sessionId: string; text: string; usage: { inputTokens: number; outputTokens: number; totalTokens: number } }) => void;
@@ -106,9 +108,8 @@ export async function prepareContextBudget(input: ContextBudgetInput): Promise<C
           const taskAwarePrompt = isGeneral
             ? prompt.replace("coding-session history", "general Home task history").replace("files changed, errors seen", "research findings, decisions, outputs created, errors seen")
             : prompt;
-          const res: any = await llm.invoke(taskAwarePrompt);
-          const text = typeof res?.content === "string" ? res.content : Array.isArray(res?.content) ? res.content.map((p: any) => (typeof p === "string" ? p : p?.text || "")).join("\n") : String(res?.content || res?.text || "");
-          return text;
+          const res = await llm.complete({ messages: [userMsg(taskAwarePrompt)], temperature: 0.1 });
+          return res.text;
         } catch {
           throw new Error("summarizer failed");
         }

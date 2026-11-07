@@ -146,16 +146,25 @@
   pointer-events: none;
 }
 
+.settings-body .market-sort-select,
+.modal-card .market-sort-select {
+  width: auto;
+  padding: 6px 28px 6px 28px;
+  font-size: 11px;
+  font-family: inherit;
+}
+
 .market-sort-select {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 7px;
-  padding: 6px 10px 6px 26px;
+  padding: 6px 28px 6px 28px;
   font-size: 11px;
   color: var(--text);
   cursor: pointer;
   font-family: inherit;
   outline: none;
+  appearance: none;
 }
 
 .market-sort-select:focus {
@@ -193,4 +202,16 @@
   background: var(--panel2);
   color: var(--text);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.market-sort-select-wrap::after {
+  content: "";
+  position: absolute;
+  right: 10px;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(45deg) translateY(-2px);
+  pointer-events: none;
 }

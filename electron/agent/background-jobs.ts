@@ -12,7 +12,7 @@
 // the model to check ONCE after doing other work instead of sleep-polling.
 
 import { z } from "zod";
-import { tool } from "@langchain/core/tools";
+import { tool } from "../agentcore/tools.js";
 import { executeCommand, readCommandPolicyWithTrust } from "../command-service.js";
 
 const MAX_OUTPUT_TAIL_CHARS = 2_000;

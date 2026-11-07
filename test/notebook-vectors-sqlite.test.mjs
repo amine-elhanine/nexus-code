@@ -52,15 +52,15 @@ await test("upsert + load round-trips vectors bit-exactly", async () => {
   const part = await lib.loadVectors(root, "nbv");
   assert.equal(part.embeddingModel, "local-hash/test");
   assert.equal(part.dims, 8);
-  assert.deepEqual(part.vectors.c1, V1);
-  assert.deepEqual(part.vectors.c2, V2);
+  assert.deepEqual(Array.from(part.vectors.c1), V1);
+  assert.deepEqual(Array.from(part.vectors.c2), V2);
 });
 
 await test("second file upserts without wiping the first", async () => {
   await lib.upsertFileVectors(root, "nbv", "local-hash/test", 8, [{ chunkId: "c3", vector: V3 }]);
   const part = await lib.loadVectors(root, "nbv");
-  assert.deepEqual(part.vectors.c1, V1);
-  assert.deepEqual(part.vectors.c3, V3);
+  assert.deepEqual(Array.from(part.vectors.c1), V1);
+  assert.deepEqual(Array.from(part.vectors.c3), V3);
 });
 
 await test("embedding-space mismatch throws the rebuild contract error", async () => {
@@ -76,13 +76,13 @@ await test("removeFileVectors deletes only the given ids", async () => {
   await lib.removeFileVectors(root, "nbv", ["c1", "c2"]);
   const part = await lib.loadVectors(root, "nbv");
   assert.equal(part.vectors.c1, undefined);
-  assert.deepEqual(part.vectors.c3, V3);
+  assert.deepEqual(Array.from(part.vectors.c3), V3);
 });
 
 await test("clearVectors empties the partition", async () => {
   await lib.clearVectors(root, "nbv");
   const part = await lib.loadVectors(root, "nbv");
-  assert.deepEqual(part.vectors, {});
+  assert.deepEqual(Object.keys(part.vectors), []);
   assert.equal(part.embeddingModel, "");
 });
 
@@ -94,7 +94,7 @@ await test("vectors.json migrates once, then is removed", async () => {
     JSON.stringify({ sessionId: "nbm", embeddingModel: "m", dims: 2, updatedAt: new Date().toISOString(), vectors: { m1: [0.5, -0.25] } })
   );
   const part = await lib.loadVectors(root2, "nbm");
-  assert.deepEqual(part.vectors.m1, [0.5, -0.25]);
+  assert.deepEqual(Array.from(part.vectors.m1), [0.5, -0.25]);
   assert.equal(part.embeddingModel, "m");
   let jsonGone = false;
   try {

@@ -1,20 +1,25 @@
-// Per-session run checkpoints: full LangChain message history + working plan,
+// Per-session run checkpoints: full agent message history + working plan,
 // in memory and mirrored to .nexus/run-checkpoints/ so "continue" survives an
 // app restart. Extracted from agent-service.ts.
+//
+// Disk format v2: messages are the agent-core ChatMessage objects verbatim
+// ({ role, content, toolCalls?, toolCallId? }). The v1 reader revives the
+// legacy LangChain dump ({ type: "human"|"ai"|"tool"|"system", kwargs }) so
+// checkpoints saved before the framework migration keep resuming.
 import { promises as fsPromises } from "node:fs";
 import path from "node:path";
-import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
+import { reviveMessages, type ChatMessage } from "./agentcore/messages.js";
 import { describeToolCall } from "./tool-describe.js";
 import { sanitizeResumeCheckpoint } from "./rate-limit.js";
 import { writeFileAtomic } from "./atomic-write.js";
 import type { PlanItem } from "./agent-types.js";
 
-// Checkpoint of the last run per session: full LangChain message history
-// (tool calls + results) plus the working plan. This is what lets a
-// follow-up "continue" resume instead of restarting — text history alone
-// (user/assistant turns) cannot reconstruct tool state. Kept in memory for
-// speed and mirrored to disk (.nexus/run-checkpoints/) so "continue" also
-// survives an app restart, when the in-memory map is empty.
+// Checkpoint of the last run per session: full message history (tool calls +
+// results) plus the working plan. This is what lets a follow-up "continue"
+// resume instead of restarting — text history alone (user/assistant turns)
+// cannot reconstruct tool state. Kept in memory for speed and mirrored to
+// disk (.nexus/run-checkpoints/) so "continue" also survives an app restart,
+// when the in-memory map is empty.
 export type TaskLedger = {
   updatedAt: string;
   planItems: PlanItem[] | null;
@@ -23,7 +28,7 @@ export type TaskLedger = {
   changedFiles: string[];
   verification: "none" | "passed" | "failed" | "interrupted";
 };
-export type RunCheckpoint = { messages: any[]; planItems: PlanItem[] | null; ledger?: TaskLedger };
+export type RunCheckpoint = { messages: ChatMessage[]; planItems: PlanItem[] | null; ledger?: TaskLedger };
 const lastRunStore = new Map<string, RunCheckpoint>();
 
 export function getLastRunCheckpoint(sessionId: string | undefined): RunCheckpoint | null {
@@ -31,22 +36,21 @@ export function getLastRunCheckpoint(sessionId: string | undefined): RunCheckpoi
   return lastRunStore.get(sessionId) ?? null;
 }
 
-function countToolCalls(messages: any[]): number {
+function countToolCalls(messages: ChatMessage[]): number {
   let count = 0;
   for (const m of messages || []) {
-    if (Array.isArray(m?.tool_calls)) count += m.tool_calls.length;
+    const calls = (m as any)?.toolCalls ?? (m as any)?.tool_calls;
+    if (Array.isArray(calls)) count += calls.length;
   }
   return count;
 }
 
-function sliceAlignedMessages(messages: any[], maxCount: number): any[] {
+function sliceAlignedMessages(messages: ChatMessage[], maxCount: number): ChatMessage[] {
   const all = messages || [];
   if (all.length <= maxCount) return all;
   let startIdx = all.length - maxCount;
   while (startIdx < all.length) {
-    const m = all[startIdx];
-    const isTool = (m as any)?.type === "tool" || (m as any)?._getType?.() === "tool" || (m as any)?.constructor?.name === "ToolMessage";
-    if (isTool) startIdx++;
+    if (all[startIdx]?.role === "tool") startIdx++;
     else break;
   }
   return all.slice(startIdx);
@@ -62,8 +66,8 @@ export function saveLastRunCheckpoint(sessionId: string | undefined, checkpoint:
     planItems: checkpoint.planItems ?? null,
     completedSteps: summarizeCompletedSteps(messages),
     lastDiagnostics: messages
-      .filter((message: any) => message?.type === "tool" || message?.type === "human")
-      .map((message: any) => String(message?.content ?? ""))
+      .filter((message: any) => message?.role === "tool" || message?.role === "user")
+      .map((message: any) => String(typeof message?.content === "string" ? message.content : ""))
       .filter((text: string) => /error|failed|diagnostic|verification/i.test(text))
       .slice(-8)
       .map((text: string) => text.slice(-600)),
@@ -108,24 +112,12 @@ function truncateForDisk(value: unknown, cap = 1500): unknown {
 const DISK_CAP_DEFAULT = 1500;
 const DISK_CAP_TOOL_RESULT = 6000;
 
-const CHECKPOINT_TYPE_BY_CLASS: Record<string, string> = {
-  HumanMessage: "human",
-  AIMessage: "ai",
-  ToolMessage: "tool",
-  SystemMessage: "system",
-};
-
-function serializeCheckpointMessage(message: any): unknown {
+function serializeCheckpointMessage(message: ChatMessage): unknown {
   try {
-    const json = typeof message?.toJSON === "function" ? message.toJSON() : message;
-    if (!json || typeof json !== "object") return null;
-    const data = json as { type?: string; id?: unknown; kwargs?: unknown };
-    // LangChain toJSON uses { type: "constructor", id: [..., "AIMessage"] } —
-    // the message kind lives in the trailing id segment, not in `type`.
-    const className = Array.isArray(data.id) ? String(data.id[data.id.length - 1]) : "";
-    const type = CHECKPOINT_TYPE_BY_CLASS[className] ?? (typeof data.type === "string" && ["human", "ai", "tool", "system"].includes(data.type) ? data.type : null);
-    if (!type) return null;
-    return { type, kwargs: truncateForDisk(data.kwargs ?? {}, type === "tool" ? DISK_CAP_TOOL_RESULT : DISK_CAP_DEFAULT) };
+    return truncateForDisk(
+      message,
+      message.role === "tool" ? DISK_CAP_TOOL_RESULT : DISK_CAP_DEFAULT,
+    );
   } catch {
     return null;
   }
@@ -138,6 +130,7 @@ export async function persistLastRunCheckpoint(telemetryRoot: string, sessionId:
   await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
   const payload = {
     savedAt: new Date().toISOString(),
+    format: 2,
     planItems: checkpoint.planItems,
     ledger: checkpoint.ledger ?? {
       updatedAt: new Date().toISOString(),
@@ -155,32 +148,17 @@ export async function persistLastRunCheckpoint(telemetryRoot: string, sessionId:
   await writeFileAtomic(filePath, JSON.stringify(payload));
 }
 
-function reviveCheckpointMessage(stored: any): any | null {
-  try {
-    if (!stored || typeof stored !== "object" || !stored.type) return null;
-    const kwargs = (stored.kwargs ?? {}) as any;
-    switch (stored.type) {
-      case "human": return new HumanMessage(kwargs);
-      case "ai": return new AIMessage(kwargs);
-      case "tool": return new ToolMessage(kwargs);
-      case "system": return new SystemMessage(kwargs);
-      default: return null;
-    }
-  } catch {
-    return null;
-  }
-}
-
 export async function loadLastRunCheckpoint(telemetryRoot: string, sessionId: string | undefined): Promise<RunCheckpoint | null> {
   if (!sessionId) return null;
   const inMemory = lastRunStore.get(sessionId);
   if (inMemory) return inMemory;
   try {
     const raw = await fsPromises.readFile(runCheckpointPath(telemetryRoot, sessionId), "utf8");
-    const parsed = JSON.parse(raw) as { planItems?: PlanItem[] | null; messages?: any[]; ledger?: TaskLedger };
-    const messages = (parsed.messages || []).map(reviveCheckpointMessage).filter(Boolean);
+    const parsed = JSON.parse(raw) as { planItems?: PlanItem[] | null; messages?: unknown[]; ledger?: TaskLedger };
+    // reviveMessages handles both the v2 (role) and v1 (LangChain type/kwargs) shapes.
+    const messages = reviveMessages(parsed.messages || []);
     if (!messages.length) return null;
-    const checkpoint = { messages: sanitizeResumeCheckpoint(messages), planItems: parsed.planItems ?? null, ledger: parsed.ledger };
+    const checkpoint = { messages: sanitizeResumeCheckpoint(messages) as ChatMessage[], planItems: parsed.planItems ?? null, ledger: parsed.ledger };
     lastRunStore.set(sessionId, checkpoint);
     return checkpoint;
   } catch {
@@ -195,13 +173,13 @@ export async function loadLastRunCheckpoint(telemetryRoot: string, sessionId: st
  * raw history is long — an explicit ledger ("- read_file src/App.tsx")
  * survives where prose instructions don't.
  */
-export function summarizeCompletedSteps(messages: any[], max = 25): string[] {
+export function summarizeCompletedSteps(messages: ChatMessage[], max = 25): string[] {
   type Step = { id: string | null; desc: string; done: boolean };
   const steps: Step[] = [];
   const byId = new Map<string, Step>();
   for (const message of messages || []) {
-    const calls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
-    for (const call of calls) {
+    const calls = (message as any)?.toolCalls ?? (message as any)?.tool_calls ?? [];
+    for (const call of Array.isArray(calls) ? calls : []) {
       const desc = describeToolCall(call?.name || "tool", call?.args) || (call?.name || "tool");
       const label = `${call?.name || "tool"} · ${desc}`;
       const step: Step = { id: typeof call?.id === "string" ? call.id : null, desc: label, done: false };
@@ -209,7 +187,7 @@ export function summarizeCompletedSteps(messages: any[], max = 25): string[] {
       if (step.id) byId.set(step.id, step);
       else step.done = true; // result-less shape: can't match, count as seen
     }
-    const resultId = (message as any)?.tool_call_id;
+    const resultId = (message as any)?.toolCallId ?? (message as any)?.tool_call_id;
     if (typeof resultId === "string" && byId.has(resultId)) {
       byId.get(resultId)!.done = true;
     }

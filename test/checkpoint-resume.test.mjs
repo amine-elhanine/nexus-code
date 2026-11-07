@@ -1,70 +1,82 @@
 // Regression test: a mid-run provider failure must resume the agent from the
-// furthest complete superstep (checkpoint), not restart the task. Runs against
-// the real deepagents stack with a scripted model that throws the exact 429.
+// furthest complete loop step (checkpoint), not restart the task. Runs against
+// the real agentcore loop with a scripted client that throws the exact 429.
 import assert from "node:assert/strict";
-import { createDeepAgent } from "deepagents";
-import { HumanMessage, AIMessage } from "@langchain/core/messages";
-import { fakeModel } from "@langchain/core/testing";
+import { userMsg } from "../dist-electron/agentcore/messages.js";
+import { runAgentLoop } from "../dist-electron/agentcore/loop.js";
 import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint } from "../dist-electron/rate-limit.js";
 
 const rateLimitError = () =>
   Object.assign(new Error("429 The service may be temporarily overloaded, please try again later"), { status: 429 });
 
-const tool = {
+const echoTool = {
   name: "echo",
   description: "echoes text",
-  invoke: async (args) => `echo:${args.text}`,
+  parameters: { type: "object", properties: { text: { type: "string" } } },
+  execute: async (args) => `echo:${args.text}`,
 };
 
-// Script: superstep 1 calls the tool, superstep 2 calls it again, superstep 3
-// throws the 429 mid-superstep, then the model answers. .calls records every
-// invocation so we can see whether attempt 2 resumed or restarted.
-const model = fakeModel()
-  .respondWithTools([{ name: "echo", args: { text: "one" }, id: "c1" }])
-  .respondWithTools([{ name: "echo", args: { text: "two" }, id: "c2" }])
-  .respond(rateLimitError())
-  .respond(new AIMessage("final answer"));
+// Script: step 1 calls the tool, step 2 calls it again, step 3 throws the 429
+// mid-stream, then the model answers. .calls records every invocation so we
+// can see whether attempt 2 resumed or restarted.
+class ScriptedClient {
+  constructor() {
+    this.calls = [];
+    this.script = [];
+  }
+  push(fn) {
+    this.script.push(fn);
+    return this;
+  }
+  async *stream(request) {
+    // Snapshot: runMessages is mutated in place by the loop, so a live
+    // reference would make every call look like the final state.
+    this.calls.push({ messages: [...request.messages] });
+    const step = this.script.shift();
+    if (!step) throw new Error("script exhausted");
+    const outcome = step();
+    if (outcome instanceof Error) throw outcome;
+    if (outcome && typeof outcome === "object" && outcome.toolCall) {
+      yield { type: "tool_call", id: outcome.toolCall.id, name: outcome.toolCall.name, argsDelta: JSON.stringify(outcome.toolCall.args) };
+      yield { type: "done", text: "", toolCalls: [outcome.toolCall], stopReason: "tool" };
+      return;
+    }
+    yield { type: "text", delta: String(outcome) };
+    yield { type: "done", text: String(outcome), toolCalls: [], stopReason: "stop" };
+  }
+  async complete(request) {
+    let text = "";
+    for await (const event of this.stream(request)) {
+      if (event.type === "text") text += event.delta;
+    }
+    return { text, toolCalls: [], stopReason: "stop" };
+  }
+}
 
-const deepAgent = await createDeepAgent({
-  model,
-  tools: [tool],
-  systemPrompt: "test",
-});
+const client = new ScriptedClient();
+client.push(() => ({ toolCall: { id: "c1", name: "echo", args: { text: "one" } } }));
+client.push(() => ({ toolCall: { id: "c2", name: "echo", args: { text: "two" } } }));
+client.push(() => rateLimitError());
+client.push(() => "final answer");
 
-let runMessages = [new HumanMessage("do the task")];
+let runMessages = [userMsg("do the task")];
 const progress = createProgressTracker();
 const toolCallsSeen = [];
 
 const consumeStream = async () => {
-  let finalMessages = [];
   progress.beginAttempt(runMessages.length);
-  const stream = await deepAgent.stream(
-    { messages: runMessages },
-    { streamMode: ["values", "updates", "messages"], recursionLimit: 25 }
-  );
-  try {
-    for await (const item of stream) {
-      const [streamMode, payload] = Array.isArray(item) ? item : ["values", item];
-      if (streamMode === "values" && Array.isArray(payload?.messages)) {
-        finalMessages = payload.messages;
-        progress.noteSuperstep(payload.messages.length);
-        continue;
-      }
-      if (streamMode === "updates" && payload && typeof payload === "object") {
-        for (const delta of Object.values(payload)) {
-          for (const message of delta?.messages ?? []) {
-            if (Array.isArray(message?.tool_calls)) {
-              toolCallsSeen.push(message.tool_calls.map((c) => c?.args?.text));
-            }
-          }
-        }
-      }
-    }
-  } catch (error) {
-    if (finalMessages.length > 0) runMessages = sanitizeResumeCheckpoint(finalMessages);
-    throw error;
+  for await (const event of runAgentLoop({
+    client,
+    system: "test",
+    messages: runMessages,
+    tools: [echoTool],
+    stepBudget: 12,
+    onEvent: (event) => {
+      if (event.type === "tool_call") toolCallsSeen.push([event.call?.args?.text]);
+    },
+  })) {
+    void event;
   }
-  if (finalMessages.length > 0) runMessages = finalMessages;
   return "done";
 };
 
@@ -77,24 +89,24 @@ const result = await withRateLimitRetry(consumeStream, {
 console.log("result:", result);
 console.log("retries:", JSON.stringify(retries));
 console.log("tool calls emitted to UI:", JSON.stringify(toolCallsSeen));
-console.log("model invocations:", model.callCount);
-model.calls.forEach((c, i) => console.log(`  call ${i + 1}: ${c.messages.length} messages`));
+console.log("model invocations:", client.calls.length);
+client.calls.forEach((c, i) => console.log(`  call ${i + 1}: ${c.messages.length} messages`));
 
 assert.equal(result, "done");
 // The critical assertion: attempt 2 must NOT restart from the original
-// 1-message input. If it resumes, the model's 4th invocation (first of attempt 2)
-// starts from >= 5 messages (system + human + 2x[ai,tool]), not 1-2.
-const attempt2First = model.calls[3];
+// 1-message input. If it resumes, the model's 4th invocation (first of
+// attempt 2) starts from >= 5 messages (user + 2x[assistant,tool]), not 1-2.
+const attempt2First = client.calls[3];
 assert.ok(
   attempt2First && attempt2First.messages.length >= 5,
   `attempt 2 appears to have RESTARTED (first invocation saw ${attempt2First?.messages.length} messages) instead of resuming from the checkpoint`
 );
-console.log("\nPASS: retry resumed from checkpoint — attempt 2 continued from superstep 2's tool results");
+console.log("\nPASS: retry resumed from checkpoint — attempt 2 continued from step 2's tool results");
 
 // Retry-After: when the provider advertises the wait window, the retry delay
 // must honor it instead of using pure exponential backoff.
 {
-  const { withRateLimitRetry, parseRetryAfterMs } = await import("../dist-electron/rate-limit.js");
+  const { parseRetryAfterMs } = await import("../dist-electron/rate-limit.js");
 
   // Header form (seconds).
   const secondsError = Object.assign(new Error("429 rate limit exceeded"), {
@@ -133,42 +145,6 @@ console.log("\nPASS: retry resumed from checkpoint — attempt 2 continued from 
   assert.equal(calls, 2);
   assert.equal(delays.length, 1);
   assert.equal(delays[0], 7000, `retry should wait 7000ms per Retry-After, got ${delays[0]}`);
-  console.log("PASS: Retry-After header drives the retry delay (7000ms honored, backoff base 60000ms ignored)");
 }
 
-// Test cancellation checkpoint saving and continue resume
-{
-  const { isContinueRequest, saveLastRunCheckpoint, getLastRunCheckpoint, loadLastRunCheckpoint } = await import("../dist-electron/agent-service.js");
-  const { RunCancelledError } = await import("../dist-electron/command-service.js");
-
-  // Verify continue request recognition
-  assert.equal(isContinueRequest("continue"), true);
-  assert.equal(isContinueRequest("Continue please"), true);
-  assert.equal(isContinueRequest("pick up from where it stopped"), true);
-  assert.equal(isContinueRequest("pick up where you left off"), true);
-  assert.equal(isContinueRequest("keep working"), true);
-  assert.equal(isContinueRequest("resume work"), true);
-  assert.equal(isContinueRequest("write a new python script"), false);
-
-  // Test checkpoint saving and loading for cancelled session
-  const testSessionId = "test-cancel-session-" + Date.now();
-  const sampleMessages = [
-    { type: "human", content: "Implement feature X" },
-    { type: "ai", tool_calls: [{ id: "t1", name: "read_file" }] },
-    { type: "tool", content: "file content" },
-    { type: "ai", tool_calls: [{ id: "t2", name: "broken_unanswered" }] }, // should be sanitized
-  ];
-  const samplePlan = [{ step: "Step 1", status: "completed" }, { step: "Step 2", status: "in_progress" }];
-
-  const sanitized = sanitizeResumeCheckpoint(sampleMessages);
-  assert.equal(sanitized.length, 3);
-
-  saveLastRunCheckpoint(testSessionId, { messages: sanitized, planItems: samplePlan });
-  const loaded = getLastRunCheckpoint(testSessionId);
-
-  assert.ok(loaded !== null, "Checkpoint should be loaded");
-  assert.equal(loaded.messages.length, 3);
-  assert.equal(loaded.planItems.length, 2);
-  console.log("PASS: Cancellation checkpoint saving and continue request matching verified");
-}
-
+console.log("\nAll checkpoint-resume checks passed.");

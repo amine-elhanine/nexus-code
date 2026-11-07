@@ -7,6 +7,8 @@ import { hybridRetrieve } from "./notebook-rag.js";
 import { loadLibrary, sessionOutline } from "./notebook-library.js";
 import { notebookGenerationInvokeOptions } from "./notebook-generation.js";
 import { writeFileAtomic } from "./atomic-write.js";
+import { invokeChatText } from "./agentcore/llm/invoke.js";
+import { systemMsg, userMsg } from "./agentcore/messages.js";
 
 // Grounded document generation for Notebook Mode: reports (docx/pdf) and
 // slide decks (pptx). Retrieval + outline reuse the isolated notebook store,
@@ -65,6 +67,9 @@ type SlidePlan = {
   code?: string;
   callouts?: SlideCallout[];
   notes?: string;
+  /** Image URL or data URI to embed on the slide (renderers fetch http(s)). */
+  image?: string;
+  imageAlt?: string;
 };
 
 type SlidesPlan = {
@@ -184,12 +189,9 @@ async function planWithLlm(system: string, user: string, input: GenerateDocument
   const modelName = input.model || provider.models[0];
   if (!modelName) throw new Error("No chat model selected.");
   const llm = await createChatModel(provider, modelName);
-  const res = await llm.invoke([
-    { role: "system", content: system } as never,
-    { role: "user", content: user } as never,
-  ], notebookGenerationInvokeOptions(input.runId));
+  const text = await invokeChatText(llm, [systemMsg(system), userMsg(user)], notebookGenerationInvokeOptions(input.runId));
   checkDocumentCancellation(input);
-  return typeof res.content === "string" ? res.content : JSON.stringify(res.content);
+  return text;
 }
 
 function stripCodeFences(raw: string): string {
@@ -305,8 +307,10 @@ export function sanitizeSlidesPlan(plan: unknown): SlidesPlan {
       code,
       callouts: callouts?.length ? callouts : undefined,
       notes: typeof o.notes === "string" ? o.notes.slice(0, 300) : undefined,
+      image: typeof o.image === "string" && /^https?:\/\/|^data:image\//i.test(o.image) ? o.image.slice(0, 500_000) : undefined,
+      imageAlt: typeof o.imageAlt === "string" ? o.imageAlt.slice(0, 160) : undefined,
     } as SlidePlan;
-  }).filter((s) => s.title !== "Slide" || s.bullets.length || s.code || s.callouts?.length);
+  }).filter((s) => s.title !== "Slide" || s.bullets.length || s.code || s.callouts?.length || s.image);
   if (!slides.length) throw new Error("empty-slides");
   return {
     title: str(p.title ?? p.name ?? "Notebook presentation", 160) || "Notebook presentation",
@@ -763,7 +767,7 @@ export function markdownToSlidesPlan(md: string, fallbackTitle: string): SlidesP
   let skipping = false;
   let codeBuf: string[] = [];
   const flush = () => {
-    if (current && (current.title !== "Slide" || current.bullets.length || current.code || current.callouts?.length)) {
+    if (current && (current.title !== "Slide" || current.bullets.length || current.code || current.callouts?.length || current.image)) {
       slides.push({ ...current, callouts: current.callouts?.length ? current.callouts : undefined });
     }
     current = null;
@@ -839,6 +843,17 @@ export function markdownToSlidesPlan(md: string, fallbackTitle: string): SlidesP
       const residue = text.replace(/\$/g, "").replace(/\s+/g, " ").trim();
       if (!residue || /^\[S\d+\]$/.test(residue)) continue;
       current.bullets.push(text.slice(0, 220));
+      continue;
+    }
+    // Standalone image lines attach to the current slide (the renderer
+    // fetches http(s) URLs and embeds the picture beside the bullets).
+    const image = line.match(/^!\[([^\]]*)\]\(([^)\s]+)\)\s*;?$/);
+    if (image) {
+      if (!current) current = { title: "Slide", bullets: [] };
+      if (!current.image) {
+        current.image = image[2].trim().slice(0, 500_000);
+        current.imageAlt = image[1].trim().slice(0, 160) || undefined;
+      }
     }
   }
   flush();
@@ -846,7 +861,7 @@ export function markdownToSlidesPlan(md: string, fallbackTitle: string): SlidesP
   return { title: (title || fallbackTitle).slice(0, 160), slides: slides.slice(0, 14) };
 }
 
-async function renderDocx(plan: ReportPlan, citations: NotebookSourceCitation[]): Promise<Buffer> {
+export async function renderDocx(plan: ReportPlan, citations: NotebookSourceCitation[]): Promise<Buffer> {
   const { Document, Packer, Paragraph, HeadingLevel, TextRun } = await import("docx");
   const NAVY = "1F3864";
   const MUTED = "808080";
@@ -880,7 +895,7 @@ async function renderDocx(plan: ReportPlan, citations: NotebookSourceCitation[])
   return Buffer.from(await Packer.toBuffer(doc));
 }
 
-async function renderPdf(plan: ReportPlan, citations: NotebookSourceCitation[]): Promise<Buffer> {
+export async function renderPdf(plan: ReportPlan, citations: NotebookSourceCitation[]): Promise<Buffer> {
   const electronRequire = createRequire(import.meta.url);
   type Win = { loadURL: (url: string) => Promise<void>; webContents: { printToPDF: (opts: unknown) => Promise<Uint8Array> }; destroy: () => void };
   let BrowserWindow: (new (opts: unknown) => Win) | null = null;
@@ -942,88 +957,187 @@ function cleanBullets(bullets: string[]): string[] {
     .filter((b) => b && !/^\[S\d+\]$/.test(b) && !/```/.test(b) && !/^\s*mermaid\b/i.test(b));
 }
 
-async function renderPptx(plan: SlidesPlan, citations: NotebookSourceCitation[]): Promise<Buffer> {
-  // Fallback renderer with a modest built-in theme (navy titles, accent
-  // callouts, footers). It can never match a skill-designed deck, but its
-  // output must be usable on its own. Designed decks come from the
-  // skill-driven script path (notebook-documents-agent.ts), where the model
-  // writes the python-pptx code and decides theme, layout and content.
-  const NAVY = "1F3864";
-  const ACCENT = "2E75B6";
-  const BODY = "333333";
-  const MUTED = "808080";
+export async function renderPptx(
+  plan: SlidesPlan,
+  citations: NotebookSourceCitation[],
+  /** Mode-neutral rendering for non-notebook callers (Home deliverables). */
+  opts: { coverBadge?: string } = {}
+): Promise<Buffer> {
+  // Designed deck renderer: a real theme (ink cover, accent-underlined
+  // titles, lead-bold bullets, two-column dense slides, callout cards, dark
+  // code cards) plus image embedding from slide content. The skill-driven
+  // python path stays available for fully custom brand designs.
+  const INK = "0F172A";
+  const ACCENT = "2563EB";
+  const ACCENT_SOFT = "DBEAFE";
+  const CARD = "F1F5F9";
+  const MUTED = "64748B";
+  const BODY = "1E293B";
+  const LIGHT = "CBD5E1";
   const today = new Date().toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
   const mod = (await import("pptxgenjs")) as unknown as { default?: unknown } & Record<string, unknown>;
   const PptxGenJS = (mod.default || mod) as unknown as new () => {
     title: string;
-    addSlide: () => { addText: (t: unknown, o?: unknown) => void };
+    addSlide: () => {
+      addText: (t: unknown, o?: unknown) => void;
+      addImage: (o: unknown) => void;
+      addShape: (shape: unknown, o?: unknown) => void;
+    };
     write: (opts: { outputType: "nodebuffer" }) => Promise<Buffer>;
   };
   const pres = new PptxGenJS();
   pres.title = plan.title;
   let slideNo = 0;
-  const footer = (slide: { addText: (t: unknown, o?: unknown) => void }, n: number) => {
-    slide.addText(`${plan.title.slice(0, 60)}  •  ${today}`, { x: 0.5, y: 7.05, w: 8, h: 0.3, fontSize: 9, color: MUTED });
-    slide.addText(String(n), { x: 9.3, y: 7.05, w: 0.7, h: 0.3, fontSize: 9, color: MUTED, align: "right" });
+  type Slide = {
+    addText: (t: unknown, o?: unknown) => void;
+    addImage: (o: unknown) => void;
+    addShape: (shape: unknown, o?: unknown) => void;
   };
-  slideNo++;
-  const cover = pres.addSlide();
-  cover.addText("NOTEBOOK", { x: 0.5, y: 0.9, w: 9, h: 0.4, fontSize: 13, bold: true, color: ACCENT });
-  cover.addText(plan.title, { x: 0.5, y: 1.3, w: 9, h: 1.4, fontSize: 32, bold: true, color: NAVY });
-  if (plan.subtitle) cover.addText(plan.subtitle, { x: 0.5, y: 2.8, w: 9, h: 0.6, fontSize: 16, color: MUTED });
-  cover.addText(`Grounded in ${citations.length} cited passage${citations.length === 1 ? "" : "s"} — every claim traceable to your sources.`, { x: 0.5, y: 3.6, w: 9, h: 0.6, fontSize: 14, italic: true, color: MUTED });
-  footer(cover, slideNo);
-  for (const s of plan.slides) {
+  const footer = (slide: Slide, n: number) => {
+    slide.addText(`${plan.title.slice(0, 70)}  •  ${today}`, { x: 0.6, y: 7.08, w: 9.5, h: 0.3, fontSize: 9, color: MUTED });
+    slide.addText(String(n), { x: 12.35, y: 7.08, w: 0.5, h: 0.3, fontSize: 9, color: MUTED, align: "right" });
+  };
+
+  // ---- image embedding: fetch http(s) slide images once, embed as data ----
+  const imageCache = new Map<string, { ext: string; b64: string } | null>();
+  const fetchSlideImage = async (url: string): Promise<{ ext: string; b64: string } | null> => {
+    const hit = imageCache.get(url);
+    if (hit !== undefined) return hit;
+    let result: { ext: string; b64: string } | null = null;
+    try {
+      if (/^data:image\/(png|jpe?g|gif);base64,/i.test(url)) {
+        const ext = /png/i.test(url) ? "png" : /gif/i.test(url) ? "gif" : "jpg";
+        result = { ext, b64: url.replace(/^data:image\/[a-z]+;base64,/i, "") };
+      } else if (/^https?:\/\//i.test(url)) {
+        // SSRF guard: slide content comes from untrusted source documents —
+        // image URLs must never probe loopback/link-local/metadata targets.
+        // safePublicFetch validates at URL-accept time, on every redirect
+        // hop, AND at socket connect (DNS-rebinding safe).
+        const { safePublicFetch } = await import("./net-guard.js");
+        const res = await safePublicFetch(url, { timeoutMs: 9_000, headers: { "user-agent": "nexus/0.5.0" } });
+        const type = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+        const ext = ({ "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif" } as Record<string, string>)[type];
+        if (res.ok && ext) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          if (buf.length > 50 && buf.length < 8_000_000) result = { ext, b64: buf.toString("base64") };
+        }
+      }
+    } catch { /* image is decorative — a failed fetch must never fail the deck */ }
+    imageCache.set(url, result);
+    return result;
+  };
+
+  /** "Lead — explanation" bullets render the lead bold for scannability. */
+  const bulletRuns = (text: string) => {
+    const split = text.match(/^(.{4,80}?)\s+(?:—|–|-|:)\s+(.{8,})$/);
+    if (split) {
+      return [
+        { text: `${split[1]} — `, options: { bold: true, color: INK } },
+        { text: split[2], options: { color: BODY } },
+      ];
+    }
+    return [{ text, options: { color: BODY } }];
+  };
+
+  const addContentSlide = async (s: SlidePlan, index: number) => {
     const title = cleanSlideTitle(s.title);
-    const bullets = cleanBullets(s.bullets).slice(0, 6);
+    const bullets = cleanBullets(s.bullets).slice(0, 8);
     const code = s.code && !/mermaid|graph\s+(LR|TD|TB|BT)/i.test(s.code) ? s.code.slice(0, 600) : undefined;
-    const callouts = (s.callouts || []).filter((c) => c.title || c.text).slice(0, 3);
-    if ((!title || title === "Slide") && !bullets.length && !code && !callouts.length) continue;
+    const callouts = (s.callouts || []).filter((c) => c.title || c.text).slice(0, 2);
+    const image = s.image ? await fetchSlideImage(s.image) : null;
+    if ((!title || title === "Slide") && !bullets.length && !code && !callouts.length && !image) return;
     slideNo++;
     const slide = pres.addSlide();
-    slide.addText(title || "Slide", { x: 0.5, y: 0.25, w: 9, h: 0.8, fontSize: 28, bold: true, color: NAVY });
-    let y = 1.2;
+    // Kicker + title + accent underline.
+    slide.addText(String(index).padStart(2, "0"), { x: 0.6, y: 0.34, w: 1.2, h: 0.4, fontSize: 12, bold: true, color: ACCENT, charSpacing: 2 });
+    slide.addText(title || "Slide", { x: 0.6, y: 0.62, w: 12.1, h: 0.85, fontSize: 26, bold: true, color: INK });
+    slide.addShape("rect", { x: 0.62, y: 1.5, w: 1.5, h: 0.055, fill: { color: ACCENT } });
+    let bodyY = 1.78;
     if (s.subtitle) {
-      slide.addText(cleanSlideText(s.subtitle), { x: 0.5, y, w: 9, h: 0.5, fontSize: 15, color: MUTED });
-      y += 0.6;
+      slide.addText(cleanSlideText(s.subtitle), { x: 0.6, y: bodyY, w: 12.1, h: 0.45, fontSize: 14, color: MUTED });
+      bodyY += 0.55;
     }
+    const withImage = Boolean(image);
     if (bullets.length) {
-      slide.addText(bullets.map((b) => ({ text: b, options: { breakLine: true, color: BODY } })), { x: 0.5, y, w: 9, h: 3.2, fontSize: 14, color: BODY, bullet: true });
-      y += 3.3;
+      const twoColumn = bullets.length > 4 && !withImage;
+      if (twoColumn) {
+        const half = Math.ceil(bullets.length / 2);
+        slide.addText(bullets.slice(0, half).map((b) => ({ text: bulletRuns(b), options: { breakLine: true, bullet: { code: "2022" }, paraSpaceAfter: 10 } })), { x: 0.6, y: bodyY, w: 5.95, h: 4.9, fontSize: 14, valign: "top" });
+        slide.addText(bullets.slice(half).map((b) => ({ text: bulletRuns(b), options: { breakLine: true, bullet: { code: "2022" }, paraSpaceAfter: 10 } })), { x: 6.85, y: bodyY, w: 5.9, h: 4.9, fontSize: 14, valign: "top" });
+      } else {
+        const width = withImage ? 6.7 : 12.1;
+        slide.addText(bullets.map((b) => ({ text: bulletRuns(b), options: { breakLine: true, bullet: { code: "2022" }, paraSpaceAfter: 10 } })), { x: 0.6, y: bodyY, w: width, h: withImage ? 4.9 : 4.6, fontSize: 14, valign: "top" });
+      }
     }
-    if (code) {
-      slide.addText(code, { x: 0.5, y, w: 9, h: 1.5, fontSize: 10, fontFace: "Consolas", color: BODY });
-      y += 1.6;
+    if (image) {
+      slide.addImage({ data: `image/${image.ext};base64,${image.b64}`, x: 7.55, y: 1.85, w: 5.2, h: 4.7, sizing: { type: "contain", w: 5.2, h: 4.7 } });
     }
+    let calloutY = 5.6;
     for (const c of callouts) {
       const label = (c.title || "Note").slice(0, 60);
       const body = cleanSlideText(c.text).slice(0, 340);
+      slide.addShape("roundRect", { x: 0.6, y: calloutY, w: withImage ? 6.7 : 12.1, h: 0.95, fill: { color: CARD }, line: { color: ACCENT_SOFT, width: 1 }, rectRadius: 0.06 });
       slide.addText(
         [{ text: `${label}: `, options: { bold: true, color: ACCENT } }, { text: body, options: { color: BODY } }],
-        { x: 0.5, y, w: 9, h: 0.6, fontSize: 13 }
+        { x: 0.85, y: calloutY + 0.08, w: (withImage ? 6.7 : 12.1) - 0.5, h: 0.8, fontSize: 12.5, valign: "middle" }
       );
-      y += 0.65;
+      calloutY += 1.05;
+      if (calloutY > 6.4) break;
     }
-    // Speaker notes are intentionally omitted here: rendered as body text
-    // they overflow and truncate mid-sentence. They remain in the preview.
+    if (code) {
+      slide.addShape("roundRect", { x: 0.6, y: 5.45, w: withImage ? 6.7 : 12.1, h: 1.5, fill: { color: INK }, rectRadius: 0.06 });
+      slide.addText(code, { x: 0.85, y: 5.55, w: (withImage ? 6.7 : 12.1) - 0.5, h: 1.3, fontSize: 10.5, fontFace: "Consolas", color: LIGHT, valign: "top" });
+    }
     footer(slide, slideNo);
-  }
+  };
+
+  // ---- cover ----
   slideNo++;
-  const sources = pres.addSlide();
-  sources.addText("Sources", { x: 0.5, y: 0.25, w: 9, h: 0.8, fontSize: 28, bold: true, color: NAVY });
-  const byFile = new Map<string, NotebookSourceCitation[]>();
-  for (const c of citations) {
-    const list = byFile.get(c.sourceName) || [];
-    list.push(c);
-    byFile.set(c.sourceName, list);
+  const cover = pres.addSlide();
+  cover.addShape("rect", { x: 0, y: 0, w: 13.33, h: 7.5, fill: { color: INK } });
+  cover.addShape("rect", { x: 0, y: 0, w: 13.33, h: 0.14, fill: { color: ACCENT } });
+  // A cover image (first slide with one) becomes a full-height right panel.
+  const coverPlan = plan.slides.find((s) => s.image);
+  const coverImage = coverPlan ? await fetchSlideImage(coverPlan.image!) : null;
+  if (coverImage) {
+    cover.addImage({ data: `image/${coverImage.ext};base64,${coverImage.b64}`, x: 7.9, y: 0.14, w: 5.43, h: 7.36, sizing: { type: "cover", w: 5.43, h: 7.36 } });
   }
-  const sourceLines: string[] = [];
-  for (const [file, list] of byFile) {
-    sourceLines.push(`${shortName(file, 60)} (${list.length})`);
-    for (const c of list.slice(0, 12)) sourceLines.push(`  [S${c.index}] ${c.heading.slice(0, 90)}`);
+  const coverBadge = opts.coverBadge;
+  if (coverBadge) cover.addText(coverBadge, { x: 0.7, y: 0.85, w: 9, h: 0.4, fontSize: 13, bold: true, color: LIGHT, charSpacing: 3 });
+  cover.addText(plan.title, { x: 0.7, y: 2.35, w: coverImage ? 6.9 : 11.9, h: 1.9, fontSize: 40, bold: true, color: "FFFFFF" });
+  if (plan.subtitle) cover.addText(plan.subtitle, { x: 0.7, y: 4.3, w: coverImage ? 6.9 : 11.9, h: 0.7, fontSize: 17, color: LIGHT });
+  cover.addText(today, { x: 0.7, y: 6.6, w: 6, h: 0.4, fontSize: 11, color: "94A3B8" });
+  if (citations.length) {
+    cover.addText(`Grounded in ${citations.length} cited passage${citations.length === 1 ? "" : "s"}`, { x: 7, y: 6.6, w: 6.1, h: 0.4, fontSize: 11, italic: true, color: "94A3B8", align: "right" });
   }
-  sources.addText(sourceLines.join("\n").slice(0, 3000), { x: 0.5, y: 1.2, w: 9, h: 5.4, fontSize: 11, color: BODY });
-  footer(sources, slideNo);
+
+  // ---- content slides ----
+  let contentIndex = 0;
+  for (const s of plan.slides) {
+    contentIndex++;
+    await addContentSlide(s, contentIndex);
+  }
+
+  // ---- sources (cited runs only) ----
+  if (citations.length) {
+    slideNo++;
+    const sources = pres.addSlide();
+    sources.addText("Sources", { x: 0.6, y: 0.62, w: 12.1, h: 0.85, fontSize: 26, bold: true, color: INK });
+    sources.addShape("rect", { x: 0.62, y: 1.5, w: 1.5, h: 0.055, fill: { color: ACCENT } });
+    const byFile = new Map<string, NotebookSourceCitation[]>();
+    for (const c of citations) {
+      const list = byFile.get(c.sourceName) || [];
+      list.push(c);
+      byFile.set(c.sourceName, list);
+    }
+    const sourceLines: string[] = [];
+    for (const [file, list] of byFile) {
+      sourceLines.push(`${shortName(file, 60)} (${list.length})`);
+      for (const c of list.slice(0, 12)) sourceLines.push(`  [S${c.index}] ${c.heading.slice(0, 90)}`);
+    }
+    sources.addText(sourceLines.join("\n").slice(0, 3000), { x: 0.6, y: 1.9, w: 12.1, h: 4.8, fontSize: 11, color: BODY, valign: "top" });
+    footer(sources, slideNo);
+  }
   const out = await pres.write({ outputType: "nodebuffer" });
   return Buffer.isBuffer(out) ? out : Buffer.from(out as unknown as Uint8Array);
 }

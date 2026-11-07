@@ -1,16 +1,15 @@
 import { execFile, spawn } from "node:child_process";
+import { planCommandSandbox, sandboxArgvPrefix, sandboxEnvAdditions, type SandboxPlan } from "./os-sandbox.js";
+import { getAppSettings } from "./store.js";
 import type { ChildProcess } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { FilesystemBackend } from "deepagents";
 import { isDeniedCommand, classifyCommand, isHttpMutationCommand, isWindowsDownloadCommand } from "./permissions.js";
-import { stripProjectRoot, normalizeCommandPaths, normalizeVirtualPath } from "./path-utils.js";
+import { stripProjectRoot, normalizeCommandPaths } from "./path-utils.js";
 import type { CommandPolicy } from "./permissions.js";
 import { requestCommandApproval } from "./approval-service.js";
-import { guardAgainstLegacyStateDir } from "./state-guard.js";
 import { scrubSecretEnv } from "./child-env.js";
 import type { ProjectRecord } from "./store.js";
-import { collectPostEditDiagnostics } from "./lsp-service.js";
 
 const DEFAULT_COMMAND_TIMEOUT_SECONDS = 180;
 
@@ -311,6 +310,22 @@ export async function executeCommand(projectRoot: string, command: string, optio
 
   const shell = process.platform === "win32" ? (process.env.ComSpec || "cmd.exe") : "/bin/sh";
   const args = process.platform === "win32" ? ["/d", "/s", "/c", wrappedCommand] : ["-c", wrappedCommand];
+
+  // OS-level sandbox (Phase 4.1): opt-in via AppSettings.commandSandbox="auto".
+  // macOS wraps the shell in sandbox-exec (writes scoped to workspace+temp,
+  // ~/.ssh & ~/.gnupg denied); Linux uses bwrap when installed; Windows
+  // degrades to TEMP/TMP env scoping. Never breaks a command: plan failures
+  // leave the run unsandboxed with the policy layer still applying.
+  let sandboxPlan: SandboxPlan = { kind: "none", reason: "sandbox disabled" };
+  try {
+    const appSettings = await getAppSettings();
+    sandboxPlan = planCommandSandbox({ projectRoot: path.resolve(projectRoot), mode: appSettings.commandSandbox || "off" });
+    if (sandboxPlan.kind !== "none") {
+      await mkdir(path.join(path.resolve(projectRoot), ".nexus", "tmp"), { recursive: true });
+    }
+  } catch { /* sandbox is optional hardening */ }
+  const sandboxPrefix = sandboxArgvPrefix(sandboxPlan);
+  const sandboxEnv = sandboxEnvAdditions(sandboxPlan);
   const appNodeModules = path.resolve(process.cwd(), "node_modules");
   const existingNodePath = process.env.NODE_PATH || "";
   const nodePath = [existingNodePath, appNodeModules].filter(Boolean).join(path.delimiter);
@@ -334,9 +349,9 @@ export async function executeCommand(projectRoot: string, command: string, optio
   };
 
   try {
-    const result = await runProcess(shell, args, {
+    const result = await runProcess(sandboxPrefix.length ? sandboxPrefix[0] : shell, sandboxPrefix.length ? [...sandboxPrefix.slice(1), shell, ...args] : args, {
       cwd: activeCwd,
-      env,
+      env: { ...env, ...sandboxEnv },
       timeout: Math.max(10, options.timeoutSeconds || DEFAULT_COMMAND_TIMEOUT_SECONDS) * 1000,
       maxBuffer: 8_000_000,
       onOutput: filteredOnOutput,
@@ -359,95 +374,11 @@ export async function executeCommand(projectRoot: string, command: string, optio
 }
 
 function backendId(project: ProjectRecord) { return `workspace-${project.id}`; }
+void backendId;
 
-export async function getAgentBackend(project: ProjectRecord, options: { readOnly?: boolean; runId?: string; editPolicy?: "auto" | "ask"; onCommandOutput?: (command: string, chunk: string) => void; /** Full Access mode: shell commands skip approval prompts and the edit-approval gate is bypassed. */ fullAccess?: boolean } = {}) {
-  const backend: any = new FilesystemBackend({ rootDir: path.resolve(project.root), virtualMode: true });
-  backend.id = backendId(project);
-
-  // Intercept resolvePath so that any host or hallucinated POSIX project root
-  // prefix (e.g. /Users/<user>/Desktop/<project>/...) is automatically stripped
-  // before resolving inside the workspace, preventing duplicate nested directories.
-  const originalResolvePath = backend.resolvePath.bind(backend);
-  backend.resolvePath = (key: string) => {
-    const virtualKey = normalizeVirtualPath(key, project.root);
-    return originalResolvePath(virtualKey);
-  };
-  // Cap listing/search fan-out: an uncapped `ls /` or `glob **/*` on a repo
-  // with node_modules/dist returns thousands of entries into context and the
-  // run looks busy while achieving nothing. Truncate with a hint instead.
-  const capEntries = (result: any, kind: "files" | "matches", max: number, hint: string) => {
-    const list = result?.[kind];
-    if (!Array.isArray(list) || list.length <= max) return result;
-    return { ...result, [kind]: [...list.slice(0, max)], truncated: true, notice: `${hint} (${list.length} total, showing first ${max})` };
-  };
-  for (const [method, kind, max, hint] of [
-    ["ls", "files", 200, "Directory listing truncated — list a subdirectory or use glob/grep"],
-    ["glob", "files", 200, "Glob matched too many files — narrow the pattern"],
-    ["grep", "matches", 100, "Too many matches — narrow the pattern or scope to a subdirectory"],
-  ] as const) {
-    const original = backend[method]?.bind(backend);
-    if (!original) continue;
-    backend[method] = async (...args: any[]) => capEntries(await original(...args), kind, max, hint);
-  }
-  if (options.readOnly) {
-    const refuse = (action: string) => async () => { throw new Error(`Plan mode is read-only: ${action} is disabled. Explore the repository and produce an implementation plan instead of changing files.`); };
-    backend.write = refuse("write_file");
-    backend.edit = refuse("edit_file");
-    backend.delete = refuse("delete");
-    backend.execute = refuse("execute");
-  } else {
-    // Never write into `.deepagents/` — Nexus state lives in `.nexus/`. The
-    // model sometimes invents the legacy DeepAgents folder on its own.
-    guardAgainstLegacyStateDir(backend, project.root);
-    // Pin policy at run start. Otherwise the agent could write an allow rule
-    // into the workspace and use it to self-approve a later shell command.
-    const { policy: commandPolicy, trustedAllow: commandPolicyTrusted } = await readCommandPolicyWithTrust(project.root);
-    backend.execute = (command: string) => executeCommand(project.root, command, {
-      runId: options.runId,
-      requireApproval: true,
-      fullAccess: options.fullAccess,
-      policy: commandPolicy,
-      policyTrusted: commandPolicyTrusted,
-      onOutput: options.onCommandOutput ? (chunk) => options.onCommandOutput!(command, chunk) : undefined,
-    });
-    if (options.editPolicy === "ask" && !options.fullAccess) {
-      // Opt-in edit approval (AppSettings.editPolicy="ask"): backend file
-      // mutations wait for the same approval UI shell commands use. A
-      // "session" decision (approvalKey + runId) approves the rest of the
-      // run's edits; a denial throws so the model sees the refusal.
-      const gate = (action: string, original: any) => async (filePath: string, ...rest: any[]) => {
-        const decision = await requestCommandApproval({
-          runId: options.runId,
-          approvalKey: "file-edit",
-          command: `${action} ${filePath}`,
-          cwd: path.resolve(project.root),
-          reason: "Edit approval is on: file changes wait for your confirmation.",
-        });
-        if (decision === "deny") throw new Error(`Edit denied by the user: ${action} on ${filePath} was not approved. Do not retry the same change; explain what you intended instead.`);
-        return original(filePath, ...rest);
-      };
-      for (const action of ["write", "edit", "delete"] as const) {
-        const original = backend[action]?.bind(backend);
-        if (original) backend[action] = gate(action, original);
-      }
-    }
-    for (const action of ["write", "edit"] as const) {
-      const orig = backend[action]?.bind(backend);
-      if (orig) {
-        backend[action] = async (filePath: string, ...rest: any[]) => {
-          const res = await orig(filePath, ...rest);
-          const diags = await collectPostEditDiagnostics(project.root, [filePath]).catch(() => null);
-          if (diags) {
-            if (typeof res === "string") return res + diags;
-            if (typeof res === "object" && res !== null) return { ...res, lspDiagnostics: diags };
-          }
-          return res;
-        };
-      }
-    }
-  }
-  return { backend, workspace: project.root };
-}
+// The run-scoped workspace backend (read-only stubs, command approval policy,
+// edit gates, legacy-dir guard, LSP diagnostics) now lives in agentcore/backend.
+export { getAgentBackend } from "./agentcore/backend.js";
 
 export async function runProjectCommand(project: ProjectRecord, command: string, runId?: string) {
   return executeCommand(project.root, command, { runId });

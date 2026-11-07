@@ -54,6 +54,10 @@ export function SettingsModal({
   const [headless, setHeadless] = useState(true);
   const [editPolicy, setEditPolicy] = useState<"auto" | "ask">("auto");
   const [editPolicyNote, setEditPolicyNote] = useState("");
+  const [searchBackend, setSearchBackend] = useState<string>("auto");
+  const [searchKeys, setSearchKeys] = useState<{ tavily: string; brave: string; exa: string }>({ tavily: "", brave: "", exa: "" });
+  const [searxngBaseUrl, setSearxngBaseUrl] = useState("");
+  const [searchNote, setSearchNote] = useState("");
   const [rerankEnabled, setRerankEnabled] = useState(false);
   const [rerankProviderId, setRerankProviderId] = useState("");
   const [rerankModel, setRerankModel] = useState("");
@@ -123,6 +127,41 @@ export function SettingsModal({
       }
     } catch (error) {
       setThemeNote(error instanceof Error ? error.message : "Could not save theme.");
+    }
+  }
+
+  useEffect(() => {
+    const api = (window as any).nexus;
+    api?.getSearchConfig?.().then((config: { backend?: string; searxngBaseUrl?: string; hasTavilyKey?: boolean; hasBraveKey?: boolean; hasExaKey?: boolean } | undefined) => {
+      if (!config) return;
+      setSearchBackend(config.backend || "auto");
+      setSearxngBaseUrl(config.searxngBaseUrl || "");
+      setSearchKeys({
+        tavily: config.hasTavilyKey ? "••••••••" : "",
+        brave: config.hasBraveKey ? "••••••••" : "",
+        exa: config.hasExaKey ? "••••••••" : "",
+      });
+    }).catch(() => undefined);
+  }, []);
+
+  async function saveSearchConfigUi() {
+    const api = (window as any).nexus;
+    if (!api?.saveSearchConfig) {
+      setSearchNote("Search settings are unavailable in this build.");
+      return;
+    }
+    try {
+      const unmask = (value: string) => (/^•+$/.test(value) ? undefined : value);
+      await api.saveSearchConfig({
+        backend: searchBackend,
+        tavilyKey: unmask(searchKeys.tavily) ?? null,
+        braveKey: unmask(searchKeys.brave) ?? null,
+        exaKey: unmask(searchKeys.exa) ?? null,
+        searxngBaseUrl: searchBackend === "searxng" ? searxngBaseUrl : null,
+      });
+      setSearchNote("Saved. web_search now routes through the selected backend (auto falls back to DuckDuckGo).");
+    } catch (error) {
+      setSearchNote(error instanceof Error ? error.message : "Could not save search settings.");
     }
   }
 
@@ -420,8 +459,8 @@ export function SettingsModal({
     },
     browser: {
       kicker: "Preferences",
-      title: "Agent Browser Visibility",
-      subtitle: "Control whether browser automation tools operate in headless background mode or mirror live in the interactive browser tab.",
+      title: "Agent Browser & Runs",
+      subtitle: "Browser automation visibility, run approval policy, and the web-search backend used during research.",
     },
     providers: {
       kicker: "AI & Agents",
@@ -600,6 +639,9 @@ export function SettingsModal({
           {section === "plugins" && <PluginMarketplace hasProject={hasProject} />}
 
           {section === "browser" && (
+            <div className="settings-group-label">Browser automation</div>
+          )}
+          {section === "browser" && (
             <div className="setting-card">
               <div className="setting-row setting-row-inline">
                 <span className="setting-icon">{headless ? <EyeOff size={15} /> : <Eye size={15} />}</span>
@@ -636,6 +678,9 @@ export function SettingsModal({
           )}
 
           {section === "browser" && (
+            <div className="settings-group-label">Run approvals & search</div>
+          )}
+          {section === "browser" && (
             <div className="setting-card">
               <div className="setting-row setting-row-inline">
                 <span className="setting-icon">{editPolicy === "ask" ? <ShieldCheck size={15} /> : <Shield size={15} />}</span>
@@ -670,6 +715,72 @@ export function SettingsModal({
                   <span>{editPolicyNote}</span>
                 </div>
               ) : null}
+            </div>
+          )}
+
+          {section === "browser" && (
+            <div className="setting-card">
+              <div className="setting-row setting-row-inline">
+                <span className="setting-icon"><Globe size={15} /></span>
+                <div className="setting-text">
+                  <strong>Web search backend</strong>
+                  <small>
+                    Auto uses the first configured API key below and falls back to the free DuckDuckGo scraper. API backends return clean JSON — no scraping brittleness during deep research.
+                  </small>
+                </div>
+                <select
+                  value={searchBackend}
+                  onChange={(e) => setSearchBackend(e.target.value)}
+                  style={{ fontSize: 12, padding: "5px 8px", borderRadius: 6, background: "var(--bg-elevated, #242424)", color: "inherit", border: "1px solid var(--border-subtle, #333)" }}
+                  aria-label="Search backend"
+                >
+                  <option value="auto">Auto</option>
+                  <option value="tavily">Tavily</option>
+                  <option value="brave">Brave</option>
+                  <option value="exa">Exa</option>
+                  <option value="searxng">SearXNG (self-hosted)</option>
+                  <option value="ddg">DuckDuckGo only</option>
+                </select>
+              </div>
+              <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                {([
+                  ["tavily", "Tavily API key", "tvly-…"],
+                  ["brave", "Brave Search API key", "BSA…"],
+                  ["exa", "Exa API key", "…"],
+                ] as const).map(([slot, label, placeholder]) => (
+                  <label key={slot} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                    <span style={{ width: 150, opacity: 0.85 }}>{label}</span>
+                    <input
+                      type="password"
+                      className="text-field"
+                      value={searchKeys[slot]}
+                      onChange={(e) => setSearchKeys((prev) => ({ ...prev, [slot]: e.target.value }))}
+                      placeholder={placeholder}
+                      style={{ flex: 1, fontSize: 12 }}
+                      autoComplete="off"
+                    />
+                  </label>
+                ))}
+                {searchBackend === "searxng" && (
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                    <span style={{ width: 150, opacity: 0.85 }}>SearXNG base URL</span>
+                    <input
+                      type="text"
+                      className="text-field"
+                      value={searxngBaseUrl}
+                      onChange={(e) => setSearxngBaseUrl(e.target.value)}
+                      placeholder="http://127.0.0.1:8080"
+                      style={{ flex: 1, fontSize: 12 }}
+                    />
+                  </label>
+                )}
+              </div>
+              <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10 }}>
+                <button type="button" className="primary" onClick={() => void saveSearchConfigUi()} style={{ fontSize: 12, padding: "6px 12px", borderRadius: 6, cursor: "pointer" }}>
+                  Save search settings
+                </button>
+                {searchNote ? <span style={{ fontSize: 11, opacity: 0.8 }}>{searchNote}</span> : null}
+              </div>
             </div>
           )}
 

@@ -16,7 +16,7 @@ test("network policy: browser_fetch_api refuses out-of-band HTTP mutations", asy
   // well in case callers bypass schema validation.
   for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
     try {
-      const out = await apiTool.invoke({ url: "http://127.0.0.1:9/unreachable", method });
+      const out = await apiTool.execute({ url: "http://127.0.0.1:9/unreachable", method });
       const text = typeof out === "string" ? out : String(out);
       assert.match(text, /refused/i, `${method} must be refused at runtime, got: ${text.slice(0, 80)}`);
     } catch (error) {

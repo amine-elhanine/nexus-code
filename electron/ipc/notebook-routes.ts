@@ -310,6 +310,15 @@ export function registerNotebookRoutes(ctx: MainIpcContext): void {
     const { deleteNotebookAudioOverview } = await import("../notebook-audio.js");
     return deleteNotebookAudioOverview(notebookId, audioId);
   });
+  // Reads the synthesized MP3 for in-app playback (base64 over IPC).
+  ipcMain.handle("notebook:audio:read", async (_event, notebookId: string, audioId: string) => {
+    const { readNotebookAudioEpisode } = await import("../notebook-audio.js");
+    return readNotebookAudioEpisode(notebookId, audioId);
+  });
+  ipcMain.handle("notebook:audio:download", async (_event, notebookId: string, audioId: string) => {
+    const { saveNotebookAudioEpisode } = await import("../notebook-audio.js");
+    return saveNotebookAudioEpisode(notebookId, audioId);
+  });
   ipcMain.handle("notebook:passage", (_event, notebookId: string, chunkId: string) => getChunkPassage(notebookId, chunkId));
   ipcMain.handle("notebook:chats", (_event, notebookId: string) => listNotebookChats(notebookId));
   ipcMain.handle("notebook:createChat", (_event, notebookId: string, title?: string) => createNotebookChat(notebookId, title));

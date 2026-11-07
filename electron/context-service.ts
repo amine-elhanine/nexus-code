@@ -1,4 +1,5 @@
-import { HumanMessage } from "@langchain/core/messages";
+import { userMsg, textOf } from "./agentcore/messages.js";
+import { schemaToText } from "./agentcore/zod-schema.js";
 import { z as zodV4 } from "zod";
 
 /**
@@ -49,7 +50,7 @@ export function isContextWindowError(error: unknown): boolean {
   return CONTEXT_WINDOW_PATTERN.test(parts);
 }
 
-/** Rough token estimate of a single LangChain message (content + tool-call args). */
+/** Rough token estimate of a single agent message (content + tool-call args). */
 export function estimateMessageTokens(message: any): number {
   if (!message) return 0;
   const content = message.content ?? message.text ?? "";
@@ -59,15 +60,14 @@ export function estimateMessageTokens(message: any): number {
     for (const part of content) {
       if (typeof part === "string") chars += part.length;
       else if (part?.text) chars += String(part.text).length;
-      else if (part?.image_url?.url) chars += String(part.image_url.url).length;
+      else if (part?.url || part?.image_url?.url) chars += String(part.url ?? part.image_url?.url).length;
       else chars += JSON.stringify(part).length;
     }
   }
   let tokens = Math.ceil(chars / 3.8);
-  if (Array.isArray(message.tool_calls)) {
-    for (const call of message.tool_calls) {
-      try { tokens += Math.ceil(JSON.stringify(call?.args ?? {}).length / 3.8) + 8; } catch { tokens += 24; }
-    }
+  const calls = Array.isArray(message.toolCalls) ? message.toolCalls : Array.isArray(message.tool_calls) ? message.tool_calls : [];
+  for (const call of calls) {
+    try { tokens += Math.ceil(JSON.stringify(call?.args ?? {}).length / 3.8) + 8; } catch { tokens += 24; }
   }
   return tokens;
 }
@@ -76,26 +76,8 @@ export function estimateMessagesTokens(messages: any[]): number {
   return (messages || []).reduce((sum, m) => sum + estimateMessageTokens(m), 0);
 }
 
-// Zod v4 first (the project's pinned zod), then a v3-style _def walk, then raw
-// stringify for plain JSON-Schema inputs (MCP tools arrive pre-serialized).
-function schemaToText(schema: any, depth = 0): string {
-  if (!schema || depth > 8) return "";
-  if (typeof schema === "string") return schema;
-  try {
-    const json = zodV4.toJSONSchema(schema, { io: "input", unrepresentable: "any" });
-    if (json && typeof json === "object") return JSON.stringify(json);
-  } catch { /* not a zod v4 schema */ }
-  try {
-    if (typeof schema.shape === "object" && schema.shape) {
-      return `{${Object.entries(schema.shape).map(([key, value]) => `${key}:${schemaToText(value, depth + 1)}`).join(",")}}`;
-    }
-    const def = schema._def ?? {};
-    const inner = def.innerType ?? def.schema ?? def.element ?? def.wrappedValue;
-    const description = schema.description ?? def.description ?? "";
-    return `${def.typeName ?? schema.type ?? ""}${inner ? `<${schemaToText(inner, depth + 1)}>` : ""}${description ? `(${description})` : ""}`;
-  } catch { /* fall through */ }
-  try { return JSON.stringify(schema) || ""; } catch { return ""; }
-}
+void zodV4;
+void textOf;
 
 /** Rough token estimate of tool DEFINITIONS as providers receive them with
  *  every model call (name + description + parameter schema). */
@@ -109,22 +91,22 @@ export function estimateToolSchemaTokens(tools: any[]): number {
 }
 
 const messageKind = (message: any): string => (
-  typeof message?._getType === "function" ? message._getType()
-    : typeof message?.type === "string" ? message.type
-      : message?.role || (Array.isArray(message?.tool_calls) && message.tool_calls.length ? "ai" : "")
+  message?.role
+  || (typeof message?.type === "string" && ["user", "assistant", "tool", "system"].includes(message.type) ? message.type : "")
+  || (Array.isArray(message?.toolCalls) && message.toolCalls.length ? "assistant" : "")
 );
 
 /**
  * Group boundaries of a run message list. Cutting the transcript at any of
  * these indices keeps the Anthropic/OpenAI tool-calling contract intact:
- * an AIMessage with tool_calls is never separated from its ToolMessages,
- * and the remaining transcript never opens with an orphan tool result.
+ * an assistant message with toolCalls is never separated from its tool
+ * results, and the remaining transcript never opens with an orphan result.
  */
 function runMessageGroupStarts(messages: any[]): number[] {
   const starts: number[] = [];
   for (let i = 0; i < messages.length; i++) {
     const kind = messageKind(messages[i]);
-    const extendsPrior = kind === "tool" || (kind === "ai" && Array.isArray(messages[i]?.tool_calls) && messages[i].tool_calls.length > 0);
+    const extendsPrior = kind === "tool" || (kind === "assistant" && Array.isArray(messages[i]?.toolCalls) && messages[i].toolCalls.length > 0);
     if (!extendsPrior) starts.push(i);
   }
   if (starts[0] !== 0) starts.unshift(0);
@@ -172,8 +154,7 @@ export function trimRunMessages(messages: any[], budgetTokens: number): any[] {
   const digestParts = dropped.map((m) => contentTextOf(m).slice(0, 500)).filter(Boolean);
   let digest = `[Condensed earlier work — the original request is included below in context]\n` + digestParts.join("\n").replace(/\n{3,}/g, "\n\n");
   if (digest.length > 4000) digest = `${digest.slice(0, 3400)}\n… [${digestParts.length} earlier entries condensed]`;
-  const summary: any = new HumanMessage(digest);
-  summary.content = digest;
+  const summary: any = userMsg(digest);
   const result = [summary, ...list.slice(keepFrom)];
 
   // Last resort: the remaining suffix itself overflows (one giant tool result).
@@ -196,74 +177,22 @@ export function trimRunMessages(messages: any[], budgetTokens: number): any[] {
 export function trimRunMessagesWithRecoveryBrief(messages: any[], recoveryBrief: string, budgetTokens: number): any[] {
   const compacted = trimRunMessages(messages, budgetTokens);
   if (!recoveryBrief?.trim()) return compacted;
-  const brief = new HumanMessage(recoveryBrief.trim());
-  brief.content = recoveryBrief.trim();
+  const brief = userMsg(recoveryBrief.trim());
   return trimRunMessages([...compacted, brief], budgetTokens);
 }
 
 export type StreamUsage = { inputTokens: number; outputTokens: number; totalTokens: number; cacheReadTokens: number; cacheCreationTokens: number };
 
-function usageFromMeta(u: any): StreamUsage | null {
-  if (!u || typeof u !== "object") return null;
-  const usage = {
-    inputTokens: u.promptTokens || u.prompt_tokens || u.input_tokens || u.inputTokens || 0,
-    outputTokens: u.completionTokens || u.completion_tokens || u.output_tokens || u.outputTokens || 0,
-    totalTokens: u.totalTokens || u.total_tokens || u.totalTokens || 0,
-    // Prompt-cache accounting, normalized across providers. LangChain standard
-    // (Anthropic/OpenAI integrations): input_token_details.cache_read is the
-    // subset of input_tokens served from cache (both APIs report input_tokens
-    // INCLUSIVE of cached tokens). Legacy spots: Anthropic's raw usage
-    // (cache_read_input_tokens / cache_creation_input_tokens) and OpenAI's
-    // prompt_tokens_details.cached_tokens.
-    cacheReadTokens:
-      u.input_token_details?.cache_read ??
-      u.cache_read_input_tokens ??
-      u.prompt_tokens_details?.cached_tokens ??
-      0,
-    cacheCreationTokens:
-      u.input_token_details?.cache_creation ?? u.cache_creation_input_tokens ?? 0,
-  };
-  // An all-zero payload carries no information (some providers emit empty
-  // usage objects mid-stream); treat it as absent so callers can fall through
-  // to the other metadata locations.
-  if (!usage.inputTokens && !usage.outputTokens && !usage.totalTokens) return null;
-  return usage;
-}
-
-export function extractStreamUsage(chunk: any): StreamUsage | null {
-  if (!chunk) return null;
-
-  // LangChain standard usage_metadata wins when it carries real values; some
-  // providers emit an empty one alongside populated legacy metadata.
-  return (
-    usageFromMeta(chunk.usage_metadata) ??
-    // Provider-specific spots: OpenAI-style response_metadata, Mistral/Groq
-    // tokenUsage (which can live in additional_kwargs even when
-    // response_metadata is present, so both must be checked).
-    usageFromMeta(chunk.response_metadata?.tokenUsage) ??
-    usageFromMeta(chunk.response_metadata?.usage) ??
-    usageFromMeta(chunk.additional_kwargs?.tokenUsage) ??
-    usageFromMeta(chunk.additional_kwargs?.usage)
-  );
-}
-
-// Streaming usage accounting. A single model invocation surfaces its usage in
-// different shapes depending on the provider:
-//  - one trailing chunk with the invocation totals (OpenAI and friends),
-//  - repeated chunks carrying cumulative totals under the same message id
-//    (Groq's x_groq usage, Anthropic's native event stream),
-//  - complementary chunks: input on an id-bearing message_start chunk, output
-//    on an id-less message_delta chunk (Anthropic legacy),
-//  - per-chunk deltas on id-less chunks (Google Gemini).
-// Accordingly: repeated usage under the same message id is cumulative and
-// collapses to the max seen per field, usage on id-less chunks is incremental
-// and is summed as reported, and the grand total sums across invocations.
+// Run usage accounting. Each model invocation reports ONE final usage object
+// from its protocol adapter (the adapters know each provider's wire shape —
+// usage_metadata soup and the per-message-id cumulative-collapse dance are
+// gone). Totals simply sum across invocations; subagent usage is added via
+// addTotals.
 export class StreamUsageTracker {
-  private perMessage = new Map<string, { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }>();
-  private incrementalInputTokens = 0;
-  private incrementalOutputTokens = 0;
-  private incrementalCacheReadTokens = 0;
-  private incrementalCacheCreationTokens = 0;
+  private invocationInputTokens = 0;
+  private invocationOutputTokens = 0;
+  private invocationCacheReadTokens = 0;
+  private invocationCacheCreationTokens = 0;
   private maxObservedInputTokens = 0;
   sawExactInput = false;
   sawExactOutput = false;
@@ -277,62 +206,46 @@ export class StreamUsageTracker {
     return this.maxObservedInputTokens;
   }
 
-  noteChunk(chunk: any): void {
-    const usage = extractStreamUsage(chunk);
+  noteUsage(usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number } | null): void {
     if (!usage) return;
-    if (usage.inputTokens > 0) {
+    const inputTokens = Number(usage.inputTokens ?? 0);
+    const outputTokens = Number(usage.outputTokens ?? 0);
+    if (!inputTokens && !outputTokens) return;
+    if (inputTokens > 0) {
       this.sawExactInput = true;
-      this.maxObservedInputTokens = Math.max(this.maxObservedInputTokens, usage.inputTokens);
+      this.maxObservedInputTokens = Math.max(this.maxObservedInputTokens, inputTokens);
     }
-    if (usage.outputTokens > 0) this.sawExactOutput = true;
-    const id = typeof chunk?.id === "string" && chunk.id ? chunk.id : null;
-    if (!id) {
-      this.incrementalInputTokens += usage.inputTokens || 0;
-      this.incrementalOutputTokens += usage.outputTokens || 0;
-      this.incrementalCacheReadTokens += usage.cacheReadTokens || 0;
-      this.incrementalCacheCreationTokens += usage.cacheCreationTokens || 0;
-      return;
-    }
-    const bucket = this.perMessage.get(id) ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
-    bucket.inputTokens = Math.max(bucket.inputTokens, usage.inputTokens || 0);
-    bucket.outputTokens = Math.max(bucket.outputTokens, usage.outputTokens || 0);
-    bucket.cacheReadTokens = Math.max(bucket.cacheReadTokens, usage.cacheReadTokens || 0);
-    bucket.cacheCreationTokens = Math.max(bucket.cacheCreationTokens, usage.cacheCreationTokens || 0);
-    this.perMessage.set(id, bucket);
+    if (outputTokens > 0) this.sawExactOutput = true;
+    this.invocationInputTokens += inputTokens;
+    this.invocationOutputTokens += outputTokens;
+    this.invocationCacheReadTokens += Number(usage.cacheReadTokens ?? 0);
+    this.invocationCacheCreationTokens += Number(usage.cacheCreationTokens ?? 0);
   }
 
   // Add already-aggregated invocation totals (e.g. a subagent's usage) on top
-  // of the tracked chunks.
+  // of the tracked invocations.
   addTotals(inputTokens: number, outputTokens: number): void {
-    this.incrementalInputTokens += inputTokens || 0;
-    this.incrementalOutputTokens += outputTokens || 0;
+    this.invocationInputTokens += inputTokens || 0;
+    this.invocationOutputTokens += outputTokens || 0;
   }
 
   get inputTokens(): number {
-    let total = this.incrementalInputTokens;
-    for (const bucket of this.perMessage.values()) total += bucket.inputTokens;
-    return total;
+    return this.invocationInputTokens;
   }
 
   get outputTokens(): number {
-    let total = this.incrementalOutputTokens;
-    for (const bucket of this.perMessage.values()) total += bucket.outputTokens;
-    return total;
+    return this.invocationOutputTokens;
   }
 
-  // Cache-token totals follow the same per-invocation collapse as inputTokens
-  // (max per message id, sum across invocations) so the hover-card hit rate
-  // stays consistent with the input totals it is divided by.
+  // Cache-token totals follow the same sum-across-invocations semantics so
+  // the hover-card hit rate stays consistent with the input totals it is
+  // divided by.
   get cacheReadTokens(): number {
-    let total = this.incrementalCacheReadTokens;
-    for (const bucket of this.perMessage.values()) total += bucket.cacheReadTokens;
-    return total;
+    return this.invocationCacheReadTokens;
   }
 
   get cacheCreationTokens(): number {
-    let total = this.incrementalCacheCreationTokens;
-    for (const bucket of this.perMessage.values()) total += bucket.cacheCreationTokens;
-    return total;
+    return this.invocationCacheCreationTokens;
   }
 }
 

@@ -1,14 +1,12 @@
 import path from "node:path";
-import { FilesystemBackend } from "deepagents";
+import { WorkspaceBackend } from "./agentcore/backend.js";
 import { executeCommand, readCommandPolicyWithTrust } from "./command-service.js";
-import { guardAgainstLegacyStateDir } from "./state-guard.js";
 
 /** Notebook agent workspace with shell approvals enforced at the backend boundary. */
 export async function createNotebookAgentBackend(root: string, id: string, runId?: string) {
-  const backend: any = new FilesystemBackend({ rootDir: path.resolve(root), virtualMode: true });
-  backend.id = id;
+  const backend = new WorkspaceBackend({ rootDir: path.resolve(root), id });
   const { policy: commandPolicy, trustedAllow } = await readCommandPolicyWithTrust(root);
   backend.execute = (command: string) => executeCommand(root, command, { runId, requireApproval: true, policy: commandPolicy, policyTrusted: trustedAllow });
-  guardAgainstLegacyStateDir(backend, root);
+  // Legacy-state guard is baked into the WorkspaceBackend write/edit paths.
   return backend;
 }

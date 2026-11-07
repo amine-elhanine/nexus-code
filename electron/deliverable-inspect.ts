@@ -81,7 +81,10 @@ async function inspectPptx(bytes: Buffer): Promise<DeliverableMetrics> {
     // good-enough title heuristic (title placeholders are hard to detect
     // reliably across generator tools).
     const runs = [...xml.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)].map((m) => xmlText(m[1])).filter(Boolean);
-    if (runs.length && titles.length < 30) titles.push(runs[0].slice(0, 120));
+    // Designed decks put a bare kicker number ("01") before the title — skip
+    // pure-number runs so the real title surfaces.
+    const titleRun = runs.find((r) => !/^\d+$/.test(r.trim()));
+    if (titleRun && titles.length < 30) titles.push(titleRun.slice(0, 120));
     allText += ` ${runs.join(" ")}`;
   }
   return { kind: "pptx", primaryCount: slideNames.length, wordCount: countWords(allText), titles, textSample: allText.slice(0, 2000) };
