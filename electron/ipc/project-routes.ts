@@ -20,6 +20,7 @@ import { discardSessionWorktree } from "../worktree-service.js";
 import { removeMemoryFactWithCount } from "../home-memory-service.js";
 import { clearLastRunCheckpoint } from "../agent-service.js";
 import type { MainIpcContext } from "./context.js";
+import { invokeChatText } from "../agentcore/llm/invoke.js";
 
 export function registerProjectRoutes(ctx: MainIpcContext): void {
   ipcMain.handle("projects:list", () => listProjects());
@@ -167,8 +168,7 @@ export function registerProjectRoutes(ctx: MainIpcContext): void {
       compacted = await compactHistoryWithModel(
         history,
         async (prompt) => {
-          const res: any = await llm.invoke(prompt);
-          return typeof res?.content === "string" ? res.content : String(res?.content || "");
+          return await invokeChatText(llm, prompt);
         },
         targetBudget
       );

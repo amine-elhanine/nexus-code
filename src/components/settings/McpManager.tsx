@@ -193,7 +193,7 @@ export function McpManager() {
         <div className="provider-form">
           <div className="form-title">
             <span>{form?.id ? "Edit MCP server" : "Add MCP server"}</span>
-            <small>langchain-mcp-adapters</small>
+            <small>@modelcontextprotocol/sdk</small>
           </div>
           {!form && (
             <button className="secondary full" onClick={() => refreshForm(EMPTY_MCP_FORM)}>

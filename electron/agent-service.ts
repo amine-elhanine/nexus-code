@@ -1,9 +1,16 @@
 import { existsSync, readFileSync, readdirSync, promises as fsPromises } from "node:fs";
 import path from "node:path";
-import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
-import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
-import { createDeepAgent, CompositeBackend, FilesystemBackend } from "deepagents";
-import { todoListMiddleware, createMiddleware } from "langchain";
+import {
+  assistantMsg, userMsg, toolMsg, systemMsg,
+  textOf, textJoined, toolCallsOf, toolCallIdOf,
+  reviveMessages, type ChatMessage, type ToolCall,
+} from "./agentcore/messages.js";
+import { runAgentLoop, buildSkillsSection, createTodoTool, StepBudgetExceededError, type AgentLoopEvent, type SkillListing } from "./agentcore/loop.js";
+import { CompositeAgentBackend, createSkillBackend, type AgentBackend } from "./agentcore/backend.js";
+import { createFilesystemTools } from "./agentcore/builtin-file-tools.js";
+import type { ChatClient } from "./agentcore/llm/types.js";
+import type { AgentMiddleware } from "./agentcore/middleware.js";
+import { normalizeToolCallArgs } from "./loop-prevention.js";
 import { createChatModel, resolveModelContextWindow, resolveModelMaxOutput, formatContextWindow, formatTokenCount } from "./providers.js";
 import { createCodeIntelligenceTools, pickRuntimeCodeTools } from "./code-tools.js";
 import { createEditTools, createQuestionTool } from "./edit-tools.js";
@@ -38,6 +45,8 @@ import { validateHomeArtifactContract, selectHomeArtifactCandidates, createArtif
 import { inspectDeliverables, planItemEvidence, type DeliverableInspection } from "./deliverable-inspect.js";
 import { buildFailoverChain, type FailoverTarget } from "./agent/provider-failover.js";
 import { createHomeResearchTool } from "./home-research-agent.js";
+import { createDeliverableTool } from "./home-deliverables.js";
+import { createImageGenTool } from "./image-gen-tool.js";
 import { createBackgroundTools } from "./agent/background-jobs.js";
 import { decideHomeVerification, responseHasVisualBlocks, hasChartFences, matchChartFences } from "./agent/verify-home.js";
 import { buildCodeTaskContextSummary, codeVerificationOutcome, createCodeTaskJournal, finishCodeTaskJournal, inferCodeTaskContract, loadCodeTaskJournal, parseBlockingReviewFindings, recordCodeTaskAction, recordCodeTaskPlan, saveCodeTaskJournal, shouldRunCodeReview, updateCodeTaskContextSummary, type CodeTaskContract, type CodeTaskJournal, type CodeTaskPhase } from "./code-task-service.js";
@@ -46,7 +55,7 @@ import type { ProviderConfig } from "./store.js";
 import type { AgentContextBreakdownEntry, AgentEvent, AgentMemoryContext, AgentMode, AgentSettings, AgentTaskKind, AgentUsage, AttachmentDoc, HistoryInput, HomeTaskContract, PlanItem } from "./agent-types.js";
 import type { TaskComplexity } from "./task-routing.js";
 import { buildSystemPrompt, homeRequestNamesFileFormat, inferHomeOutputFormats, inferHomeTaskContract } from "./agent-prompt.js";
-import { DoomLoopError, RESEARCH_BUDGET_BASE, RESEARCH_BUDGET_WITH_RESEARCH, loopPreventionMiddleware, resolveResearchBudget, toolParameterNormalizationMiddleware } from "./loop-prevention.js";
+import { DoomLoopError, RESEARCH_BUDGET_BASE, RESEARCH_BUDGET_WITH_RESEARCH, loopPreventionMiddleware, resolveResearchBudget } from "./loop-prevention.js";
 import { buildVerificationBatch, classifyTaskComplexity, detectPackageManager, findTargetedTests, isContinueRequest, isNewProjectTask, isWebTask, pickAffectedPackageCommands, pickFileScopedVerification, pickVerificationCommands, readPackageJsonCached, shouldSkipMcpForTask } from "./task-routing.js";
 import { describeToolCall, extractGithubLogin, extractSkillNameFromPath, loadedSkillNamesFromMessages, toolCallSummary, toolResultExcerpt } from "./tool-describe.js";
 import { saveLastRunCheckpoint, summarizeCompletedSteps } from "./run-checkpoint.js";
@@ -64,7 +73,7 @@ import { prepareContextBudget } from "./agent/context-budget.js";
 // agent-service; the implementations now live in the focused modules above.
 export type { AgentMode, PlanItem, AgentTurn, HistoryEventItem, HistoryInput, AgentSettings, AgentUsage, AgentEvent, AgentMemoryContext, AgentTaskKind, HomeTaskContract, AttachmentDoc } from "./agent-types.js";
 export { inferHomeTaskContract, inferHomeOutputFormats, homeRequestNamesFileFormat } from "./agent-prompt.js";
-export { DoomLoopError, RESEARCH_BUDGET_BASE, RESEARCH_BUDGET_WITH_RESEARCH, resolveResearchBudget, toolParameterNormalizationMiddleware, loopPreventionMiddleware } from "./loop-prevention.js";
+export { DoomLoopError, RESEARCH_BUDGET_BASE, RESEARCH_BUDGET_WITH_RESEARCH, resolveResearchBudget, normalizeToolCallArgs, loopPreventionMiddleware } from "./loop-prevention.js";
 export type { PackageManagerName, PackageManager, TaskComplexity } from "./task-routing.js";
 export { detectPackageManager, pickVerificationCommand, pickVerificationCommands, pickAffectedPackageCommands, pickFileScopedVerification, findTargetedTests, buildVerificationBatch, classifyTaskComplexity, shouldSkipMcpForTask, isWebTask, isProjectRunRequest, isNewProjectTask, isContinueRequest } from "./task-routing.js";
 export { extractSkillNameFromPath, loadedSkillNamesFromMessages, describeToolCall, extractGithubLogin, toolResultExcerpt } from "./tool-describe.js";
@@ -76,16 +85,6 @@ export { MAX_REPAIRS } from "./agent/loop-limits.js";
 export { appendEntryLog, PROJECT_MEMORY_RUN_LOG_CAP, SESSION_MEMORY_ENTRY_CAP, SESSION_MEMORY_CHAR_CAP } from "./agent/memory-log.js";
 
 export { RunCancelledError };
-
-const AgentState = Annotation.Root({
-  projectRoot: Annotation<string>(),
-  request: Annotation<string>(),
-  response: Annotation<string>({ reducer: (_, value) => value, default: () => "" }),
-  verifyFeedback: Annotation<string>({ reducer: (_, value) => value, default: () => "" }),
-  repairs: Annotation<number>({ reducer: (_, value) => value, default: () => 0 }),
-  verification: Annotation<string>({ reducer: (_, value) => value, default: () => "" }),
-  runMessages: Annotation<any[]>({ reducer: (_, value) => value, default: () => [] }),
-});
 
 // Usage accounting for streamed runs was extracted to ./agent/usage.ts.
 
@@ -202,7 +201,7 @@ export async function runProjectAgent(options: {
   }
   const effort = settings.effort || settings.reasoningEffort;
   emit("status", `Starting agent · ${provider.label} / ${modelName}${effort ? ` (${effort} effort)` : ""} · ${mode} mode`);
-  const llm = await createChatModel(provider, modelName, { reasoningEffort: effort });
+  let llm: ChatClient = await createChatModel(provider, modelName, { reasoningEffort: effort });
 
   // Mid-run provider failover (Home only): when the active provider exhausts
   // its rate-limit retry budget mid-run, the run swaps to the next configured
@@ -324,9 +323,9 @@ export async function runProjectAgent(options: {
     /github|repositor|\brepos?\b|pull request|\bprs?\b|issues?|gists?/i.test(request)
       ? (async () => {
           const meTool = mcpTools.find((t: any) => typeof t?.name === "string" && /^get_me$/i.test(t.name));
-          if (!meTool || typeof meTool.invoke !== "function") return null;
+          if (!meTool || typeof meTool.execute !== "function") return null;
           try {
-            const raw = await withSetupTimeout(Promise.resolve(meTool.invoke({})), 15000, "GitHub identity");
+            const raw = await withSetupTimeout(Promise.resolve(meTool.execute({})), 15000, "GitHub identity");
             const login = extractGithubLogin(raw);
             if (login) {
               emit("status", `GitHub identity · ${login}`);
@@ -385,34 +384,33 @@ export async function runProjectAgent(options: {
   };
 
   const skills = skillsConfig.enabled ? [PROJECT_SKILLS_DIR, GLOBAL_SKILLS_ROUTE, SYSTEM_SKILLS_ROUTE] : [];
-  let globalSkillsBackend: any = null;
-  let systemBackend: any = null;
+  let globalSkillsBackend: AgentBackend | null = null;
+  let systemBackend: AgentBackend | null = null;
   if (skills.length) {
-    globalSkillsBackend = new FilesystemBackend({ rootDir: globalSkillsDir(), virtualMode: true });
-    if (mode === "plan") {
-      const refuseSkillWrite = (action: string) => async () => {
-        throw new Error(`Plan mode is read-only: skill ${action} is disabled.`);
-      };
-      globalSkillsBackend.write = refuseSkillWrite("write_file");
-      globalSkillsBackend.edit = refuseSkillWrite("edit_file");
-      globalSkillsBackend.delete = refuseSkillWrite("delete");
-      globalSkillsBackend.execute = refuseSkillWrite("execute");
-    }
+    globalSkillsBackend = createSkillBackend({
+      rootDir: globalSkillsDir(),
+      id: "global-skills",
+      readOnly: mode === "plan",
+      readOnlyReason: `Plan mode is read-only: skill writes disabled`,
+    });
     // Bundled system skills: always read-only, in every mode including auto.
     try {
-      systemBackend = new FilesystemBackend({ rootDir: systemSkillsDir(), virtualMode: true });
-      const refuseSystemWrite = (action: string) => async () => {
-        throw new Error(`System skills are read-only: ${action} is disabled.`);
-      };
-      systemBackend.write = refuseSystemWrite("write_file");
-      systemBackend.edit = refuseSystemWrite("edit_file");
-      systemBackend.delete = refuseSystemWrite("delete");
-      systemBackend.execute = refuseSystemWrite("execute");
+      systemBackend = createSkillBackend({
+        rootDir: systemSkillsDir(),
+        id: "system-skills",
+        readOnly: true,
+        readOnlyReason: "System skills are read-only",
+      });
     } catch { /* no system skills shipped */ }
   }
-  const compositeBackend = skills.length
-    ? new CompositeBackend(agentBackend as any, buildSkillMounts(globalSkillsBackend, systemBackend))
-    : agentBackend;
+  let compositeBackend: AgentBackend = agentBackend as AgentBackend;
+  if (skills.length) {
+    const composite = new CompositeAgentBackend({ rootDir: projectRoot, id: `workspace-composite-${sessionId || "run"}` });
+    for (const [prefix, mountBackend] of Object.entries(buildSkillMounts(globalSkillsBackend, systemBackend))) {
+      composite.mount(prefix, mountBackend);
+    }
+    compositeBackend = composite;
+  }
 
   // Skill catalog: tell the agent about every skill installed for this mode,
   // best match first, and let it read the one that fits. Keyword matching
@@ -427,6 +425,7 @@ export async function runProjectAgent(options: {
   let skillNote: string | null = null;
   let eligibleSkillCatalog: SkillInfo[] = [];
   let mountedSkillCatalog: SkillInfo[] = [];
+  const skillListings: SkillListing[] = [];
   if (skillsConfig.enabled) {
     try {
       const fullCatalog = [...(await listSkills(projectRoot)), ...(await listSystemSkills().catch(() => []))];
@@ -440,6 +439,7 @@ export async function runProjectAgent(options: {
       // whole eligible catalog is safe — and it is what puts the full list in
       // the system message instead of only the lexical matches.
       mountedSkillCatalog = selection.catalog;
+      for (const skill of mountedSkillCatalog) skillListings.push({ name: skill.name, description: skill.description, path: skillDirVirtualPath(skill) });
       const offLimits = skillsMode ? fullCatalog.filter((s) => !skillAppliesToMode(s, skillsMode)) : [];
       const forced = selection.forced || [];
       const forcedNames = new Set(forced.map((s) => s.name.toLowerCase()));
@@ -575,7 +575,6 @@ export async function runProjectAgent(options: {
   // requests, and Home requests whose contract expects an observable output
   // (document, dataset, multi-part deliverable). Chat-shaped Home questions
   // (research, explanations) are exempt — no todo plan needed there.
-  // runStartMs initialized earlier before buildDeepAgent
   let initialHomeFiles: HomeFileSnapshot = new Map();
   // Memoizes jszip/pdf-parse validation results per (path, size, mtime) for
   // the three Home validation sites below (loop gate, verify node,
@@ -624,6 +623,7 @@ export async function runProjectAgent(options: {
     projectRecord: { id: "current", name: "current", root: projectRoot },
     mcpTools,
     skills: skillDirs,
+    skillListings,
     skillsBackend: compositeBackend,
     fullAccess,
     onEvent: (subEvent) => {
@@ -777,38 +777,52 @@ export async function runProjectAgent(options: {
     ? []
     : createBackgroundTools({ projectRoot, runId: sessionId, fullAccess });
 
-  const builtinTools = [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...webImageSearchTools, ...homeResearchTool, ...homeMemoryTool, ...projectMemoryTool, ...backgroundTools];
-  const boundTools = [...builtinTools, ...(assetsEnabled("agents") && !isSimple ? [subagentTool] : []), ...mcpTools, ...pluginTools];
+  // Deterministic deliverable engine (Home): standard document formats render
+  // from the model's Markdown CONTENT — no model-authored Python, no pip, no
+  // one-shot script risk. Small models write content, not code.
+  const homeDeliverableTool = isGeneral
+    ? [createDeliverableTool({ projectRoot, request, runId: sessionId, beforeEdit: editGate ? (info) => editGate(info) : undefined })]
+    : [];
+  // Neural image generation (OpenAI/Imagen) — bound only when the run's
+  // provider can actually serve an image endpoint.
+  const imageGenTool = (() => {
+    if (!isGeneral) return [];
+    try {
+      const genTool = createImageGenTool({ projectRoot, provider, beforeEdit: editGate ? (info) => editGate(info) : undefined });
+      return genTool ? [genTool] : [];
+    } catch {
+      return [];
+    }
+  })();
+  const builtinTools = [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...webImageSearchTools, ...homeResearchTool, ...homeMemoryTool, ...projectMemoryTool, ...backgroundTools, ...homeDeliverableTool, ...imageGenTool];
+  if (homeDeliverableTool.length) {
+    emit("status", "Loaded create_deliverable · deterministic docx/pptx/xlsx/pdf/tex rendering from Markdown content");
+  }
+  // Agent-core filesystem tools over the composite backend (deepagents
+  // built-ins port) + todo planning (todoListMiddleware parity): planning is
+  // dropped on the simple-task fast path, like the old middleware.
+  const filesystemTools = createFilesystemTools(compositeBackend);
+  const todoTools = isSimple ? [] : [createTodoTool()];
+  const loopSystemPrompt = `${systemPromptText}${buildSkillsSection(skillListings, skills.length ? [PROJECT_SKILLS_DIR, GLOBAL_SKILLS_ROUTE, SYSTEM_SKILLS_ROUTE] : undefined)}`;
+  const boundTools = [...filesystemTools, ...builtinTools, ...(assetsEnabled("agents") && !isSimple ? [subagentTool] : []), ...todoTools, ...mcpTools, ...pluginTools];
 
   // Agent construction is a closure so mid-run provider failover can rebuild
   // the graph around a new chat model — everything else (backend, tools,
   // prompt) is provider-independent and shared.
-  const buildDeepAgent = (model: any) =>
-    createDeepAgent({
-      model,
-      backend: compositeBackend as any,
-      middleware: [
-        toolParameterNormalizationMiddleware(projectRoot),
-        loopPreventionMiddleware({
-          general: isGeneral,
-          outputRequired: Boolean(homeTaskContract?.expectsOutput),
-          needsResearch: homeTaskContract?.needsResearch,
-          beforeModify: beforeCodeModify,
-          checkDeliverableReady,
-        }),
-        ...(isSimple ? [] : [todoListMiddleware()]),
-        ...(hooksMiddleware ? [hooksMiddleware] : []),
-      ],
-      tools: boundTools,
-      skills: skillDirs,
-      // Relevance-ranked memory for the prompt: profile/preferences always in,
-      // facts and recent activity filtered to the current request so unrelated
-      // history never crowds out working context. manage_memory above keeps
-      // operating on the FULL memory — only the prompt copy is sliced.
-      systemPrompt: systemPromptText,
-    });
-  // `let` so mid-run provider failover can swap the graph's model in place.
-  let deepAgent = await buildDeepAgent(llm);
+  // Agent middleware (agentcore contract): loop prevention rides wrapToolCall;
+  // tool-argument normalization runs inside the loop via normalizeArgs; the
+  // todo plan is a plain write_todos tool (todoListMiddleware parity); hooks
+  // enforcement rides wrapToolCall too.
+  const agentMiddlewares: AgentMiddleware[] = [
+    loopPreventionMiddleware({
+      general: isGeneral,
+      outputRequired: Boolean(homeTaskContract?.expectsOutput),
+      needsResearch: homeTaskContract?.needsResearch,
+      beforeModify: beforeCodeModify,
+      checkDeliverableReady,
+    }),
+    ...(hooksMiddleware ? [hooksMiddleware] : []),
+  ];
 
   // Basename fallback: stored windows are keyed by bare model names
   // (e.g. "qwen3-coder") while OpenRouter-style ids carry a prefix
@@ -865,10 +879,10 @@ export async function runProjectAgent(options: {
   const { compactedHistory, promptOverheadTokens, compactionThreshold, outputReserve } = contextBudget;
   const { systemPromptTokens, mcpToolsTokens, pluginToolsTokens, systemToolsTokens, skillsTokens, metaContextTokens } = contextBudget;
   const { targetBudget, estimatedHistoryTokens, historyBudget, projectedHistoryTokens } = contextBudget;
-  const priorMessages = compactedHistory.map((turn) =>
+  const priorMessages: ChatMessage[] = compactedHistory.map((turn) =>
     turn.role === "assistant"
-      ? new AIMessage(tail(turn.text, HISTORY_CHAR_CAP))
-      : new HumanMessage(tail(turn.text, HISTORY_CHAR_CAP))
+      ? assistantMsg(tail(turn.text, HISTORY_CHAR_CAP))
+      : userMsg(tail(turn.text, HISTORY_CHAR_CAP))
   );
 
   const imageNote = attachments?.length
@@ -897,18 +911,15 @@ export async function runProjectAgent(options: {
   // setup serially.
   identityNote = await identityNotePromise;
   const requestText = [request, homeRecoveryContext, identityNote, resumeNote, skillNote, imageNote, docNote, importNote].filter(Boolean).join("\n\n");
-  let initialHumanMessage: HumanMessage;
+  let initialHumanMessage: ChatMessage;
   if (images && images.length > 0) {
     const contentParts: any[] = [{ type: "text", text: requestText }];
     for (const img of images) {
-      contentParts.push({
-        type: "image_url",
-        image_url: { url: img },
-      });
+      contentParts.push({ type: "image", url: img });
     }
-    initialHumanMessage = new HumanMessage({ content: contentParts });
+    initialHumanMessage = userMsg(contentParts);
   } else {
-    initialHumanMessage = new HumanMessage(requestText);
+    initialHumanMessage = userMsg(requestText);
   }
 
   const estimatedFallbackInputTokens = Math.max(
@@ -918,7 +929,7 @@ export async function runProjectAgent(options: {
     )
   );
 
-  let runMessages: any[] = [...priorMessages, initialHumanMessage];
+  let runMessages: ChatMessage[] = [...priorMessages, initialHumanMessage];
   // Same-session tool memory (OpenCode/Pi-style): when this run starts
   // WITHOUT a full checkpoint behind it, fold the session's recent tool
   // activity (calls + truncated results, plans, errors) into a context block
@@ -927,14 +938,14 @@ export async function runProjectAgent(options: {
   // messages and the block would only duplicate them.
   if (!resumeMessages?.length) {
     const toolContext = buildToolContextBlock(history);
-    if (toolContext) runMessages = [...priorMessages, new HumanMessage(toolContext), initialHumanMessage];
+    if (toolContext) runMessages = [...priorMessages, userMsg(toolContext), initialHumanMessage];
   }
   // Cross-run resume: seed the conversation with the previous run's full
   // tool history so "continue" proceeds instead of restarting. Prune any
   // trailing unanswered tool calls the same way mid-stream retries do.
   if (resumeMessages && resumeMessages.length) {
     const clean = sanitizeResumeCheckpoint([...resumeMessages]);
-    runMessages = [...clean, initialHumanMessage];
+    runMessages = [...clean, initialHumanMessage] as ChatMessage[];
     if (hasResume) emit("status", `Resuming prior run · ${clean.length} checkpointed message(s) restored`);
   }
 
@@ -1038,6 +1049,7 @@ export async function runProjectAgent(options: {
     emit("plan", "Resumed working plan", resumePlanItems);
   }
   let retryCount = 0;
+  let lastCheckpointSaveMs = 0;
   let unaccountedOutputChars = 0;
   // Doom-loop tracker: consecutive identical tool-call signatures.
   let lastToolSig: string | null = null;
@@ -1156,17 +1168,18 @@ export async function runProjectAgent(options: {
     // call, so the doom-loop signature must not accumulate across attempts.
     lastToolSig = null;
     toolRepeatCount = 0;
-    let finalMessages: any[] = [];
     progress.beginAttempt(runMessages.length);
 
-    let messagesToStream = runMessages;
     // Provider-safety boundary: tool results must be string-content on the
     // wire (see flattenToolMessageContent). Runs once per stream attempt, so
-    // poisoned tool messages from fresh runs, resumes AND failovers are all
-    // normalized before the provider ever sees them.
+    // legacy tool messages from resumes AND failovers are all normalized
+    // before the provider ever sees them. (Fresh loop results are
+    // string-only by construction.)
+    let messagesToStream: ChatMessage[] = runMessages;
     const wireMessages = flattenToolMessageContent(messagesToStream);
     if (wireMessages.flattened > 0) {
-      messagesToStream = wireMessages.messages;
+      runMessages = wireMessages.messages;
+      messagesToStream = runMessages;
       if (retryCount === 1) {
         emit("status", `Normalized ${wireMessages.flattened} structured tool result(s) to plain text${wireMessages.omittedImages ? ` (${wireMessages.omittedImages} inline image(s) referenced by path instead)` : ""} for provider compatibility`);
       }
@@ -1187,244 +1200,223 @@ export async function runProjectAgent(options: {
         ? `\nSkills already loaded this run (do NOT re-read any SKILL.md — act on the instructions above): ${resumedSkills.join(", ")}`
         : "";
       const resumeNotice = `[System Note: Stream was resumed after pause/interruption. All preceding tool executions and results are recorded above and already complete.${planNotice}${ledgerNotice}${skillsNotice}\n\nIMPORTANT: Do NOT restart from the beginning, do NOT re-create the todo list from scratch, and do NOT repeat already completed tool actions. If builds and code are in place, mark remaining in-progress todos completed and output your final response immediately.]`;
-      messagesToStream = [...runMessages, new HumanMessage(resumeNotice)];
+      messagesToStream = [...runMessages, userMsg(resumeNotice)];
     }
+    void messagesToStream;
 
-    const stream = await (deepAgent as any).stream(
-      { messages: messagesToStream },
-      { streamMode: ["values", "updates", "messages"], recursionLimit, signal }
-    );
-    const seenToolCallIds = new Set<string>();
-    const seenToolResultIds = new Set<string>();
-    let lastCheckpointSaveMs = 0;
-    for (const msg of (messagesToStream as any[]) ?? []) {
-      if (Array.isArray(msg?.tool_calls)) {
-        for (const tc of msg.tool_calls) {
-          if (tc?.id) seenToolCallIds.add(String(tc.id));
-        }
-      }
-      if (msg?.type === "tool" || (msg as any)?._getType?.() === "tool") {
-        const trId = String(msg?.tool_call_id || msg?.id || "");
-        if (trId) seenToolResultIds.add(trId);
-      }
-    }
-    try {
-      for await (const item of stream as AsyncIterable<any>) {
+    // Loop step budget: the old LangGraph recursionLimit counted supersteps
+    // (model node + tool node per call, so ~2-3 supersteps per tool call);
+    // the self-built loop counts model invocations, so the same ceiling maps
+    // to roughly half.
+    const stepBudget = Math.max(8, Math.ceil(recursionLimit / 2));
+    let sawToolCalls = false;
+    let finalAnswer = "";
+
+    for await (const event of runAgentLoop({
+      client: llm,
+      system: loopSystemPrompt,
+      messages: runMessages,
+      tools: boundTools,
+      middleware: agentMiddlewares,
+      stepBudget,
+      signal,
+      runId: sessionId,
+      normalizeArgs: (call) => normalizeToolCallArgs(call, projectRoot),
+      onEvent: (event: AgentLoopEvent) => {
         if (isCancelled() || signal?.aborted) throw new RunCancelledError();
-        const [streamMode, payload] = Array.isArray(item) ? item : ["values", item];
-        if (streamMode === "values" && Array.isArray(payload?.messages)) {
-          finalMessages = payload.messages;
-          runMessages = payload.messages;
-          progress.noteSuperstep(payload.messages.length);
-          emitContext(payload.messages);
+        if (event.type === "token") {
+          // Counted only as a fallback; finalize ignores it when the
+          // provider reported exact output usage.
+          unaccountedOutputChars += event.delta.length;
+          emit("token", event.delta);
+        } else if (event.type === "thinking") {
+          emit("thinking", event.delta);
+        } else if (event.type === "usage") {
+          usage.noteUsage(event.usage);
+        } else if (event.type === "tool_call") {
+          handleToolCallEvent(event.call);
+        } else if (event.type === "tool_result") {
+          sawToolCalls = true;
+          handleToolResultEvent(event.call, event.result, event.isError);
+        } else if (event.type === "step") {
+          emitContext(event.messages);
           // Mid-run context pressure (Claude-Code-style): the run only grows,
           // so when EITHER the provider-reported input of the last model call
           // OR the projected next request crosses the threshold, the next call
-          // is expected to fail. Stop at this consistent superstep boundary,
+          // is expected to fail. Stop at this consistent step boundary,
           // condense, and relaunch — tool results already committed are kept.
           if (!isSimple) {
-            const projectedTokens = promptOverheadTokens + estimateMessagesTokensMemo(payload.messages);
+            const projectedTokens = promptOverheadTokens + estimateMessagesTokensMemo(event.messages);
             const measuredTokens = usage.observedInputTokens;
             if (measuredTokens >= compactionThreshold || projectedTokens >= compactionThreshold) {
               throw new AgentContextRelaunch(
-                `measured ${formatTokenCount(measuredTokens)}, projected ${formatTokenCount(projectedTokens)} ≥ threshold ${formatTokenCount(compactionThreshold)}`
+                `measured ${formatTokenCount(measuredTokens)}, projected ${formatTokenCount(projectedTokens)} >= threshold ${formatTokenCount(compactionThreshold)}`
               );
             }
           }
-          continue;
+        } else if (event.type === "done") {
+          finalAnswer = event.answer;
+          emitContext(event.messages);
         }
-        if (streamMode === "updates" && payload && typeof payload === "object") {
-          for (const delta of Object.values<any>(payload)) {
-            for (const message of delta?.messages ?? []) {
-              if (message?.constructor?.name === "RemoveMessage" || (message as any)?._getType?.() === "remove" || message?.type === "remove") {
-                continue;
-              }
-              if (Array.isArray(message?.tool_calls)) {
-                for (const call of message.tool_calls) {
-                  const callId = String(call?.id || "");
-                  if (callId && seenToolCallIds.has(callId)) continue;
-                  if (callId) seenToolCallIds.add(callId);
-                  toolCallCount++;
-                  const name = call?.name || "tool";
-                  lastActiveToolName = name;
-                  if (name === "read_file" || name === "read_file_range") {
-                    const filePath = String(call?.args?.file_path || call?.args?.filePath || call?.args?.file || call?.args?.path || "");
-                    lastActiveToolSkill = extractSkillNameFromPath(filePath);
-                  } else {
-                    lastActiveToolSkill = null;
-                  }
-                  if (/todo|plan/i.test(name)) {
-                    const items = planItemsFromArgs(call.args);
-                    if (items) {
-                      lastPlanItems = items;
-                      codePlanReady = items.length > 0;
-                      if (!isGeneral && codeJournal) queueCodeJournalWrite(recordCodeTaskPlan(codeJournal, items));
-                      emit("plan", "Working plan", items);
-                    }
-                    continue;
-                  }
-                  const summary = toolCallSummary(call);
-                  const isSkillRead = summary.startsWith("Consulting skill: ");
-                  const desc = isSkillRead ? summary : (summary ? `${name} · ${summary}` : name);
-                  // Doom-loop breaker (opencode DOOM_LOOP_THRESHOLD): the same
-                  // tool with identical args 6x in a row is stuck, not working.
-                  // loopPreventionMiddleware intercepts and steers at repetition 2 & 3,
-                  // so 6x acts as the final safety circuit breaker if model persists.
-                  const normalizedCallArgs = { ...call?.args };
-                  if (normalizedCallArgs.filePath && !normalizedCallArgs.file_path) {
-                    normalizedCallArgs.file_path = normalizedCallArgs.filePath;
-                    delete normalizedCallArgs.filePath;
-                  }
-                  if (typeof normalizedCallArgs.file_path === "string") {
-                    normalizedCallArgs.file_path = normalizedCallArgs.file_path.replace(/\\/g, "/").replace(/^\/+/, "");
-                  }
-                  const sig = `${name}:${JSON.stringify(normalizedCallArgs).slice(0, 500)}`;
-                  if (sig === lastToolSig) {
-                    toolRepeatCount++;
-                  } else {
-                    lastToolSig = sig;
-                    toolRepeatCount = 1;
-                  }
-                  if (toolRepeatCount >= 6) {
-                    throw new DoomLoopError(name, summary || "identical arguments");
-                  }
-                  if (isGeneral) {
-                    const readOnlyAction = /search|browser|fetch|inspect|read|skill|outline|passage|list/i.test(name);
-                    if (sig === homeLastActionSig) homeActionRepeatCount++;
-                    else {
-                      homeLastActionSig = sig;
-                      homeActionRepeatCount = 1;
-                    }
-                    homeReadOnlyStreak = readOnlyAction ? homeReadOnlyStreak + 1 : 0;
-                    if (homeReadOnlyStreak === 7 && homeTaskContract?.expectsOutput) {
-                      emit("status", "Supervisor · research/read-only streak detected; the next action must advance the requested result");
-                    }
-                    if (homeActionRepeatCount === 3 && homeTaskContract?.expectsOutput) {
-                      emit("status", "Supervisor · the same action is repeating; change approach or produce an intermediate result");
-                    }
-                  }
-                  emit("tool", desc);
-                  if (trajectory) {
-                    void trajectory.log({ source: "TOOL", type: "TOOL_CALL", content: desc, tool_calls: [{ name, args: call.args }] });
-                  }
-                }
-              }
-              if (message?.type === "tool" || (message as any)?._getType?.() === "tool") {
-                const resultId = String(message.tool_call_id || message.id || "");
-                if (resultId && seenToolResultIds.has(resultId)) continue;
-                if (resultId) seenToolResultIds.add(resultId);
-                // Persist a truncated result excerpt alongside the ✓ marker so
-                // future runs in this session can reuse what was already read
-                // instead of re-reading the same files. The UI renders only
-                // the short text; detail travels in the transcript + history.
-                const excerpt = toolResultExcerpt((message as { content?: unknown })?.content);
-                const doneLabel = lastActiveToolSkill
-                  ? `Skill loaded: ${lastActiveToolSkill} ✓`
-                  : `${message.name || lastActiveToolName || "tool"} ✓`;
-                emit("tool", doneLabel, undefined, undefined, undefined, undefined, excerpt || undefined);
-                if (isGeneral && homeJournal) {
-                  const toolName = String(message.name || lastActiveToolName || "tool");
-                  const phase: HomeTaskPhase = /search|browser|fetch|inspect|read|skill/i.test(toolName)
-                    ? "research"
-                    : /write|edit|execute|delete|patch|create/i.test(toolName)
-                      ? "execution"
-                      : /list|stat|validate|check|test/i.test(toolName)
-                        ? "validation"
-                        : homeJournal.phase;
-                  const readOnlyAction = /search|browser|fetch|inspect|read|skill|outline|passage|list/i.test(toolName);
-                  const next = recordHomeTaskAction(homeJournal, {
-                    tool: toolName,
-                    summary: doneLabel,
-                    result: excerpt || undefined,
-                    progressed: !readOnlyAction || homeReadOnlyStreak < 7,
-                    phase,
-                  });
-                  queueHomeJournalWrite(next);
-                }
-                if (!isGeneral && codeJournal) {
-                  const toolName = String(message.name || lastActiveToolName || "tool");
-                  const phase: CodeTaskPhase = /test|check|diagnostic|lint|build|verify|format/i.test(toolName)
-                    ? "verification"
-                    : /write|edit|execute|delete|patch|create|move/i.test(toolName)
-                      ? "implementation"
-                      : codeJournal.phase === "verification" || codeJournal.phase === "review"
-                        ? codeJournal.phase
-                        : "planning";
-                  const readOnlyAction = !/write|edit|execute|delete|patch|create|move|test|check|diagnostic|lint|build|verify|format/i.test(toolName);
-                  queueCodeJournalWrite(recordCodeTaskAction(codeJournal, {
-                    tool: toolName,
-                    summary: doneLabel,
-                    result: excerpt || undefined,
-                    progressed: !readOnlyAction,
-                    phase,
-                  }));
-                }
-                progress.noteToolResult();
-                if (isGeneral && sessionId) {
-                  const now = Date.now();
-                  if (now - lastCheckpointSaveMs > 2000) {
-                    lastCheckpointSaveMs = now;
-                    saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
-                  }
-                }
-                if (trajectory) {
-                  void trajectory.log({ source: "TOOL", type: "TOOL_RESULT", content: `${message.name || lastActiveToolName || "tool"} finished` });
-                }
-              }
-            }
-          }
-          continue;
-        }
-        if (streamMode === "messages") {
-          const [chunk] = Array.isArray(payload) ? payload : [payload];
-          usage.noteChunk(chunk);
-          // Reasoning deltas (Anthropic extended thinking, DeepSeek-style
-          // reasoning_content, …) stream as their own event kind so the UI can
-          // render a live Claude-Code-style thinking block in the step feed.
-          const thinking = chunkThinking(chunk);
-          if (thinking) emit("thinking", thinking);
-          const text = chunkText(chunk);
-          if (text) {
-            // Counted only as a fallback; finalize ignores it when the
-            // provider reported exact output usage.
-            unaccountedOutputChars += text.length;
-            emit("token", text);
-          }
-        }
-      }
-    } catch (error: any) {
-      if (finalMessages.length > 0) {
-        runMessages = sanitizeResumeCheckpoint(finalMessages);
-      }
-      const isAbort = error instanceof RunCancelledError || error?.name === "AbortError" || isCancelled() || signal?.aborted;
-      if (isAbort) {
-        saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
-        throw new RunCancelledError();
-      }
-      throw error;
+      },
+    })) {
+      void event;
     }
-    if (finalMessages.length > 0) {
-      runMessages = finalMessages;
-    }
-    const finalMessage = finalMessages[finalMessages.length - 1];
-    const finalAnswer = textFromMessage(finalMessage);
+
     // Silent SSE failure (seen with OpenRouter): the provider can return an
     // error payload INSIDE a 200 response and the stream simply ends — no
-    // exception, and the final AIMessage carries neither text nor tool calls.
+    // exception, and the final answer carries neither text nor tool calls.
     // That must never be fabricated into a canned "success": raise it as a
     // transient "empty response" error so withAgentRetry re-attempts the
     // stream, and if retries exhaust, the run fails honestly instead.
-    const lastIsAi = typeof finalMessage?.type === "string"
-      ? finalMessage.type === "ai"
-      : finalMessage?.constructor?.name === "AIMessage";
-    const madeNoOutput = !finalAnswer && !(Array.isArray(finalMessage?.tool_calls) && finalMessage.tool_calls.length > 0);
-    if (finalMessages.length > 0 && lastIsAi && madeNoOutput) {
-      throw new Error(`Provider returned an empty response (silent stream failure): the final model message has no text and no tool calls after ${finalMessages.length} messages.`);
+    if (!finalAnswer && sawToolCalls) {
+      // The model did the tool work but its final turn arrived without text
+      // (gateway dialect or a silent stream cut). Recover the last non-empty
+      // assistant message from the transcript before giving up — the answer
+      // often exists there even when the done event carried none.
+      for (let i = runMessages.length - 1; i >= 0; i--) {
+        const m = runMessages[i];
+        if (m?.role !== "assistant") continue;
+        const recovered = textJoined(m).trim();
+        if (recovered) { finalAnswer = recovered; break; }
+      }
     }
-    return finalAnswer || (isGeneral ? "I have completed the requested task." : "Agent finished without a textual response.");
+    if (!finalAnswer) {
+      // Honest failure (retried by withAgentRetry, checkpoint preserved) —
+      // never fabricate a canned "completed" response over missing output.
+      throw new Error(`Provider returned an empty response (silent stream failure): the final model message has no text${sawToolCalls ? " after tool execution" : " and no tool calls"} after ${runMessages.length} messages.`);
+    }
+    return finalAnswer;
   };
 
-  const streamDeepAgent = async (extra: HumanMessage[]) => {
+  // Per-event handling for tool calls/results (single emission now — the old
+  // seenToolCallIds/seenToolResultIds dedup sets existed for LangGraph
+  // superstep replays, which the self-built loop does not emit).
+  const handleToolCallEvent = (call: ToolCall) => {
+    toolCallCount++;
+    const name = call?.name || "tool";
+    lastActiveToolName = name;
+    if (name === "read_file" || name === "read_file_range") {
+      const filePath = String((call?.args as any)?.file_path || (call?.args as any)?.filePath || (call?.args as any)?.file || (call?.args as any)?.path || "");
+      lastActiveToolSkill = extractSkillNameFromPath(filePath);
+    } else {
+      lastActiveToolSkill = null;
+    }
+    if (/todo|plan/i.test(name)) {
+      const items = planItemsFromArgs(call.args);
+      if (items) {
+        lastPlanItems = items;
+        codePlanReady = items.length > 0;
+        if (!isGeneral && codeJournal) queueCodeJournalWrite(recordCodeTaskPlan(codeJournal, items));
+        emit("plan", "Working plan", items);
+      }
+      return;
+    }
+    const summary = toolCallSummary(call);
+    const isSkillRead = summary.startsWith("Consulting skill: ");
+    const desc = isSkillRead ? summary : (summary ? `${name} · ${summary}` : name);
+    // Doom-loop breaker (opencode DOOM_LOOP_THRESHOLD): the same
+    // tool with identical args 6x in a row is stuck, not working.
+    // loopPreventionMiddleware intercepts and steers at repetition 2 & 3,
+    // so 6x acts as the final safety circuit breaker if model persists.
+    const normalizedCallArgs = { ...((call?.args as any) || {}) };
+    if (normalizedCallArgs.filePath && !normalizedCallArgs.file_path) {
+      normalizedCallArgs.file_path = normalizedCallArgs.filePath;
+      delete normalizedCallArgs.filePath;
+    }
+    if (typeof normalizedCallArgs.file_path === "string") {
+      normalizedCallArgs.file_path = normalizedCallArgs.file_path.replace(/\\/g, "/").replace(/^\/+/, "");
+    }
+    const sig = `${name}:${JSON.stringify(normalizedCallArgs).slice(0, 500)}`;
+    if (sig === lastToolSig) {
+      toolRepeatCount++;
+    } else {
+      lastToolSig = sig;
+      toolRepeatCount = 1;
+    }
+    if (toolRepeatCount >= 6) {
+      throw new DoomLoopError(name, summary || "identical arguments");
+    }
+    if (isGeneral) {
+      const readOnlyAction = /search|browser|fetch|inspect|read|skill|outline|passage|list/i.test(name);
+      if (sig === homeLastActionSig) homeActionRepeatCount++;
+      else {
+        homeLastActionSig = sig;
+        homeActionRepeatCount = 1;
+      }
+      homeReadOnlyStreak = readOnlyAction ? homeReadOnlyStreak + 1 : 0;
+      if (homeReadOnlyStreak === 7 && homeTaskContract?.expectsOutput) {
+        emit("status", "Supervisor · research/read-only streak detected; the next action must advance the requested result");
+      }
+      if (homeActionRepeatCount === 3 && homeTaskContract?.expectsOutput) {
+        emit("status", "Supervisor · the same action is repeating; change approach or produce an intermediate result");
+      }
+    }
+    emit("tool", desc);
+    if (trajectory) {
+      void trajectory.log({ source: "TOOL", type: "TOOL_CALL", content: desc, tool_calls: [{ name, args: call.args }] });
+    }
+  };
+
+  const handleToolResultEvent = (call: ToolCall, result: string, isError: boolean) => {
+    void call;
+    const excerpt = isError ? "" : toolResultExcerpt(result);
+    const doneLabel = lastActiveToolSkill
+      ? `Skill loaded: ${lastActiveToolSkill} ✓`
+      : `${lastActiveToolName || "tool"} ✓`;
+    emit("tool", doneLabel, undefined, undefined, undefined, undefined, excerpt || undefined);
+    if (isGeneral && homeJournal) {
+      const toolName = String(lastActiveToolName || "tool");
+      const phase: HomeTaskPhase = /search|browser|fetch|inspect|read|skill/i.test(toolName)
+        ? "research"
+        : /write|edit|execute|delete|patch|create/i.test(toolName)
+          ? "execution"
+          : /list|stat|validate|check|test/i.test(toolName)
+            ? "validation"
+            : homeJournal.phase;
+      const readOnlyAction = /search|browser|fetch|inspect|read|skill|outline|passage|list/i.test(toolName);
+      const next = recordHomeTaskAction(homeJournal, {
+        tool: toolName,
+        summary: doneLabel,
+        result: excerpt || undefined,
+        progressed: !readOnlyAction || homeReadOnlyStreak < 7,
+        phase,
+      });
+      queueHomeJournalWrite(next);
+    }
+    if (!isGeneral && codeJournal) {
+      const toolName = String(lastActiveToolName || "tool");
+      const phase: CodeTaskPhase = /test|check|diagnostic|lint|build|verify|format/i.test(toolName)
+        ? "verification"
+        : /write|edit|execute|delete|patch|create|move/i.test(toolName)
+          ? "implementation"
+          : codeJournal.phase === "verification" || codeJournal.phase === "review"
+            ? codeJournal.phase
+            : "planning";
+      const readOnlyAction = !/write|edit|execute|delete|patch|create|move|test|check|diagnostic|lint|build|verify|format/i.test(toolName);
+      queueCodeJournalWrite(recordCodeTaskAction(codeJournal, {
+        tool: toolName,
+        summary: doneLabel,
+        result: excerpt || undefined,
+        progressed: !readOnlyAction,
+        phase,
+      }));
+    }
+    progress.noteToolResult();
+    if (isGeneral && sessionId) {
+      const now = Date.now();
+      if (now - lastCheckpointSaveMs > 2000) {
+        lastCheckpointSaveMs = now;
+        saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages) as ChatMessage[], planItems: lastPlanItems }, targetTelemetryRoot);
+      }
+    }
+    if (trajectory) {
+      void trajectory.log({ source: "TOOL", type: "TOOL_RESULT", content: `${lastActiveToolName || "tool"} finished` });
+    }
+  };
+
+
+  const streamDeepAgent = async (extra: ChatMessage[]) => {
     if (extra.length > 0) {
       runMessages = [...runMessages, ...extra];
     }
@@ -1480,8 +1472,8 @@ export async function runProjectAgent(options: {
           if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: `Provider failover ${failoverIndex}/${failoverChain.length}: ${provider.label} -> ${target.config.label} / ${target.model}` }).catch(() => {});
           let swapped = false;
           try {
-            const nextModel = await createChatModel(target.config, target.model, { reasoningEffort: effort });
-            deepAgent = await buildDeepAgent(nextModel);
+            const nextClient = await createChatModel(target.config, target.model, { reasoningEffort: effort });
+            llm = nextClient;
             swapped = true;
           } catch (swapError) {
             // Swap failed (bad key, dead base URL): fall through to the
@@ -1492,7 +1484,7 @@ export async function runProjectAgent(options: {
           if (swapped) {
             runMessages = [
               ...runMessages,
-              new HumanMessage(
+              userMsg(
                 `[System Note: The previous model provider kept failing (${errorSummary(error)}). The run switched to ${target.config.label} / ${target.model}. All tool executions and results above are complete — continue the task from where it stopped. Do NOT restart from the beginning, do NOT re-create the todo list, and do NOT repeat already completed tool actions.]`
               ),
             ];
@@ -1525,7 +1517,7 @@ export async function runProjectAgent(options: {
             });
             runMessages = [
               ...runMessages,
-              new HumanMessage(
+              userMsg(
                 `[System Note: The previous attempt failed with: ${errorSummary(error)}. Continue the task from where it stopped — do not repeat completed steps or re-read files you already inspected. If one specific tool call, image payload or file caused the failure, take a different approach to achieve the same goal.]`
               ),
             ];
@@ -1605,15 +1597,17 @@ export async function runProjectAgent(options: {
   }
 
   let codeReviewsDone = 0;
-  const graph = new StateGraph(AgentState as any)
-    .addNode("deep_agent", async (state: any) => {
-      if (isCancelled() || signal?.aborted) throw new RunCancelledError();
-      const extra = state.verifyFeedback ? [new HumanMessage(state.verifyFeedback)] : [];
-      emit("status", state.verifyFeedback ? `Self-healing repair in progress (attempt ${state.repairs || 1} of ${MAX_REPAIRS[mode] ?? 3})` : "Agent is working on the task");
-      const answer = await streamDeepAgent(extra);
-      return { response: answer, verifyFeedback: "", runMessages };
-    })
-    .addNode("verify", async (state: any) => {
+  // Supervisor nodes as plain functions (the old 2-node StateGraph had no
+  // checkpointer and only wired deep_agent -> verify -> deep_agent, so a
+  // while-loop is a 1:1 replacement).
+  const runDeepAgentNode = async (verifyFeedback: string): Promise<string> => {
+    if (isCancelled() || signal?.aborted) throw new RunCancelledError();
+    const extra = verifyFeedback ? [userMsg(verifyFeedback)] : [];
+    emit("status", verifyFeedback ? `Self-healing repair in progress (attempt 1 of ${MAX_REPAIRS[mode] ?? 3})` : "Agent is working on the task");
+    const answer = await streamDeepAgent(extra);
+    return answer;
+  };
+  const runVerifyNode = async (stateResponse: string, stateRepairs: number) => {
       if (isCancelled() || signal?.aborted) throw new RunCancelledError();
 
       if (!isGeneral && codeJournal) {
@@ -1632,7 +1626,7 @@ export async function runProjectAgent(options: {
       // this node owns only I/O: file discovery, validation, inspection,
       // chart-dump cleanup, event emission.
       if (isGeneral) {
-        const currentRepairs = Number(state.repairs) || 0;
+        const currentRepairs = Number(stateRepairs) || 0;
         const maxRepairs = MAX_REPAIRS[mode] ?? 1;
         const wantsDeliverable = Boolean(homeTaskContract?.expectsOutput);
         const freshFiles = wantsDeliverable
@@ -1652,7 +1646,7 @@ export async function runProjectAgent(options: {
         const contentInspections: DeliverableInspection[] = validCandidates.length
           ? await inspectDeliverables(projectRoot, validCandidates, request)
           : [];
-        const responseTextTrimmed = String(state.response || "").trimEnd();
+        const responseTextTrimmed = String(stateResponse || "").trimEnd();
         const hasVisualBlocks = responseHasVisualBlocks(responseTextTrimmed);
         const requestWantsVisuals = /\b(chart|charts|graph|graphs|diagram|diagrams|plot|plots|visual|visuals|visualization)\b/i.test(request);
         const mdFilesWithCharts: Array<{ path: string }> = [];
@@ -1672,7 +1666,7 @@ export async function runProjectAgent(options: {
         }
         const decision = decideHomeVerification({
           request,
-          response: String(state.response || ""),
+          response: String(stateResponse || ""),
           currentRepairs,
           maxRepairs,
           wantsDeliverable,
@@ -1742,7 +1736,7 @@ export async function runProjectAgent(options: {
         }
       }
 
-      const currentRepairs = Number(state.repairs) || 0;
+      const currentRepairs = Number(stateRepairs) || 0;
       const maxRepairs = MAX_REPAIRS[mode] ?? 1;
 
       // A denied or timed-out approval is a UI permission decision, not a
@@ -2013,6 +2007,7 @@ export async function runProjectAgent(options: {
           projectRecord: { id: "current", name: "current", root: projectRoot },
           mcpTools: [],
           skills: skillDirs,
+          skillListings,
           skillsBackend: compositeBackend,
           onEvent: (subEvent) => {
             usage.addSubagent(subEvent.subagent.usage);
@@ -2061,16 +2056,31 @@ export async function runProjectAgent(options: {
           requiredCheckDenied: requiredDeniedCommands.length > 0,
         }),
       };
-    })
-    .addEdge(START, "deep_agent")
-    .addConditionalEdges("deep_agent", () => (mode === "plan" ? "end" : "verify"), { verify: "verify", end: END })
-    .addConditionalEdges("verify", (state: any) => (state.verifyFeedback ? "deep_agent" : "end"), { deep_agent: "deep_agent", end: END })
-    .compile();
+  };
+
+  const runSupervisor = async (initialFeedback = ""): Promise<{ response: string; verification: string }> => {
+    let answer = await runDeepAgentNode(initialFeedback);
+    if (mode === "plan") return { response: answer, verification: "none" };
+    let repairs = 0;
+    for (;;) {
+      if (isCancelled() || signal?.aborted) throw new RunCancelledError();
+      const verdict = (await runVerifyNode(answer, repairs)) as { verification?: string; repairs?: number; verifyFeedback?: string };
+      if (verdict?.verifyFeedback) {
+        repairs = Number(verdict.repairs ?? repairs + 1);
+        answer = await runDeepAgentNode(verdict.verifyFeedback);
+        continue;
+      }
+      return { response: answer, verification: String(verdict?.verification ?? "none") };
+    }
+  };
 
   // The outer graph only has 2 nodes, but LangGraph's default invoke limit
   // is 25 — pass an explicit budget and turn a limit hit into a resumable
   // partial result instead of a hard GraphRecursionError.
-  let outerLimit = Math.max(recursionLimit, 50);
+  // The old LangGraph invoke limit (outerLimit) is gone — budget enforcement
+  // now happens inside runAgentLoop (StepBudgetExceededError), which
+  // isRecursionLimitError recognizes.
+  let outerLimit = recursionLimit;
   let result: any;
   // Budget exhaustion is a pause, not a stop: a run that was making progress
   // auto-resumes from the furthest complete superstep with a fresh budget
@@ -2083,7 +2093,7 @@ export async function runProjectAgent(options: {
   // asked exactly once when the automatic budget is exhausted.
   let budgetAskUsed = false;
   try {
-    result = await graph.invoke({ projectRoot, request }, { recursionLimit: outerLimit, signal });
+    result = await runSupervisor();
   } catch (error) {
     let runError: unknown = error;
     // Failed/cancelled runs still burned provider tokens (streamed chunks,
@@ -2134,14 +2144,7 @@ export async function runProjectAgent(options: {
                 wrapUpUsed = true;
                 emit("status", "Asking the agent to wrap up and summarize the verified deliverable…");
                 try {
-                  result = await graph.invoke(
-                    {
-                      projectRoot,
-                      request,
-                      verifyFeedback: "[System Note: Your step budget was reached, but your deliverable has been verified complete on disk. Do NOT continue working and do NOT run any more tools. Produce your final user-facing response NOW: answer the original request directly and briefly state what was created and where.]",
-                    },
-                    { recursionLimit: 16, signal }
-                  );
+                  result = await runSupervisor("[System Note: Your step budget was reached, but your deliverable has been verified complete on disk. Do NOT continue working and do NOT run any more tools. Produce your final user-facing response NOW: answer the original request directly and briefly state what was created and where.]");
                   if (!String((result as any)?.response || "").trim()) throw new Error("empty wrap-up response");
                 } catch { /* fall through to the canned response below */ }
               }
@@ -2197,9 +2200,9 @@ export async function runProjectAgent(options: {
       if (trajectory) await trajectory.log({ source: "SYSTEM", type: "STATUS", content: `Recursion limit hit at ${outerLimit}; auto-extended budget ${budgetExtensions}/${maxBudgetExtensions}.` });
       // The model must not have to infer that it should continue: the pruned
       // checkpoint can end on a tool result, so say it explicitly.
-      runMessages = [...runMessages, new HumanMessage("[System Note: The step budget was extended automatically. All preceding tool actions are complete. Continue the task directly from where it stopped — do not repeat completed steps or re-read files you already inspected.]")];
+      runMessages = [...runMessages, userMsg("[System Note: The step budget was extended automatically. All preceding tool actions are complete. Continue the task directly from where it stopped — do not repeat completed steps or re-read files you already inspected.]")];
       try {
-        result = await graph.invoke({ projectRoot, request }, { recursionLimit: outerLimit, signal });
+        result = await runSupervisor();
       } catch (retryError) {
         runError = retryError;
       }
@@ -2455,16 +2458,11 @@ export async function runProjectAgent(options: {
       `NEVER include transient data: greetings, tables, lists, counts, URLs, file names, numbers from tool output, or anything already answered in full. ` +
       `Return {"candidates":[]} when nothing is worth remembering.\n\n` +
       `User: ${requestText.slice(0, 800)}\nAssistant: ${responseText.slice(0, 2500)}`;
-    const raw: any = await Promise.race([
-      Promise.resolve(llm.invoke(extractPrompt)),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("memory extract timeout")), 20000)),
+    const raw: string = await Promise.race([
+      llm.complete({ messages: [userMsg(extractPrompt)], temperature: 0.1 }).then((r) => r.text),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("memory extract timeout")), 20000)),
     ]);
-    const content = typeof raw?.content === "string"
-      ? raw.content
-      : Array.isArray(raw?.content)
-        ? raw.content.map((p: any) => (typeof p === "string" ? p : p?.text || "")).join("\n")
-        : String(raw?.content || raw?.text || "");
-    return parseCandidateFacts(content);
+    return parseCandidateFacts(raw);
   };
   if (isGeneral && mode !== "plan" && onMemoryCandidates) {
     const runIdForLog = sessionId;

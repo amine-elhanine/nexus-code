@@ -22,7 +22,7 @@ export const FALLBACK_PROVIDERS: ProviderDefinition[] = [
   {
     id: "openai",
     label: "OpenAI",
-    packageName: "@langchain/openai",
+    packageName: "builtin",
     envKey: "OPENAI_API_KEY",
     models: ["gpt-5.5", "gpt-5.5-mini", "gpt-4.1", "gpt-4.1-mini", "o3", "o4-mini"],
     modelEfforts: {
@@ -35,7 +35,7 @@ export const FALLBACK_PROVIDERS: ProviderDefinition[] = [
   {
     id: "anthropic",
     label: "Anthropic",
-    packageName: "@langchain/anthropic",
+    packageName: "builtin",
     envKey: "ANTHROPIC_API_KEY",
     models: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
     modelEfforts: {
@@ -46,7 +46,7 @@ export const FALLBACK_PROVIDERS: ProviderDefinition[] = [
   {
     id: "google",
     label: "Google Gemini",
-    packageName: "@langchain/google-genai",
+    packageName: "builtin",
     envKey: "GOOGLE_API_KEY",
     models: ["gemini-3.7-pro", "gemini-3.7-flash", "gemini-2.5-flash"],
     modelEfforts: {
@@ -55,13 +55,13 @@ export const FALLBACK_PROVIDERS: ProviderDefinition[] = [
       "gemini-2.5-flash": ["none", "low", "medium", "high"],
     },
   },
-  { id: "mistral", label: "Mistral", packageName: "@langchain/mistralai", envKey: "MISTRAL_API_KEY", models: ["mistral-large-latest", "codestral-latest", "mistral-small-latest"] },
-  { id: "groq", label: "Groq", packageName: "@langchain/groq", envKey: "GROQ_API_KEY", models: ["openai/gpt-oss-120b", "llama-4-scout-17b-16e-instruct", "qwen/qwen3-32b"] },
-  { id: "xai", label: "xAI", packageName: "@langchain/xai", envKey: "XAI_API_KEY", models: ["grok-4", "grok-4-fast", "grok-3-mini"] },
+  { id: "mistral", label: "Mistral", packageName: "builtin", envKey: "MISTRAL_API_KEY", models: ["mistral-large-latest", "codestral-latest", "mistral-small-latest"] },
+  { id: "groq", label: "Groq", packageName: "builtin", envKey: "GROQ_API_KEY", models: ["openai/gpt-oss-120b", "llama-4-scout-17b-16e-instruct", "qwen/qwen3-32b"] },
+  { id: "xai", label: "xAI", packageName: "builtin", envKey: "XAI_API_KEY", models: ["grok-4", "grok-4-fast", "grok-3-mini"] },
   {
     id: "openrouter",
     label: "OpenRouter",
-    packageName: "@langchain/openrouter",
+    packageName: "builtin",
     envKey: "OPENROUTER_API_KEY",
     models: ["anthropic/claude-sonnet-4.6", "openai/gpt-5.5", "google/gemini-3.7-pro"],
     modelEfforts: {
@@ -70,11 +70,11 @@ export const FALLBACK_PROVIDERS: ProviderDefinition[] = [
       "anthropic/claude-sonnet-4.6": ["low", "medium", "high", "max"],
     },
   },
-  { id: "ollama", label: "Ollama", packageName: "@langchain/ollama", envKey: "OLLAMA_BASE_URL", defaultBaseUrl: "http://127.0.0.1:11434", models: ["qwen3-coder", "devstral", "llama3.3"] },
+  { id: "ollama", label: "Ollama", packageName: "builtin", envKey: "OLLAMA_BASE_URL", defaultBaseUrl: "http://127.0.0.1:11434", models: ["qwen3-coder", "devstral", "llama3.3"] },
   {
     id: "deepseek",
     label: "DeepSeek",
-    packageName: "@langchain/deepseek",
+    packageName: "builtin",
     envKey: "DEEPSEEK_API_KEY",
     models: ["deepseek-chat", "deepseek-reasoner"],
     modelEfforts: {
@@ -84,7 +84,7 @@ export const FALLBACK_PROVIDERS: ProviderDefinition[] = [
   {
     id: "opencode-zen",
     label: "OpenCode Zen",
-    packageName: "@langchain/openai",
+    packageName: "builtin",
     envKey: "OPENCODE_API_KEY",
     defaultBaseUrl: "https://opencode.ai/zen/v1",
     models: ["kimi-k2.6", "kimi-k2.5", "deepseek-v4-pro", "deepseek-v4-flash", "glm-5.2", "qwen3.7-max", "claude-opus-4-6", "claude-sonnet-4-6", "gpt-5.5"],
@@ -95,12 +95,12 @@ export const FALLBACK_PROVIDERS: ProviderDefinition[] = [
       "claude-sonnet-4-6": ["low", "medium", "high", "max"],
     },
   },
-  { id: "together", label: "Together AI", packageName: "@langchain/community", envKey: "TOGETHER_AI_KEY", models: ["Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"] },
-  { id: "fireworks", label: "Fireworks", packageName: "@langchain/community", envKey: "FIREWORKS_API_KEY", models: ["accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/qwen3-coder"] },
+  { id: "together", label: "Together AI", packageName: "builtin", envKey: "TOGETHER_AI_KEY", models: ["Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"] },
+  { id: "fireworks", label: "Fireworks", packageName: "builtin", envKey: "FIREWORKS_API_KEY", models: ["accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/qwen3-coder"] },
   {
     id: "azure",
     label: "Azure OpenAI",
-    packageName: "@langchain/openai",
+    packageName: "builtin",
     envKey: "AZURE_OPENAI_API_KEY",
     models: ["gpt-5.5", "gpt-4.1", "o3"],
     modelEfforts: {
@@ -108,8 +108,8 @@ export const FALLBACK_PROVIDERS: ProviderDefinition[] = [
       "o3": ["low", "medium", "high"],
     },
   },
-  { id: "bedrock", label: "AWS Bedrock", packageName: "@langchain/aws", envKey: "AWS_ACCESS_KEY_ID", models: ["anthropic.claude-sonnet-4-6", "amazon.nova-pro-v1:0"] },
-  { id: "custom", label: "Custom (OpenAI-compatible)", packageName: "@langchain/openai", envKey: "CUSTOM_API_KEY", models: [] },
+  { id: "bedrock", label: "AWS Bedrock", packageName: "builtin", envKey: "AWS_ACCESS_KEY_ID", models: ["anthropic.claude-sonnet-4-6", "amazon.nova-pro-v1:0"] },
+  { id: "custom", label: "Custom (OpenAI-compatible)", packageName: "builtin", envKey: "CUSTOM_API_KEY", models: [] },
 ];
 
 export function sortSessionsByUpdatedAt(list: SessionRecord[]): SessionRecord[] {

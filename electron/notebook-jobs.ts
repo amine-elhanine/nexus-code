@@ -40,6 +40,8 @@ import {
 import { embedTexts } from "./notebook-embeddings.js";
 import { notebookFlags } from "./notebook-flags.js";
 import { getAppSettings, getNotebookParserConfig, listProviders } from "./store.js";
+import { invokeChatText } from "./agentcore/llm/invoke.js";
+import { userMsg } from "./agentcore/messages.js";
 
 // Asynchronous ingestion: one idempotent background job per file.
 // uploaded → parsing → chunking → indexing → ready | failed.
@@ -143,17 +145,16 @@ async function describeNotebookImage(buffer: Buffer, filename: string, mimeType:
   if (!provider || !modelName) return null;
   const { createChatModel } = await import("./providers.js");
   const llm = await createChatModel(provider, modelName);
-  const response = await llm.invoke([{
-    role: "user",
-    content: [
-      { type: "text", text: `Describe this image for a research notebook. Extract visible text, explain charts/diagrams, identify important objects or relationships, and clearly mark uncertainty. Be factual and concise. Filename: ${filename}` },
-      { type: "image_url", image_url: { url: `data:${mimeType};base64,${buffer.toString("base64")}` } },
-    ],
-  } as never]);
-  const content = response.content;
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) return content.map((part) => typeof part === "string" ? part : (part as { text?: string }).text || "").join(" ");
-  return null;
+  const response = await llm.complete({
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: `Describe this image for a research notebook. Extract visible text, explain charts/diagrams, identify important objects or relationships, and clearly mark uncertainty. Be factual and concise. Filename: ${filename}` },
+        { type: "image", url: `data:${mimeType};base64,${buffer.toString("base64")}` },
+      ],
+    }],
+  });
+  return response.text || null;
 }
 
 /** Run one file's ingestion end to end. Re-runnable: wipes the file's
@@ -409,8 +410,7 @@ async function attachSynthQuestions(chunks: LibraryChunk[]): Promise<void> {
     for (let i = 0; i < chunks.length; i += 4) {
       const batch = chunks.slice(i, i + 4);
       const prompt = `For each numbered passage below, write 2 short questions (under 15 words each) that this passage answers. Reply with JSON only: {"0": ["q1", "q2"], "1": ["q1", "q2"], ...}.\n\n${batch.map((c, j) => `--- ${j} ---\n${c.text.slice(0, 1200)}`).join("\n\n")}`;
-      const res = await llm.invoke([{ role: "user", content: prompt } as never]);
-      const raw = typeof res.content === "string" ? res.content : JSON.stringify(res.content);
+      const raw = await invokeChatText(llm, [userMsg(prompt)]);
       const match = raw.match(/\{[\s\S]*\}/);
       if (!match) continue;
       const parsed = JSON.parse(match[0]) as Record<string, string[]>;

@@ -24,14 +24,14 @@ test("research tool: identity + schema", () => {
 
 test("research tool: empty question refused without touching a provider", async () => {
   const research = createHomeResearchTool({ projectRoot: ".", provider, modelName: "gpt-test", researchTools: [] });
-  const result = await research.invoke({ question: "   " });
+  const result = await research.execute({ question: "   " });
   assert.match(String(result), /the question is required/);
 });
 
 test("research tool: oversized question rejected by schema before any provider call", async () => {
   const research = createHomeResearchTool({ projectRoot: ".", provider, modelName: "gpt-test", researchTools: [] });
-  await assert.rejects(
-    () => research.invoke({ question: "x".repeat(2_001) }),
-    (error) => /tool input|schema|expected/i.test(String(error?.message || error))
-  );
+  // Agentcore tools return a validation-error string for the model instead
+  // of throwing — the loop surfaces it as a failed tool result.
+  const result = await research.execute({ question: "x".repeat(2_001) });
+  assert.match(String(result), /Invalid tool arguments|too long|schema/i);
 });

@@ -1,4 +1,4 @@
-import { tool } from "@langchain/core/tools";
+import { tool } from "./agentcore/tools.js";
 import { z } from "zod";
 
 /**

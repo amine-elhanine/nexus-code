@@ -85,13 +85,13 @@ await test('apply_patch beforeEdit gate: denial text returned, file untouched; n
     });
     const patchTool = gated.find((t) => t.name === 'apply_patch');
     assert.ok(patchTool);
-    const denial = await patchTool.invoke({ patchText });
+    const denial = await patchTool.execute({ patchText });
     assert.match(String(denial), /Edit denied by the user/);
     assert.equal(await fs.readFile(path.join(tempDir, 'app.ts'), 'utf8'), 'const a = 1;\n', 'file unchanged after denial');
 
     const open = createEditTools(tempDir, { beforeEdit: async () => null });
     const openTool = open.find((t) => t.name === 'apply_patch');
-    await openTool.invoke({ patchText });
+    await openTool.execute({ patchText });
     assert.equal(await fs.readFile(path.join(tempDir, 'app.ts'), 'utf8'), 'const a = 2;\n', 'patch applied when the gate passes');
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });

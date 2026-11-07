@@ -231,7 +231,7 @@ app.whenReady().then(async () => {
     const tempDir = await mkdirScratch('nexus-patch-');
     await fs.writeFile(path.join(tempDir, 'existing.txt'), 'original\n');
     const [patchTool] = createEditTools(tempDir);
-    const result = await patchTool.invoke({ patchText: '*** Update File: existing.txt\nchanged\n*** Update File: missing.txt\nshould fail' });
+    const result = await patchTool.execute({ patchText: '*** Update File: existing.txt\nchanged\n*** Update File: missing.txt\nshould fail' });
     assert.match(String(result), /apply_patch failed/i);
     assert.equal(await fs.readFile(path.join(tempDir, 'existing.txt'), 'utf8'), 'original\n');
   });
@@ -240,10 +240,10 @@ app.whenReady().then(async () => {
     const tempDir = await mkdirScratch('nexus-patch-conflict-');
     await fs.writeFile(path.join(tempDir, 'existing.txt'), 'original\n');
     const [patchTool] = createEditTools(tempDir);
-    const add = await patchTool.invoke({ patchText: '*** Add File: existing.txt\nreplacement' });
+    const add = await patchTool.execute({ patchText: '*** Add File: existing.txt\nreplacement' });
     assert.match(String(add), /existing file|already exists/i);
     assert.equal(await fs.readFile(path.join(tempDir, 'existing.txt'), 'utf8'), 'original\n');
-    const update = await patchTool.invoke({ patchText: '*** Update File: missing.txt\ncontent' });
+    const update = await patchTool.execute({ patchText: '*** Update File: missing.txt\ncontent' });
     assert.match(String(update), /missing file/i);
   });
 
@@ -253,7 +253,7 @@ app.whenReady().then(async () => {
     await fs.writeFile(file, 'current\n');
     const [patchTool] = createEditTools(tempDir);
     const wrongHash = crypto.createHash('sha256').update('old\n').digest('hex');
-    const result = await patchTool.invoke({ patchText: `*** Update File: existing.txt (sha256: ${wrongHash})\nreplacement` });
+    const result = await patchTool.execute({ patchText: `*** Update File: existing.txt (sha256: ${wrongHash})\nreplacement` });
     assert.match(String(result), /stale update rejected/i);
     assert.equal(await fs.readFile(file, 'utf8'), 'current\n');
     await fs.rm(tempDir, { recursive: true, force: true });
@@ -271,7 +271,7 @@ app.whenReady().then(async () => {
         throw error;
       }
       const [patchTool] = createEditTools(tempDir);
-      const result = await patchTool.invoke({ patchText: '*** Update File: linked/secret.txt\nnot secret' });
+      const result = await patchTool.execute({ patchText: '*** Update File: linked/secret.txt\nnot secret' });
       assert.match(String(result), /symlink|outside/i);
       assert.equal(await fs.readFile(path.join(outsideDir, 'secret.txt'), 'utf8'), 'secret\n');
     } finally {
@@ -286,10 +286,10 @@ app.whenReady().then(async () => {
       const [patchTool, importTool] = createEditTools(tempDir, { attachedImages: ['data:image/png;base64,aGVsbG8='] });
       assert.equal(patchTool.name, 'apply_patch');
       assert.equal(importTool.name, 'import_attached_image');
-      const imported = await importTool.invoke({ index: 0, targetPath: 'public/assets/reference.png' });
+      const imported = await importTool.execute({ index: 0, targetPath: 'public/assets/reference.png' });
       assert.match(String(imported), /Imported attached image/);
       assert.equal(await fs.readFile(path.join(tempDir, 'public', 'assets', 'reference.png'), 'utf8'), 'hello');
-      await assert.rejects(() => importTool.invoke({ index: 0, targetPath: '../outside.png' }), /escapes/i);
+      await assert.rejects(() => importTool.execute({ index: 0, targetPath: '../outside.png' }), /escapes/i);
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -732,7 +732,7 @@ pub async fn execute_task(task: &str) -> bool { true }
     const readRangeTool = tools.find((t) => t.name === 'read_file_range');
     assert.ok(readRangeTool);
 
-    const result = await readRangeTool.invoke({ filePath: 'sample.txt', startLine: 10, endLine: 15 });
+    const result = await readRangeTool.execute({ filePath: 'sample.txt', startLine: 10, endLine: 15 });
     assert.match(result, /lines 10-15 of 50/);
     assert.match(result, /10 \| Line 10/);
     assert.match(result, /15 \| Line 15/);
@@ -749,7 +749,7 @@ pub async fn execute_task(task: &str) -> bool { true }
     const grepTool = tools.find((t) => t.name === 'grep_search');
     assert.ok(grepTool);
 
-    const result = await grepTool.invoke({ query: 'SECRET_KEY', isRegex: false });
+    const result = await grepTool.execute({ query: 'SECRET_KEY', isRegex: false });
     assert.match(result, /Found 2 match\(es\)/);
     assert.match(result, /file1\.ts:1:/);
     assert.match(result, /file2\.js:2:/);
@@ -1410,7 +1410,7 @@ pub async fn execute_task(task: &str) -> bool { true }
       const findRefTool = tools.find((t) => t.name === 'find_symbol_references');
       assert.notEqual(findRefTool, undefined);
 
-      const res = await findRefTool.invoke({ symbol: 'UserProfile' });
+      const res = await findRefTool.execute({ symbol: 'UserProfile' });
       assert.match(res, /Found 3 reference/i);
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
@@ -1450,10 +1450,10 @@ pub async fn execute_task(task: &str) -> bool { true }
     assert.notEqual(apiTool, undefined);
 
     // Verify invalid url error handling
-    const inspectRes = await inspectTool.invoke({ url: 'http://127.0.0.1:59999/non-existent' });
+    const inspectRes = await inspectTool.execute({ url: 'http://127.0.0.1:59999/non-existent' });
     assert.match(inspectRes, /Failed to inspect/i);
 
-    const apiRes = await apiTool.invoke({ url: 'http://127.0.0.1:59999/api/health' });
+    const apiRes = await apiTool.execute({ url: 'http://127.0.0.1:59999/api/health' });
     assert.match(apiRes, /API Request.*failed/i);
   });
 
@@ -1466,18 +1466,18 @@ pub async fn execute_task(task: &str) -> bool { true }
 
     // External URLs are no longer policy-blocked; the only failure mode is the
     // (offline-safe) connection error itself.
-    const blockedInspect = await inspectTool.invoke({ url: 'https://example.invalid-qt/page' });
+    const blockedInspect = await inspectTool.execute({ url: 'https://example.invalid-qt/page' });
     assert.doesNotMatch(blockedInspect, /Network access blocked/i);
     assert.match(blockedInspect, /Failed to inspect/i);
 
-    const blockedApi = await apiTool.invoke({ url: 'https://api.invalid-qt/v1/health' });
+    const blockedApi = await apiTool.execute({ url: 'https://api.invalid-qt/v1/health' });
     assert.doesNotMatch(blockedApi, /Network access blocked/i);
 
     // Verify invalid url error handling still works
-    const inspectRes = await inspectTool.invoke({ url: 'http://127.0.0.1:59999/non-existent' });
+    const inspectRes = await inspectTool.execute({ url: 'http://127.0.0.1:59999/non-existent' });
     assert.match(inspectRes, /Failed to inspect/i);
 
-    const apiRes = await apiTool.invoke({ url: 'http://127.0.0.1:59999/api/health' });
+    const apiRes = await apiTool.execute({ url: 'http://127.0.0.1:59999/api/health' });
     assert.match(apiRes, /API Request.*failed/i);
   });
 
@@ -1703,15 +1703,15 @@ pub async fn execute_task(task: &str) -> bool { true }
     const actTool = tools.find((t) => t.name === 'browser_act');
     assert.ok(actTool);
 
-    const snap = await actTool.invoke({ action: 'snapshot' });
+    const snap = await actTool.execute({ action: 'snapshot' });
     assert.match(String(snap), /acted:snapshot/);
     assert.deepEqual(calls[0], { action: 'snapshot' });
 
-    const fill = await actTool.invoke({ action: 'fill', target: 'e3', value: 'hello' });
+    const fill = await actTool.execute({ action: 'fill', target: 'e3', value: 'hello' });
     assert.match(String(fill), /acted:fill/);
 
     // Service-level throw becomes a model-readable string, not a rejection.
-    const failed = await actTool.invoke({ action: 'click' });
+    const failed = await actTool.execute({ action: 'click' });
     assert.match(String(failed), /Browser action failed/);
   });
 
@@ -1720,13 +1720,13 @@ pub async fn execute_task(task: &str) -> bool { true }
       renderedInspect: async (url) => `rendered:${url}`,
     });
     const okInspect = okTools.find((t) => t.name === 'browser_inspect');
-    assert.match(String(await okInspect.invoke({ url: 'http://127.0.0.1:59999/x' })), /rendered:/);
+    assert.match(String(await okInspect.execute({ url: 'http://127.0.0.1:59999/x' })), /rendered:/);
 
     const failingTools = createBrowserTools('/test', {
       renderedInspect: async () => { throw new Error('window gone'); },
     });
     const fallbackInspect = failingTools.find((t) => t.name === 'browser_inspect');
-    const res = String(await fallbackInspect.invoke({ url: 'http://127.0.0.1:59999/x' }));
+    const res = String(await fallbackInspect.execute({ url: 'http://127.0.0.1:59999/x' }));
     assert.match(res, /Failed to inspect/);
   });
 
@@ -1755,7 +1755,7 @@ pub async fn execute_task(task: &str) -> bool { true }
     const seen = [];
     const [searchTool] = createWebSearchTools({ onSearch: (query, url) => { seen.push([query, url]); } });
     // Works offline: the mirror fires before the network fetch, whatever it does.
-    const result = await searchTool.invoke({ query: 'nexus test query', maxResults: 1 });
+    const result = await searchTool.execute({ query: 'nexus test query', maxResults: 1 });
     assert.equal(seen.length, 1);
     assert.equal(seen[0][0], 'nexus test query');
     assert.match(seen[0][1], /^https:\/\/duckduckgo\.com\/\?q=/);
@@ -1765,7 +1765,7 @@ pub async fn execute_task(task: &str) -> bool { true }
   await test('web_search without a mirror still works', async () => {
     const { createWebSearchTools } = await import('../dist-electron/websearch-tool.js');
     const [searchTool] = createWebSearchTools();
-    const result = await searchTool.invoke({ query: 'nexus test query', maxResults: 1 });
+    const result = await searchTool.execute({ query: 'nexus test query', maxResults: 1 });
     assert.equal(typeof result, 'string');
   });
 

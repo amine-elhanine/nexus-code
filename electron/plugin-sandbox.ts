@@ -5,21 +5,21 @@
 //   run in-process: they are data, not code. Safe by construction.
 // - Executable plugins (`entry` JS) are UNTRUSTED code. They MUST NOT be
 //   required() directly into the privileged Electron main process.
-// - This module runs entry code in a `node:vm` context with:
-//     * no `require`, no `process`, no `Electron`, no Node globals,
-//     * only a frozen `nexus` SDK object (registerTool/registerCommand/on),
-//     * a bounded timeout (default 5s for activation),
-//     * stdout-free, network-free activation.
-// - vm-context isolation is NOT a full sandbox (no OS boundary). It raises
-//   the bar against accidental privileged access and makes the trust prompt
-//   meaningful, but installation still requires explicit user approval and
-//   source review. High-risk deployments should run executable plugins in a
-//   separate process (see PLUGIN_ISOLATION_NOTES in docs); that migration can
-//   reuse this SDK surface without changing plugins.
+// - This module runs entry code OUT-OF-PROCESS through the same NDJSON-RPC
+//   plugin runner the lifecycle manager uses (plugin-process-host.ts): a
+//   one-shot child process (Electron binary with ELECTRON_RUN_AS_NODE=1,
+//   secret-scrubbed env) that only exposes the frozen `nexus` SDK surface
+//   over the narrow activate/call-tool protocol, with a bounded activation
+//   timeout and process-tree kill on failure. There is NO in-process
+//   node:vm fallback — every standalone sandbox validation runs with the
+//   same OS-process boundary as live plugins.
+// - Installation still requires explicit user approval and source review;
+//   the process boundary makes the trust prompt meaningful instead of
+//   decorative.
 
-import vm from "node:vm";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { startPluginProcess, stopPluginProcess, resolvePluginEntry } from "./plugin-process-host.js";
 
 export type SandboxSdk = {
   registerTool: (def: unknown) => void;
@@ -40,15 +40,16 @@ export type SandboxResult = {
 const MAX_ENTRY_BYTES = 256 * 1024; // 256KB cap on entry source
 const DEFAULT_TIMEOUT_MS = 5_000;
 
+let oneShotCounter = 0;
+
 function looksLikePathEscape(resolved: string, root: string): boolean {
   return !resolved.startsWith(root + path.sep) && resolved !== root;
 }
 
 /**
- * Load + execute a plugin entry file inside a vm context. The entry may call
- * `nexus.registerTool/registerCommand/on` (CommonJS: `module.exports = ...`
- * or ESM-ish default export is NOT executed beyond top-level calls).
- * Returns the recorded SDK calls for the lifecycle manager to validate and
+ * Load + execute a plugin entry file in a one-shot out-of-process runner.
+ * Returns the recorded SDK calls (tools/commands/subscriptions/context
+ * providers declared by the entry) for the lifecycle manager to validate and
  * register through the normal capability registry (never direct).
  */
 export async function runPluginEntrySandbox(options: {
@@ -63,59 +64,36 @@ export async function runPluginEntrySandbox(options: {
   if (looksLikePathEscape(resolved, root)) {
     return { ok: false, calls: [], logs: [], error: "entry escapes plugin directory" };
   }
-  let source: string;
   try {
+    resolvePluginEntry(root, entry);
     const stat = await fs.stat(resolved);
     if (!stat.isFile()) return { ok: false, calls: [], logs: [], error: "entry is not a file" };
     if (stat.size > MAX_ENTRY_BYTES) {
       return { ok: false, calls: [], logs: [], error: `entry exceeds ${MAX_ENTRY_BYTES} bytes` };
     }
-    source = await fs.readFile(resolved, "utf8");
   } catch (error) {
     return { ok: false, calls: [], logs: [], error: error instanceof Error ? error.message : String(error) };
   }
 
-  const calls: Array<{ method: string; args: unknown }> = [];
-  const logs: string[] = [];
-  const sdk: SandboxSdk = {
-    registerTool: (def: unknown) => {
-      calls.push({ method: "registerTool", args: def });
-    },
-    registerCommand: (def: unknown) => {
-      calls.push({ method: "registerCommand", args: def });
-    },
-    registerContextProvider: (def: unknown, handler?: unknown) => {
-      calls.push({ method: "registerContextProvider", args: { def, handler } });
-    },
-    on: (event: string, _handler: (...args: unknown[]) => unknown) => {
-      // Handlers are functions that cannot cross the vm boundary safely.
-      // Record the subscription; the host wires a message-port later.
-      // For v1, executable event subscriptions via entry are recorded but
-      // only `tool:before`/`tool:after` declarative hooks execute (see docs).
-      calls.push({ method: "on", args: { event } });
-    },
-    log: (message: string) => {
-      logs.push(String(message).slice(0, 2_000));
-    },
-  };
-
-  const sandbox: Record<string, unknown> = {
-    nexus: Object.freeze({ ...sdk }),
-    console: Object.freeze({ log: (...args: unknown[]) => logs.push(args.map(String).join(" ").slice(0, 2_000)) }),
-    module: { exports: {} },
-    exports: {},
-  };
-  // Intentionally NO: require, process, globalThis pollution, fetch, setInterval
-  // beyond the minimum. Timers are allowed but bounded by the vm timeout.
-  const context = vm.createContext(sandbox, { name: "nexus-plugin-sandbox" });
-  const wrapped = `"use strict";\n${source}\n//# sourceURL=nexus-plugin-entry.js`;
+  const oneShotId = `sandbox-${process.pid}-${Date.now()}-${oneShotCounter++}`;
   try {
-    const script = new vm.Script(wrapped, { filename: "nexus-plugin-entry.js" });
-    script.runInContext(context, { timeout: timeoutMs, displayErrors: true });
-    return { ok: true, calls, logs };
+    const { process: proc, activation } = await startPluginProcess(oneShotId, root, entry, {
+      activationTimeoutMs: timeoutMs,
+    });
+    try {
+      const calls: Array<{ method: string; args: unknown }> = [
+        ...activation.tools.map((def) => ({ method: "registerTool", args: def })),
+        ...activation.commands.map((def) => ({ method: "registerCommand", args: def })),
+        ...(activation.contextProviders || []).map((def) => ({ method: "registerContextProvider", args: def })),
+        ...activation.subscriptions.map((sub) => ({ method: "on", args: { event: sub.event } })),
+      ];
+      return { ok: true, calls, logs: (activation.logs || []).map((l) => String(l).slice(0, 2_000)) };
+    } finally {
+      await stopPluginProcess(oneShotId).catch(() => proc.kill());
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const timedOut = /timed out/i.test(message);
-    return { ok: false, calls, logs, error: message.slice(0, 2_000), timedOut };
+    const timedOut = /timed out|timeout/i.test(message);
+    return { ok: false, calls: [], logs: [], error: message.slice(0, 2_000), timedOut };
   }
 }

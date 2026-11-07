@@ -9,7 +9,7 @@
 // tools MUST use this boundary so plugins cannot bypass security checks.
 
 import { z } from "zod";
-import { tool } from "@langchain/core/tools";
+import { tool } from "./agentcore/tools.js";
 import { evaluatePolicyHooks } from "./plugin-events.js";
 import { hasPermissions, getGrantedPermissions, type PermissionGrant } from "./plugin-permissions.js";
 import { getCapability, listCapabilities, capabilityAppliesToMode } from "./capability-registry.js";

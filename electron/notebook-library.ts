@@ -69,7 +69,13 @@ export type VectorPartition = {
   embeddingModel: string;
   dims: number;
   updatedAt: string;
-  vectors: Record<string, number[]>;
+  /**
+   * Float64Array views over the stored blobs — zero-copy deserialization
+   * (the old Array.from<number[]> doubled heap usage per snapshot load).
+   * The JSON fallback path yields plain arrays at runtime; cosine accepts
+   * both (ArrayLike<number>).
+   */
+  vectors: Record<string, Float64Array>;
 };
 
 // ---- Deterministic IDs ----
@@ -313,7 +319,7 @@ export async function loadVectors(root: string, sessionId: string): Promise<Vect
     if (!stored || stored.sessionId !== sessionId) {
       partition = { sessionId, embeddingModel: "", dims: 0, updatedAt: new Date().toISOString(), vectors: {} };
     } else {
-      stored.vectors = stored.vectors || {};
+      stored.vectors = (stored.vectors || {}) as Record<string, Float64Array>;
       partition = stored;
     }
   }
@@ -349,7 +355,7 @@ export async function upsertFileVectors(root: string, sessionId: string, embeddi
     }
     partition.embeddingModel = embeddingModel;
     partition.dims = dims;
-    for (const e of entries) partition.vectors[e.chunkId] = e.vector;
+    for (const e of entries) partition.vectors[e.chunkId] = Float64Array.from(e.vector);
     await saveVectors(root, partition);
   });
 }

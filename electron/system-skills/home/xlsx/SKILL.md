@@ -5,6 +5,11 @@ description: Build formatted Microsoft Excel spreadsheets (.xlsx) with openpyxl 
 
 # xlsx — Excel Spreadsheet Generation
 
+
+## Fast Path First (Preferred)
+Before writing any generator script: call the **create_deliverable** tool with the document content in Markdown. It renders a validated Excel spreadsheets (.xlsx) deterministically (no pip, no script, no shell) and reports structure + content checks in the same call. Repairs are one tool call with corrected content and the same file name.
+Use the generator-script workflow below ONLY for highly custom designs the Markdown contract cannot express (precise corporate templates, charts embedded inside the file, custom geometry/styling).
+
 ## Core Principle
 Write ONE clean, complete generator script, execute it ONCE, verify the file exists on disk, delete the generator script, and finish.
 

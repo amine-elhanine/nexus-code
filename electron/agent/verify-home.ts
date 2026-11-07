@@ -97,6 +97,18 @@ export function decideHomeVerification(input: HomeVerifyDecisionInput): HomeVeri
     !homeRequestNamesFileFormat(request) &&
     (hasVisualBlocks || (!createdDeliverable && responseTextTrimmed.length >= 200 && /\[\[answer-in-chat\]\]\s*$/i.test(responseTextTrimmed)));
   if (chatAnswerDeclared) {
+    // A request that EXPLICITLY asks for plots/graphs/charts must actually
+    // contain visual blocks — a text-only answer with the sentinel must not
+    // sail through (the old escape let chart requests end without visuals).
+    const requestWantsCharts = new RegExp("(?:^|[^a-zA-Z])(chart|charts|graph|graphs|plot|plots|diagram|diagrams|visualisation|visualization)(?:$|[^a-zA-Z])", "i").test(request);
+    if (requestWantsCharts && !hasVisualBlocks && repairsLeft) {
+      return {
+        outcome: "failed-charts",
+        repairs: currentRepairs + 1,
+        telemetry: "Verification · chat answer missing the requested charts",
+        verifyFeedback: `The request explicitly asks for charts/graphs, but your answer contains no visual blocks. The chat interface natively renders \`\`\`bar, \`\`\`line, \`\`\`area, \`\`\`pie, \`\`\`donut, \`\`\`scatter, \`\`\`radar, and \`\`\`mermaid fenced blocks, plus image charts via ![Caption](filename.png). Re-answer NOW with the charts directly in chat (ground every value in sources or tool output — never fabricate numbers), keep the full explanation, and end with [[answer-in-chat]].`,
+      };
+    }
     return {
       outcome: "chat-answer",
       hasVisualBlocks,
@@ -143,7 +155,7 @@ export function decideHomeVerification(input: HomeVerifyDecisionInput): HomeVeri
       outcome: "failed-structure",
       repairs: currentRepairs + 1,
       telemetry: `Verification · output check failed.${validationNote}`,
-      verifyFeedback: `The request has an observable output contract, but the output is missing or failed validation.${validationNote} You are in AUTO mode: do NOT stop to talk or narrate future steps.${homeReadOnlyStreak >= 7 ? " The supervisor detected a prolonged read-only/research streak. Change strategy now and use the evidence already collected." : ""}${failedSkillsNote} Create or repair the requested result now, then inspect the created path and confirm it is readable. Do not perform another research/read-only action unless it is required to unblock creation.${contentNote}${finalStructureAttempt ? " This is your FINAL repair: if the output is still missing or invalid on the next check, the run ends as failed." : ""}`,
+      verifyFeedback: `The request has an observable output contract, but the output is missing or failed validation.${validationNote} You are in AUTO mode: do NOT stop to talk or narrate future steps.${homeReadOnlyStreak >= 7 ? " The supervisor detected a prolonged read-only/research streak. Change strategy now and use the evidence already collected." : ""}${failedSkillsNote} STRONGLY PREFERRED: use the create_deliverable tool with your content in Markdown — it renders the requested format deterministically (no generator script, no pip) and validates the file in the same call. Create or repair the requested result now, then confirm the reported file. Do not perform another research/read-only action unless it is required to unblock creation.${contentNote}${finalStructureAttempt ? " This is your FINAL repair: if the output is still missing or invalid on the next check, the run ends as failed." : ""}`,
     };
   }
 
@@ -154,7 +166,7 @@ export function decideHomeVerification(input: HomeVerifyDecisionInput): HomeVeri
       outcome: "failed-content",
       repairs: currentRepairs + 1,
       telemetry: `Verification · content check failed on ${contentProblems.length} deliverable${contentProblems.length === 1 ? "" : "s"}`,
-      verifyFeedback: `The requested output exists but fails content inspection:\n${details.join("\n")}\n\nRepair exactly these problems now — do not restart research and do not re-read skills. Fix the files in place (or regenerate if faster), then finish.`,
+      verifyFeedback: `The requested output exists but fails content inspection:\n${details.join("\n")}\n\nRepair exactly these problems now — do not restart research and do not re-read skills. Fastest fix: call create_deliverable again with corrected Markdown content and the same file name (it validates the result for you), or fix the files in place if they need custom edits, then finish.`,
     };
   }
 

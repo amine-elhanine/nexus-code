@@ -5,14 +5,14 @@ import type { AgentUsage } from "../agent-types.js";
 import { StreamUsageTracker } from "../context-service.js";
 import { calculateAgentUsage } from "../subagent-service.js";
 
-// Chunk-level extraction and per-invocation deduplication live in
-// StreamUsageTracker; totals must be summed across all model invocations,
-// not overwritten by the latest one.
+// Invocation-level usage objects come from the protocol adapters via the
+// agent loop's "usage" event; StreamUsageTracker sums them across model
+// invocations, never overwriting with the latest one.
 export class UsageAccumulator {
   private tracker = new StreamUsageTracker();
 
-  noteChunk(chunk: any) {
-    this.tracker.noteChunk(chunk);
+  noteUsage(usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number } | null) {
+    this.tracker.noteUsage(usage);
   }
 
   /** Largest single model-call input seen so far — the live context size. */

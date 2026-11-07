@@ -14,9 +14,9 @@
 // renders it as a regular subagent card.
 
 import { z } from "zod";
-import { tool } from "@langchain/core/tools";
-import { HumanMessage } from "@langchain/core/messages";
-import { createDeepAgent } from "deepagents";
+import { tool, type AgentTool } from "./agentcore/tools.js";
+import { userMsg } from "./agentcore/messages.js";
+import { runAgentLoop } from "./agentcore/loop.js";
 import type { ProviderConfig } from "./store.js";
 import { getAgentBackend, getRunAbortSignal } from "./command-service.js";
 import { StreamUsageTracker } from "./context-service.js";
@@ -43,7 +43,7 @@ export function createHomeResearchTool(options: {
   modelName: string;
   reasoningEffort?: string;
   /** Read-only tool instances created for the parent run (search/browse). */
-  researchTools: any[];
+  researchTools: AgentTool[];
   onEvent?: SubagentEventHandler;
   onUsage?: (usage: AgentUsage) => void;
   isCancelled?: () => boolean;
@@ -69,43 +69,32 @@ export function createHomeResearchTool(options: {
           readOnly: true,
           runId: options.runId,
         });
-        const llm = await import("./providers.js").then((m) => m.createChatModel(options.provider, options.modelName, { reasoningEffort: options.reasoningEffort }));
-        const researchAgent = await createDeepAgent({
-          model: llm,
-          backend: backend as any,
-          tools: options.researchTools,
-          systemPrompt: RESEARCH_SYSTEM_PROMPT,
-        });
+        const client = await import("./providers.js").then((m) => m.createChatModel(options.provider, options.modelName, { reasoningEffort: options.reasoningEffort }));
 
         const progress = createProgressTracker();
         const usage = new StreamUsageTracker();
         const isCancelled = () => Boolean(options.isCancelled?.());
+        // Loop step budget: the old LangGraph recursionLimit of 24 supersteps
+        // ≈ 12 model iterations (model node + tool node per step).
+        const stepBudget = 12;
         const consumeStream = async () => {
           progress.beginAttempt(1);
-          const stream = await (researchAgent as any).stream(
-            { messages: [new HumanMessage(trimmed)] },
-            { streamMode: ["values", "updates", "messages"], recursionLimit: 24, signal }
-          );
+          const messages = [userMsg(trimmed)];
           let finalText = "";
-          try {
-            for await (const item of stream as AsyncIterable<any>) {
-              if (isCancelled()) throw new Error("Research subagent cancelled by user");
-              const [streamMode, payload] = Array.isArray(item) ? item : ["values", item];
-              if (streamMode === "messages") {
-                const [chunk] = Array.isArray(payload) ? payload : [payload];
-                usage.noteChunk(chunk);
-              } else if (streamMode === "values" && Array.isArray(payload?.messages)) {
-                const last = payload.messages[payload.messages.length - 1];
-                const content = last?.content;
-                if (typeof content === "string" && content.trim()) finalText = content;
-                else if (Array.isArray(content)) {
-                  const text = content.map((part: any) => (typeof part === "string" ? part : String(part?.text ?? ""))).join("").trim();
-                  if (text) finalText = text;
-                }
-              }
-            }
-          } finally {
-            await stream?.return?.().catch(() => {});
+          for await (const event of runAgentLoop({
+            client,
+            system: RESEARCH_SYSTEM_PROMPT,
+            messages,
+            tools: options.researchTools,
+            stepBudget,
+            signal,
+            onEvent: (event) => {
+              if (event.type === "usage") usage.noteUsage(event.usage);
+              else if (event.type === "done") finalText = event.answer;
+            },
+          })) {
+            if (isCancelled()) throw new Error("Research subagent cancelled by user");
+            void event;
           }
           return finalText;
         };

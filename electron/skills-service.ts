@@ -1,7 +1,7 @@
 import { promises as fs, realpathSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { tool } from "@langchain/core/tools";
+import { tool } from "./agentcore/tools.js";
 import electronPkg from "electron";
 const app = (electronPkg as any)?.app || (electronPkg as any)?.default?.app;
 const shell = (electronPkg as any)?.shell || (electronPkg as any)?.default?.shell;

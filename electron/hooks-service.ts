@@ -7,8 +7,7 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { createMiddleware } from "langchain";
-import { ToolMessage } from "@langchain/core/messages";
+import type { AgentMiddleware, ToolCallRequest, ToolResult } from "./agentcore/middleware.js";
 import { scrubSecretEnv } from "./child-env.js";
 import { pluginHookFilesWithModes, type PluginMode } from "./plugins-service.js";
 import { evaluatePolicyHooks, emitPluginEvent, listenerCount } from "./plugin-events.js";
@@ -168,24 +167,23 @@ export async function dispatchHooks(projectRoot: string, hooks: HookConfig[], ev
 }
 
 /**
- * LangChain middleware running tool:before (deny-capable) and tool:after
+ * Agent middleware running tool:before (deny-capable) and tool:after
  * hooks around every tool call (both declarative hooks.json shell hooks and
  * executable SDK plugin listeners). Returns null when there are no hooks or
  * plugin tool listeners so the run pays nothing.
  */
-export function createHooksMiddleware(options: { projectRoot: string; hooks: HookConfig[]; runId?: string }) {
+export function createHooksMiddleware(options: { projectRoot: string; hooks: HookConfig[]; runId?: string }): AgentMiddleware | null {
   const { projectRoot, hooks, runId } = options;
   const before = hooks.filter((hook) => hook.event === "tool:before");
   const after = hooks.filter((hook) => hook.event === "tool:after");
   const hasPluginToolListeners = listenerCount("tool:before") > 0 || listenerCount("tool:after") > 0;
   if (!before.length && !after.length && !hasPluginToolListeners) return null;
 
-  return createMiddleware({
+  return {
     name: "hooksMiddleware",
-    wrapToolCall: async (request: any, handler: any) => {
-      const toolName = String(request?.tool?.name ?? request?.toolCall?.name ?? "");
-      const args = request?.toolCall?.args ?? {};
-      const toolCallId = String(request?.toolCall?.id ?? "");
+    wrapToolCall: async (request: ToolCallRequest, next: (req: ToolCallRequest) => Promise<ToolResult>): Promise<ToolResult> => {
+      const toolName = String(request?.call?.name ?? "");
+      const args = request?.call?.args ?? {};
       // "Plugin-owned" = genuinely an SDK/plugin tool. Built-in tools that
       // are REGISTERED in the capability catalog (owner "builtin") are not
       // plugin-owned: they never flow through executePluginTool, so they get
@@ -197,12 +195,10 @@ export function createHooksMiddleware(options: { projectRoot: string; hooks: Hoo
       if (before.length) {
         const outcome = await dispatchHooks(projectRoot, before, "tool:before", { tool: toolName, args, runId });
         if (outcome && !outcome.ok) {
-          return new ToolMessage({
-            tool_call_id: toolCallId,
-            name: toolName,
-            status: "error",
+          return {
+            isError: true,
             content: `[HOOK DENIED] The tool call '${toolName}' was blocked by a project hook (exit ${outcome.exitCode ?? "timeout"}): ${outcome.output || "no output"}. Ask the user to review .nexus/hooks.json if this denial is wrong.`,
-          });
+          };
         }
       }
 
@@ -211,16 +207,14 @@ export function createHooksMiddleware(options: { projectRoot: string; hooks: Hoo
       if (!isPluginOwnedTool && listenerCount("tool:before") > 0) {
         const policy = await evaluatePolicyHooks("tool:before", { tool: toolName, args, runId, projectRoot });
         if (!policy.allowed) {
-          return new ToolMessage({
-            tool_call_id: toolCallId,
-            name: toolName,
-            status: "error",
+          return {
+            isError: true,
             content: `[HOOK DENIED] The tool call '${toolName}' was blocked by plugin '${policy.deniedBy ?? "unknown"}': ${policy.reason || "denied by policy hook"}.`,
-          });
+          };
         }
       }
 
-      const result = await handler(request);
+      const result = await next(request);
 
       if (after.length) {
         await dispatchHooks(projectRoot, after, "tool:after", { tool: toolName, args, runId }).catch(() => undefined);
@@ -229,5 +223,5 @@ export function createHooksMiddleware(options: { projectRoot: string; hooks: Hoo
       }
       return result;
     },
-  });
+  };
 }

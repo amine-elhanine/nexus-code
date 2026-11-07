@@ -1,13 +1,13 @@
-import { AIMessage, HumanMessage } from "@langchain/core/messages";
-import { tool } from "@langchain/core/tools";
-import { createDeepAgent } from "deepagents";
+import { tool, type AgentTool } from "./agentcore/tools.js";
+import { userMsg, textJoined, type ChatMessage } from "./agentcore/messages.js";
+import { runAgentLoop, buildSkillsSection, type SkillListing } from "./agentcore/loop.js";
 import { z } from "zod";
 import { createChatModel } from "./providers.js";
 import { createCodeIntelligenceTools } from "./code-tools.js";
 import { getAgentBackend, getRunAbortSignal } from "./command-service.js";
+import { createFilesystemTools } from "./agentcore/builtin-file-tools.js";
 import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint } from "./rate-limit.js";
 import { StreamUsageTracker } from "./context-service.js";
-import { chunkThinking } from "./thinking-chunk.js";
 import type { ProviderConfig } from "./store.js";
 import type { AgentUsage } from "./agent-service.js";
 
@@ -419,11 +419,7 @@ Review criteria:
 
 function textFromMessage(message: any): string {
   if (!message) return "";
-  if (typeof message.content === "string") return message.content;
-  if (Array.isArray(message.content)) {
-    return message.content.map((part: any) => (typeof part === "string" ? part : part?.text ?? "")).join("");
-  }
-  return message.text ?? "";
+  return textJoined(message);
 }
 
 // Mirrors describeToolCall in agent-service.ts (kept separate to avoid a
@@ -533,8 +529,10 @@ export async function executeSubagentTask(options: {
   provider: ProviderConfig;
   modelName: string;
   projectRecord: any;
-  mcpTools?: any[];
+  mcpTools?: AgentTool[];
   skills?: string[];
+  /** Skill metadata for the system-prompt skills section (deepagents parity). */
+  skillListings?: SkillListing[];
   skillsBackend?: any;
   onEvent?: SubagentEventHandler;
   isCancelled?: () => boolean;
@@ -542,7 +540,7 @@ export async function executeSubagentTask(options: {
   /** Inherit the parent run's Full Access mode: subagent commands skip approval prompts. */
   fullAccess?: boolean;
 }): Promise<string> {
-  const { role, task, projectRoot, provider, modelName, projectRecord, mcpTools, skills, skillsBackend, onEvent, isCancelled, runId } = options;
+  const { role, task, projectRoot, provider, modelName, projectRecord, mcpTools, skills, skillListings, skillsBackend, onEvent, isCancelled, runId } = options;
   const signal = runId ? getRunAbortSignal(runId) : undefined;
   const availableAgents = getAvailableAgents(projectRoot);
   const config = (SUBAGENT_CONFIGS as any)[role] || availableAgents.get(role) || SUBAGENT_CONFIGS.researcher;
@@ -576,122 +574,89 @@ export async function executeSubagentTask(options: {
       fullAccess: options.fullAccess,
     });
 
-    const llm = await createChatModel(provider, modelName);
+    const client = await createChatModel(provider, modelName);
     const codeTools = createCodeIntelligenceTools(projectRoot, { readOnly: config.readOnly });
-    const tools = [...codeTools, ...(mcpTools || [])];
+    const fileTools = createFilesystemTools(skillsBackend || backend);
+    const tools: AgentTool[] = [...fileTools, ...codeTools, ...(mcpTools || [])];
 
-    const subAgent = await createDeepAgent({
-      model: llm,
-      backend: (skillsBackend || backend) as any,
-      tools,
-      skills: skills || [],
-      systemPrompt: `${config.systemPrompt(projectRoot)}\n${SUBAGENT_TOOL_NOTES}`,
-    });
-
-    let finalMessages: any[] = [];
+    // Loop step budget: the old recursionLimit counted LangGraph supersteps
+    // where one tool call cost several supersteps; the self-built loop counts
+    // model invocations, so the same ceiling maps to roughly half.
+    const stepBudget = Math.max(8, Math.ceil(config.recursionLimit / 2));
     const usage = new StreamUsageTracker();
 
     // Mirrors the main agent: a provider 429 or dropped connection during a
-    // delegated task must not fail the whole parent run, so the stream is
+    // delegated task must not fail the whole parent run, so the loop is
     // consumed under bounded retry with the same progress-based counter reset,
-    // and mid-stream failures resume from the furthest complete superstep.
-    let runMessages: any[] = [new HumanMessage(task)];
+    // and mid-stream failures resume from the furthest complete step.
+    let runMessages: ChatMessage[] = [userMsg(task)];
+    let answer = "";
     const progress = createProgressTracker();
     let retryCount = 0;
 
-    const consumeStream = async () => {
+    const runLoopOnce = async () => {
       retryCount++;
       progress.beginAttempt(runMessages.length);
-      let messagesToStream = runMessages;
       if (retryCount > 1 && runMessages.length > 1) {
-        messagesToStream = [
-          ...runMessages,
-          new HumanMessage("[System Note: Stream resumed after temporary provider interruption. All preceding tool actions are complete. Continue directly with the subagent task without repeating completed steps.]"),
-        ];
+        runMessages.push(userMsg("[System Note: Stream resumed after temporary provider interruption. All preceding tool actions are complete. Continue directly with the subagent task without repeating completed steps.]"));
       }
-      const stream = await (subAgent as any).stream(
-        { messages: messagesToStream },
-        { streamMode: ["values", "updates", "messages"], recursionLimit: config.recursionLimit, signal }
-      );
       let lastThinkingEmitAt = 0;
-      try {
-        for await (const item of stream as AsyncIterable<any>) {
+      let sawToolCalls = false;
+      const result = await runAgentLoop({
+        client,
+        system: `${config.systemPrompt(projectRoot)}\n${SUBAGENT_TOOL_NOTES}${buildSkillsSection(skillListings, skills)}`,
+        messages: runMessages,
+        tools,
+        stepBudget,
+        signal,
+        runId,
+        onEvent: (event) => {
           if (isCancelled?.() || signal?.aborted) throw new Error("Subagent cancelled by user");
-          const [streamMode, payload] = Array.isArray(item) ? item : ["values", item];
-
-          if (streamMode === "values" && Array.isArray(payload?.messages)) {
-            finalMessages = payload.messages;
-            progress.noteSuperstep(payload.messages.length);
-          }
-
-          if (streamMode === "messages") {
-            const [chunk] = Array.isArray(payload) ? payload : [payload];
-            usage.noteChunk(chunk);
+          if (event.type === "usage") {
+            usage.noteUsage(event.usage);
+          } else if (event.type === "thinking") {
             // Reasoning deltas accumulate on the card (capped tail) and are
             // re-emitted throttled, so the subagent card shows a live
             // thinking block without flooding the event channel.
-            const thinking = chunkThinking(chunk);
-            if (thinking) {
-              const THINKING_DISPLAY_CAP = 6000;
-              const combined = (subagentItem.thinking || "") + thinking;
-              subagentItem.thinking = combined.length > THINKING_DISPLAY_CAP
-                ? combined.slice(combined.length - THINKING_DISPLAY_CAP)
-                : combined;
-              const now = Date.now();
-              if (now - lastThinkingEmitAt >= 300) {
-                lastThinkingEmitAt = now;
-                onEvent?.({ type: "subagent_step", subagent: { ...subagentItem } });
-              }
+            const THINKING_DISPLAY_CAP = 6000;
+            const combined = (subagentItem.thinking || "") + event.delta;
+            subagentItem.thinking = combined.length > THINKING_DISPLAY_CAP
+              ? combined.slice(combined.length - THINKING_DISPLAY_CAP)
+              : combined;
+            const now = Date.now();
+            if (now - lastThinkingEmitAt >= 300) {
+              lastThinkingEmitAt = now;
+              onEvent?.({ type: "subagent_step", subagent: { ...subagentItem } });
             }
+          } else if (event.type === "tool_call") {
+            sawToolCalls = true;
+            const toolName = event.call?.name || "tool";
+            const summary = toolCallSummary(event.call);
+            const step: SubagentStep = {
+              toolName: summary ? `${toolName} · ${summary}` : toolName,
+              summary,
+              timestamp: new Date().toISOString(),
+            };
+            if (subagentItem.steps.length < 100) subagentItem.steps.push(step);
+            onEvent?.({ type: "subagent_step", subagent: { ...subagentItem } });
+          } else if (event.type === "tool_result") {
+            progress.noteToolResult();
+          } else if (event.type === "done") {
+            answer = event.answer;
           }
-
-          if (streamMode === "updates" && payload && typeof payload === "object") {
-            for (const delta of Object.values<any>(payload)) {
-              for (const message of delta?.messages ?? []) {
-                if (Array.isArray(message?.tool_calls)) {
-                  for (const call of message.tool_calls) {
-                    const toolName = call?.name || "tool";
-                    const summary = toolCallSummary(call);
-                    const step: SubagentStep = {
-                      toolName: summary ? `${toolName} · ${summary}` : toolName,
-                      summary,
-                      timestamp: new Date().toISOString(),
-                    };
-                    if (subagentItem.steps.length < 100) subagentItem.steps.push(step);
-                    onEvent?.({ type: "subagent_step", subagent: { ...subagentItem } });
-                  }
-                }
-                if (message?.type === "tool") {
-                  progress.noteToolResult();
-                }
-              }
-            }
-          }
-        }
-      } catch (error) {
-        // Keep the furthest complete superstep as the resume checkpoint so the
-        // next attempt continues instead of restarting the delegated task.
-        // Trailing unanswered tool calls are pruned before resuming.
-        if (finalMessages.length > 0) {
-          runMessages = sanitizeResumeCheckpoint(finalMessages);
-        }
-        throw error;
-      }
-
+        },
+      });
+      void result;
       // Silent SSE failure (provider error payload inside HTTP 200): a stream
-      // that ends with an empty final AIMessage must be retried, not turned
-      // into a fabricated "completed without text output" report — an empty
-      // reviewer report would also silently pass the code-review gate.
-      const lastMsg = finalMessages[finalMessages.length - 1];
-      const lastIsAi = typeof lastMsg?.type === "string"
-        ? lastMsg.type === "ai"
-        : lastMsg?.constructor?.name === "AIMessage";
-      if (finalMessages.length > 0 && lastIsAi && !textFromMessage(lastMsg) && !(Array.isArray(lastMsg?.tool_calls) && lastMsg.tool_calls.length > 0)) {
+      // that ends with an empty final assistant message must be retried, not
+      // turned into a fabricated "completed without text output" report — an
+      // empty reviewer report would also silently pass the code-review gate.
+      if (!answer && !sawToolCalls) {
         throw new Error("Provider returned an empty response (silent stream failure): subagent final message has no text and no tool calls.");
       }
     };
 
-    await withRateLimitRetry(consumeStream, {
+    await withRateLimitRetry(runLoopOnce, {
       madeProgress: () => progress.madeProgress(),
       onRetry: ({ delayMs, attempt, maxAttempts, kind, reason, reset }) => {
         const prefix = reset
@@ -706,9 +671,11 @@ export async function executeSubagentTask(options: {
         onEvent?.({ type: "subagent_step", subagent: { ...subagentItem } });
       },
     });
+    // A failed attempt may leave trailing unanswered tool calls behind —
+    // prune before the next attempt replays the transcript.
+    runMessages = sanitizeResumeCheckpoint(runMessages) as ChatMessage[];
 
-    const lastMsg = finalMessages[finalMessages.length - 1];
-    const answer = capSubagentOutput(textFromMessage(lastMsg) || `Subagent [${config.title}] completed task without text output.`);
+    answer = capSubagentOutput(answer || `Subagent [${config.title}] completed task without text output.`);
     let totalInputTokens = usage.inputTokens;
     let totalOutputTokens = usage.outputTokens;
     if (!usage.sawExactOutput && totalOutputTokens === 0) totalOutputTokens = Math.max(1, Math.round(answer.length / 4));
@@ -739,6 +706,7 @@ export function createSubagentDelegationTool(options: {
   projectRecord: any;
   mcpTools?: any[];
   skills?: string[];
+  skillListings?: SkillListing[];
   skillsBackend?: any;
   onEvent?: SubagentEventHandler;
   isCancelled?: () => boolean;
@@ -757,6 +725,7 @@ export function createSubagentDelegationTool(options: {
         projectRecord: options.projectRecord,
         mcpTools: options.mcpTools,
         skills: options.skills,
+        skillListings: options.skillListings,
         skillsBackend: options.skillsBackend,
         onEvent: options.onEvent,
         isCancelled: options.isCancelled,

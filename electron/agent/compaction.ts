@@ -21,7 +21,7 @@
 // newest exchange is never degraded. Pure and synchronous — every function
 // returns new message lists and never mutates its input.
 
-import { ToolMessage, HumanMessage } from "@langchain/core/messages";
+import { toolMsg, type ChatMessage } from "../agentcore/messages.js";
 import { estimateMessageTokens, estimateMessagesTokens, trimRunMessages } from "../context-service.js";
 
 export type CompactionLevel = "none" | "microcompact" | "trim" | "clip-outputs" | "drop-outputs" | "last-resort";
@@ -36,10 +36,19 @@ export type CompactionResult = {
 };
 
 const kindOf = (message: any): string => (
-  typeof message?._getType === "function" ? message._getType()
-    : typeof message?.type === "string" ? message.type
-      : message?.role || ""
+  message?.role
+    || (typeof message?.type === "string" && ["user", "assistant", "tool", "system"].includes(message.type) ? message.type : "")
+    || (typeof message?._getType === "function" ? legacyKind(message._getType()) : "")
 );
+
+function legacyKind(getType: () => string): string {
+  try {
+    const kind = getType();
+    return kind === "human" ? "user" : kind === "ai" ? "assistant" : kind;
+  } catch {
+    return "";
+  }
+}
 
 function textOf(message: any): string {
   const content = message?.content ?? "";
@@ -50,18 +59,8 @@ function textOf(message: any): string {
   return "";
 }
 
-function replacedToolMessage(original: any, content: string): ToolMessage {
-  const next = new ToolMessage({
-    content,
-    tool_call_id: original.tool_call_id,
-    ...(original.name ? { name: original.name } : {}),
-  });
-  for (const [key, value] of Object.entries(original)) {
-    if (!(key in next) && key !== "content" && value !== undefined) {
-      try { (next as any)[key] = value; } catch { /* read-only field */ }
-    }
-  }
-  return next;
+function replacedToolMessage(original: any, content: string): ChatMessage {
+  return toolMsg(original.toolCallId ?? original.tool_call_id ?? "", content, original.name);
 }
 
 /**
@@ -72,7 +71,7 @@ function replacedToolMessage(original: any, content: string): ToolMessage {
 function microcompactBoundary(messages: any[], keepUserTurns: number): number {
   const userStarts: number[] = [];
   for (let i = 0; i < messages.length; i++) {
-    if (kindOf(messages[i]) === "human") userStarts.push(i);
+    if (kindOf(messages[i]) === "user") userStarts.push(i);
   }
   // Boundary = start of the keep window: tool results at or after it stay
   // verbatim. Fewer user turns than the window → nothing is stale.
@@ -220,10 +219,11 @@ export function buildDroppedWorkDigest(droppedMessages: any[], maxEntries = 12):
   const lines: string[] = [];
   for (const message of droppedMessages || []) {
     const kind = kindOf(message);
-    // AI messages that only carry tool calls have no text — record the calls
-    // themselves before the empty-text guard skips the message entirely.
-    if (kind === "ai" && Array.isArray(message.tool_calls) && message.tool_calls.length) {
-      for (const call of message.tool_calls) {
+    // Assistant messages that only carry tool calls have no text — record the
+    // calls themselves before the empty-text guard skips the message entirely.
+    const calls = Array.isArray(message?.toolCalls) ? message.toolCalls : Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+    if (kind === "assistant" && calls.length) {
+      for (const call of calls) {
         lines.push(`- called ${call?.name || "tool"}`);
       }
       continue;
@@ -232,7 +232,7 @@ export function buildDroppedWorkDigest(droppedMessages: any[], maxEntries = 12):
     if (!text) continue;
     if (kind === "tool") {
       lines.push(`- ${message.name || "tool"} → ${text.slice(0, 120)}`);
-    } else if (kind === "human") {
+    } else if (kind === "user") {
       lines.push(`- said: ${text.slice(0, 160)}`);
     }
   }
@@ -245,12 +245,12 @@ export function buildDroppedWorkDigest(droppedMessages: any[], maxEntries = 12):
 export function shrinkWithBrief(messages: any[], budgetTokens: number, brief: string, opts: { keepUserTurns?: number } = {}): CompactionResult {
   const trimmedBrief = String(brief || "").trim();
   if (!trimmedBrief) return shrinkToBudget(messages, budgetTokens, opts);
-  const withBrief = [...(messages || []).filter(Boolean), new HumanMessage(trimmedBrief)];
+  const withBrief = [...(messages || []).filter(Boolean), { role: "user" as const, content: trimmedBrief }];
   const result = shrinkToBudget(withBrief, budgetTokens, opts);
   // If the brief itself was trimmed away by group-dropping, re-attach it —
   // the journal brief is the one thing a resumed run must always see.
   if (!result.messages.some((m) => textOf(m) === trimmedBrief)) {
-    result.messages = [new HumanMessage(trimmedBrief), ...result.messages];
+    result.messages = [{ role: "user" as const, content: trimmedBrief }, ...result.messages];
   }
   result.tokensAfter = estimateMessagesTokens(result.messages);
   return result;

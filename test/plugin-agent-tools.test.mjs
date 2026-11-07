@@ -94,13 +94,13 @@ await test('createPluginAgentTools enforces permission checks and denies by defa
   assert.equal(tools.length, 1);
 
   // Without granting permissions, tool call returns error string
-  const deniedResult = await tools[0].invoke({});
+  const deniedResult = await tools[0].execute({});
   assert.match(deniedResult, /\[Plugin Tool Error \(permission\)\]/);
   assert.match(deniedResult, /lacks permission/);
 
   // Grant permission and retry
   setGrantedPermissions('test-plugin', ['fs.write']);
-  const allowedResult = await tools[0].invoke({});
+  const allowedResult = await tools[0].execute({});
   assert.match(allowedResult, /"status": "done"/);
 });
 
@@ -126,7 +126,7 @@ await test('createPluginAgentTools redacts secrets from results', async () => {
   });
 
   const tools = createPluginAgentTools({ mode: 'code' });
-  const result = await tools[0].invoke({});
+  const result = await tools[0].execute({});
   assert.ok(!result.includes('sk-abcdef1234567890'), 'Secret key was not redacted!');
   assert.ok(result.includes('sk-****'), 'Redacted mask sk-**** was not found in result');
 });
@@ -152,7 +152,7 @@ await test('createPluginAgentTools enforces user approval when requiresApproval 
 
   // Without approval callback, denied by default
   const toolsWithoutApproval = createPluginAgentTools({ mode: 'code' });
-  const deniedResult = await toolsWithoutApproval[0].invoke({});
+  const deniedResult = await toolsWithoutApproval[0].execute({});
   assert.match(deniedResult, /\[Plugin Tool Error \(approval\)\]/);
 
   // With approval callback that returns false
@@ -160,7 +160,7 @@ await test('createPluginAgentTools enforces user approval when requiresApproval 
     mode: 'code',
     requestApproval: async () => false,
   });
-  const rejectedResult = await toolsWithRejection[0].invoke({});
+  const rejectedResult = await toolsWithRejection[0].execute({});
   assert.match(rejectedResult, /\[Plugin Tool Error \(approval\)\]/);
   assert.match(rejectedResult, /denied by user/);
 
@@ -169,7 +169,7 @@ await test('createPluginAgentTools enforces user approval when requiresApproval 
     mode: 'code',
     requestApproval: async () => true,
   });
-  const approvedResult = await toolsWithApproval[0].invoke({});
+  const approvedResult = await toolsWithApproval[0].execute({});
   assert.match(approvedResult, /"performed": true/);
 });
 

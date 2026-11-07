@@ -2,7 +2,7 @@
 
 import { ipcMain } from "electron";
 import {
-  getAppSettings, getNotebookParserConfig, isMaskedSecret, saveAppSettings, saveNotebookParserConfig,
+  getAppSettings, getSearchConfig, saveSearchConfig, getNotebookParserConfig, isMaskedSecret, saveAppSettings, saveNotebookParserConfig,
 } from "../store.js";
 import type { AgentSettings } from "../agent-types.js";
 import { assertPayload, AgentSettingsSaveSchema, AppSettingsSaveSchema, NotebookParserSaveSchema } from "./schemas.js";
@@ -24,6 +24,30 @@ export function registerSettingsRoutes(ctx: MainIpcContext): void {
     return { ...saved, apiKey: saved.apiKey ? "********" : "" };
   });
   ipcMain.handle("app-settings:get", () => getAppSettings());
+  // Search backend config: keys return MASKED (never the plaintext), saves
+  // skip masked values so a re-save of untouched fields keeps the sealed key.
+  ipcMain.handle("search-config:get", async () => {
+    const config = await getSearchConfig();
+    return {
+      backend: config.backend,
+      searxngBaseUrl: config.searxngBaseUrl,
+      hasTavilyKey: Boolean(config.tavilyKey),
+      hasBraveKey: Boolean(config.braveKey),
+      hasExaKey: Boolean(config.exaKey),
+    };
+  });
+  ipcMain.handle("search-config:save", (_event, input: { backend?: string; tavilyKey?: string | null; braveKey?: string | null; exaKey?: string | null; searxngBaseUrl?: string | null }) => {
+    const BACKENDS = new Set(["auto", "tavily", "brave", "exa", "searxng", "ddg"]);
+    const backend = BACKENDS.has(String(input.backend)) ? (input.backend as any) : undefined;
+    const unmask = (value?: string | null) => (isMaskedSecret(value as string) ? undefined : value);
+    return saveSearchConfig({
+      backend,
+      tavilyKey: unmask(input.tavilyKey),
+      braveKey: unmask(input.braveKey),
+      exaKey: unmask(input.exaKey),
+      searxngBaseUrl: input.searxngBaseUrl,
+    });
+  });
   ipcMain.handle("app-settings:save", (_event, input: Parameters<typeof saveAppSettings>[0]) => {
     assertPayload(AppSettingsSaveSchema, input, "app-settings:save");
     return saveAppSettings(input);

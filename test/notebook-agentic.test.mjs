@@ -114,15 +114,16 @@ await test("R4: chat message persistence preserves steps", async () => {
 
 await test("R5: buildSkillMounts resolves skill mounts across route permutations on Windows & POSIX", async () => {
   const { buildSkillMounts } = await import("../dist-electron/skills-service.js");
-  const { CompositeBackend, FilesystemBackend } = await import("deepagents");
+  const { CompositeAgentBackend, WorkspaceBackend } = await import("../dist-electron/agentcore/backend.js");
 
   const mockSkillDir = path.join(tmp, "mock-skills", "all", "pptx");
   await fs.mkdir(mockSkillDir, { recursive: true });
   await fs.writeFile(path.join(mockSkillDir, "SKILL.md"), Array(60).fill("# PPTX Skill line").join("\n"), "utf8");
 
-  const systemBackend = new FilesystemBackend({ rootDir: path.join(tmp, "mock-skills"), virtualMode: true });
+  const systemBackend = new WorkspaceBackend({ rootDir: path.join(tmp, "mock-skills"), id: "system-skills" });
   const mounts = buildSkillMounts(null, systemBackend);
-  const composite = new CompositeBackend(new FilesystemBackend({ rootDir: tmp, virtualMode: true }), mounts);
+  const composite = new CompositeAgentBackend({ rootDir: tmp, id: "notebook-test" });
+  for (const [prefix, backend] of Object.entries(mounts)) composite.mount(prefix, backend);
 
   const paths = [
     "/system-skills/all/pptx/SKILL.md",
@@ -140,12 +141,13 @@ await test("R5: buildSkillMounts resolves skill mounts across route permutations
 });
 
 await test("R6: fileBackend with id enables command execution in CompositeBackend", async () => {
-  const { CompositeBackend, FilesystemBackend } = await import("deepagents");
-  const fileBackend = new FilesystemBackend({ rootDir: tmp, virtualMode: true });
-  fileBackend.id = "notebook-test";
+  const { CompositeAgentBackend, WorkspaceBackend } = await import("../dist-electron/agentcore/backend.js");
+  const fileBackend = new WorkspaceBackend({ rootDir: tmp, id: "notebook-test" });
   fileBackend.execute = async (cmd) => ({ output: `ok: ${cmd}`, exitCode: 0, truncated: false });
 
-  const composite = new CompositeBackend(fileBackend, {});
+  // The composite carries the wrapped backend's execute wiring (see
+  // notebook-rag.ts — the notebook file backend owns the approval pipeline).
+  const composite = new CompositeAgentBackend({ rootDir: tmp, id: fileBackend.id, execute: (cmd) => fileBackend.execute(cmd) });
   assert.equal(composite.id, "notebook-test");
   const res = await composite.execute("echo test");
   assert.equal(res.output, "ok: echo test");

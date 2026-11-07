@@ -233,3 +233,52 @@ test("repair budget: exhausted repairs skip content/plan repair rounds (no infin
   // decision falls through to the honest warnings pass, never a loop.
   assert.equal(decision.outcome, "passed-with-warnings");
 });
+
+// Regression: a chart-requesting chat answer with no visual blocks must be
+// bounced (failed-charts), not silently passed via the [[answer-in-chat]]
+// sentinel — this is what let "add plots" requests end text-only.
+const verdict = decideHomeVerification({
+  request: "show me graphs of renewable energy growth by year",
+  response: "Renewable energy capacity has expanded dramatically over the last decade, with solar and wind leading the transition across every major market. Here is the breakdown of growth by year and technology, with the trends that matter most.\n\n[[answer-in-chat]]",
+  currentRepairs: 0,
+  maxRepairs: 2,
+  wantsDeliverable: true,
+  freshFiles: [],
+  createdDeliverable: false,
+  artifactValid: false,
+  invalidArtifacts: [],
+  missingFormats: [],
+  contentInspections: [],
+  mdFilesWithCharts: [],
+  planItems: [],
+  evidenceActions: [],
+  homeReadOnlyStreak: 0,
+  failedSkillNames: [],
+});
+console.log("chart-request guard:", verdict.outcome);
+if (verdict.outcome !== "failed-charts") {
+  throw new Error(`expected failed-charts for a chart request without visuals, got ${verdict.outcome}`);
+}
+const withCharts = decideHomeVerification({
+  request: "show me graphs of renewable energy growth by year",
+  response: "Renewable energy capacity has expanded dramatically over the last decade, and the momentum keeps building. Here is the growth picture by year and technology:\n```bar\ntitle \"Renewable growth by year\"\nx-axis \"Year\"\ny-axis \"TWh\"\nbar \"2020\" 2500\nbar \"2021\" 2900\nbar \"2022\" 3400\n```\n\n[[answer-in-chat]]",
+  currentRepairs: 0,
+  maxRepairs: 2,
+  wantsDeliverable: true,
+  freshFiles: [],
+  createdDeliverable: false,
+  artifactValid: false,
+  invalidArtifacts: [],
+  missingFormats: [],
+  contentInspections: [],
+  mdFilesWithCharts: [],
+  planItems: [],
+  evidenceActions: [],
+  homeReadOnlyStreak: 0,
+  failedSkillNames: [],
+});
+console.log("with-charts verdict:", withCharts.outcome);
+if (withCharts.outcome !== "chat-answer") {
+  throw new Error(`expected chat-answer when visuals are present, got ${withCharts.outcome}`);
+}
+console.log("\nchart-request guard tests passed");

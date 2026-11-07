@@ -6,7 +6,6 @@ import {
   Terminal, Trash2, TriangleAlert, Activity, Globe, GitCompare, Layers, SlidersHorizontal, Share2
 } from "lucide-react";
 import { WindowControls } from "./components/common/WindowControls.js";
-import { NexusLogo } from "./components/common/NexusLogo.js";
 import { ConfirmModal } from "./modals/ConfirmModal.js";
 import { ErrorBoundary } from "./components/common/ErrorBoundary.js";
 import { ProviderModal } from "./modals/ProviderModal.js";
@@ -737,7 +736,6 @@ function App() {
             </button>
           )}
           <div className="product-logo" onClick={() => void enterHome()} title="Nexus — Unified AI Workspace" style={{ cursor: "pointer" }}>
-            <NexusLogo size={16} />
             <span className="nexus-title">nexus<span className="nexus-cursor">_</span></span>
           </div>
           <div className="top-separator" />

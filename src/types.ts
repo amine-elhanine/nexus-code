@@ -103,6 +103,12 @@ export type NotebookAudioOverview = {
   citations: NotebookCitation[];
   createdAt: string;
   updatedAt: string;
+  /** Synthesized neural episode (present when a TTS-capable provider was configured). */
+  audioFilename?: string;
+  audioMimeType?: string;
+  /** Cumulative start offset per turn in ms — drives transcript highlighting. */
+  turnTimestampsMs?: number[];
+  audioModel?: string;
 };
 
 export type ArtifactVersionEntry = {

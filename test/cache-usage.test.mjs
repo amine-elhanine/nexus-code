@@ -1,68 +1,58 @@
-// Tests for prompt-cache token extraction in the streaming usage tracker
+// Tests for prompt-cache token accounting in the streaming usage tracker
 // (electron/context-service.ts) — the data behind the context-bar hover
-// card's "Cache Hit Rate" row. Providers report cached input tokens in
-// different shapes; all must normalize into cacheReadTokens/cacheCreation.
+// card's "Cache Hit Rate" row. Protocol adapters normalize each provider's
+// wire shape into one usage object per model invocation; the tracker sums
+// invocations and carries cacheRead/cacheCreation for the hit-rate row.
 import test from "node:test";
 import assert from "node:assert/strict";
 
-const { extractStreamUsage, StreamUsageTracker } = await import("../dist-electron/context-service.js");
-
-test("cache usage: LangChain standard usage_metadata.input_token_details (Anthropic + OpenAI)", () => {
-  const usage = extractStreamUsage({
-    id: "msg_1",
-    usage_metadata: {
-      input_tokens: 10_000, // INCLUSIVE of cached subset on both providers
-      output_tokens: 500,
-      total_tokens: 10_500,
-      input_token_details: { cache_read: 8_000, cache_creation: 1_000 },
-    },
-  });
-  assert.equal(usage.inputTokens, 10_000);
-  assert.equal(usage.cacheReadTokens, 8_000);
-  assert.equal(usage.cacheCreationTokens, 1_000);
-});
-
-test("cache usage: legacy Anthropic raw usage fields", () => {
-  const usage = extractStreamUsage({
-    id: "msg_2",
-    additional_kwargs: {
-      usage: { input_tokens: 5_000, output_tokens: 200, cache_read_input_tokens: 4_000, cache_creation_input_tokens: 500 },
-    },
-  });
-  assert.equal(usage.cacheReadTokens, 4_000);
-  assert.equal(usage.cacheCreationTokens, 500);
-});
-
-test("cache usage: legacy OpenAI prompt_tokens_details.cached_tokens", () => {
-  const usage = extractStreamUsage({
-    id: "msg_3",
-    response_metadata: {
-      tokenUsage: { prompt_tokens: 6_000, completion_tokens: 100, total_tokens: 6_100, prompt_tokens_details: { cached_tokens: 2_500 } },
-    },
-  });
-  assert.equal(usage.cacheReadTokens, 2_500);
-  assert.equal(usage.cacheCreationTokens, 0);
-});
+const { StreamUsageTracker } = await import("../dist-electron/context-service.js");
 
 test("cache usage: usage without cache accounting defaults to zero", () => {
-  const usage = extractStreamUsage({
-    id: "msg_4",
-    usage_metadata: { input_tokens: 1_000, output_tokens: 100, total_tokens: 1_100 },
-  });
-  assert.equal(usage.cacheReadTokens, 0);
-  assert.equal(usage.cacheCreationTokens, 0);
+  const tracker = new StreamUsageTracker();
+  tracker.noteUsage({ inputTokens: 1_000, outputTokens: 100 });
+  assert.equal(tracker.cacheReadTokens, 0);
+  assert.equal(tracker.cacheCreationTokens, 0);
 });
 
-test("cache usage: tracker collapses cumulative per-message cache totals and sums across invocations", () => {
+test("cache usage: tracker sums per-invocation usage and cache totals", () => {
   const tracker = new StreamUsageTracker();
-  // Invocation 1: Anthropic-style repeated cumulative chunks under one id.
-  tracker.noteChunk({ id: "run1", usage_metadata: { input_tokens: 10_000, output_tokens: 100, total_tokens: 10_100, input_token_details: { cache_read: 8_000, cache_creation: 1_000 } } });
-  tracker.noteChunk({ id: "run1", usage_metadata: { input_tokens: 10_000, output_tokens: 100, total_tokens: 10_100, input_token_details: { cache_read: 8_000, cache_creation: 1_000 } } });
+  // Invocation 1 (Anthropic adapter shape: input INCLUSIVE of cached subset).
+  tracker.noteUsage({ inputTokens: 10_000, outputTokens: 100, cacheReadTokens: 8_000, cacheCreationTokens: 1_000 });
   // Invocation 2 (context grew, cache grew with it).
-  tracker.noteChunk({ id: "run2", usage_metadata: { input_tokens: 15_000, output_tokens: 200, total_tokens: 15_200, input_token_details: { cache_read: 12_000, cache_creation: 1_500 } } });
+  tracker.noteUsage({ inputTokens: 15_000, outputTokens: 200, cacheReadTokens: 12_000, cacheCreationTokens: 1_500 });
   assert.equal(tracker.inputTokens, 25_000);
+  assert.equal(tracker.outputTokens, 300);
   assert.equal(tracker.cacheReadTokens, 20_000);
   assert.equal(tracker.cacheCreationTokens, 2_500);
   // Hit rate the hover card computes: 20k of 25k input from cache.
   assert.equal(tracker.cacheReadTokens / tracker.inputTokens, 0.8);
+});
+
+test("cache usage: empty/absent usage payloads are ignored", () => {
+  const tracker = new StreamUsageTracker();
+  tracker.noteUsage(undefined);
+  tracker.noteUsage({ inputTokens: 0, outputTokens: 0 });
+  tracker.noteUsage({});
+  assert.equal(tracker.inputTokens, 0);
+  assert.equal(tracker.sawExactInput, false);
+  assert.equal(tracker.sawExactOutput, false);
+});
+
+test("cache usage: lastObservedInputTokens tracks the largest single-call input", () => {
+  const tracker = new StreamUsageTracker();
+  tracker.noteUsage({ inputTokens: 10_000, outputTokens: 100 });
+  tracker.noteUsage({ inputTokens: 15_000, outputTokens: 200 });
+  tracker.noteUsage({ inputTokens: 12_000, outputTokens: 50 });
+  assert.equal(tracker.lastObservedInputTokens, 15_000);
+  assert.equal(tracker.sawExactInput, true);
+  assert.equal(tracker.sawExactOutput, true);
+});
+
+test("cache usage: addTotals folds subagent aggregates on top", () => {
+  const tracker = new StreamUsageTracker();
+  tracker.noteUsage({ inputTokens: 1_000, outputTokens: 100 });
+  tracker.addTotals(500, 50);
+  assert.equal(tracker.inputTokens, 1_500);
+  assert.equal(tracker.outputTokens, 150);
 });

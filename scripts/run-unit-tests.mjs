@@ -14,6 +14,13 @@ const root = path.join(here, "..");
 
 const UNIT_TESTS = [
   "test/scratch-helper.test.mjs",
+  "test/openai-wire-shapes.test.mjs",
+  "test/home-deliverables.test.mjs",
+  "test/phase1-fixes.test.mjs",
+  "test/audio-tts.test.mjs",
+  "test/phase3-tools.test.mjs",
+  "test/os-sandbox.test.mjs",
+  "test/prompt-caching.test.mjs",
   "test/rate-limit.test.mjs",
   "test/checkpoint-resume.test.mjs",
   "test/checkpoint-binary.test.mjs",
@@ -69,7 +76,6 @@ const UNIT_TESTS = [
   "test/network-policy.test.mjs",
   "test/ipc-adversarial.test.mjs",
   "test/ipc-schemas.test.mjs",
-  "test/prompt-caching.test.mjs",
   "test/cache-usage.test.mjs",
   "test/deliverable-inspect.test.mjs",
   "test/reliability-gates.test.mjs",

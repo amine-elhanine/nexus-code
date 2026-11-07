@@ -1,37 +1,33 @@
-// Tests for the provider-safety tool-message sanitizer
-// (electron/agent/message-utils.ts flattenToolMessageContent).
-//
-// Regression context: a Home presentation run burned 600+ steps because one
-// tool result carried structured (image-part) content; the OpenAI-compatible
-// provider rejected the payload shape with a 400 deserialize error on EVERY
-// retry/recovery/continue until the run died. The sanitizer flattens tool
-// message content to plain text at the stream boundary so no tool result can
-// ever poison the transcript again.
+// Tests for agentcore/message-utils flattenToolMessageContent: legacy
+// structured tool results must normalize to plain string content before a
+// stream attempt (structured tool content permanently 400s OpenAI-compatible
+// providers).
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ToolMessage, HumanMessage, AIMessage } from "@langchain/core/messages";
+import { toolMsg, userMsg, assistantMsg } from "../dist-electron/agentcore/messages.js";
 
 const { flattenToolMessageContent } = await import("../dist-electron/agent/message-utils.js");
 
 test("sanitize: array tool content with text parts flattens to a string", () => {
   const { messages, flattened } = flattenToolMessageContent([
-    new ToolMessage({ content: [{ type: "text", text: "line one" }, { type: "text", text: "line two" }], tool_call_id: "call_1" }),
+    { role: "tool", toolCallId: "call_1", content: [{ type: "text", text: "line one" }, { type: "text", text: "line two" }] },
   ]);
   assert.equal(flattened, 1);
   assert.equal(messages[0].content, "line one\nline two");
-  assert.equal(messages[0].tool_call_id, "call_1");
+  assert.equal(messages[0].toolCallId, "call_1");
 });
 
 test("sanitize: image parts are omitted and referenced by path instead", () => {
   const { messages, omittedImages } = flattenToolMessageContent([
-    new ToolMessage({
+    {
+      role: "tool",
+      toolCallId: "call_2",
       content: [
         { type: "text", text: "Preview of sheet:" },
-        { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
-        { type: "image_url", image_url: { url: "data:image/png;base64,BBBB" } },
+        { type: "image", url: "data:image/png;base64,AAAA" },
+        { type: "image", url: "data:image/png;base64,BBBB" },
       ],
-      tool_call_id: "call_2",
-    }),
+    },
   ]);
   assert.equal(omittedImages, 2);
   assert.match(String(messages[0].content), /^Preview of sheet:/);
@@ -42,9 +38,9 @@ test("sanitize: image parts are omitted and referenced by path instead", () => {
 });
 
 test("sanitize: string-content tool messages and non-tool messages pass through untouched", () => {
-  const tool = new ToolMessage({ content: "plain text", tool_call_id: "call_3" });
-  const human = new HumanMessage([{ type: "text", text: "hello" }, { type: "image_url", image_url: { url: "data:image/png;base64,x" } }]);
-  const ai = new AIMessage("hi");
+  const tool = toolMsg("call_3", "plain text");
+  const human = userMsg([{ type: "text", text: "hello" }, { type: "image", url: "data:image/png;base64,x" }]);
+  const ai = assistantMsg("hi");
   const { messages, flattened, omittedImages } = flattenToolMessageContent([tool, human, ai]);
   assert.equal(flattened, 0);
   assert.equal(omittedImages, 0);
@@ -55,21 +51,21 @@ test("sanitize: string-content tool messages and non-tool messages pass through 
 
 test("sanitize: image-only tool content becomes a path-reference note, never an empty string", () => {
   const { messages } = flattenToolMessageContent([
-    new ToolMessage({ content: [{ type: "image_url", image_url: { url: "x" } }], tool_call_id: "call_4" }),
+    { role: "tool", toolCallId: "call_4", content: [{ type: "image", url: "x" }] },
   ]);
   assert.equal(typeof messages[0].content, "string");
   assert.match(String(messages[0].content), /image part\(s\) removed/);
 });
 
-test("sanitize: tolerates malformed parts and non-LangChain shapes", () => {
+test("sanitize: tolerates malformed parts and legacy shapes", () => {
   const { messages, flattened } = flattenToolMessageContent([
-    new ToolMessage({ content: ["plain", { type: "text", text: "part" }, { weird: true }], tool_call_id: "call_5" }),
-    { content: "not even a class instance" }, // no _getType → untouched
+    { role: "tool", toolCallId: "call_5", content: ["plain", { type: "text", text: "part" }, { weird: true }] },
+    { content: "not even a message object" }, // no role → untouched
     null,
   ]);
   assert.equal(flattened, 1);
   assert.match(String(messages[0].content), /plain/);
   assert.match(String(messages[0].content), /part/);
-  assert.deepEqual(messages[1], { content: "not even a class instance" });
+  assert.deepEqual(messages[1], { content: "not even a class instance".replace("class instance", "message object") } && { content: "not even a message object" });
   assert.equal(messages[2], null);
 });

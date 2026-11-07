@@ -64,9 +64,9 @@ await test('hooks middleware still runs policy hooks for a REGISTERED builtin to
   try {
     const middleware = createHooksMiddleware({ projectRoot: '.', hooks: [] });
     assert.ok(middleware, 'middleware exists when a listener is registered');
-    const request = { tool: { name: 'web_search' }, toolCall: { name: 'web_search', args: {}, id: 'tc1' } };
-    const handled = await middleware.wrapToolCall(request, async (req) => ({ via: 'handler', req: req.toolCall.id }));
-    assert.equal(handled.status, 'error', 'registered builtin tool is still policy-hook-denyable');
+    const request = { call: { id: 'tc1', name: 'web_search', args: {} }, toolCallId: 'tc1' };
+    const handled = await middleware.wrapToolCall(request, async () => 'handler-ok');
+    assert.equal(handled.isError, true, 'registered builtin tool is still policy-hook-denyable');
     assert.ok(String(handled.content).includes('[HOOK DENIED]'), 'denial message present');
   } finally {
     remove();

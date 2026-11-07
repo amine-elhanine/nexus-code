@@ -374,22 +374,22 @@ test("estimateMessagesTokens counts content, tool-call args and image payloads",
 });
 
 test("trimRunMessages keeps the original request, preserves tool pairs and honors the budget", () => {
-  const small = (text) => ({ type: "human", content: `/build ${text}` });
-  const giant = (chars) => ({ type: "tool", content: "x".repeat(chars) });
+  const small = (text) => ({ role: "user", content: `/build ${text}` });
+  const giant = (chars) => ({ role: "tool", toolCallId: "giant", content: "x".repeat(chars) });
   // Pair: AI-with-calls must move together with its tool result.
   const messages = [
-    { type: "human", content: "Build feature X with Y and Z constraints" },
-    { type: "ai", content: "Reading the repo", tool_calls: [{ name: "read_file", args: { file_path: "src/a.ts" } }] },
+    { role: "user", content: "Build feature X with Y and Z constraints" },
+    { role: "assistant", content: "Reading the repo", toolCalls: [{ id: "a1", name: "read_file", args: { file_path: "src/a.ts" } }] },
     giant(20_000),
-    { type: "ai", content: "Now editing" },
-    { type: "ai", content: "second plan", tool_calls: [{ name: "execute", args: { command: "npm test" } }] },
+    { role: "assistant", content: "Now editing" },
+    { role: "assistant", content: "second plan", toolCalls: [{ id: "a2", name: "execute", args: { command: "npm test" } }] },
     giant(20_000),
-    { type: "human", content: "iterate further" },
-    { type: "ai", content: "more work", tool_calls: [{ name: "write_file", args: { file_path: "src/b.ts" } }] },
+    { role: "user", content: "iterate further" },
+    { role: "assistant", content: "more work", toolCalls: [{ id: "a3", name: "write_file", args: { file_path: "src/b.ts" } }] },
     giant(8_000),
-    { type: "ai", content: "final check", tool_calls: [{ name: "read_file", args: { file_path: "src/b.ts" } }] },
+    { role: "assistant", content: "final check", toolCalls: [{ id: "a4", name: "read_file", args: { file_path: "src/b.ts" } }] },
     giant(8_000),
-    { type: "ai", content: "done text" },
+    { role: "assistant", content: "done text" },
   ];
 
   const budget = 30_000;
@@ -397,16 +397,16 @@ test("trimRunMessages keeps the original request, preserves tool pairs and honor
   // Under budget after condensation
   assert.ok(estimateMessagesTokens(result) <= budget, "result should fit the budget");
   // Never an orphan tool result at the start, and pairs stay adjacent
-  assert.equal(result[0].type, "human");
+  assert.equal(result[0].role, "user");
   const summaryText = String(result[0].content);
   assert.ok(summaryText.includes("Condensed earlier work"), "condensation digest must be present");
   assert.ok(summaryText.includes("Build feature X"), "the original request must be preserved in the digest");
   for (let i = 1; i < result.length; i++) {
-    if (result[i].type === "ai" && Array.isArray(result[i].tool_calls) && result[i].tool_calls.length) {
-      assert.equal(result[i + 1]?.type, "tool", "an AI message with tool calls must be followed by its tool result");
+    if (result[i].role === "assistant" && Array.isArray(result[i].toolCalls) && result[i].toolCalls.length) {
+      assert.equal(result[i + 1]?.role, "tool", "an assistant message with tool calls must be followed by its tool result");
     }
-    if (result[i].type === "tool") {
-      assert.ok(Array.isArray(result[i - 1]?.tool_calls), "a tool result must never appear without its AI call message");
+    if (result[i].role === "tool") {
+      assert.ok(Array.isArray(result[i - 1]?.toolCalls), "a tool result must never appear without its assistant call message");
     }
   }
   // Condensation actually freed room (strictly smaller than the input)
@@ -415,12 +415,12 @@ test("trimRunMessages keeps the original request, preserves tool pairs and honor
 
 test("run compaction preserves the structured recovery brief and complete tool-call pairs", () => {
   const messages = [
-    { type: "human", content: "Implement feature Q; preserve API compatibility and add tests" },
-    { type: "ai", content: "Inspecting files", tool_calls: [{ id: "call-1", name: "read_file", args: { path: "src/q.ts" } }] },
-    { type: "tool", tool_call_id: "call-1", content: "x".repeat(20_000) },
-    { type: "ai", content: "Implementing changes" },
-    { type: "ai", content: "Running checks", tool_calls: [{ id: "call-2", name: "execute", args: { command: "npm test" } }] },
-    { type: "tool", tool_call_id: "call-2", content: "y".repeat(20_000) },
+    { role: "user", content: "Implement feature Q; preserve API compatibility and add tests" },
+    { role: "assistant", content: "Inspecting files", toolCalls: [{ id: "call-1", name: "read_file", args: { path: "src/q.ts" } }] },
+    { role: "tool", toolCallId: "call-1", content: "x".repeat(20_000) },
+    { role: "assistant", content: "Implementing changes" },
+    { role: "assistant", content: "Running checks", toolCalls: [{ id: "call-2", name: "execute", args: { command: "npm test" } }] },
+    { role: "tool", toolCallId: "call-2", content: "y".repeat(20_000) },
   ];
   const brief = [
     "[Durable Code Task Recovery Brief]",
@@ -436,23 +436,23 @@ test("run compaction preserves the structured recovery brief and complete tool-c
   assert.match(allText, /npm test failed with assertion mismatch/);
   assert.ok(estimateMessagesTokens(compacted) <= 5000);
   for (let i = 1; i < compacted.length; i++) {
-    if (compacted[i]?.type === "tool") {
-      assert.ok(Array.isArray(compacted[i - 1]?.tool_calls), "compaction must not orphan a tool result");
+    if (compacted[i]?.role === "tool") {
+      assert.ok(Array.isArray(compacted[i - 1]?.toolCalls), "compaction must not orphan a tool result");
     }
   }
 });
 
 test("StreamUsageTracker.lastObservedInputTokens tracks the largest single-call input", () => {
   const tracker = new StreamUsageTracker();
-  tracker.noteChunk({ usage_metadata: { input_tokens: 1200, output_tokens: 40 } });
+  // Adapters report one usage object per model invocation.
+  tracker.noteUsage({ inputTokens: 1200, outputTokens: 40 });
   assert.equal(tracker.lastObservedInputTokens, 1200);
-  tracker.noteChunk({ response_metadata: { tokenUsage: { promptTokens: 5000, completionTokens: 30 } } });
+  tracker.noteUsage({ inputTokens: 5000, outputTokens: 30 });
   assert.equal(tracker.lastObservedInputTokens, 5000);
-  // Repeated cumulative chunks under one id must not inflate the max
-  tracker.noteChunk({ id: "msg-1", usage_metadata: { input_tokens: 6000, output_tokens: 10 } });
-  tracker.noteChunk({ id: "msg-1", usage_metadata: { input_tokens: 6100, output_tokens: 15 } });
+  tracker.noteUsage({ inputTokens: 6100, outputTokens: 15 });
   assert.equal(tracker.lastObservedInputTokens, 6100);
   // Empty usage payloads are ignored
-  tracker.noteChunk({ usage_metadata: {} });
+  tracker.noteUsage({ inputTokens: 0, outputTokens: 0 });
+  tracker.noteUsage(undefined);
   assert.equal(tracker.lastObservedInputTokens, 6100);
 });

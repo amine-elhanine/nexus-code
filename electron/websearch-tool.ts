@@ -1,4 +1,4 @@
-import { tool } from "@langchain/core/tools";
+import { tool } from "./agentcore/tools.js";
 import { z } from "zod";
 import { decodeHtmlEntities, htmlToText } from "./html-text.js";
 
@@ -107,6 +107,136 @@ export function freshnessToDateFilter(freshness?: string): string | null {
   return FRESHNESS_DF[freshness.toLowerCase()] ?? null;
 }
 
+// ---- Structured search backends (Phase 3.1) -------------------------------
+// Tavily / Brave / Exa / SearXNG return JSON — no HTML scraping, no layout
+// drift. Each adapter takes the raw API key; routing (backend selection +
+// automatic DDG fallback) lives in webSearchWithFallback.
+
+const SEARCH_TIMEOUT_MS = 12_000;
+
+export function parseTavilyResponse(payload: unknown, limit: number): WebSearchResult[] {
+  const results = (payload as any)?.results;
+  if (!Array.isArray(results)) return [];
+  return results.slice(0, limit).map((r: any) => ({
+    title: String(r?.title || "").slice(0, 160),
+    url: String(r?.url || ""),
+    snippet: String(r?.content || "").slice(0, 300),
+  })).filter((r) => /^https?:\/\//i.test(r.url));
+}
+
+export function parseBraveResponse(payload: unknown, limit: number): WebSearchResult[] {
+  const results = (payload as any)?.web?.results;
+  if (!Array.isArray(results)) return [];
+  return results.slice(0, limit).map((r: any) => ({
+    title: String(r?.title || "").slice(0, 160),
+    url: String(r?.url || ""),
+    snippet: String(r?.description || "").slice(0, 300),
+  })).filter((r) => /^https?:\/\//i.test(r.url));
+}
+
+export function parseExaResponse(payload: unknown, limit: number): WebSearchResult[] {
+  const results = (payload as any)?.results;
+  if (!Array.isArray(results)) return [];
+  return results.slice(0, limit).map((r: any) => ({
+    title: String(r?.title || "").slice(0, 160),
+    url: String(r?.url || ""),
+    snippet: String(r?.text || "").slice(0, 300),
+  })).filter((r) => /^https?:\/\//i.test(r.url));
+}
+
+export function parseSearxngResponse(payload: unknown, limit: number): WebSearchResult[] {
+  const results = (payload as any)?.results;
+  if (!Array.isArray(results)) return [];
+  return results.slice(0, limit).map((r: any) => ({
+    title: String(r?.title || "").slice(0, 160),
+    url: String(r?.url || ""),
+    snippet: String(r?.content || "").slice(0, 300),
+  })).filter((r) => /^https?:\/\//i.test(r.url));
+}
+
+async function jsonSearchFetch(url: string, init: RequestInit): Promise<unknown> {
+  const response = await fetch(url, { ...init, signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`search backend HTTP ${response.status}: ${detail.slice(0, 160)}`);
+  }
+  return response.json();
+}
+
+export async function tavilySearch(query: string, apiKey: string, maxResults: number, dateFilter?: string | null): Promise<WebSearchResult[]> {
+  const body: Record<string, unknown> = { api_key: apiKey, query, max_results: maxResults };
+  if (dateFilter) body.time_range = dateFilter === "day" ? "day" : dateFilter === "week" ? "week" : dateFilter === "month" ? "month" : "year";
+  return parseTavilyResponse(await jsonSearchFetch("https://api.tavily.com/search", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }), maxResults);
+}
+
+export async function braveSearch(query: string, apiKey: string, maxResults: number, dateFilter?: string | null): Promise<WebSearchResult[]> {
+  const params = new URLSearchParams({ q: query, count: String(maxResults) });
+  const year = dateFilter === "year" ? new Date().getFullYear() : null;
+  if (year) {
+    params.set("freshness", "py");
+    params.set("tfpy", String(year));
+  } else if (dateFilter === "month" || dateFilter === "week" || dateFilter === "day") {
+    params.set("freshness", dateFilter === "day" ? "pd" : dateFilter === "week" ? "pw" : "pm");
+  }
+  return parseBraveResponse(await jsonSearchFetch(`https://api.search.brave.com/res/v1/web/search?${params}`, {
+    headers: { accept: "application/json", "x-subscription-token": apiKey },
+  }), maxResults);
+}
+
+export async function exaSearch(query: string, apiKey: string, maxResults: number, dateFilter?: string | null): Promise<WebSearchResult[]> {
+  const body: Record<string, unknown> = { query, numResults: maxResults, type: "auto" };
+  if (dateFilter) body.startPublishedDate = new Date(Date.now() - (dateFilter === "day" ? 1 : dateFilter === "week" ? 7 : dateFilter === "month" ? 30 : 365) * 86_400_000).toISOString();
+  return parseExaResponse(await jsonSearchFetch("https://api.exa.ai/search", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": apiKey },
+    body: JSON.stringify(body),
+  }), maxResults);
+}
+
+export async function searxngSearch(query: string, baseUrl: string, maxResults: number, dateFilter?: string | null): Promise<WebSearchResult[]> {
+  const params = new URLSearchParams({ q: query, format: "json" });
+  if (dateFilter) params.set("time_range", dateFilter);
+  const base = baseUrl.replace(/\/+$/, "");
+  return parseSearxngResponse(await jsonSearchFetch(`${base}/search?${params}`, {
+    headers: { accept: "application/json" },
+  }), maxResults);
+}
+
+export type SearchConfig = {
+  backend?: "auto" | "tavily" | "brave" | "exa" | "searxng" | "ddg";
+  tavilyKey?: string;
+  braveKey?: string;
+  exaKey?: string;
+  searxngBaseUrl?: string;
+};
+
+/** Backend routing: explicit choice first, then "auto" = first configured
+ *  key (Tavily > Brave > Exa > SearXNG), then the zero-config DDG scrape.
+ *  A failing API backend falls back to DDG rather than failing the run. */
+export async function webSearchWithFallback(query: string, maxResults: number, dateFilter: string | null, config?: SearchConfig): Promise<{ results: WebSearchResult[]; backend: string }> {
+  const cfg = config || {};
+  const order: Array<{ name: string; run: () => Promise<WebSearchResult[]> }> = [];
+  const chosen = cfg.backend || "auto";
+  const wants = (name: string) => chosen === "auto" || chosen === name;
+  if (chosen !== "ddg") {
+    if (wants("tavily") && cfg.tavilyKey) order.push({ name: "tavily", run: () => tavilySearch(query, cfg.tavilyKey!, maxResults, dateFilter) });
+    if (wants("brave") && cfg.braveKey) order.push({ name: "brave", run: () => braveSearch(query, cfg.braveKey!, maxResults, dateFilter) });
+    if (wants("exa") && cfg.exaKey) order.push({ name: "exa", run: () => exaSearch(query, cfg.exaKey!, maxResults, dateFilter) });
+    if (wants("searxng") && cfg.searxngBaseUrl) order.push({ name: "searxng", run: () => searxngSearch(query, cfg.searxngBaseUrl!, maxResults, dateFilter) });
+  }
+  for (const candidate of order) {
+    try {
+      const results = await candidate.run();
+      if (results.length) return { results, backend: candidate.name };
+    } catch { /* next backend, then DDG */ }
+  }
+  return { results: await duckDuckGoSearch(query, maxResults, dateFilter), backend: "ddg" };
+}
+
 export async function duckDuckGoSearch(query: string, maxResults = MAX_RESULTS, dateFilter?: string | null): Promise<WebSearchResult[]> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), DDG_TIMEOUT_MS);
@@ -159,10 +289,11 @@ export function createWebSearchTools(opts?: { onSearch?: (query: string, url: st
         opts?.onSearch?.(cleanQuery, `https://duckduckgo.com/?q=${encodeURIComponent(cleanQuery)}`);
       } catch { /* mirror is best-effort */ }
       try {
-        const results = await duckDuckGoSearch(cleanQuery, Math.min(Math.max(maxResults, 1), 10), freshnessToDateFilter(freshness));
+        const searchConfig = await import("./store.js").then((m) => m.getSearchConfig().catch(() => ({})));
+        const { results, backend } = await webSearchWithFallback(cleanQuery, Math.min(Math.max(maxResults, 1), 10), freshnessToDateFilter(freshness), searchConfig);
         if (!results.length) return `No web results found for "${cleanQuery}". Try different keywords.`;
         const lines = results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet}` : ""}`);
-        return `Web results for "${cleanQuery}"${freshness ? ` (freshness: ${freshness})` : ""}:\n${lines.join("\n")}\n\nUse browser_fetch_api or browser_inspect on a result URL to read the full page before citing facts. For time-sensitive topics, note each source's publication date and prefer the most recent.`;
+        return `Web results for "${cleanQuery}" (via ${backend})${freshness ? ` (freshness: ${freshness})` : ""}:\n${lines.join("\n")}\n\nUse browser_fetch_api or browser_inspect on a result URL to read the full page before citing facts. For time-sensitive topics, note each source's publication date and prefer the most recent.`;
       } catch (error) {
         return `Web search failed: ${error instanceof Error ? error.message : String(error)}. Continue with local knowledge and say so.`;
       }

@@ -5,6 +5,11 @@ description: Build professional PowerPoint presentations (.pptx) with python-ppt
 
 # pptx — PowerPoint Deck Generation
 
+
+## Fast Path First (Default)
+Call the **create_deliverable** tool with the deck content in Markdown — it renders a professionally designed, validated .pptx deterministically (designed cover, numbered titles, image embedding, callout cards) with no pip, no script, no shell, and reports structure + content checks in the same call. Repairs are one tool call with corrected content and the same file name. Find 2-4 real image URLs with web_image_search and embed them with "![alt](https://...)" lines per the tool's contract — decks without images look bare.
+Only fall back to the generator-script workflow below when the user explicitly supplied a template/brand file to fill or demanded exact custom styling the Markdown contract cannot express.
+
 ## Core Principle
 Write ONE clean, complete generator script, execute it ONCE, verify the file exists on disk, delete the generator script, and finish. Never write custom QA, contrast, or diagnostic scripts.
 

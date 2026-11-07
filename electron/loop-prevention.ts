@@ -1,14 +1,14 @@
-// Run-loop control: the doom-loop breaker circuit and the LangChain middleware
+// Run-loop control: the doom-loop breaker circuit and the agent middleware
 // that steers/blocks repetitive inspection and normalizes tool arguments.
-// Extracted from agent-service.ts.
-import { ToolMessage } from "@langchain/core/messages";
-import { createMiddleware } from "langchain";
+// Extracted from agent-service.ts; now rides the agentcore middleware
+// contract instead of LangChain's createMiddleware.
+import type { AgentMiddleware, ToolCallRequest, ToolResult } from "./agentcore/middleware.js";
 import { extractSkillNameFromPath } from "./tool-describe.js";
 import { normalizeVirtualPath, normalizeCommandPaths } from "./path-utils.js";
 
 // OpenCode-style doom-loop breaker: the model repeating the exact same tool
 // call is stuck, not working. Thrown from the stream consumer and converted
-// into a resumable partial result at graph.invoke — never retried.
+// into a resumable partial result at the supervisor — never retried.
 export class DoomLoopError extends Error {
   toolName: string;
   constructor(toolName: string, detail: string) {
@@ -20,67 +20,41 @@ export class DoomLoopError extends Error {
 
 /**
  * Normalizes tool arguments so models passing `filePath` or `path` instead of
- * snake_case `file_path` for DeepAgents filesystem tools (read_file, write_file,
+ * snake_case `file_path` for filesystem tools (read_file, write_file,
  * edit_file, delete) succeed without validation crashes, and strips host or
  * hallucinated POSIX project root prefixes before tools receive them.
+ * Applied by the agent loop before every tool execution.
  */
-export function toolParameterNormalizationMiddleware(projectRoot?: string) {
-  const normalize = (toolCalls: any[]) => {
-    if (!Array.isArray(toolCalls)) return;
-    for (const tc of toolCalls) {
-      if (tc?.args && typeof tc.args === "object") {
-        if ("filePath" in tc.args && !("file_path" in tc.args)) {
-          tc.args.file_path = tc.args.filePath;
-        }
-        if ("path" in tc.args && !("file_path" in tc.args)) {
-          tc.args.file_path = tc.args.path;
-        }
-        if (projectRoot) {
-          const pathKeys = [
-            "file_path",
-            "filePath",
-            "path",
-            "file",
-            "target",
-            "dirPath",
-            "dir_path",
-            "directory",
-            "search_path",
-            "searchPath",
-          ] as const;
-          for (const key of pathKeys) {
-            if (typeof tc.args[key] === "string" && tc.args[key]) {
-              tc.args[key] = normalizeVirtualPath(tc.args[key], projectRoot);
-            }
-          }
-          if (typeof tc.args.command === "string") {
-            tc.args.command = normalizeCommandPaths(tc.args.command, projectRoot);
-          }
-        }
+export function normalizeToolCallArgs(call: { name: string; args: any }, projectRoot?: string): void {
+  if (!call.args || typeof call.args !== "object") return;
+  if ("filePath" in call.args && !("file_path" in call.args)) {
+    call.args.file_path = call.args.filePath;
+  }
+  if ("path" in call.args && !("file_path" in call.args)) {
+    call.args.file_path = call.args.path;
+  }
+  if (projectRoot) {
+    const pathKeys = [
+      "file_path",
+      "filePath",
+      "path",
+      "file",
+      "target",
+      "dirPath",
+      "dir_path",
+      "directory",
+      "search_path",
+      "searchPath",
+    ] as const;
+    for (const key of pathKeys) {
+      if (typeof call.args[key] === "string" && call.args[key]) {
+        call.args[key] = normalizeVirtualPath(call.args[key], projectRoot);
       }
     }
-  };
-
-  return createMiddleware({
-    name: "toolParameterNormalizationMiddleware",
-    wrapModelCall: async (request: any, handler: any) => {
-      const response = await handler(request);
-      if (response && Array.isArray((response as any).tool_calls)) {
-        normalize((response as any).tool_calls);
-      }
-      return response;
-    },
-    afterModel: (state: any) => {
-      const messages = state?.messages;
-      if (!messages || messages.length === 0) return undefined;
-      for (const msg of messages) {
-        if (msg?.tool_calls) {
-          normalize(msg.tool_calls);
-        }
-      }
-      return undefined;
-    },
-  });
+    if (typeof call.args.command === "string") {
+      call.args.command = normalizeCommandPaths(call.args.command, projectRoot);
+    }
+  }
 }
 
 /**
@@ -101,6 +75,19 @@ export type DeliverableReadyCheck = () => Promise<{ ready: boolean; files: strin
 
 const BINARY_FILE_EXT = /\.(png|jpe?g|gif|webp|ico|svgz|pdf|pptx|docx|xlsx|zip|tar|gz|7z|rar|mp3|mp4|wav|mov|bin|exe|dll)$/i;
 
+const blocked = (content: string): ToolResult => ({ content, isError: true });
+
+/** Extracts the plain text of a tool result (string or {content} shape). */
+function resultText(result: ToolResult): string {
+  if (typeof result === "string") return result;
+  return result.content;
+}
+
+function withText(result: ToolResult, text: string): ToolResult {
+  if (typeof result === "string") return text;
+  return { ...result, content: text };
+}
+
 /**
  * Loop Prevention Middleware:
  * Detects and breaks repetitive read/inspection tool loops (e.g., repeatedly calling
@@ -110,7 +97,7 @@ const BINARY_FILE_EXT = /\.(png|jpe?g|gif|webp|ico|svgz|pdf|pptx|docx|xlsx|zip|t
  *
  * Repetition 2: Injects a proactive steering notice into the tool message advising the model
  *               that the file has not changed, build/tests already passed, and to mark todos completed.
- * Repetition 3+: Blocks execution of the tool, returning an intervention ToolMessage directing the model
+ * Repetition 3+: Blocks execution of the tool, returning an intervention result directing the model
  *                to update its todo list and provide its final answer immediately.
  *
  * Research tools (web_search, browser_inspect/fetch, browser_act navigate/text)
@@ -126,7 +113,7 @@ export function loopPreventionMiddleware(options: {
   needsResearch?: boolean;
   beforeModify?: () => string | null;
   checkDeliverableReady?: DeliverableReadyCheck;
-} = {}) {
+} = {}): AgentMiddleware {
   let lastReadSig: string | null = null;
   let consecutiveCount = 0;
   let researchCallCount = 0;
@@ -203,22 +190,17 @@ export function loopPreventionMiddleware(options: {
     return p.replace(/\\/g, "/").replace(/^\/+/, "").trim();
   };
 
-  return createMiddleware({
+  return {
     name: "loopPreventionMiddleware",
-    wrapToolCall: async (request: any, handler: any) => {
-      const toolName = String(request.tool?.name ?? request.toolCall?.name ?? "");
-      const args = request.toolCall?.args ?? {};
-      const toolCallId = String(request.toolCall?.id ?? "");
+    wrapToolCall: async (request: ToolCallRequest, next: (req: ToolCallRequest) => Promise<ToolResult>): Promise<ToolResult> => {
+      const toolName = String(request.call?.name ?? "");
+      const args = (request.call?.args ?? {}) as any;
+      const toolCallId = request.toolCallId;
 
       if (isModifying(toolName)) {
         const gate = options.beforeModify?.();
         if (gate) {
-          return new ToolMessage({
-            tool_call_id: toolCallId,
-            name: toolName,
-            status: "error",
-            content: gate,
-          });
+          return blocked(gate);
         }
 
         // Post-deliverable completion gate for Home deliverable runs:
@@ -232,12 +214,7 @@ export function loopPreventionMiddleware(options: {
               const rawTarget = String(args.file_path || args.filePath || args.command || "");
               const isDiagnosticOrTemp = /validate|contrast|inspect|scan|debug|find|check|test/i.test(rawTarget);
               if (isDiagnosticOrTemp || postDeliverableModifyCount >= 3) {
-                return new ToolMessage({
-                  tool_call_id: toolCallId,
-                  name: toolName,
-                  status: "error",
-                  content: `[DELIVERABLE ALREADY VERIFIED]: Your output (${readyInfo.files.join(", ")}: ${readyInfo.summary}) already exists on disk and passed structural and content verification. Stop writing validation/debug scripts or tweaking the generator. Delete any temporary helper scripts (.py/.js) you created in this run, mark any remaining todos as completed, and present your final response to the user now.`,
-                });
+                return blocked(`[DELIVERABLE ALREADY VERIFIED]: Your output (${readyInfo.files.join(", ")}: ${readyInfo.summary}) already exists on disk and passed structural and content verification. Stop writing validation/debug scripts or tweaking the generator. Delete any temporary helper scripts (.py/.js) you created in this run, mark any remaining todos as completed, and present your final response to the user now.`);
               }
             }
           } catch { /* best effort */ }
@@ -249,12 +226,7 @@ export function loopPreventionMiddleware(options: {
           const modCount = (modifyTargetCounts.get(modTarget) ?? 0) + 1;
           modifyTargetCounts.set(modTarget, modCount);
           if (modCount >= 5 && options.general) {
-            return new ToolMessage({
-              tool_call_id: toolCallId,
-              name: toolName,
-              status: "error",
-              content: `[EDIT/EXECUTION CHURN DETECTED]: Target '${modTarget}' has been modified or executed ${modCount} times without concluding the task. Stop tweaking minor parameters. If the deliverable exists, verify it with 'ls' and present your result immediately.`,
-            });
+            return blocked(`[EDIT/EXECUTION CHURN DETECTED]: Target '${modTarget}' has been modified or executed ${modCount} times without concluding the task. Stop tweaking minor parameters. If the deliverable exists, verify it with 'ls' and present your result immediately.`);
           }
         }
 
@@ -264,7 +236,7 @@ export function loopPreventionMiddleware(options: {
         researchCallCount = 0;
         researchTargetCounts.clear();
         bannedResearchTargets.clear();
-        return handler(request);
+        return next(request);
       }
 
       // Per-target repeat ban for research: same URL/query stuck in a loop
@@ -274,40 +246,27 @@ export function loopPreventionMiddleware(options: {
       if (isResearchTool(toolName, args)) {
         const targetKey = researchTargetKey(toolName, args);
         if (targetKey && bannedResearchTargets.has(targetKey)) {
-          return new ToolMessage({
-            tool_call_id: toolCallId,
-            name: toolName,
-            status: "error",
-            content: `[RESEARCH TARGET BANNED]: '${targetKey.slice(2)}' was already fetched repeatedly without progress and is banned for the rest of this run. Do NOT retry it. Move on: try a different source URL or a rephrased query, or continue with the next pending plan item (e.g. if LangChain docs failed, research LangGraph next).`,
-          });
+          return blocked(`[RESEARCH TARGET BANNED]: '${targetKey.slice(2)}' was already fetched repeatedly without progress and is banned for the rest of this run. Do NOT retry it. Move on: try a different source URL or a rephrased query, or continue with the next pending plan item (e.g. if LangChain docs failed, research LangGraph next).`);
         }
         if (targetKey) {
           const repeatCount = (researchTargetCounts.get(targetKey) ?? 0) + 1;
           researchTargetCounts.set(targetKey, repeatCount);
           if (repeatCount >= 3) {
             bannedResearchTargets.add(targetKey);
-            return new ToolMessage({
-              tool_call_id: toolCallId,
-              name: toolName,
-              status: "error",
-              content: `[RESEARCH TARGET BANNED]: '${targetKey.slice(2)}' failed or repeated ${repeatCount}x without progress — it is now banned for this run. Do NOT retry it. Switch to a different source or rephrased query and continue with the next plan item.`,
-            });
+            return blocked(`[RESEARCH TARGET BANNED]: '${targetKey.slice(2)}' failed or repeated ${repeatCount}x without progress — it is now banned for this run. Do NOT retry it. Switch to a different source or rephrased query and continue with the next plan item.`);
           }
           if (repeatCount === 2) {
-            const result = await handler(request);
-            const currentContent = typeof result.content === "string" ? result.content : JSON.stringify(result.content);
-            result.content = `${currentContent}\n\n[Notice: You already fetched '${targetKey.slice(2)}'. If this result is not useful, do NOT fetch it again — try a different source URL or a rephrased query, or move to the next plan item.]`;
-            if (researchBudget !== null) {
+            const result = await next(request);
+            let currentContent = resultText(result);
+            currentContent += `\n\n[Notice: You already fetched '${targetKey.slice(2)}'. If this result is not useful, do NOT fetch it again — try a different source URL or a rephrased query, or move to the next plan item.]`;
+            const budgetBlocked = researchBudget !== null && (() => {
               researchCallCount++;
-              if (researchCallCount > researchBudget) {
-                return new ToolMessage({
-                  tool_call_id: toolCallId,
-                  name: toolName,
-                  content: `[SUPERVISOR INTERVENTION] The research budget for this task has been reached (${researchBudget} web lookups). Use the evidence already collected and take the next result-producing action. Do not perform another web search or page fetch unless it directly unblocks creation of the requested output.`,
-                });
-              }
+              return researchCallCount > researchBudget;
+            })();
+            if (budgetBlocked) {
+              return `[SUPERVISOR INTERVENTION] The research budget for this task has been reached (${researchBudget} web lookups). Use the evidence already collected and take the next result-producing action. Do not perform another web search or page fetch unless it directly unblocks creation of the requested output.`;
             }
-            return result;
+            return withText(result, currentContent);
           }
         }
       }
@@ -315,11 +274,7 @@ export function loopPreventionMiddleware(options: {
       if (researchBudget !== null && isResearchTool(toolName, args)) {
         researchCallCount++;
         if (researchCallCount > researchBudget) {
-          return new ToolMessage({
-            tool_call_id: toolCallId,
-            name: toolName,
-            content: `[SUPERVISOR INTERVENTION] The research budget for this task has been reached (${researchBudget} web lookups). Use the evidence already collected and take the next result-producing action. Do not perform another web search or page fetch unless it directly unblocks creation of the requested output.`,
-          });
+          return `[SUPERVISOR INTERVENTION] The research budget for this task has been reached (${researchBudget} web lookups). Use the evidence already collected and take the next result-producing action. Do not perform another web search or page fetch unless it directly unblocks creation of the requested output.`;
         }
       }
 
@@ -328,26 +283,16 @@ export function loopPreventionMiddleware(options: {
       if (isFileRead(toolName)) {
         const filePath = normalizePath(args);
         if (BINARY_FILE_EXT.test(filePath)) {
-          return new ToolMessage({
-            tool_call_id: toolCallId,
-            name: toolName,
-            status: "error",
-            content: `[BINARY FILE]: '${filePath}' is a binary file and cannot be read as text. If this is an image or deliverable, reference it by path or check its size/existence with 'ls'. Do not call read_file on binary or archive files.`,
-          });
+          return blocked(`[BINARY FILE]: '${filePath}' is a binary file and cannot be read as text. If this is an image or deliverable, reference it by path or check its size/existence with 'ls'. Do not call read_file on binary or archive files.`);
         }
 
         const skill = extractSkillNameFromPath(filePath);
         if (skill) {
           const key = skill.toLowerCase();
           if (loadedSkills.has(key)) {
-            return new ToolMessage({
-              tool_call_id: toolCallId,
-              name: toolName,
-              status: "error",
-              content: `[SKILL ALREADY LOADED]: Skill '${skill}' is already loaded above — its instructions have not changed. Do NOT re-read any SKILL.md file. Proceed directly: write_file the generator script, execute it, verify the output with ls, then present the result.`,
-            });
+            return blocked(`[SKILL ALREADY LOADED]: Skill '${skill}' is already loaded above — its instructions have not changed. Do NOT re-read any SKILL.md file. Proceed directly: write_file the generator script, execute it, verify the output with ls, then present the result.`);
           }
-          const result = await handler(request);
+          const result = await next(request);
           loadedSkills.add(key);
           return result;
         }
@@ -369,28 +314,22 @@ export function loopPreventionMiddleware(options: {
         // 3rd+ consecutive repetition or 4th total inspection without modifying actions:
         // Intervene and short-circuit! Do NOT re-execute the tool.
         if (consecutiveCount >= 3 || totalCount >= 4) {
-          return new ToolMessage({
-            tool_call_id: toolCallId,
-            name: toolName,
-            status: "error",
-            content: `[LOOP PREVENTION NOTICE]: You have already inspected '${target || toolName}' multiple times (${totalCount}x) without making any workspace edits or code changes. The file content has not changed.\n\nCRITICAL INSTRUCTIONS:\n1. Stop inspecting or re-reading files.\n2. If build or tests already passed and required changes are in place, call write_todos to mark remaining in-progress todos as completed.\n3. Output your final response to the user immediately detailing the changes made.`,
-          });
+          return blocked(`[LOOP PREVENTION NOTICE]: You have already inspected '${target || toolName}' multiple times (${totalCount}x) without making any workspace edits or code changes. The file content has not changed.\n\nCRITICAL INSTRUCTIONS:\n1. Stop inspecting or re-reading files.\n2. If build or tests already passed and required changes are in place, call write_todos to mark remaining in-progress todos as completed.\n3. Output your final response to the user immediately detailing the changes made.`);
         }
 
-        const result = await handler(request);
+        const result = await next(request);
 
         // 2nd consecutive repetition or 2nd total inspection of the same target:
         // Append proactive steering notice to guide the model before a hard block.
         if (consecutiveCount === 2 || totalCount === 2) {
-          const currentContent = typeof result.content === "string" ? result.content : JSON.stringify(result.content);
           const nudge = `\n\n[Notice: You already inspected '${target || toolName}'. The content has not changed. Do NOT re-read or inspect this again. If your build or verification passed, update your todo list to completed with write_todos and present your final response now.]`;
-          result.content = currentContent + nudge;
+          return withText(result, resultText(result) + nudge);
         }
 
         return result;
       }
 
-      return handler(request);
+      return next(request);
     },
-  });
+  };
 }
