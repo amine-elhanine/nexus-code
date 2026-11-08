@@ -11,12 +11,6 @@ interface State {
   error: Error | null;
 }
 
-/**
- * Top-level render-crash guard. Without it, any uncaught exception during a
- * React render unmounts the whole tree and the user sees a blank window with
- * no way back. This renders a recovery card with the actual error message so
- * crashes are visible and reportable instead of fatal.
- */
 export class ErrorBoundary extends React.Component<Props, State> {
   state: State = { error: null };
 
@@ -33,20 +27,15 @@ export class ErrorBoundary extends React.Component<Props, State> {
     return (
       <div className="modal-layer">
         <div
-          className="modal-card"
-          style={{ maxWidth: 560, width: "92%", padding: "20px 22px", display: "flex", flexDirection: "column", gap: 12 }}
+          className="modal-card error-boundary-card"
+          style={{ maxWidth: 560, width: "92%", padding: "22px 24px", display: "flex", flexDirection: "column", gap: 14 }}
           onClick={(e) => e.stopPropagation()}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#fbbf24" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 9, color: "var(--warning)" }}>
             <AlertTriangle size={18} />
-            <strong style={{ color: "#f1f5f9", fontSize: 15 }}>Something went wrong rendering this view</strong>
+            <strong style={{ color: "var(--text-primary)", fontSize: 15 }}>Something went wrong rendering this view</strong>
           </div>
-          <pre
-            style={{
-              margin: 0, maxHeight: 180, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word",
-              fontSize: 12, color: "#e07a72", background: "#131922", border: "1px solid #1c2635", borderRadius: 8, padding: 10,
-            }}
-          >
+          <pre className="error-boundary-pre" style={{ margin: 0 }}>
             {this.state.error.message || String(this.state.error)}
           </pre>
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>

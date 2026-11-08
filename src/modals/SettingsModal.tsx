@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Eye, EyeOff, KeyRound, FolderOpen, ChevronRight, Globe, Puzzle, Server, Terminal, Download, RefreshCw, Loader2, Check, BookOpen, Plus, Settings2, Trash2, X, Palette, FileText, Shield, ShieldCheck, Search, Sparkles, SlidersHorizontal, Store } from "lucide-react";
+import { Eye, EyeOff, KeyRound, FolderOpen, ChevronRight, Globe, Puzzle, Server, Terminal, Download, RefreshCw, Loader2, Check, BookOpen, Plus, Settings2, Trash2, X, Palette, FileText, Shield, ShieldCheck, Search, Sparkles, SlidersHorizontal, Store, Keyboard, HardDrive } from "lucide-react";
 import { Modal } from "../components/common/Modal.js";
 import { Toggle } from "../components/common/Toggle.js";
 import { ProviderManager } from "../components/settings/ProviderManager.js";
@@ -11,7 +11,7 @@ import { MemoryRow } from "../views/MemoryView.js";
 import { APP_THEMES, applyTheme, getStoredThemeId } from "../state/theme.js";
 import type { EmbeddingEndpointKind, EmbeddingProviderConfig, ProviderConfig, ProviderDefinition, UpdaterState } from "../types.js";
 
-type SettingsSection = "appearance" | "browser" | "providers" | "notebook" | "mcp" | "skills" | "plugins" | "rules" | "services" | "updates" | "workspace";
+export type SettingsSection = "appearance" | "browser" | "providers" | "notebook" | "mcp" | "skills" | "plugins" | "rules" | "services" | "updates" | "workspace" | "shortcuts" | "storage";
 
 export function SettingsModal({
   area,
@@ -29,6 +29,7 @@ export function SettingsModal({
   onCheckUpdates,
   onQuitAndInstall,
   onClose,
+  initialSection,
 }: {
   area: "home" | "code" | "notebook";
   hasProject: boolean;
@@ -45,9 +46,10 @@ export function SettingsModal({
   onCheckUpdates: () => void;
   onQuitAndInstall: () => void;
   onClose: () => void;
+  initialSection?: string;
 }) {
   const api = window.nexus;
-  const [section, setSection] = useState<SettingsSection>("appearance");
+  const [section, setSection] = useState<SettingsSection>((initialSection as SettingsSection) || "appearance");
   const [navSearch, setNavSearch] = useState("");
   const [themeId, setThemeId] = useState(() => getStoredThemeId());
   const [themeNote, setThemeNote] = useState("");
@@ -436,8 +438,10 @@ export function SettingsModal({
       ],
     },
     {
-      title: "System",
+      title: "System & Data",
       items: [
+        { id: "shortcuts", label: "Shortcuts", icon: <Keyboard size={13} /> },
+        { id: "storage", label: "Data & Storage", icon: <HardDrive size={13} /> },
         { id: "services", label: "Services", icon: <Terminal size={13} /> },
         {
           id: "updates",
@@ -506,6 +510,16 @@ export function SettingsModal({
       kicker: "System",
       title: "Project Workspace",
       subtitle: "Quickly access the root document and artifact storage folder in your operating system's file manager.",
+    },
+    shortcuts: {
+      kicker: "System & Data",
+      title: "Keyboard Shortcuts",
+      subtitle: "Navigate across ChatGPT Home, Codex Engineering, and NotebookLM Studio at keyboard speed.",
+    },
+    storage: {
+      kicker: "System & Data",
+      title: "Data & Local Storage",
+      subtitle: "Manage local SQLite conversation history, Nexus workspace deliverables, and cached UI preferences.",
     },
   };
 
@@ -1235,7 +1249,68 @@ export function SettingsModal({
             </div>
           )}
 
-          {section === "workspace" && area === "home" && (
+          {section === "shortcuts" && (
+            <div className="setting-card">
+              <div className="shortcuts-grid">
+                {[
+                  { title: "Open Command Palette", desc: "Jump to any mode, conversation, notebook, or setting", keys: ["Ctrl", "K"] },
+                  { title: "Switch to Home Mode", desc: "Open ChatGPT-inspired conversation & canvas studio", keys: ["Ctrl", "1"] },
+                  { title: "Switch to Code Mode", desc: "Open Codex-inspired agentic coding workspace", keys: ["Ctrl", "2"] },
+                  { title: "Switch to Notebook Mode", desc: "Open NotebookLM-inspired source-grounded studio", keys: ["Ctrl", "3"] },
+                  { title: "New Conversation", desc: "Start a fresh chat in Home mode", keys: ["Ctrl", "N"] },
+                  { title: "Toggle Left Sidebar", desc: "Collapse or expand the navigation & history rail", keys: ["Ctrl", "B"] },
+                  { title: "Toggle Right Inspector", desc: "Collapse or expand the right context drawer", keys: ["Ctrl", "J"] },
+                  { title: "Open Settings", desc: "Open this unified preferences dialog", keys: ["Ctrl", ","] },
+                  { title: "Send Message", desc: "Submit prompt in any composer (Shift+Enter for newline)", keys: ["Enter"] },
+                  { title: "Mention Skill or File", desc: "Trigger inline autocomplete in the composer", keys: ["@"] },
+                  { title: "Slash Commands", desc: "Open quick slash command menu in the composer", keys: ["/"] },
+                ].map((sc) => (
+                  <div key={sc.title} className="shortcut-row">
+                    <div className="shortcut-row-info">
+                      <strong>{sc.title}</strong>
+                      <small>{sc.desc}</small>
+                    </div>
+                    <div className="shortcut-keys">
+                      {sc.keys.map((k) => (
+                        <kbd key={k} className="shortcut-kbd">{k}</kbd>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {section === "storage" && (
+            <>
+              <div className="setting-card">
+                <button className="setting-nav-row" onClick={() => void api.openHomeFolder()}>
+                  <span className="setting-icon"><FolderOpen size={15} /></span>
+                  <span className="setting-text">
+                    <strong>Open Nexus Deliverables Folder</strong>
+                    <small>Inspect generated PDFs, Word documents, slide decks, spreadsheets, and saved attachments on disk.</small>
+                  </span>
+                  <ChevronRight size={14} />
+                </button>
+              </div>
+              <div className="setting-card">
+                <div className="setting-row">
+                  <span className="setting-icon"><HardDrive size={15} /></span>
+                  <div className="setting-text">
+                    <strong>Local-First SQLite Persistence</strong>
+                    <small>All conversations, coding checkpoints, vector embeddings, and API keys are stored locally on your machine and never synced to external cloud telemetry.</small>
+                  </div>
+                </div>
+                <div style={{ marginTop: 12 }}>
+                  <MemoryRow label="Configured AI Providers" value={String(providers.length)} />
+                  <MemoryRow label="Custom Embedding Endpoints" value={String(embProviders.length)} />
+                  <MemoryRow label="Active Theme" value={APP_THEMES.find((t) => t.id === themeId)?.name || themeId} />
+                </div>
+              </div>
+            </>
+          )}
+
+          {section === "workspace" && (
             <div className="setting-card">
               <button className="setting-nav-row" onClick={() => void api.openHomeFolder()}>
                 <span className="setting-icon"><FolderOpen size={14} /></span>

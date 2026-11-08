@@ -1,46 +1,92 @@
-import React, { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import React, { useRef, useState, useEffect, useMemo, KeyboardEvent, type ReactNode } from "react";
 import {
-  Sparkles, Square, ArrowUp,
-  Paperclip, FileText, Search, Presentation, Table2, Mic,
+  Sparkles, Paperclip, ArrowUp, Square, Search, BarChart3, FileText,
+  X, Presentation, Table2
 } from "lucide-react";
-import { ModelSelect } from "./AgentView.js";
-import { ChatItemView, ActivityGroupView, StreamingAssistantMessage } from "../components/chat/ChatMessageItem.js";
+import { ChatItemView, StreamingAssistantMessage, ActivityGroupView } from "../components/chat/ChatMessageItem.js";
 import { SlashCommandPopup, filterSlashCommands, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
-import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment, openChatAttachment } from "../utils/attachments.js";
+import { ATTACHMENT_ACCEPT } from "../utils/attachments.js";
 import { insertAtCursor } from "../utils/textarea.js";
-import type { ChatItem, ProviderConfig, ProviderDefinition, AgentUsage, AgentContextUsageSnapshot, ChatAttachment, SkillInfo } from "../types.js";
+import type { ChatItem, ProviderConfig, ProviderDefinition, ChatAttachment, SkillInfo, AgentUsage, AgentContextUsageSnapshot } from "../types.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
+import { HomeCanvasDrawer } from "../components/home/HomeCanvasDrawer.js";
+import { ModelSelect } from "./AgentView.js";
+
+type RenderBlock =
+  | { kind: "message"; message: ChatItem; index: number }
+  | { kind: "events"; events: ChatItem[]; startIndex: number };
 
 export type HomeFile = { path: string; name: string; size: number; modified: string };
 
-const SUGGESTIONS = [
+export interface HomeViewProps {
+  messages: ChatItem[];
+  draft: string;
+  setDraft: (value: string) => void;
+  submit: (override?: string) => void;
+  running: boolean;
+  onStop: () => void;
+  streamingText: string;
+  liveEvents: ChatItem[];
+  selectedProviderId: string;
+  selectedModel: string;
+  selectedEffort?: string;
+  providers: ProviderConfig[];
+  definitions: ProviderDefinition[];
+  switchModel: (providerId: string, model: string, effort?: string) => void;
+  switchEffort?: (effort: string) => void;
+  onOpenProviders: () => void;
+  sessionUsage?: AgentUsage | null;
+  contextUsage?: AgentContextUsageSnapshot | null;
+  activeSessionId?: string;
+  sessionTitle?: string;
+  panelMenu?: ReactNode;
+  topbarLeading?: ReactNode;
+  onDownloadFile?: (path: string) => void;
+  attachedImages: string[];
+  setAttachedImages: (updater: (current: string[]) => string[]) => void;
+  attachments: ChatAttachment[];
+  setAttachments: (updater: (current: ChatAttachment[]) => ChatAttachment[]) => void;
+  hasProvider: boolean;
+  onOpenImage?: (src: string) => void;
+  onOpenAttachment?: (attachment: ChatAttachment) => void;
+  customCommands?: SlashCommand[];
+  skills?: SkillInfo[];
+  onRefreshSkills?: () => void;
+  onTruncateSession?: (fromIndex: number) => Promise<any>;
+  onForkSession?: (fromIndex: number) => Promise<any>;
+}
+
+const TOOL_PILLS = [
+  { id: "search", label: "Search", icon: <Search size={13} />, prefix: "Search the web for " },
+  { id: "visualize", label: "Visualize", icon: <BarChart3 size={13} />, prefix: "Create an interactive visual diagram or chart of " },
+  { id: "document", label: "Document", icon: <FileText size={13} />, prefix: "Generate a polished report on " },
+  { id: "research", label: "Deep Research", icon: <Sparkles size={13} />, prefix: "Conduct deep multi-source research with citations on " },
+];
+
+const STARTER_PROMPTS = [
   {
-    icon: <FileText size={16} className="file-icon-doc" />,
-    label: "Write a Word report",
-    desc: "Generate a formatted DOCX document with sections & tables",
-    prompt: "Create a Word document (.docx) about ",
-    tone: "doc",
+    icon: <FileText size={16} />,
+    title: "Write a comprehensive report",
+    desc: "Generate a formatted document with clear sections & data tables",
+    prompt: "Write a comprehensive research report on ",
   },
   {
-    icon: <Presentation size={16} className="file-icon-ppt" />,
-    label: "Build a presentation",
-    desc: "Create a professional PowerPoint (.pptx) slide deck",
-    prompt: "Create a PowerPoint presentation (.pptx) about ",
-    tone: "ppt",
+    icon: <Presentation size={16} />,
+    title: "Build a slide presentation",
+    desc: "Create an outline and slides for a deck (.pptx)",
+    prompt: "Create a detailed presentation outline with slide notes on ",
   },
   {
-    icon: <Table2 size={16} className="file-icon-text" />,
-    label: "Make a spreadsheet",
-    desc: "Build calculation models and data sheets (.xlsx)",
-    prompt: "Create an Excel spreadsheet (.xlsx) for ",
-    tone: "table",
+    icon: <Table2 size={16} />,
+    title: "Create data tables & analysis",
+    desc: "Structured data tables, metrics, and comparisons",
+    prompt: "Create a structured comparison spreadsheet (.xlsx) analyzing ",
   },
   {
-    icon: <Search size={16} className="file-icon-web" />,
-    label: "Research the web",
-    desc: "Find live sources, papers, summaries and facts",
-    prompt: "Search the web for ",
-    tone: "web",
+    icon: <Search size={16} />,
+    title: "Deep multi-source web research",
+    desc: "Gather facts, live sources, benchmarks, and citations",
+    prompt: "Conduct in-depth web research with sources and citations on ",
   },
 ];
 
@@ -75,231 +121,57 @@ export function HomeView({
   hasProvider,
   onOpenImage,
   onOpenAttachment,
-  customCommands,
-  skills,
-  onRefreshSkills,
+  customCommands = [],
   onTruncateSession,
   onForkSession,
-}: {
-  messages: ChatItem[];
-  draft: string;
-  setDraft: (value: string) => void;
-  submit: (override?: string) => void;
-  running: boolean;
-  onStop: () => void;
-  streamingText: string;
-  liveEvents: ChatItem[];
-  selectedProviderId: string;
-  selectedModel: string;
-  selectedEffort?: string;
-  providers: ProviderConfig[];
-  definitions: ProviderDefinition[];
-  switchModel: (providerId: string, model: string, effort?: string) => void;
-  switchEffort?: (effort: string) => void;
-  onOpenProviders: () => void;
-  sessionUsage?: AgentUsage | null;
-  contextUsage?: AgentContextUsageSnapshot | null;
-  activeSessionId?: string;
-  sessionTitle?: string;
-  panelMenu?: ReactNode;
-  topbarLeading?: ReactNode;
-  onDownloadFile: (path: string) => void;
-  attachedImages: string[];
-  setAttachedImages: (updater: (current: string[]) => string[]) => void;
-  attachments: ChatAttachment[];
-  setAttachments: (updater: (current: ChatAttachment[]) => ChatAttachment[]) => void;
-  hasProvider: boolean;
-  onOpenImage?: (src: string) => void;
-  onOpenAttachment?: (attachment: ChatAttachment) => void;
-  customCommands?: SlashCommand[];
-  skills?: SkillInfo[];
-  onRefreshSkills?: () => void;
-  onTruncateSession?: (fromIndex: number) => Promise<any>;
-  onForkSession?: (fromIndex: number) => Promise<any>;
-}) {
-  const api = window.nexus;
-  const transcriptRef = useRef<HTMLDivElement>(null);
-  const stickToBottomRef = useRef(true);
+}: HomeViewProps) {
+  const messagesViewportRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const imageInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Widget "ask" buttons (interactive tools inside answers) prefill the composer.
-  useEffect(() => {
-    const onWidgetAsk = (event: Event) => {
-      const prompt = (event as CustomEvent<string>).detail;
-      if (typeof prompt === "string" && prompt.trim()) {
-        setDraft(prompt);
-        setTimeout(() => textareaRef.current?.focus(), 10);
-      }
-    };
-    window.addEventListener("nexus:widget-ask", onWidgetAsk);
-    return () => window.removeEventListener("nexus:widget-ask", onWidgetAsk);
-  }, [setDraft]);
-
-  // Pinned scroll on session switch or initial open
-  useEffect(() => {
-    stickToBottomRef.current = true;
-    const el = transcriptRef.current;
-    if (el) {
-      el.scrollTop = el.scrollHeight;
-      const t = setTimeout(() => {
-        if (transcriptRef.current) {
-          transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
-        }
-      }, 50);
-      return () => clearTimeout(t);
-    }
-  }, [activeSessionId]);
-
-  useEffect(() => {
-    const el = transcriptRef.current;
-    if (el && stickToBottomRef.current) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [messages, liveEvents, streamingText]);
-
-  // Keep pinned to bottom when lazy visual content (e.g. images, charts, diagrams) loads or resizes
-  useEffect(() => {
-    const el = transcriptRef.current;
-    if (!el) return;
-
-    const handleImageLoaded = () => {
-      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      if (stickToBottomRef.current || distFromBottom < 400) {
-        stickToBottomRef.current = true;
-        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-      }
-    };
-    window.addEventListener("nexus:chat-image-loaded", handleImageLoaded);
-
-    let prevHeight = el.scrollHeight;
-    let observer: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== "undefined") {
-      observer = new ResizeObserver(() => {
-        const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-        if ((stickToBottomRef.current || distFromBottom < 300) && el.scrollHeight !== prevHeight) {
-          el.scrollTop = el.scrollHeight;
-        }
-        prevHeight = el.scrollHeight;
-      });
-      observer.observe(el);
-      Array.from(el.children).forEach((child) => observer?.observe(child));
-    }
-
-    return () => {
-      window.removeEventListener("nexus:chat-image-loaded", handleImageLoaded);
-      observer?.disconnect();
-    };
-  }, [messages.length, liveEvents.length, streamingText]);
-
-  const transcriptNodes: ReactNode[] = [];
-  let pendingActivity: ChatItem[] = [];
-  const flushActivity = () => {
-    if (pendingActivity.length) {
-      transcriptNodes.push(
-        <ActivityGroupView
-          key={`activity-${pendingActivity[0].createdAt}-${transcriptNodes.length}`}
-          events={pendingActivity}
-          running={false}
-          onOpenImage={onOpenImage}
-          onOpenAttachment={onOpenAttachment}
-        />
-      );
-      pendingActivity = [];
-    }
-  };
-  messages.forEach((message, index) => {
-    if (message.role === "event") pendingActivity.push(message);
-    else {
-      flushActivity();
-      transcriptNodes.push(
-        <ChatItemView
-          key={`${message.createdAt}-${index}`}
-          message={message}
-          index={index}
-          onOpenImage={onOpenImage}
-          onOpenAttachment={onOpenAttachment}
-          onEditMessage={running ? undefined : (idx, text) => {
-            setDraft(text);
-            void onTruncateSession?.(idx);
-          }}
-          onForkChat={running ? undefined : (idx) => {
-            void onForkSession?.(idx);
-          }}
-        />
-      );
-    }
-  });
-  flushActivity();
-
+  const [activePill, setActivePill] = useState<string | null>(null);
+  const [selectedCanvasFile, setSelectedCanvasFile] = useState<string | null>(null);
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
-  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
-  const [mentionIndex, setMentionIndex] = useState(0);
 
-  const matchingCommands = useMemo(() => {
-    if (slashQuery === null) return [];
-    return filterSlashCommands(slashQuery, customCommands, []);
-  }, [slashQuery, customCommands]);
+  // Group messages & events into RenderBlocks so tool runs collapse cleanly into ActivityGroupView
+  const renderBlocks = useMemo<RenderBlock[]>(() => {
+    const blocks: RenderBlock[] = [];
+    messages.forEach((message, index) => {
+      if (message.role === "event") {
+        const last = blocks[blocks.length - 1];
+        if (last && last.kind === "events") {
+          last.events.push(message);
+        } else {
+          blocks.push({ kind: "events", events: [message], startIndex: index });
+        }
+      } else {
+        blocks.push({ kind: "message", message, index });
+      }
+    });
+    return blocks;
+  }, [messages]);
 
-  const [localSkills, setLocalSkills] = useState<SkillInfo[] | null>(null);
-  const effectiveSkills = localSkills || skills || [];
-
-  const matchingSkills = useMemo(() => {
-    if (mentionQuery === null || !effectiveSkills.length) return [];
-    const query = mentionQuery.toLowerCase();
-    return effectiveSkills
-      .filter((s) => {
-        if (s.modes && s.modes.length > 0 && !s.modes.includes("home")) return false;
-        return (
-          s.name.toLowerCase().includes(query) ||
-          (query.length >= 2 && s.description.toLowerCase().includes(query))
-        );
-      })
-      .slice(0, 8);
-  }, [mentionQuery, effectiveSkills]);
-
-  const latestPlan = useMemo(() => extractLatestPlan(liveEvents, messages, running), [liveEvents, messages, running]);
-
-  function updateCursorTriggers(value: string, cursorPosition: number) {
-    const beforeCursor = value.slice(0, cursorPosition);
-    const mentionMatch = beforeCursor.match(/@([a-zA-Z0-9_./-]*)$/);
-    if (mentionMatch) {
-      setMentionQuery(mentionMatch[1]);
-      setMentionIndex(0);
-      setSlashQuery(null);
-      onRefreshSkills?.();
-      api?.listSkills?.().then((list) => {
-        if (Array.isArray(list)) setLocalSkills(list);
-      }).catch(() => {});
-      return;
-    } else {
-      setMentionQuery(null);
+  // Auto-scroll when new messages arrive or streaming updates
+  useEffect(() => {
+    if (messagesViewportRef.current) {
+      messagesViewportRef.current.scrollTop = messagesViewportRef.current.scrollHeight;
     }
+  }, [messages, streamingText, liveEvents]);
 
-    const slashMatch = beforeCursor.match(/(?:^|\s)\/([a-zA-Z0-9_-]*)$/);
-    if (slashMatch) {
-      setSlashQuery(slashMatch[1]);
-      setSlashIndex(0);
-    } else {
-      setSlashQuery(null);
-    }
-  }
+  // Clean auto-resize textarea from min 26px up to 160px
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const nextHeight = Math.min(Math.max(el.scrollHeight, 26), 160);
+    el.style.height = `${nextHeight}px`;
+  }, [draft]);
 
-  function handleDraftChange(value: string, cursorPosition: number) {
-    setDraft(value);
-    updateCursorTriggers(value, cursorPosition);
-  }
+  const isEmpty = messages.length === 0 && !streamingText && liveEvents.length === 0;
+  const matchingCommands = slashQuery !== null ? filterSlashCommands(slashQuery, customCommands) : [];
 
-  function insertSkillMention(skillName: string) {
-    const result = insertAtCursor(textareaRef.current, draft, /@([a-zA-Z0-9_./-]*)$/, `@${skillName} `);
-    if (!result) return;
-    setDraft(result.nextDraft);
-    setMentionQuery(null);
-    setTimeout(() => textareaRef.current?.focus(), 10);
-  }
-
-  function handleSlashSelect(cmd: SlashCommand) {
+  const handleSlashSelect = (cmd: SlashCommand) => {
     const result = insertAtCursor(textareaRef.current, draft, /(?:^|\s)\/([a-zA-Z0-9_-]*)$/, (match) => {
       const leadingWhitespace = match.match(/^\s/)?.[0] || "";
       return `${leadingWhitespace}${cmd.command} `;
@@ -307,340 +179,350 @@ export function HomeView({
     if (!result) return;
     setDraft(result.nextDraft);
     setSlashQuery(null);
-    setSlashIndex(0);
+  };
 
-    const newCursor = result.cursor;
-    setTimeout(() => {
-      if (textareaRef.current) {
-        textareaRef.current.focus();
-        textareaRef.current.setSelectionRange(newCursor, newCursor);
-      }
-    }, 0);
-  }
-
-  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (mentionQuery !== null && matchingSkills.length > 0) {
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setMentionIndex((c) => (c + 1) % matchingSkills.length);
-        return;
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setMentionIndex((c) => (c - 1 + matchingSkills.length) % matchingSkills.length);
-        return;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setMentionQuery(null);
-        return;
-      }
-      if (event.key === "Enter" || event.key === "Tab") {
-        if (!event.ctrlKey && !event.metaKey && !event.shiftKey) {
-          event.preventDefault();
-          insertSkillMention(matchingSkills[mentionIndex].name);
-          return;
-        }
-      }
-    }
-
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashQuery !== null && matchingCommands.length > 0) {
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setSlashIndex((c) => (c + 1) % matchingCommands.length);
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashIndex((i) => (i + 1) % matchingCommands.length);
         return;
       }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setSlashIndex((c) => (c - 1 + matchingCommands.length) % matchingCommands.length);
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashIndex((i) => (i - 1 + matchingCommands.length) % matchingCommands.length);
         return;
       }
-      if (event.key === "Escape") {
-        event.preventDefault();
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        handleSlashSelect(matchingCommands[slashIndex]);
+        return;
+      }
+      if (e.key === "Escape") {
         setSlashQuery(null);
         return;
       }
-      if (event.key === "Enter" || event.key === "Tab") {
-        if (!event.ctrlKey && !event.metaKey && !event.shiftKey) {
-          event.preventDefault();
-          const selected = matchingCommands[((slashIndex % matchingCommands.length) + matchingCommands.length) % matchingCommands.length];
-          if (selected) {
-            handleSlashSelect(selected);
-          }
-          return;
+    }
+
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (!running && (draft.trim() || attachments.length > 0)) {
+        submit();
+        setActivePill(null);
+        setSlashQuery(null);
+      }
+    }
+  };
+
+  const handleApplyToolPill = (pill: typeof TOOL_PILLS[0]) => {
+    if (activePill === pill.id) {
+      setActivePill(null);
+      if (draft.startsWith(pill.prefix)) {
+        setDraft(draft.slice(pill.prefix.length));
+      }
+    } else {
+      setActivePill(pill.id);
+      if (!draft.startsWith(pill.prefix)) {
+        setDraft(pill.prefix + draft);
+      }
+    }
+    textareaRef.current?.focus();
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const reader = new FileReader();
+      reader.onload = () => {
+        const url = reader.result as string;
+        setAttachments((prev) => [
+          ...prev,
+          { name: file.name, size: file.size, mimeType: file.type || "application/octet-stream", url },
+        ]);
+        if (file.type.startsWith("image/")) {
+          setAttachedImages((prev) => [...prev, url]);
         }
-      }
+      };
+      reader.readAsDataURL(file);
     }
-    if (event.key === "Enter") {
-      if (event.ctrlKey || event.metaKey || event.shiftKey) return;
-      event.preventDefault();
-      // While a run is active the send button acts as Stop — Enter must not
-      // fire a second concurrent run (the backend would reject it, but the
-      // optimistic user message would already pollute the transcript).
-      if (running) return;
-      submit();
-    }
-  }
+    e.target.value = "";
+  };
 
-  function openAttachment(attachment: ChatAttachment) {
-    openChatAttachment(attachment, onOpenAttachment, onOpenImage);
-  }
-
-  function handleImageFileSelect(event: React.ChangeEvent<HTMLInputElement>) {
-    const fileList = event.target.files;
-    if (!fileList) return;
-    for (let i = 0; i < fileList.length; i++) {
-      const file = fileList[i];
-      if (file.type || file.name) {
-        const mimeType = file.type || "application/octet-stream";
-        const isImage = mimeType.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(file.name);
-        const reader = new FileReader();
-        reader.onload = async (loadEvt) => {
-          const rawUrl = loadEvt.target?.result as string;
-          if (rawUrl) {
-            if (api?.saveAttachment) {
-              try {
-                const saved = await api.saveAttachment(rawUrl, file.name);
-                setAttachments((current) => [...current, { url: saved.url, name: file.name, mimeType, size: file.size }]);
-                if (isImage) setAttachedImages((current) => [...current, saved.url]);
-                return;
-              } catch { /* ignore fallback */ }
-            }
-            setAttachments((current) => [...current, { url: rawUrl, name: file.name, mimeType, size: file.size }]);
-            if (isImage) setAttachedImages((current) => [...current, rawUrl]);
-          }
-        };
-        reader.readAsDataURL(file);
-      }
-    }
-    event.target.value = "";
-  }
-
-  // ChatGPT-style hero landing: greeting + centered composer + starter chips.
-  const isEmpty = !messages.length && !running;
-
-  useEffect(() => {
-    if (isEmpty) textareaRef.current?.focus();
-  }, [isEmpty]);
-
-  const nowHour = new Date().getHours();
-  const greeting =
-    nowHour < 5 ? "Still up?" : nowHour < 12 ? "Good morning." : nowHour < 18 ? "Good afternoon." : "Good evening.";
-
-  const composer = (
-    <div className="agent-input-area">
-      <input
-        type="file"
-        ref={imageInputRef}
-        style={{ display: "none" }}
-        accept={ATTACHMENT_ACCEPT}
-        multiple
-        onChange={handleImageFileSelect}
-      />
-      <SlidingPlanDrawer
-        plan={latestPlan?.plan}
-        running={running}
-        isInterrupted={latestPlan?.isInterrupted}
-        onContinue={() => submit("continue")}
-      />
-      <div className="agent-input" style={{ position: "relative" }}>
-        {attachments.length > 0 && (
-          <div className="image-attachments-bar">
-            {attachments.map((attachment, idx) => (
-              <div className="image-preview-chip" key={`${attachment.url}-${idx}`}>
-                <button
-                  className="attachment-chip-main"
-                  onClick={() => openAttachment(attachment)}
-                  title={`${attachment.name} — click to preview`}
-                >
-                  {isImageAttachment(attachment)
-                    ? <img src={attachment.url} alt={attachment.name} className="image-preview-thumb" />
-                    : <FileText size={14} />}
-                  <span className="attachment-file-chip">
-                    <span className="attachment-file-name">{attachment.name}</span>
-                    <small>{formatAttachmentSize(attachment.size)}</small>
-                  </span>
-                </button>
-                <button
-                  className="image-preview-remove"
-                  onClick={() => { setAttachments((current) => current.filter((_, i) => i !== idx)); setAttachedImages((current) => current.filter((image) => image !== attachment.url)); }}
-                  title={`Remove ${attachment.name}`}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {mentionQuery !== null && matchingSkills.length > 0 && (
-          <div className="mention-dropdown">
-            {matchingSkills.map((skill, idx) => (
-              <button
-                key={skill.name}
-                className={`mention-item ${idx === mentionIndex ? "active" : ""}`}
-                onClick={() => insertSkillMention(skill.name)}
-              >
-                <Sparkles size={12} style={{ color: "#a496ff", flexShrink: 0 }} />
-                <span style={{ fontWeight: 600, color: "#e1dbff" }}>@{skill.name}</span>
-                <span className="mention-badge">Skill</span>
-                {skill.description && <span className="mention-desc">— {skill.description}</span>}
-              </button>
-            ))}
-          </div>
-        )}
-        {slashQuery !== null && matchingCommands.length > 0 && (
-          <SlashCommandPopup
-            filter={slashQuery}
-            items={matchingCommands}
-            customCommands={customCommands}
-            defaults={[]}
-            onSelect={handleSlashSelect}
-            selectedIndex={slashIndex}
-          />
-        )}
-        <textarea
-          ref={textareaRef}
-          value={draft}
-          onFocus={() => {
-            onRefreshSkills?.();
-            api?.listSkills?.().then((list) => {
-              if (Array.isArray(list)) setLocalSkills(list);
-            }).catch(() => {});
-          }}
-          onChange={(event) =>
-            handleDraftChange(
-              event.target.value,
-              event.target.selectionStart || event.target.value.length
-            )
-          }
-          onSelect={(event) => {
-            const target = event.currentTarget;
-            updateCursorTriggers(target.value, target.selectionStart || target.value.length);
-          }}
-          onKeyDown={handleKeyDown}
-          placeholder={isEmpty ? "Ask anything, or request a document…" : "Ask anything, or request a document… (Enter to send)"}
-          rows={3}
-        />
-        <div className="input-footer">
-          <div className="input-left">
-            <button
-              className="attach-button"
-              onClick={() => imageInputRef.current?.click()}
-              title="Attach files (images, PDF, Word, Excel, PowerPoint, TeX, text)"
-            >
-              <Paperclip size={14} />
-            </button>
-            <ModelSelect
-              selectedProviderId={selectedProviderId}
-              selectedModel={selectedModel}
-              selectedEffort={selectedEffort}
-              providers={providers}
-              definitions={definitions}
-              switchModel={switchModel}
-              switchEffort={switchEffort}
-              onOpenProviders={onOpenProviders}
-              sessionUsage={sessionUsage}
-              contextUsage={contextUsage}
-              activeSessionId={activeSessionId}
-            />
-          </div>
-          <button
-            className={`send-button${running ? " stop" : ""}`}
-            disabled={(!running && !draft.trim() && attachments.length === 0) || (!hasProvider && !running)}
-            onClick={running ? onStop : () => submit()}
-            title={running ? "Stop" : hasProvider ? "Send" : "Configure a provider first"}
-          >
-            {running ? <Square size={13} fill="currentColor" /> : <ArrowUp size={16} />}
-          </button>
-        </div>
-      </div>
-      {!hasProvider && (
-        <div className="input-note">
-          <Mic size={12} /> Configure a provider (Providers button, top right) to start chatting
-        </div>
-      )}
-    </div>
-  );
+  const latestPlan = extractLatestPlan(liveEvents);
 
   return (
-    <div className={`agent-view home-ds-main${isEmpty ? " home-hero-mode" : ""}`}>
-      <div className="home-topbar">
-        {topbarLeading}
-        <div className="home-topbar-title" title={sessionTitle || "New conversation"}>
-          {sessionTitle || (running ? "Working on it…" : "New conversation")}
-        </div>
-        <div className="agent-view-meta">
-          {panelMenu}
-        </div>
-      </div>
+    <div className="home-container">
+      {/* Main Chat Pane */}
+      <div className="home-chat-pane">
+        {/* Top Minimal Strip */}
+        <header className="home-topbar">
+          <div className="home-topbar-left">
+            {topbarLeading}
+            {sessionTitle && (
+              <span className="home-session-title">{sessionTitle}</span>
+            )}
+          </div>
 
-      {isEmpty ? (
-        <div className="home-hero">
-          <div className="home-hero-brand-pill">
-            <Sparkles size={13} />
-            <span>Nexus Chat · Research & Document Studio</span>
+          <div className="home-topbar-right">
+            {panelMenu}
           </div>
-          <h1 className="home-hero-greeting">{greeting} What can I help with?</h1>
-          {composer}
-          <div className="home-hero-chips">
-            {SUGGESTIONS.map((s) => (
-              <button
-                key={s.label}
-                className={`hero-chip hero-chip-${s.tone}`}
-                onClick={() => {
-                  setDraft(s.prompt);
-                  textareaRef.current?.focus();
-                }}
-                title={s.desc}
-              >
-                <span className="hero-chip-icon">{s.icon}</span>
-                <span className="hero-chip-text">
-                  <strong>{s.label}</strong>
-                  <small>{s.desc}</small>
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
-      ) : (
-        <>
-          <div className="home-body">
-            <div
-              className="agent-transcript home-transcript"
-              ref={transcriptRef}
-              onScroll={() => {
-                const el = transcriptRef.current;
-                if (!el) return;
-                stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 240;
-              }}
-            >
-              {transcriptNodes}
+        </header>
+
+        {/* Messages Scroll Area */}
+        <div className="home-messages-viewport" ref={messagesViewportRef}>
+          {isEmpty ? (
+            <div className="home-empty-state">
+              <div className="home-empty-icon">
+                <Sparkles size={24} />
+              </div>
+              <h1 className="home-empty-title">What can I help with?</h1>
+              <p className="home-empty-desc">
+                Ask questions, research live sources, build presentations, and create formatted documents.
+              </p>
+              <div className="home-prompts-grid">
+                {STARTER_PROMPTS.map((card) => (
+                  <div
+                    key={card.title}
+                    className="home-prompt-card"
+                    onClick={() => {
+                      setDraft(card.prompt);
+                      textareaRef.current?.focus();
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <span style={{ color: "var(--accent-home)" }}>{card.icon}</span>
+                      <span className="home-prompt-card-title">{card.title}</span>
+                    </div>
+                    <div className="home-prompt-card-desc">{card.desc}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="home-chat-content">
+              {renderBlocks.map((block) =>
+                block.kind === "events" ? (
+                  <ActivityGroupView
+                    key={`events-${block.startIndex}`}
+                    events={block.events}
+                    running={false}
+                    onOpenArtifact={(art) => setSelectedCanvasFile(art.path || art.filename || art.name)}
+                    onOpenImage={onOpenImage}
+                  />
+                ) : (
+                  <ChatItemView
+                    key={`msg-${block.index}`}
+                    message={block.message}
+                    index={block.index}
+                    onOpenAttachment={onOpenAttachment}
+                    onOpenImage={onOpenImage}
+                    onOpenArtifact={(art) => setSelectedCanvasFile(art.path || art.filename || art.name)}
+                    onEditMessage={
+                      onTruncateSession && block.message.role === "user" && !running
+                        ? async (idx, newText) => {
+                            await onTruncateSession(idx);
+                            submit(newText);
+                          }
+                        : undefined
+                    }
+                    onForkChat={
+                      onForkSession && !running
+                        ? (idx) => {
+                            void onForkSession(idx);
+                          }
+                        : undefined
+                    }
+                    onRegenerate={
+                      onTruncateSession && block.message.role === "assistant" && !running
+                        ? async (idx) => {
+                            let userIdx = idx - 1;
+                            while (userIdx >= 0 && messages[userIdx]?.role !== "user") userIdx--;
+                            if (userIdx >= 0 && messages[userIdx]?.role === "user") {
+                              const promptText = messages[userIdx].text || "";
+                              await onTruncateSession(userIdx);
+                              submit(promptText);
+                            }
+                          }
+                        : undefined
+                    }
+                  />
+                ),
+              )}
+
+              {/* Live Tool Activity during execution */}
               {running && liveEvents.length > 0 && (
                 <ActivityGroupView
                   events={liveEvents}
-                  running
+                  running={true}
+                  currentText={streamingText}
+                  onOpenArtifact={(art) => setSelectedCanvasFile(art.path || art.filename || art.name)}
                   onOpenImage={onOpenImage}
-                  onOpenAttachment={onOpenAttachment}
-                  currentText={streamingText ? "Writing response…" : undefined}
                 />
               )}
-              {running && !liveEvents.length && !streamingText && (
-                <ActivityGroupView
-                  events={[]}
-                  running
-                  onOpenImage={onOpenImage}
-                  onOpenAttachment={onOpenAttachment}
-                  currentText="Starting the agent… the first step can take a while."
-                />
-              )}
-              {running && streamingText && (
+
+              {/* Live Streaming Assistant Message */}
+              {(streamingText || (running && liveEvents.length === 0)) && (
                 <StreamingAssistantMessage text={streamingText} />
               )}
             </div>
+          )}
+        </div>
+
+        {/* Sliding Plan Drawer if an agent task is active */}
+        {latestPlan && (
+          <SlidingPlanDrawer
+            plan={latestPlan.plan}
+            running={running}
+            isInterrupted={latestPlan.isInterrupted}
+            onContinue={() => submit("continue")}
+          />
+        )}
+
+        {/* Sleek Floating Composer (Directly fixes the textarea UI bug) */}
+        <div className="home-composer-wrapper">
+          <input
+            type="file"
+            ref={fileInputRef}
+            style={{ display: "none" }}
+            accept={ATTACHMENT_ACCEPT}
+            multiple
+            onChange={handleFileSelect}
+          />
+
+          {slashQuery !== null && matchingCommands.length > 0 && (
+            <SlashCommandPopup
+              filter={slashQuery}
+              items={matchingCommands}
+              customCommands={customCommands}
+              selectedIndex={slashIndex}
+              onSelect={handleSlashSelect}
+            />
+          )}
+
+          <div className="home-composer-box">
+            {/* Attachment preview strip */}
+            {attachments.length > 0 && (
+              <div className="home-composer-attachments">
+                {attachments.map((att, idx) => (
+                  <div key={idx} className="home-attachment-pill">
+                    <FileText size={12} />
+                    <span style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {att.name}
+                    </span>
+                    <button
+                      className="btn-icon-sm"
+                      onClick={() => setAttachments((p) => p.filter((_, i) => i !== idx))}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Textarea */}
+            <textarea
+              ref={textareaRef}
+              className="home-composer-textarea"
+              placeholder={isEmpty ? "Ask anything, or request a document..." : "Ask anything... (Enter to send)"}
+              value={draft}
+              onChange={(e) => {
+                const val = e.target.value;
+                setDraft(val);
+                const slashMatch = val.match(/(?:^|\s)\/([a-zA-Z0-9_-]*)$/);
+                if (slashMatch) {
+                  setSlashQuery(slashMatch[1]);
+                } else {
+                  setSlashQuery(null);
+                }
+              }}
+              onKeyDown={handleKeyDown}
+              rows={1}
+            />
+
+            {/* Model / effort / context selector — lives inside the composer,
+                ChatGPT-style, instead of crowding the top bar. */}
+            <div className="home-composer-modelrow">
+              <ModelSelect
+                selectedProviderId={selectedProviderId}
+                selectedModel={selectedModel}
+                selectedEffort={selectedEffort}
+                providers={providers}
+                definitions={definitions}
+                switchModel={switchModel}
+                switchEffort={switchEffort}
+                onOpenProviders={onOpenProviders}
+                sessionUsage={sessionUsage}
+                contextUsage={contextUsage}
+                activeSessionId={activeSessionId}
+              />
+            </div>
+
+            {/* Bottom Toolbar: Tools on Left, Send on Right */}
+            <div className="home-composer-toolbar">
+              <div className="home-composer-tools-group">
+                <button
+                  type="button"
+                  className="composer-tool-btn"
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Attach file or image"
+                >
+                  <Paperclip size={13} />
+                </button>
+                {TOOL_PILLS.map((pill) => (
+                  <button
+                    key={pill.id}
+                    type="button"
+                    className={`composer-tool-btn ${activePill === pill.id ? "active" : ""}`}
+                    onClick={() => handleApplyToolPill(pill)}
+                    title={pill.prefix}
+                  >
+                    {pill.icon}
+                    <span>{pill.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="home-composer-send-group">
+                {running ? (
+                  <button
+                    type="button"
+                    className="composer-stop-btn"
+                    onClick={onStop}
+                    title="Stop generation"
+                  >
+                    <Square size={13} fill="currentColor" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="composer-send-btn"
+                    disabled={!draft.trim() && attachments.length === 0}
+                    onClick={() => submit()}
+                    title="Send message (Enter)"
+                  >
+                    <ArrowUp size={16} />
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
-          {composer}
-        </>
+        </div>
+      </div>
+
+      {/* Side-by-Side Canvas Drawer if file is selected */}
+      {selectedCanvasFile && (
+        <HomeCanvasDrawer
+          filePath={selectedCanvasFile}
+          onClose={() => setSelectedCanvasFile(null)}
+          onDownload={(path: string) => onDownloadFile?.(path)}
+          onRefine={(prompt: string) => submit(prompt)}
+        />
       )}
     </div>
   );
 }
+
+export default HomeView;

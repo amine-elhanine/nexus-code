@@ -1,8 +1,22 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Minus, Minimize2, Square, X } from "lucide-react";
 
 export function WindowControls() {
   const [isMax, setIsMax] = useState(false);
+
+  // Sync the initial state (app may be restored already maximized).
+  useEffect(() => {
+    let cancelled = false;
+    window.nexus
+      ?.isWindowMaximized?.()
+      .then((v) => {
+        if (!cancelled) setIsMax(Boolean(v));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleToggleMax = async () => {
     try {

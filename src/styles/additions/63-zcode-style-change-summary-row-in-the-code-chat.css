@@ -45,6 +45,12 @@
   font-weight: 600;
 }
 
+/* Stats are flex items inside the summary span: the leading space in the JSX
+   collapses at the line start, so space them explicitly. */
+.rollback-summary .diff-stat {
+  margin-left: 7px;
+}
+
 .diff-stat.add {
   color: #3ee695;
 }

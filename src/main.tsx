@@ -4,6 +4,8 @@ import App from "./App";
 import "./styles.css";
 import "./styles-additions.css";
 import "./styles/themes.css";
+import "./styles/index.css";
+import "./styles/design-fixes.css";
 import "katex/dist/katex.min.css";
 import { applyTheme, getStoredThemeId } from "./state/theme.js";
 

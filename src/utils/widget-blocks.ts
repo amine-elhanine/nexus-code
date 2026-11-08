@@ -109,6 +109,9 @@ export type WidgetAction =
   | { kind: "link"; label: string; url: string }
   | { kind: "ask"; label: string; prompt: string };
 
+export type WidgetCard = { title: string; badge?: string; body: string };
+export type WidgetStep = { badge: string; title: string; detail?: string };
+
 export type WidgetSpec = {
   title: string;
   inputs: WidgetInput[];
@@ -117,6 +120,10 @@ export type WidgetSpec = {
   charts: WidgetChart[];
   tables: WidgetTable[];
   actions: WidgetAction[];
+  /** Structured comparison / pros-cons / feature cards (grid layout). */
+  cards: WidgetCard[];
+  /** Ordered process stepper (phase badge, title, description). */
+  steps: WidgetStep[];
   note: string;
 };
 
@@ -133,6 +140,10 @@ const MAX_TABLE_COLS = 6;
 const MAX_FORMULA_CHARS = 300;
 const NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
+const MAX_CARDS = 6;
+const MAX_STEPS = 8;
+const CARD_RE = /^card\s+"([^"]*)"(?:\s+"([^"]*)")?\s+"([^"]*)"$/i;
+const UI_STEP_RE = /^step\s+"([^"]*)"\s+"([^"]*)"(?:\s+"([^"]*)")?$/i;
 const TITLE_RE = /^title\s+"([\s\S]*)"$/i;
 const INPUT_RE = /^input\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+"([\s\S]*)"\s+(slider|number|select|toggle)\s+(.+)$/i;
 const STAT_RE = /^stat\s+"([\s\S]*?)"\s+formula\s+"([\s\S]*?)"(.*)$/i;
@@ -192,7 +203,7 @@ function quotedAll(line: string): string[] {
  * no usable content (RichMarkdown then falls back to a plain code block).
  */
 export function parseWidget(source: string): WidgetSpec | null {
-  const spec: WidgetSpec = { title: "", inputs: [], stats: [], gauges: [], charts: [], tables: [], actions: [], note: "" };
+  const spec: WidgetSpec = { title: "", inputs: [], stats: [], gauges: [], charts: [], tables: [], actions: [], cards: [], steps: [], note: "" };
   const seen = new Set<string>();
   let chartPending: WidgetChart | null = null;
   let seriesPending: WidgetChartSeries | null = null;
@@ -209,6 +220,16 @@ export function parseWidget(source: string): WidgetSpec | null {
     }
     if ((match = line.match(NOTE_RE))) {
       spec.note = match[1];
+      continue;
+    }
+    if ((match = line.match(CARD_RE))) {
+      if (spec.cards.length >= MAX_CARDS) continue;
+      spec.cards.push({ title: match[1].slice(0, 80), badge: match[2]?.slice(0, 40) || undefined, body: match[3].slice(0, 400) });
+      continue;
+    }
+    if ((match = line.match(UI_STEP_RE))) {
+      if (spec.steps.length >= MAX_STEPS) continue;
+      spec.steps.push({ badge: match[1].slice(0, 40), title: match[2].slice(0, 100), detail: match[3]?.slice(0, 400) || undefined });
       continue;
     }
     if ((match = line.match(INPUT_RE))) {
@@ -358,7 +379,8 @@ export function parseWidget(source: string): WidgetSpec | null {
   spec.tables = spec.tables.filter((table) => table.rows.length > 0);
   if (
     !spec.inputs.length && !spec.stats.length && !spec.gauges.length &&
-    !spec.charts.length && !spec.tables.length && !spec.actions.length
+    !spec.charts.length && !spec.tables.length && !spec.actions.length &&
+    !spec.cards.length && !spec.steps.length
   ) {
     return null;
   }

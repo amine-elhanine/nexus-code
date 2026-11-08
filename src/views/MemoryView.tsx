@@ -3,22 +3,13 @@ import type { ReactNode } from "react";
 import type { ProjectRecord, SessionRecord } from "../types.js";
 import { parseMemorySections, parseWorkLog } from "../utils/memory-format.js";
 
-/**
- * Code-mode Memory panel — mirrors the Home memory panel's manage-style
- * design (structured fact rows with remove buttons, read-only logs) instead
- * of raw textareas. The old textarea layout also had a real bug in the
- * narrow sidebar: fixed-height textareas inside a flex panel with
- * min-height:0 got squeezed instead of scrolling, so the footer note
- * overlapped the textarea content.
- */
-
 function FactList({ items, emptyText, onRemove }: { items: string[]; emptyText: string; onRemove: (fact: string) => void }) {
   if (!items.length) return <div className="empty-pane" style={{ padding: "6px" }}>{emptyText}</div>;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
       {items.map((fact) => (
         <div key={fact} className="home-file-row" title={fact}>
-          <Brain size={13} style={{ flex: "none", color: "var(--nexus-green)" }} />
+          <Brain size={13} style={{ flex: "none", color: "var(--accent)" }} />
           <div className="home-file-info">
             <span className="home-file-name" style={{ whiteSpace: "normal" }}>{fact}</span>
           </div>
@@ -52,7 +43,7 @@ export function MemoryView({
           <span>PROJECT FACTS ({durableCount})</span>
           <small>SHARED</small>
         </div>
-        <p style={{ color: "#687588", fontSize: "11px", lineHeight: 1.5, margin: "0 0 8px" }}>
+        <p style={{ color: "var(--text-secondary)", fontSize: "11px", lineHeight: 1.5, margin: "0 0 8px" }}>
           Durable discoveries the agent saves for every future task in this project — working commands, conventions, gotchas. Manage them here, or say “remember…” in chat.
         </p>
         {sections.profile.length > 0 && (
@@ -92,7 +83,7 @@ export function MemoryView({
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             {workLog.slice().reverse().map((entry, i) => (
               <div key={`${entry.date}-${i}`} className="home-file-row" title={entry.text}>
-                <FileText size={13} style={{ flex: "none", color: entry.kind === "interrupted" ? "#e0a660" : undefined }} />
+                <FileText size={13} style={{ flex: "none", color: entry.kind === "interrupted" ? "var(--warning)" : undefined }} />
                 <div className="home-file-info">
                   <span className="home-file-name" style={{ whiteSpace: "normal" }}>{entry.text}</span>
                   <small>{entry.date}{entry.kind === "interrupted" ? " · interrupted" : ""}</small>
@@ -111,10 +102,10 @@ export function MemoryView({
             Clear
           </button>
         </div>
-        <p style={{ color: "#687588", fontSize: "11px", lineHeight: 1.5, margin: "0 0 8px" }}>
+        <p style={{ color: "var(--text-secondary)", fontSize: "11px", lineHeight: 1.5, margin: "0 0 8px" }}>
           Short pointers for this session — full answers stay in the transcript, which the agent reads directly.
         </p>
-        <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: 0, padding: "8px", border: "1px solid #28374a", borderRadius: "5px", background: "#090d14", color: "#a6b2c2", font: "10px/1.5 'DM Mono', monospace", maxHeight: 220, overflowY: "auto" }}>
+        <pre className="memory-content-preview">
           {session?.memory || "No session notes yet."}
         </pre>
       </div>

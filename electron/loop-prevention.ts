@@ -132,7 +132,7 @@ export function loopPreventionMiddleware(options: {
   const isInspection = (name: string) => /^(read_file|read_file_range|grep_search|glob|ls|view_file|search_code|code_structure|code_symbol)$/i.test(name);
   const isFileRead = (name: string) => /^(read_file|read_file_range)$/i.test(name);
   const isResearchTool = (name: string, args?: any) => {
-    if (/^(web_search|web_image_search|browser_fetch_api|browser_inspect|search_web|fetch_url)$/i.test(name)) return true;
+    if (/^(web_search|web_image_search|web_video_search|browser_fetch_api|browser_inspect|search_web|fetch_url)$/i.test(name)) return true;
     // browser_act covers both research (navigate/text) and interaction
     // (click/fill/type). Only the research actions consume the budget.
     if (/^browser_act$/i.test(name)) {

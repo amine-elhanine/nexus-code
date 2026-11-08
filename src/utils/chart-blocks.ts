@@ -26,13 +26,26 @@ export type ScatterSpec = {
   points: Array<{ name: string; x: number; y: number }>;
 };
 
+export type CategoryChartEntry = {
+  label: string;
+  /** Primary value (series[0]) — backward compatibility for single-series callers. */
+  value: number;
+  /** All series values for this category (same order as seriesNames). */
+  values: number[];
+};
+
 export type CategoryChartSpec = {
   title: string;
+  subtitle?: string;
   xLabel: string;
   yLabel: string;
   yMin: number;
   yMax: number;
-  entries: Array<{ label: string; value: number }>;
+  /** Series display names from the optional `series "A" "B"` header line. */
+  seriesNames: string[];
+  /** Stacked bars/areas instead of grouped. */
+  stacked?: boolean;
+  entries: CategoryChartEntry[];
 };
 
 const TITLE = /^title\s+"([\s\S]*)"$/i;
@@ -76,13 +89,23 @@ export function parseScatterChart(source: string): ScatterSpec | null {
   return spec;
 }
 
-function parseCategoryChart(source: string, dataPattern: RegExp): CategoryChartSpec | null {
-  const spec: CategoryChartSpec = { title: "", xLabel: "", yLabel: "", yMin: 0, yMax: 0, entries: [] };
+function parseCategoryChart(source: string, dataPattern: RegExp, kind: "bar" | "point"): CategoryChartSpec | null {
+  const spec: CategoryChartSpec = { title: "", xLabel: "", yLabel: "", yMin: 0, yMax: 0, seriesNames: [], entries: [] };
   let explicitMax: number | null = null;
+  // Multi-value data line: `bar "AWS" 90.8 105.2 124.0` — one value per series.
+  const verb = kind === "bar" ? "(?:bar|hbar)" : "(?:point|area)";
+  const MULTI_DATA = new RegExp(`^${verb}\\s+"([\\s\\S]*)"` + "\\s+([-+\\d.]+(?:\\s+[-+\\d.]+)*)$", "i");
+  const SERIES = /^series\s+(.+)$/i;
+  const SUBTITLE = /^subtitle\s+"([\s\S]*)"$/i;
   for (const line of lines(source)) {
     let match: RegExpMatchArray | null;
     if ((match = line.match(TITLE))) spec.title = match[1];
-    else if ((match = line.match(X_AXIS))) spec.xLabel = match[1];
+    else if ((match = line.match(SUBTITLE))) spec.subtitle = match[1];
+    else if ((match = line.match(SERIES))) {
+      spec.seriesNames = [...match[1].matchAll(/"([\s\S]*?)"/g)].map((m) => m[1]).filter(Boolean);
+    } else if (/^stacked\s+(true|on|yes)\b/i.test(line)) {
+      spec.stacked = true;
+    } else if ((match = line.match(X_AXIS))) spec.xLabel = match[1];
     else if ((match = line.match(Y_AXIS))) {
       spec.yLabel = match[1];
       if (match[2] !== undefined && match[3] !== undefined) {
@@ -92,36 +115,53 @@ function parseCategoryChart(source: string, dataPattern: RegExp): CategoryChartS
         spec.yMin = min;
         explicitMax = max;
       }
+    } else if ((match = line.match(MULTI_DATA)) && match[2].trim().includes(" ")) {
+      // Multi-series data row: one value per series. Needs a series header to
+      // name them; without one the extra values are ignored (treated as single).
+      const values = match[2].trim().split(/\s+/).map(Number).filter(Number.isFinite);
+      if (!values.length || !Number.isFinite(values[0])) continue;
+      spec.entries.push({ label: match[1], value: values[0], values });
     } else if ((match = line.match(dataPattern))) {
       const value = Number(match[2]);
       if (!Number.isFinite(value)) continue;
-      spec.entries.push({ label: match[1], value });
+      spec.entries.push({ label: match[1], value, values: [value] });
+    }
+  }
+  // Consistency: multi-series rows need at least as many series names as the
+  // widest row; backfill unnamed series as "Series N".
+  const widest = Math.max(...spec.entries.map((e) => e.values.length), spec.seriesNames.length, 1);
+  if (widest > 1) {
+    while (spec.seriesNames.length < widest) spec.seriesNames.push(`Series ${spec.seriesNames.length + 1}`);
+    for (const entry of spec.entries) {
+      while (entry.values.length < widest) entry.values.push(0);
+      if (entry.values.length > widest) entry.values = entry.values.slice(0, widest);
     }
   }
   if (!spec.entries.length) return null;
-  spec.yMax = explicitMax ?? niceMax(Math.max(...spec.entries.map((e) => e.value), spec.yMin, 0));
+  const allValues = spec.entries.flatMap((e) => (widest > 1 ? e.values : [e.value]));
+  spec.yMax = explicitMax ?? niceMax(Math.max(...allValues, spec.yMin, 0));
   if (spec.yMax <= spec.yMin) return null;
   return spec;
 }
 
-/** ```bar fence: one `bar "Label" value` line per category. */
+/** ```bar fence: one `bar "Label" value[, value...]` line per category. */
 export function parseBarChart(source: string): CategoryChartSpec | null {
-  return parseCategoryChart(source, /^(?:bar)\s+"([\s\S]*)"\s+([-+\d.]+)$/i);
+  return parseCategoryChart(source, /^(?:bar)\s+"([\s\S]*)"\s+([-+\d.]+)$/i, "bar");
 }
 
 /** ```hbar fence: horizontal bars for categories with long labels. */
 export function parseHBarChart(source: string): CategoryChartSpec | null {
-  return parseCategoryChart(source, /^(?:bar|hbar)\s+"([\s\S]*)"\s+([-+\d.]+)$/i);
+  return parseCategoryChart(source, /^(?:bar|hbar)\s+"([\s\S]*)"\s+([-+\d.]+)$/i, "bar");
 }
 
-/** ```line fence: ordered `point "Label" value` lines. */
+/** ```line fence: ordered `point "Label" value[, value...]` lines. */
 export function parseLineChart(source: string): CategoryChartSpec | null {
-  return parseCategoryChart(source, /^(?:point)\s+"([\s\S]*)"\s+([-+\d.]+)$/i);
+  return parseCategoryChart(source, /^(?:point)\s+"([\s\S]*)"\s+([-+\d.]+)$/i, "point");
 }
 
-/** ```area fence: ordered `point "Label" value` lines with filled area. */
+/** ```area fence: ordered `point "Label" value[, value...]` lines with filled area. */
 export function parseAreaChart(source: string): CategoryChartSpec | null {
-  return parseCategoryChart(source, /^(?:point|area)\s+"([\s\S]*)"\s+([-+\d.]+)$/i);
+  return parseCategoryChart(source, /^(?:point|area)\s+"([\s\S]*)"\s+([-+\d.]+)$/i, "point");
 }
 
 export type PieSlice = { label: string; value: number; percent: number };

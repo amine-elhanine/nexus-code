@@ -714,6 +714,21 @@ export function AgentView({
           onForkChat={running ? undefined : (idx) => {
             void onForkSession?.(idx);
           }}
+          onRegenerate={running ? undefined : (idx) => {
+            let userIdx = idx;
+            for (let i = idx - 1; i >= 0; i--) {
+              if (messages[i]?.role === "user") {
+                userIdx = i;
+                break;
+              }
+            }
+            const promptText = messages[userIdx]?.text || "";
+            if (promptText) {
+              void Promise.resolve(onTruncateSession?.(userIdx)).then(() => {
+                submit(promptText);
+              });
+            }
+          }}
         />
       );
     }
