@@ -85,15 +85,81 @@ export function markdownToSheets(md: string, fallbackName = "Sheet1"): Array<{ n
   return sheets;
 }
 
+/** Parses "$1,200.50" / "45.2%" / "1200" into a typed value + number format. */
+function parseNumericCell(raw: string): { v: number; z?: string } | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("=")) return null; // formula — caller handles
+  const currency = /^\$\s*-?[\d,]+(\.\d+)?$/.test(trimmed);
+  const percent = /^-?[\d,]+(\.\d+)?\s*%$/.test(trimmed);
+  const plain = /^-?[\d,]+(\.\d+)?$/.test(trimmed);
+  const num = Number(trimmed.replace(/[$,%\s]/g, ""));
+  if (!Number.isFinite(num) || !plain && !currency && !percent) return null;
+  if (currency) return { v: num, z: "$#,##0.00" };
+  if (percent) return { v: num / 100, z: "0.0%" };
+  return { v: num };
+}
+
 async function renderXlsxSheets(sheets: Array<{ name: string; rows: string[][] }>): Promise<Buffer> {
   const XLSX = (await import("xlsx")).default ?? (await import("xlsx"));
   const workbook = XLSX.utils.book_new();
   for (const sheet of sheets) {
-    const worksheet = XLSX.utils.aoa_to_sheet(sheet.rows);
+    const worksheet = XLSX.utils.aoa_to_sheet(sheet.rows.map((row) =>
+      row.map((cell) => {
+        const trimmed = String(cell ?? "").trim();
+        if (trimmed.startsWith("=")) return { f: trimmed.slice(1) }; // native formula
+        const numeric = parseNumericCell(trimmed);
+        return numeric ? numeric : trimmed;
+      })
+    ));
+    // Styled header row.
+    const range = XLSX.utils.decode_range(worksheet["!ref"] || "A1");
+    for (let col = range.s.c; col <= range.e.c; col++) {
+      const addr = XLSX.utils.encode_cell({ r: range.s.r, c: col });
+      if (!worksheet[addr]) continue;
+      worksheet[addr].s = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: "1F3864" } } };
+    }
+    // Auto-fit column widths from header and cell content lengths.
+    if (!worksheet["!cols"]) worksheet["!cols"] = [];
+    for (let col = range.s.c; col <= range.e.c; col++) {
+      let maxLen = 8;
+      for (let row = range.s.r; row <= range.e.r; row++) {
+        const addr = XLSX.utils.encode_cell({ r: row, c: col });
+        const cell = worksheet[addr];
+        const len = String(cell?.v ?? cell?.f ?? "").length;
+        if (len > maxLen) maxLen = len;
+      }
+      worksheet["!cols"][col] = { wch: Math.min(maxLen + 3, 50) };
+    }
+    worksheet["!freeze"] = { xSplit: 0, ySplit: 1 };
     XLSX.utils.book_append_sheet(workbook, worksheet, sheet.name.slice(0, 31) || `Sheet${sheets.length}`);
   }
-  const out = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  const out = XLSX.write(workbook, { type: "buffer", bookType: "xlsx", cellStyles: true });
   return Buffer.isBuffer(out) ? out : Buffer.from(out as unknown as Uint8Array);
+}
+
+/** Resolves ![alt](local-file) references from the workspace into data URIs. */
+async function resolveWorkspaceImages(content: string, projectRoot: string): Promise<string> {
+  const IMAGE_REF = /!\[([^\]]*)\]\((?!https?:\/\/|data:)([^)\s]+)\)/g;
+  const matches = [...content.matchAll(IMAGE_REF)];
+  if (!matches.length) return content;
+  let resolved = content;
+  for (const match of matches) {
+    const alt = match[1];
+    const localPath = match[2];
+    const safeName = path.basename(localPath.replace(/\\/g, "/"));
+    const abs = path.join(projectRoot, safeName);
+    try {
+      const stat = await fsPromises.stat(abs);
+      if (!stat.isFile() || stat.size > 10 * 1024 * 1024) continue;
+      const ext = path.extname(safeName).toLowerCase();
+      const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" }[ext];
+      if (!mime) continue;
+      const bytes = await fsPromises.readFile(abs);
+      resolved = resolved.replace(match[0], `![${alt}](data:${mime};base64,${bytes.toString("base64")})`);
+    } catch { /* file not found — leave the reference as-is */ }
+  }
+  return resolved;
 }
 
 export interface DeliverableCreationResult {
@@ -120,25 +186,29 @@ export async function createDeliverable(options: {
   const fileName = sanitizeDeliverableFileName(options.fileName, format);
   const relativePath = fileName; // workspace root, where fresh-file detection + contract validation look
 
+  // Resolve workspace-relative image references (![alt](img.png)) into data
+  // URIs so generated plots/images embed into .docx/.pptx/.pdf deliverables.
+  const resolvedContent = await resolveWorkspaceImages(content, projectRoot);
+
   let bytes: Buffer;
   try {
     if (format === "docx") {
-      const plan = markdownToReportPlan(content, options.title || safeStem(fileName, "Report"));
+      const plan = markdownToReportPlan(resolvedContent, options.title || safeStem(fileName, "Report"));
       bytes = await renderDocx(plan, []);
     } else if (format === "pdf") {
-      const plan = markdownToReportPlan(content, options.title || safeStem(fileName, "Report"));
+      const plan = markdownToReportPlan(resolvedContent, options.title || safeStem(fileName, "Report"));
       bytes = await renderPdf(plan, []);
     } else if (format === "pptx") {
-      const plan = markdownToSlidesPlan(content, options.title || safeStem(fileName, "Presentation"));
+      const plan = markdownToSlidesPlan(resolvedContent, options.title || safeStem(fileName, "Presentation"));
       bytes = await renderPptx(plan, [], { coverBadge: "" });
     } else if (format === "xlsx") {
-      const sheets = markdownToSheets(content, safeStem(fileName, "Sheet1").slice(0, 31));
+      const sheets = markdownToSheets(resolvedContent, safeStem(fileName, "Sheet1").slice(0, 31));
       if (!sheets.length) {
         return { ok: false, message: "No spreadsheet data found. Provide one '## Sheet name' heading per worksheet with a Markdown table ('| col | col |' rows, first row = headers, 4+ data rows)." };
       }
       bytes = await renderXlsxSheets(sheets);
     } else {
-      bytes = Buffer.from(content, "utf8");
+      bytes = Buffer.from(resolvedContent, "utf8");
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

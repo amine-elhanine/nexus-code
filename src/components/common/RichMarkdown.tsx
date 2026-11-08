@@ -13,6 +13,7 @@ import {
   parseRadarChart,
   detectFenceKind,
   type CategoryChartSpec,
+  type CategoryChartEntry,
 } from "../../utils/chart-blocks.js";
 import { WidgetBlock } from "../chat/WidgetBlock.js";
 
@@ -47,6 +48,8 @@ function ChartActions({
 }) {
   const [copiedData, setCopiedData] = useState(false);
   const [downloaded, setDownloaded] = useState(false);
+  const [pngBusy, setPngBusy] = useState(false);
+  const [pngDone, setPngDone] = useState(false);
 
   const handleCopyData = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -81,6 +84,43 @@ function ChartActions({
     if (svg) openVisualFullscreen({ kind: "svg", svg, title: title || "Chart" });
   };
 
+  const handleDownloadPng = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const svgEl = svgRef.current;
+    if (!svgEl || pngBusy) return;
+    setPngBusy(true);
+    try {
+      const svgXml = new XMLSerializer().serializeToString(svgEl);
+      const svgBlob = new Blob([svgXml], { type: "image/svg+xml;charset=utf-8" });
+      const url = URL.createObjectURL(svgBlob);
+      const img = new Image();
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error("SVG rasterization failed"));
+        img.src = url;
+      });
+      URL.revokeObjectURL(url);
+      const scale = 2;
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, svgEl.clientWidth || 760) * scale;
+      canvas.height = Math.max(1, svgEl.clientHeight || 420) * scale;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("Canvas 2D unavailable");
+      ctx.fillStyle = getComputedStyle(document.body).backgroundColor || "#0b0f16";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL("image/png");
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = `${(title || "chart").replace(/[^a-zA-Z0-9_-]/g, "_").toLowerCase()}.png`;
+      a.click();
+      setPngDone(true);
+      setTimeout(() => setPngDone(false), 1800);
+    } catch { /* best effort */ } finally {
+      setPngBusy(false);
+    }
+  };
+
   return (
     <div className="rich-chart-actions" onClick={(e) => e.stopPropagation()}>
       <button
@@ -111,6 +151,16 @@ function ChartActions({
       >
         {downloaded ? <Check size={11} /> : <Download size={11} />}
         <span>{downloaded ? "Saved" : "SVG"}</span>
+      </button>
+      <button
+        type="button"
+        className="rich-chart-btn"
+        onClick={handleDownloadPng}
+        disabled={pngBusy}
+        title="Download chart as PNG (2x)"
+      >
+        {pngDone ? <Check size={11} /> : <Download size={11} />}
+        <span>{pngBusy ? "…" : pngDone ? "Saved" : "PNG"}</span>
       </button>
     </div>
   );
@@ -379,13 +429,41 @@ function ScatterBlock({ source }: { source: string }) {
 }
 
 // Bar/line/area share one frame: axes, three y ticks, category labels below
+// Multi-series interactive category chart with live view switching
+// (Bar | Line | Area | Table), series legend, smooth curves and CSV export.
+
+const SERIES_PALETTE = ["#34d399", "#60a5fa", "#f59e0b", "#f472b6", "#a78bfa", "#f87171", "#22d3ee", "#facc15"];
+
+/** Catmull-Rom spline → cubic Bezier path through the given points. */
+function smoothPath(points: Array<{ x: number; y: number }>): string {
+  if (points.length < 2) return points.map((p) => `${p.x},${p.y}`).join(" ");
+  let d = `M ${points[0].x},${points[0].y}`;
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[Math.max(0, i - 1)];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[Math.min(points.length - 1, i + 2)];
+    const c1x = p1.x + (p2.x - p0.x) / 6;
+    const c1y = p1.y + (p2.y - p0.y) / 6;
+    const c2x = p2.x - (p3.x - p1.x) / 6;
+    const c2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C ${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2.x},${p2.y}`;
+  }
+  return d;
+}
+
 function CategoryChartBlock({ source, kind }: { source: string; kind: "bar" | "line" | "area" }) {
   const spec: CategoryChartSpec | null =
     kind === "bar" ? parseBarChart(source) : kind === "area" ? parseAreaChart(source) : parseLineChart(source);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const [hoveredSeries, setHoveredSeries] = useState<number | null>(null);
+  const [view, setView] = useState<"bar" | "line" | "area" | "table">(kind);
   const svgRef = useRef<SVGSVGElement>(null);
 
   if (!spec) return <pre className="rich-mermaid-fallback"><code>{source}</code></pre>;
+  const seriesCount = Math.max(1, spec.seriesNames.length, ...spec.entries.map((e) => e.values.length));
+  const isMulti = seriesCount > 1;
+  const activeView = view;
   const width = 760, height = 420, left = 62, right = 24, top = 42, bottom = 58;
   const plotW = width - left - right, plotH = height - top - bottom;
   const clamp = (value: number) => Math.min(spec.yMax, Math.max(spec.yMin, value));
@@ -394,136 +472,237 @@ function CategoryChartBlock({ source, kind }: { source: string; kind: "bar" | "l
   const ticks = [spec.yMin, spec.yMin + (spec.yMax - spec.yMin) / 2, spec.yMax];
   const slot = plotW / spec.entries.length;
   const mid = (i: number) => (spec.entries.length > 1 ? left + i * slot + slot / 2 : left + plotW / 2);
+  const seriesName = (s: number) => spec.seriesNames[s] || `Series ${s + 1}`;
+  const seriesColor = (s: number) => SERIES_PALETTE[s % SERIES_PALETTE.length];
+  const entryValue = (entry: CategoryChartEntry, s: number) => (entry.values.length > s ? entry.values[s] : entry.values[entry.values.length - 1] ?? entry.value);
   const labelKind = kind === "bar" ? "Bar chart" : kind === "area" ? "Area chart" : "Line chart";
 
   const activeEntry = hoveredIndex !== null ? spec.entries[hoveredIndex] : null;
   const csv =
-    [spec.xLabel || "Category", spec.yLabel || "Value"].join(",") +
+    [spec.xLabel || "Category", ...Array.from({ length: seriesCount }, (_, s) => spec.seriesNames[s] || `Series ${s + 1}`)].join(",") +
     "\n" +
-    spec.entries.map((e) => `"${e.label}",${e.value}`).join("\n");
+    spec.entries.map((e) => `"${e.label}",` + Array.from({ length: seriesCount }, (_, s) => entryValue(e, s)).join(",")).join("\n");
+
+  // Series-visibility for the active view: hovered series dims others.
+  const seriesStyle = (s: number): React.CSSProperties =>
+    hoveredSeries !== null && hoveredSeries !== s ? { opacity: 0.25, transition: "opacity 0.2s" } : { transition: "opacity 0.2s" };
+
+  const renderBars = () => {
+    const groupWidth = Math.min(slot * 0.68, 110);
+    const singleWidth = Math.min(slot * 0.62, 80);
+    return spec.entries.map((entry, index) => {
+      const isHovered = hoveredIndex === index;
+      const isDimmed = hoveredIndex !== null && !isHovered;
+      const x = left + index * slot + (slot - (isMulti ? groupWidth : singleWidth)) / 2;
+      const bars = [];
+      if (isMulti && spec.stacked) {
+        let cumulative = spec.yMin;
+        const barWidth = groupWidth;
+        for (let s = 0; s < seriesCount; s++) {
+          const v = entryValue(entry, s);
+          const y0 = py(cumulative);
+          const y1 = py(cumulative + v);
+          cumulative += v;
+          bars.push(
+            <rect key={s} x={x} y={y1} width={barWidth} height={Math.max(0, y0 - y1)} fill={seriesColor(s)} style={seriesStyle(s)} rx={2} />
+          );
+        }
+        bars.push(
+          <text key="total" x={x + barWidth / 2} y={py(cumulative) - 6} textAnchor="middle" className="rich-chart-tick" fontWeight={isHovered ? "700" : "normal"}>{fmt(cumulative)}</text>
+        );
+      } else if (isMulti) {
+        const barWidth = groupWidth / seriesCount;
+        for (let s = 0; s < seriesCount; s++) {
+          const v = entryValue(entry, s);
+          const bx = x + s * barWidth;
+          const yTop = py(v);
+          bars.push(
+            <g key={s} style={seriesStyle(s)}>
+              <rect x={bx} y={yTop} width={barWidth - 2} height={Math.max(0, baseline - yTop)} rx={2} fill={seriesColor(s)} />
+              <text x={bx + (barWidth - 2) / 2} y={yTop - 5} textAnchor="middle" className="rich-chart-tick" fontSize={9}>{fmt(v)}</text>
+            </g>
+          );
+        }
+      } else {
+        const yTop = py(entry.value);
+        bars.push(
+          <g key="single" style={seriesStyle(0)}>
+            <rect x={x} y={yTop} width={singleWidth} height={Math.max(0, baseline - yTop)} rx={3} className={`rich-bar ${isHovered ? "active" : ""}`} />
+            <text x={x + singleWidth / 2} y={yTop - 6} textAnchor="middle" className="rich-chart-tick" fontWeight={isHovered ? "700" : "normal"}>{fmt(entry.value)}</text>
+          </g>
+        );
+      }
+      return (
+        <g
+          key={`${entry.label}-${index}`}
+          onMouseEnter={() => setHoveredIndex(index)}
+          onMouseLeave={() => setHoveredIndex(null)}
+          style={{ opacity: isDimmed ? 0.35 : 1, transition: "opacity 0.2s" }}
+        >
+          {bars}
+          <text x={left + index * slot + slot / 2} y={baseline + 16} textAnchor="middle" className="rich-chart-label" fontWeight={isHovered ? "700" : "normal"}>{truncate(entry.label)}</text>
+        </g>
+      );
+    });
+  };
+
+  const renderLines = (filled: boolean) => {
+    const seriesIndices = Array.from({ length: seriesCount }, (_, s) => s);
+    return seriesIndices.map((s) => {
+      const points = spec.entries.map((entry, index) => ({ x: mid(index), y: py(entryValue(entry, s)) }));
+      const pathD = smoothPath(points);
+      const areaD = `${pathD} L ${points[points.length - 1]?.x ?? left},${baseline} L ${points[0]?.x ?? left},${baseline} Z`;
+      return (
+        <g key={s} style={seriesStyle(s)}>
+          {filled && (
+            <path d={areaD} fill={seriesColor(s)} opacity={seriesCount > 1 ? 0.12 : 0.18} stroke="none">
+              <animate attributeName="opacity" from="0" to={seriesCount > 1 ? 0.12 : 0.18} dur="0.5s" fill="freeze" />
+            </path>
+          )}
+          <path d={pathD} fill="none" stroke={seriesColor(s)} strokeWidth={2} strokeLinecap="round" className="rich-line-path" style={seriesStyle(s)} />
+          {points.map((p, index) => {
+            const isHovered = hoveredIndex === index;
+            return (
+              <g key={index} onMouseEnter={() => setHoveredIndex(index)} onMouseLeave={() => setHoveredIndex(null)}>
+                {isHovered && <circle cx={p.x} cy={p.y} r={12} fill="none" stroke={seriesColor(s)} strokeWidth={2} opacity={0.6} className="rich-halo-ring" />}
+                <circle cx={p.x} cy={p.y} r={isHovered ? 6 : 4} fill={seriesColor(s)} className={`rich-line-point ${isHovered ? "active" : ""}`} />
+              </g>
+            );
+          })}
+        </g>
+      );
+    });
+  };
+
+  const xLabels = (
+    <g>
+      {spec.entries.map((entry, index) => (
+        <text key={index} x={left + index * slot + slot / 2} y={baseline + 16} textAnchor="middle" className="rich-chart-label">{truncate(entry.label)}</text>
+      ))}
+    </g>
+  );
 
   return (
     <div className="rich-chart" role="img" aria-label={spec.title || labelKind}>
-      <ChartActions title={spec.title || labelKind.toLowerCase().replace(/\s+/g, "-")} svgRef={svgRef} dataText={csv} />
-      <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet">
-        {spec.title && <text x={width / 2} y={22} textAnchor="middle" className="rich-chart-title">{spec.title}</text>}
-        {ticks.map((tick, index) => (
-          <g key={index}>
-            <line x1={left} y1={py(tick)} x2={left + plotW} y2={py(tick)} className="rich-chart-axis" style={{ strokeOpacity: 0.15 }} />
-            <text x={left - 8} y={py(tick) + 3} textAnchor="end" className="rich-chart-tick">{fmt(tick)}</text>
-          </g>
-        ))}
-        <line x1={left} y1={top} x2={left} y2={top + plotH} className="rich-chart-axis" />
-        <line x1={left} y1={baseline} x2={left + plotW} y2={baseline} className="rich-chart-axis" />
-
-        {/* Hover crosshair guide line for line/area */}
-        {(kind === "line" || kind === "area") && hoveredIndex !== null && (
-          <line
-            x1={mid(hoveredIndex)}
-            y1={top}
-            x2={mid(hoveredIndex)}
-            y2={baseline}
-            className="rich-chart-guide"
-          />
-        )}
-
-        {kind === "bar" && spec.entries.map((entry, index) => {
-          const barWidth = Math.min(slot * 0.62, 80);
-          const x = left + index * slot + (slot - barWidth) / 2;
-          const yTop = py(entry.value);
-          const isHovered = hoveredIndex === index;
-          const isDimmed = hoveredIndex !== null && !isHovered;
-          return (
-            <g
-              key={`${entry.label}-${index}`}
-              onMouseEnter={() => setHoveredIndex(index)}
-              onMouseLeave={() => setHoveredIndex(null)}
-              style={{ opacity: isDimmed ? 0.35 : 1, transition: "opacity 0.2s" }}
+      <div className="chart-header-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+        <div className="chart-view-switcher" role="group" aria-label="Chart view" style={{ display: "inline-flex", gap: 2, padding: 2, border: "1px solid var(--line, #24334a)", borderRadius: 7, background: "var(--bg, #0b0f16)" }}>
+          {(["bar", "line", "area", "table"] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setView(v)}
+              style={{
+                border: 0, background: activeView === v ? "var(--panel2, #17202d)" : "transparent",
+                color: activeView === v ? "var(--nexus-bright, #6ee7b7)" : "var(--muted, #7e8b9d)",
+                fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 5, cursor: "pointer",
+                textTransform: "capitalize",
+              }}
             >
-              <rect
-                x={x}
-                y={yTop}
-                width={barWidth}
-                height={Math.max(0, baseline - yTop)}
-                rx={3}
-                className={`rich-bar ${isHovered ? "active" : ""}`}
-              />
-              <text x={x + barWidth / 2} y={yTop - 6} textAnchor="middle" className="rich-chart-tick" fontWeight={isHovered ? "700" : "normal"}>{fmt(entry.value)}</text>
-              <text x={x + barWidth / 2} y={baseline + 16} textAnchor="middle" className="rich-chart-label" fontWeight={isHovered ? "700" : "normal"}>{truncate(entry.label)}</text>
+              {v}
+            </button>
+          ))}
+        </div>
+        <ChartActions title={spec.title || labelKind.toLowerCase().replace(/\s+/g, "-")} svgRef={svgRef} dataText={csv} />
+      </div>
+      {activeView === "table" ? (
+        <div className="chart-table-view" style={{ overflowX: "auto", border: "1px solid var(--line, #24334a)", borderRadius: 8 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: "left", padding: "7px 10px", borderBottom: "1px solid var(--line, #24334a)", color: "var(--muted)", fontWeight: 600 }}>{spec.xLabel || "Category"}</th>
+                {Array.from({ length: seriesCount }, (_, s) => (
+                  <th key={s} style={{ textAlign: "right", padding: "7px 10px", borderBottom: "1px solid var(--line, #24334a)", color: seriesColor(s), fontWeight: 600 }}>{seriesName(s)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {spec.entries.map((entry, index) => (
+                <tr key={index} onMouseEnter={() => setHoveredIndex(index)} onMouseLeave={() => setHoveredIndex(null)} style={{ background: hoveredIndex === index ? "var(--panel2, #17202d)" : "transparent" }}>
+                  <td style={{ padding: "6px 10px", borderBottom: "1px solid var(--panel2, #17202d)" }}>{entry.label}</td>
+                  {Array.from({ length: seriesCount }, (_, s) => (
+                    <td key={s} style={{ padding: "6px 10px", borderBottom: "1px solid var(--panel2, #17202d)", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{fmt(entryValue(entry, s))}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet">
+          <defs>
+            {Array.from({ length: seriesCount }, (_, s) => (
+              <linearGradient key={s} id={`area-grad-${s}-${seriesColor(s).slice(1)}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={seriesColor(s)} stopOpacity={0.35} />
+                <stop offset="100%" stopColor={seriesColor(s)} stopOpacity={0.02} />
+              </linearGradient>
+            ))}
+          </defs>
+          {spec.title && <text x={width / 2} y={22} textAnchor="middle" className="rich-chart-title">{spec.title}</text>}
+          {spec.subtitle && <text x={width / 2} y={spec.title ? 36 : 22} textAnchor="middle" className="rich-chart-tick" fontSize={10} opacity={0.75}>{spec.subtitle}</text>}
+          {ticks.map((tick, index) => (
+            <g key={index}>
+              <line x1={left} y1={py(tick)} x2={left + plotW} y2={py(tick)} className="rich-chart-axis" style={{ strokeOpacity: 0.15 }} />
+              <text x={left - 8} y={py(tick) + 3} textAnchor="end" className="rich-chart-tick">{fmt(tick)}</text>
             </g>
-          );
-        })}
+          ))}
+          <line x1={left} y1={top} x2={left} y2={top + plotH} className="rich-chart-axis" />
+          <line x1={left} y1={baseline} x2={left + plotW} y2={baseline} className="rich-chart-axis" />
 
-        {kind === "area" && (
-          <g>
-            <polygon
-              points={`${mid(0)},${baseline} ${spec.entries.map((entry, index) => `${mid(index)},${py(entry.value)}`).join(" ")} ${mid(spec.entries.length - 1)},${baseline}`}
-              className="rich-area-fill"
+          {(activeView === "line" || activeView === "area") && hoveredIndex !== null && (
+            <line x1={mid(hoveredIndex)} y1={top} x2={mid(hoveredIndex)} y2={baseline} className="rich-chart-guide" />
+          )}
+
+          {activeView === "bar" && renderBars()}
+
+          {activeView === "area" && (
+            <g>
+              {renderLines(true)}
+              {xLabels}
+            </g>
+          )}
+
+          {activeView === "line" && (
+            <g>
+              {renderLines(false)}
+              {xLabels}
+            </g>
+          )}
+
+          <text x={left + plotW / 2} y={height - 12} textAnchor="middle" className="rich-chart-label">{spec.xLabel}</text>
+          <text x="14" y={top + plotH / 2} textAnchor="middle" transform={`rotate(-90 14 ${top + plotH / 2})`} className="rich-chart-label">{spec.yLabel}</text>
+
+          {activeEntry && (
+            <SvgTooltip
+              x={activeView === "bar" ? left + (hoveredIndex! * slot) + slot / 2 : mid(hoveredIndex!)}
+              y={py(entryValue(activeEntry, 0))}
+              title={activeEntry.label}
+              value={seriesCount > 1
+                ? Array.from({ length: seriesCount }, (_, s) => `${spec.seriesNames[s] || `S${s + 1}`} ${fmt(entryValue(activeEntry, s))}`).join("  ·  ")
+                : fmt(activeEntry.value)}
             />
-            <polyline
-              points={spec.entries.map((entry, index) => `${mid(index)},${py(entry.value)}`).join(" ")}
-              className="rich-line-path"
-            />
-            {spec.entries.map((entry, index) => {
-              const isHovered = hoveredIndex === index;
-              const isDimmed = hoveredIndex !== null && !isHovered;
-              const mx = mid(index);
-              const my = py(entry.value);
-              return (
-                <g
-                  key={`${entry.label}-${index}`}
-                  onMouseEnter={() => setHoveredIndex(index)}
-                  onMouseLeave={() => setHoveredIndex(null)}
-                  style={{ opacity: isDimmed ? 0.35 : 1, transition: "opacity 0.2s" }}
-                >
-                  {isHovered && <circle cx={mx} cy={my} r={12} fill="none" stroke="#7aa8d1" strokeWidth={2} opacity={0.6} className="rich-halo-ring" />}
-                  <circle cx={mx} cy={my} r={isHovered ? 7 : 4} className={`rich-line-point ${isHovered ? "active" : ""}`} />
-                  <text x={mx} y={baseline + 16} textAnchor="middle" className="rich-chart-label" fontWeight={isHovered ? "700" : "normal"}>{truncate(entry.label)}</text>
-                </g>
-              );
-            })}
-          </g>
-        )}
-
-        {kind === "line" && (
-          <g>
-            <polyline
-              points={spec.entries.map((entry, index) => `${mid(index)},${py(entry.value)}`).join(" ")}
-              className="rich-line-path"
-            />
-            {spec.entries.map((entry, index) => {
-              const isHovered = hoveredIndex === index;
-              const isDimmed = hoveredIndex !== null && !isHovered;
-              const mx = mid(index);
-              const my = py(entry.value);
-              return (
-                <g
-                  key={`${entry.label}-${index}`}
-                  onMouseEnter={() => setHoveredIndex(index)}
-                  onMouseLeave={() => setHoveredIndex(null)}
-                  style={{ opacity: isDimmed ? 0.35 : 1, transition: "opacity 0.2s" }}
-                >
-                  {isHovered && <circle cx={mx} cy={my} r={12} fill="none" stroke="#7aa8d1" strokeWidth={2} opacity={0.6} className="rich-halo-ring" />}
-                  <circle cx={mx} cy={my} r={isHovered ? 7 : 4} className={`rich-line-point ${isHovered ? "active" : ""}`} />
-                  <text x={mx} y={baseline + 16} textAnchor="middle" className="rich-chart-label" fontWeight={isHovered ? "700" : "normal"}>{truncate(entry.label)}</text>
-                </g>
-              );
-            })}
-          </g>
-        )}
-
-        <text x={left + plotW / 2} y={height - 12} textAnchor="middle" className="rich-chart-label">{spec.xLabel}</text>
-        <text x="14" y={top + plotH / 2} textAnchor="middle" transform={`rotate(-90 14 ${top + plotH / 2})`} className="rich-chart-label">{spec.yLabel}</text>
-
-        {activeEntry && (
-          <SvgTooltip
-            x={kind === "bar" ? left + (hoveredIndex! * slot) + slot / 2 : mid(hoveredIndex!)}
-            y={py(activeEntry.value)}
-            title={activeEntry.label}
-            value={fmt(activeEntry.value)}
-          />
-        )}
-      </svg>
+          )}
+        </svg>
+      )}
+      {isMulti && activeView !== "table" && (
+        <div className="chart-series-legend" style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 6, padding: "0 4px" }}>
+          {Array.from({ length: seriesCount }, (_, s) => (
+            <button
+              key={s}
+              type="button"
+              onMouseEnter={() => setHoveredSeries(s)}
+              onMouseLeave={() => setHoveredSeries(null)}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 5, border: 0, background: "transparent",
+                color: hoveredSeries === null || hoveredSeries === s ? "var(--text, #dce1eb)" : "var(--muted, #7e8b9d)",
+                fontSize: 10.5, cursor: "pointer", padding: "2px 4px", opacity: hoveredSeries !== null && hoveredSeries !== s ? 0.5 : 1,
+              }}
+            >
+              <span style={{ width: 9, height: 9, borderRadius: 2, background: seriesColor(s), flex: "none" }} />
+              {seriesName(s)}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1353,6 +1532,147 @@ function SearchImageGallery({ items }: { items: SearchImageItem[] }) {
 }
 
 const CHART_KINDS = new Set(["mermaid", "scatter", "bar", "hbar", "line", "area", "pie", "donut", "radar"]);
+// ---- Inline video cards & source citations (ChatGPT-style) -----------------
+
+const YT_VIDEO_RE = /(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i;
+const VIDEO_IMAGE_RE = /^Video:\s*(.+)$/i;
+
+function youTubeId(value: string): string | null {
+  const match = String(value || "").match(YT_VIDEO_RE);
+  return match ? match[1] : null;
+}
+
+function ChatVideoBlock({ alt, src }: { alt: string; src: string }) {
+  const videoId = youTubeId(src);
+  const [playing, setPlaying] = useState(false);
+  if (!videoId) return <ChatImageBlock alt={alt} src={src} />;
+  const metaMatch = alt.match(VIDEO_IMAGE_RE);
+  const metaParts = metaMatch ? metaMatch[1].split("|").map((x) => x.trim()) : [];
+  const title = metaParts[0] || "Video";
+  const channel = metaParts[1] || "";
+  const duration = metaParts[2] || "";
+  return (
+    <div className="chat-video-card" style={{ maxWidth: 520, margin: "10px 0" }}>
+      {playing ? (
+        <div style={{ position: "relative", paddingBottom: "56.25%", borderRadius: 10, overflow: "hidden", background: "#000" }}>
+          <iframe
+            src={`https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1`}
+            title={title}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allowFullScreen
+            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: 0 }}
+          />
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setPlaying(true)}
+          style={{ position: "relative", display: "block", width: "100%", padding: 0, border: 0, borderRadius: 10, overflow: "hidden", cursor: "pointer", background: "#000" }}
+          title={`Play: ${title}`}
+        >
+          <img
+            src={`https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`}
+            alt={title}
+            style={{ display: "block", width: "100%", aspectRatio: "16/9", objectFit: "cover" }}
+            loading="lazy"
+          />
+          <span
+            style={{
+              position: "absolute", inset: 0, display: "grid", placeItems: "center",
+              background: "rgba(0,0,0,0.25)", transition: "background 0.15s",
+            }}
+          >
+            <span style={{ display: "grid", placeItems: "center", width: 52, height: 36, borderRadius: 10, background: "rgba(255,0,0,0.92)", boxShadow: "0 4px 16px rgba(0,0,0,0.4)" }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M8 5v14l11-7z" /></svg>
+            </span>
+          </span>
+        </button>
+      )}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", flexWrap: "wrap" }}>
+        <strong style={{ fontSize: 11.5, color: "var(--text, #dce1eb)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{title}</strong>
+        {channel && <span style={{ fontSize: 10, color: "var(--muted, #8b98ab)", whiteSpace: "nowrap" }}>{channel}</span>}
+        {duration && (
+          <span style={{ fontSize: 9.5, fontFamily: "'DM Mono', monospace", color: "var(--muted, #8b98ab)", border: "1px solid var(--line, #24334a)", borderRadius: 4, padding: "0 5px" }}>
+            {duration}
+          </span>
+        )}
+        <a
+          href={`https://www.youtube.com/watch?v=${videoId}`}
+          target="_blank"
+          rel="noreferrer noopener"
+          style={{ fontSize: 10, color: "var(--nexus-green, #34d399)", whiteSpace: "nowrap" }}
+        >
+          YouTube ↗
+        </a>
+      </div>
+    </div>
+  );
+}
+
+function VideoGallery({ items }: { items: Array<{ alt: string; src: string }> }) {
+  return (
+    <div className="video-gallery-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 10, margin: "10px 0" }}>
+      {items.map((item, index) => (
+        <ChatVideoBlock key={index} alt={item.alt} src={item.src} />
+      ))}
+    </div>
+  );
+}
+
+function SourceCitationsBar({ links }: { links: Array<{ url: string; label: string }> }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!links.length) return null;
+  const visible = expanded ? links : links.slice(0, 5);
+  return (
+    <div className="source-cards-strip" style={{ marginTop: 14, borderTop: "1px solid var(--line, #24334a)", paddingTop: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted, #8b98ab)" }}>
+          Sources · {links.length}
+        </span>
+        {links.length > 5 && (
+          <button type="button" onClick={() => setExpanded((prev) => !prev)} style={{ border: 0, background: "transparent", color: "var(--nexus-green, #34d399)", fontSize: 10, cursor: "pointer" }}>
+            {expanded ? "Show less" : `Show all ${links.length}`}
+          </button>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: expanded ? "wrap" : "nowrap", overflowX: expanded ? "visible" : "auto", paddingBottom: 4 }}>
+        {visible.map((link, index) => {
+          let domain = link.url;
+          try { domain = new URL(link.url).hostname.replace(/^www\./, ""); } catch { /* keep raw */ }
+          return (
+            <a
+              key={index}
+              href={link.url}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="source-citation-pill"
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 6, flex: expanded ? undefined : "0 0 auto",
+                maxWidth: 260, border: "1px solid var(--line, #24334a)", borderRadius: 8,
+                padding: "5px 9px", background: "var(--panel2, #141c26)", textDecoration: "none",
+              }}
+              title={link.label || domain}
+            >
+              <img
+                src={`https://www.google.com/s2/favicons?domain=${domain}&sz=32`}
+                alt=""
+                width={14}
+                height={14}
+                style={{ borderRadius: 3, flex: "none" }}
+                loading="lazy"
+              />
+              <span style={{ fontSize: 10.5, color: "var(--text, #dce1eb)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {link.label || domain}
+              </span>
+              <span style={{ fontSize: 9, color: "var(--muted, #8b98ab)", flex: "none" }}>{domain}</span>
+            </a>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const BLOCK_PATTERN = /(```([\w-]*)\s*\n([\s\S]*?)```)|(!\[([^\]]*)\]\(([^)]+)\))/gi;
 
 /** Shared fence-kind → component mapping, used by known-language fences and by
@@ -1375,6 +1695,18 @@ export function RichMarkdown({ source, className = "" }: { source: string; class
   const pieces: React.ReactNode[] = [];
   let renderSource = source || "";
   const imagePattern = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g;
+  // Video embeds (![Video: Title | Channel | Duration](youtube-url)) render
+  // as inline player cards; 2+ become a gallery like the search image set.
+  const videoPattern = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g;
+  const videoMatches = [...renderSource.matchAll(videoPattern)]
+    .filter((match) => youTubeId(match[2] || "") && VIDEO_IMAGE_RE.test(match[1] || ""));
+  const videos: SearchImageItem[] = videoMatches.map((match) => ({ alt: match[1] || "", src: match[2] || "", sourceUrl: match[2] || "" }));
+  if (videos.length > 1) {
+    for (const item of videos.slice(1)) {
+      const escaped = item.src.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      renderSource = renderSource.replace(new RegExp("^[^\n]*\(" + escaped.replace(/\$/g, "\$") + "\)[^\n]*\n?", "gim"), "");
+    }
+  }
   const searchImageMatches = [...renderSource.matchAll(imagePattern)]
     .filter((match) => isSearchImageUrl(match[2] || ""));
   const searchImages: SearchImageItem[] = searchImageMatches.map((match, index) => {
@@ -1440,7 +1772,13 @@ export function RichMarkdown({ source, className = "" }: { source: string; class
     } else if (match[4]) {
       const altText = match[5] || "";
       const imgSrc = match[6] || "";
-      if (isSearchImageUrl(imgSrc)) {
+      if (youTubeId(imgSrc) && VIDEO_IMAGE_RE.test(altText)) {
+        if (videos.length > 1) {
+          pieces.push(<VideoGallery key={`videos-${match.index}`} items={videos} />);
+        } else {
+          pieces.push(<ChatVideoBlock key={`video-${match.index}`} alt={altText} src={imgSrc} />);
+        }
+      } else if (isSearchImageUrl(imgSrc)) {
         if (searchImages.length > 1) {
           pieces.push(<SearchImageGallery key={`gallery-${match.index}`} items={searchImages} />);
         } else {
@@ -1463,5 +1801,24 @@ export function RichMarkdown({ source, className = "" }: { source: string; class
     }
   }
 
-  return <div className={`rich-markdown md ${className}`}>{pieces}</div>;
+  const citationLinks: Array<{ url: string; label: string }> = [];
+  {
+    const seenDomains = new Set<string>();
+    for (const match of (renderSource || "").matchAll(/\[([^\]]{1,120})\]\((https?:\/\/[^)\s]+)\)/g)) {
+      const url = match[2];
+      if (youTubeId(url)) continue;
+      let domain = "";
+      try { domain = new URL(url).hostname.replace(/^www\./, ""); } catch { continue; }
+      if (seenDomains.has(domain)) continue;
+      seenDomains.add(domain);
+      citationLinks.push({ url, label: match[1] });
+      if (citationLinks.length >= 12) break;
+    }
+  }
+  return (
+    <div className={`rich-markdown md ${className}`}>
+      {pieces}
+      <SourceCitationsBar links={citationLinks} />
+    </div>
+  );
 }

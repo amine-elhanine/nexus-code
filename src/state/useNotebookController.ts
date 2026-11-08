@@ -76,7 +76,6 @@ export function useNotebookController(enabled: boolean) {
         );
         setSourceCounts(Object.fromEntries(entries));
       }
-      // Sessions-first: never auto-enter. The user clicks a session to enter it.
       return all;
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not load notebook sessions.");
@@ -167,11 +166,23 @@ export function useNotebookController(enabled: boolean) {
 
   useEffect(() => {
     if (!enabled) return;
-    void refreshNotebooks();
+    void (async () => {
+      const all = await refreshNotebooks();
+      // Redundancy fix: entering Notebook mode opens the most recently
+      // edited notebook right away (the sidebar still lists all of them)
+      // instead of showing the "pick a notebook" landing page.
+      if (!activeNotebook && all && all.length) {
+        const latest = [...all].sort(
+          (a, b) => Date.parse(b.updatedAt || b.createdAt || "") - Date.parse(a.updatedAt || a.createdAt || "")
+        )[0];
+        if (latest) enterNotebook(latest);
+      }
+    })();
     const typed = api as unknown as { getNotebookEmbedding: () => Promise<NotebookEmbeddingConfig> };
     if (typeof typed.getNotebookEmbedding === "function") {
       typed.getNotebookEmbedding().then(setEmbedding).catch(() => {});
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
 
   useEffect(() => {

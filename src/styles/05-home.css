@@ -1,0 +1,392 @@
+/* ==========================================================================
+   AETHER DESIGN SYSTEM — HOME MODE (ChatGPT Inspired)
+   ========================================================================== */
+
+.home-container {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+  background-color: var(--bg-app);
+}
+
+.home-chat-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Minimal Top Bar in Home View */
+.home-topbar {
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  /* Reserve exactly the window-controls strip (106px + gutters) so the
+     model selector never slides under the OS window buttons. */
+  padding: 0 118px 0 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  background-color: var(--bg-app);
+  flex-shrink: 0;
+  z-index: 20;
+  -webkit-app-region: drag;
+}
+
+.home-topbar-left {
+  min-width: 0;
+  flex: 1;
+}
+
+.home-topbar-right {
+  flex-shrink: 0;
+}
+
+.home-topbar button,
+.home-topbar select,
+.home-topbar .model-select-wrapper {
+  -webkit-app-region: no-drag;
+}
+
+.home-topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.home-session-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Chat Scrollable Area */
+.home-messages-viewport {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px 24px 36px;
+  gap: 20px;
+}
+
+.home-chat-content {
+  width: 100%;
+  max-width: var(--chat-max-width);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Empty State / Welcome Screen */
+.home-empty-state {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  max-width: 660px;
+  padding: 40px 20px;
+  animation: fadeIn var(--transition-normal) ease-out;
+}
+
+.home-empty-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: var(--radius-full);
+  background: var(--accent-home-subtle);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 18px;
+  color: #60a5fa;
+}
+
+.home-empty-title {
+  font-size: 1.65rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+  letter-spacing: -0.025em;
+}
+
+.home-empty-desc {
+  font-size: 0.94rem;
+  color: var(--text-secondary);
+  margin-bottom: 32px;
+  line-height: 1.55;
+}
+
+.home-prompts-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  width: 100%;
+}
+
+.home-prompt-card {
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: all var(--transition-fast);
+}
+
+.home-prompt-card:hover {
+  background-color: var(--bg-surface-hover);
+  border-color: var(--border-strong);
+  transform: translateY(-2px);
+}
+
+.home-prompt-card-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.home-prompt-card-desc {
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+}
+
+/* Auto-Growing Sleek Composer (Fixing the Textarea UI bug) */
+.home-composer-wrapper {
+  width: 100%;
+  max-width: var(--chat-max-width);
+  margin: 0 auto;
+  padding: 0 20px 20px;
+  position: relative;
+  z-index: 30;
+  flex-shrink: 0;
+}
+
+.home-composer-box {
+  background-color: var(--bg-composer);
+  border: 1px solid var(--border-default);
+  border-radius: 22px;
+  box-shadow: var(--shadow-composer);
+  display: flex;
+  flex-direction: column;
+  padding: 10px 14px;
+  transition: border-color var(--transition-fast), background-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.home-composer-box:focus-within {
+  border-color: var(--border-focus);
+  background-color: var(--bg-composer-focus);
+}
+
+/* Auto-growing Textarea */
+.home-composer-textarea {
+  width: 100%;
+  min-height: 26px;
+  max-height: 180px;
+  padding: 4px 6px 8px;
+  font-size: 0.94rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+  resize: none;
+  background: transparent;
+  border: none;
+  outline: none;
+}
+
+.home-composer-textarea::placeholder {
+  color: var(--text-muted);
+}
+
+/* Composer Attachment preview strip */
+.home-composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 6px 8px;
+}
+
+/* Model / effort / context row inside the composer (ChatGPT-style). */
+.home-composer-modelrow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 2px 2px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 8px;
+}
+
+.home-attachment-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-surface-active);
+  border: 1px solid var(--border-subtle);
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
+/* Composer Bottom Toolbar */
+.home-composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+  gap: 8px;
+}
+
+.home-composer-tools-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.composer-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: var(--radius-full);
+  background: transparent;
+  border: 1px solid transparent;
+  font-size: 0.76rem;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  transition: all var(--transition-fast);
+}
+
+.composer-tool-btn:hover {
+  background-color: var(--bg-surface-hover);
+  color: var(--text-primary);
+}
+
+.composer-tool-btn.active {
+  background-color: var(--accent-home-subtle);
+  border-color: rgba(59, 130, 246, 0.35);
+  color: #60a5fa;
+}
+
+.home-composer-send-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.composer-send-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  background-color: var(--text-primary);
+  color: var(--text-inverse);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform var(--transition-fast), opacity var(--transition-fast);
+}
+
+.composer-send-btn:hover:not(:disabled) {
+  transform: scale(1.06);
+}
+
+.composer-send-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.composer-stop-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  background-color: var(--danger);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Home Canvas Split Drawer */
+.home-canvas-drawer {
+  width: 480px;
+  max-width: 55%;
+  height: 100%;
+  border-left: 1px solid var(--border-default);
+  background-color: var(--bg-surface);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  animation: slideInRight var(--transition-normal) ease-out;
+}
+
+.file-preview-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-sidebar);
+  overflow-x: auto;
+}
+
+.file-preview-tabs button {
+  padding: 4px 10px;
+  font-size: 0.76rem;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+.file-preview-tabs button.active {
+  background: var(--bg-surface-active);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.file-preview-sheet table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.file-preview-sheet td,
+.file-preview-sheet th {
+  border: 1px solid var(--border-default);
+  padding: 6px 8px;
+}
+
+/* Sliding Plan Drawer */
+.sliding-plan-drawer {
+  width: 100%;
+  max-width: var(--chat-max-width);
+  margin: 0 auto 8px;
+  padding: 0 20px;
+}
+
+.plan-drawer-card {
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

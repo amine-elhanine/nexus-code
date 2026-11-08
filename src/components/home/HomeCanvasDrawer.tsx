@@ -191,8 +191,8 @@ export function HomeCanvasDrawer({
         display: "flex",
         flexDirection: "column",
         height: "100%",
-        borderLeft: "1px solid var(--border-subtle, #333)",
-        background: "var(--bg-canvas, #181818)",
+        borderLeft: "1px solid var(--border-strong)",
+        background: "var(--surface-1)",
         position: "relative",
         zIndex: 10,
       }}
@@ -213,12 +213,12 @@ export function HomeCanvasDrawer({
           alignItems: "center",
           justifyContent: "space-between",
           padding: "8px 12px",
-          borderBottom: "1px solid var(--border-subtle, #333)",
-          background: "var(--bg-elevated, #202020)",
+          borderBottom: "1px solid var(--border-strong)",
+          background: "var(--panel)",
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8, overflow: "hidden" }}>
-          <span style={{ color: "var(--accent, #3b82f6)" }}>
+          <span style={{ color: "var(--accent)" }}>
             <Sparkles size={14} />
           </span>
           <div style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -244,9 +244,9 @@ export function HomeCanvasDrawer({
                 }}
                 style={{
                   fontSize: 11,
-                  background: "var(--bg-input, #161616)",
-                  color: "var(--fg, #eee)",
-                  border: "1px solid var(--border-subtle, #333)",
+                  background: "var(--surface-2)",
+                  color: "var(--text-primary)",
+                  border: "1px solid var(--border-strong)",
                   borderRadius: 4,
                   padding: "2px 4px",
                 }}
@@ -272,7 +272,7 @@ export function HomeCanvasDrawer({
           )}
 
           {(kind === "markdown" || kind === "html" || kind === "text") && (
-            <div style={{ display: "flex", background: "var(--bg-input, #161616)", borderRadius: 4, padding: 2, border: "1px solid var(--border-subtle, #333)" }}>
+            <div style={{ display: "flex", background: "var(--surface-2)", borderRadius: 4, padding: 2, border: "1px solid var(--border-strong)" }}>
               <button
                 className={`pane-action${tab === "preview" ? " active" : ""}`}
                 style={{ padding: "2px 6px", fontSize: 11 }}
@@ -325,7 +325,7 @@ export function HomeCanvasDrawer({
           </div>
         )}
         {status === "error" && (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: 8, color: "#f87171" }}>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: 8, color: "var(--danger)" }}>
             <TriangleAlert size={20} />
             <span style={{ fontSize: 12 }}>{error}</span>
           </div>
@@ -380,8 +380,8 @@ export function HomeCanvasDrawer({
       {/* Docked "Ask Nexus to Refine" Bar */}
       <div
         style={{
-          borderTop: "1px solid var(--border-subtle, #333)",
-          background: "var(--bg-elevated, #202020)",
+          borderTop: "1px solid var(--border-strong)",
+          background: "var(--panel)",
           padding: "8px 12px",
           display: "flex",
           flexDirection: "column",
@@ -397,9 +397,9 @@ export function HomeCanvasDrawer({
                 fontSize: 10,
                 padding: "2px 8px",
                 borderRadius: 12,
-                border: "1px solid var(--border-subtle, #333)",
+                border: "1px solid var(--border-strong)",
                 background: "transparent",
-                color: "var(--fg-muted, #aaa)",
+                color: "var(--text-secondary)",
                 cursor: "pointer",
               }}
             >

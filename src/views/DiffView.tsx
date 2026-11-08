@@ -1,5 +1,5 @@
 import React, { useState, type ReactNode } from "react";
-import { RotateCcw, RefreshCw, ChevronDown, ChevronRight, Columns, GitBranch, Undo2 } from "lucide-react";
+import { RotateCcw, RefreshCw, ChevronDown, ChevronRight, Columns, AlignJustify, GitBranch, Undo2 } from "lucide-react";
 import type { WorkspaceDiffFile, SplitDiffRow, DiffSide } from "../types.js";
 import { fileIcon } from "../utils/format.js";
 
@@ -82,8 +82,69 @@ export function DiffLineView({
   );
 }
 
-export function DiffPatch({ patch, filePath, onRevertHunk }: { patch: string; filePath?: string; onRevertHunk?: (filePath: string, hunkHeader: string) => void }) {
+export function DiffPatch({
+  patch,
+  filePath,
+  viewMode = "inline",
+  onRevertHunk,
+}: {
+  patch: string;
+  filePath?: string;
+  viewMode?: "inline" | "split";
+  onRevertHunk?: (filePath: string, hunkHeader: string) => void;
+}) {
   const rows = parseDiffPatch(patch);
+  if (!rows.length) {
+    return (
+      <div className="diff-code-panel">
+        <div className="diff-code-empty">No patch available for this file.</div>
+      </div>
+    );
+  }
+
+  if (viewMode === "split") {
+    return (
+      <div className="diff-code-panel diff-split-container">
+        {rows.map((row, index) => {
+          if (row.kind === "hunk") {
+            const header = row.text || null;
+            return (
+              <div className="diff-split-hunk-bar" key={`${index}-hunk`}>
+                <span>{row.text}</span>
+                {filePath && header && onRevertHunk && (
+                  <button
+                    className="diff-hunk-discard"
+                    onClick={() => onRevertHunk(filePath, header)}
+                    title="Discard only this hunk, keep the rest of the file"
+                  >
+                    Discard hunk
+                  </button>
+                )}
+              </div>
+            );
+          }
+          const hasOld = Boolean(row.old);
+          const hasNew = Boolean(row.new);
+          const oldClass = row.kind === "deleted" || row.kind === "change" ? "is-del" : "";
+          const newClass = row.kind === "added" || row.kind === "change" ? "is-add" : "";
+
+          return (
+            <div className="diff-split-row" key={`${index}-split`}>
+              <span className="diff-split-ln">{row.old?.number ?? ""}</span>
+              <code className={`diff-split-code side-old ${hasOld ? oldClass : "is-empty"}`}>
+                {row.old ? row.old.text || "\u00a0" : "\u00a0"}
+              </code>
+              <span className="diff-split-ln">{row.new?.number ?? ""}</span>
+              <code className={`diff-split-code side-new ${hasNew ? newClass : "is-empty"}`}>
+                {row.new ? row.new.text || "\u00a0" : "\u00a0"}
+              </code>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   const rendered: ReactNode[] = [];
   let currentHunk: string | null = null;
   rows.forEach((row, index) => {
@@ -102,7 +163,7 @@ export function DiffPatch({ patch, filePath, onRevertHunk }: { patch: string; fi
               Discard hunk
             </button>
           )}
-        </div>
+        </div>,
       );
     } else if (row.kind === "context") {
       rendered.push(<DiffLineView key={`${index}-context`} side={row.new} kind="context" />);
@@ -111,11 +172,7 @@ export function DiffPatch({ patch, filePath, onRevertHunk }: { patch: string; fi
       if (row.new) rendered.push(<DiffLineView key={`${index}-new`} side={row.new} kind="added" />);
     }
   });
-  return (
-    <div className="diff-code-panel">
-      {rendered.length ? rendered : <div className="diff-code-empty">No patch available for this file.</div>}
-    </div>
-  );
+  return <div className="diff-code-panel">{rendered}</div>;
 }
 
 export function DiffView({
@@ -140,6 +197,8 @@ export function DiffView({
   onRevertHunk?: (path: string, hunkHeader: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [viewMode, setViewMode] = useState<"inline" | "split">("inline");
+
   const toggle = (file: string) =>
     setExpanded((current) => {
       const next = new Set(current);
@@ -163,6 +222,26 @@ export function DiffView({
           </p>
         </div>
         <div className="diff-head-actions">
+          <div className="diff-mode-toggle" role="group" aria-label="Diff display mode">
+            <button
+              type="button"
+              className={viewMode === "inline" ? "active" : ""}
+              onClick={() => setViewMode("inline")}
+              title="Unified inline diff view"
+            >
+              <AlignJustify size={11} />
+              <span>Inline</span>
+            </button>
+            <button
+              type="button"
+              className={viewMode === "split" ? "active" : ""}
+              onClick={() => setViewMode("split")}
+              title="Side-by-side split diff view"
+            >
+              <Columns size={11} />
+              <span>Split</span>
+            </button>
+          </div>
           <select className="diff-scope-select" value="unstaged" aria-label="Diff scope">
             <option value="unstaged">Unstaged</option>
           </select>
@@ -223,7 +302,9 @@ export function DiffView({
               </i>
               {expanded.has(file.path) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             </button>
-            {expanded.has(file.path) && <DiffPatch patch={file.patch} filePath={file.path} onRevertHunk={onRevertHunk} />}
+            {expanded.has(file.path) && (
+              <DiffPatch patch={file.patch} filePath={file.path} viewMode={viewMode} onRevertHunk={onRevertHunk} />
+            )}
           </div>
         ))}
         {!diff.length && (

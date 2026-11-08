@@ -978,6 +978,8 @@ export async function renderPptx(
   const mod = (await import("pptxgenjs")) as unknown as { default?: unknown } & Record<string, unknown>;
   const PptxGenJS = (mod.default || mod) as unknown as new () => {
     title: string;
+    defineLayout: (layout: { name: string; width: number; height: number }) => void;
+    layout: string;
     addSlide: () => {
       addText: (t: unknown, o?: unknown) => void;
       addImage: (o: unknown) => void;
@@ -986,6 +988,8 @@ export async function renderPptx(
     write: (opts: { outputType: "nodebuffer" }) => Promise<Buffer>;
   };
   const pres = new PptxGenJS();
+  pres.defineLayout({ name: "NEXUS_WIDE", width: 13.33, height: 7.5 });
+  pres.layout = "NEXUS_WIDE";
   pres.title = plan.title;
   let slideNo = 0;
   type Slide = {
@@ -1027,16 +1031,30 @@ export async function renderPptx(
     return result;
   };
 
-  /** "Lead — explanation" bullets render the lead bold for scannability. */
-  const bulletRuns = (text: string) => {
+  /**
+   * "Lead — explanation" bullets render the lead bold for scannability.
+   * Returns a FLAT array of pptxgenjs-compatible run objects. The caller
+   * flattens all bullet groups into ONE addText call; `breakLine` sits on
+   * the LAST run of each bullet and `bullet` on the FIRST run.
+   */
+  const bulletRuns = (text: string, isLast: boolean): Array<{ text: string; options: Record<string, unknown> }> => {
     const split = text.match(/^(.{4,80}?)\s+(?:—|–|-|:)\s+(.{8,})$/);
     if (split) {
       return [
-        { text: `${split[1]} — `, options: { bold: true, color: INK } },
-        { text: split[2], options: { color: BODY } },
+        { text: `${split[1]} — `, options: { bold: true, color: INK, bullet: { code: "2022" } } },
+        { text: split[2], options: { color: BODY, breakLine: isLast } },
       ];
     }
-    return [{ text, options: { color: BODY } }];
+    return [{ text, options: { color: BODY, bullet: { code: "2022" }, breakLine: isLast } }];
+  };
+
+  /** Flattens bullet strings into a single run array for one addText call. */
+  const bulletTextRuns = (bullets: string[]): Array<{ text: string; options: Record<string, unknown> }> => {
+    const all: Array<{ text: string; options: Record<string, unknown> }> = [];
+    bullets.forEach((b, i) => {
+      all.push(...bulletRuns(b, true));
+    });
+    return all;
   };
 
   const addContentSlide = async (s: SlidePlan, index: number) => {
@@ -1060,13 +1078,14 @@ export async function renderPptx(
     const withImage = Boolean(image);
     if (bullets.length) {
       const twoColumn = bullets.length > 4 && !withImage;
+      const paraOpts = { fontSize: 14, valign: "top" as const };
       if (twoColumn) {
         const half = Math.ceil(bullets.length / 2);
-        slide.addText(bullets.slice(0, half).map((b) => ({ text: bulletRuns(b), options: { breakLine: true, bullet: { code: "2022" }, paraSpaceAfter: 10 } })), { x: 0.6, y: bodyY, w: 5.95, h: 4.9, fontSize: 14, valign: "top" });
-        slide.addText(bullets.slice(half).map((b) => ({ text: bulletRuns(b), options: { breakLine: true, bullet: { code: "2022" }, paraSpaceAfter: 10 } })), { x: 6.85, y: bodyY, w: 5.9, h: 4.9, fontSize: 14, valign: "top" });
+        slide.addText(bulletTextRuns(bullets.slice(0, half)), { ...paraOpts, x: 0.6, y: bodyY, w: 5.95, h: 4.9 });
+        slide.addText(bulletTextRuns(bullets.slice(half)), { ...paraOpts, x: 6.85, y: bodyY, w: 5.9, h: 4.9 });
       } else {
-        const width = withImage ? 6.7 : 12.1;
-        slide.addText(bullets.map((b) => ({ text: bulletRuns(b), options: { breakLine: true, bullet: { code: "2022" }, paraSpaceAfter: 10 } })), { x: 0.6, y: bodyY, w: width, h: withImage ? 4.9 : 4.6, fontSize: 14, valign: "top" });
+        const bw = withImage ? 6.7 : 12.1;
+        slide.addText(bulletTextRuns(bullets), { ...paraOpts, x: 0.6, y: bodyY, w: bw, h: withImage ? 4.9 : 4.6 });
       }
     }
     if (image) {

@@ -18,7 +18,7 @@ import { createBrowserTools } from "./browser-tool.js";
 import { agentBrowserService } from "./browser-service.js";
 import { getRepoMapSection } from "./repo-map-service.js";
 import { getProjectIndexSection } from "./project-index-service.js";
-import { createWebImageSearchTools, createWebSearchTools } from "./websearch-tool.js";
+import { createWebImageSearchTools, createWebSearchTools, createWebVideoSearchTools } from "./websearch-tool.js";
 import { chunkThinking } from "./thinking-chunk.js";
 import { discoverAllRules, discoverProjectRules } from "./rules-service.js";
 import { discoverProjectInstructions } from "./project-instructions.js";
@@ -541,6 +541,7 @@ export async function runProjectAgent(options: {
   // in its Markdown response. Image lookups are charged to the same research
   // cap by loopPreventionMiddleware (isResearchTool).
   const webImageSearchTools = isGeneral ? createWebImageSearchTools({}) : [];
+  const webVideoSearchTools = isGeneral ? createWebVideoSearchTools({}) : [];
   const usage = new UsageAccumulator();
   let recursionLimit = isSimple
     ? SIMPLE_TASK_LIMIT
@@ -646,7 +647,7 @@ export async function runProjectAgent(options: {
             provider,
             modelName,
             reasoningEffort: effort,
-            researchTools: [...webSearchTools, ...webImageSearchTools, ...safeBrowserTools.filter((candidate: any) => candidate?.name === "browser_inspect")],
+            researchTools: [...webSearchTools, ...webImageSearchTools, ...webVideoSearchTools, ...safeBrowserTools.filter((candidate: any) => candidate?.name === "browser_inspect")],
             onEvent: (subEvent) => {
               usage.addSubagent(subEvent.subagent.usage);
               emit("subagent", subEvent.type === "subagent_start" ? "Delegated research to a fresh-context subagent" : subEvent.type === "subagent_finish" ? "Research subagent completed" : "Research subagent working...", undefined, undefined, subEvent.subagent);
@@ -794,7 +795,7 @@ export async function runProjectAgent(options: {
       return [];
     }
   })();
-  const builtinTools = [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...webImageSearchTools, ...homeResearchTool, ...homeMemoryTool, ...projectMemoryTool, ...backgroundTools, ...homeDeliverableTool, ...imageGenTool];
+  const builtinTools = [...codeTools, ...editTools, ...skillFilesTools, questionTool, ...safeBrowserTools, ...webSearchTools, ...webImageSearchTools, ...webVideoSearchTools, ...homeResearchTool, ...homeMemoryTool, ...projectMemoryTool, ...backgroundTools, ...homeDeliverableTool, ...imageGenTool];
   if (homeDeliverableTool.length) {
     emit("status", "Loaded create_deliverable · deterministic docx/pptx/xlsx/pdf/tex rendering from Markdown content");
   }

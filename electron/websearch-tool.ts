@@ -9,7 +9,18 @@ const DDG_TIMEOUT_MS = 12000;
 const MAX_RESULTS = 8;
 
 export type WebSearchResult = { title: string; url: string; snippet: string };
-export type WebImageResult = { title: string; imageUrl: string; sourceUrl: string };
+export type WebImageResult = { title: string; imageUrl: string; sourceUrl: string; width?: number; height?: number; domain?: string };
+export type WebVideoResult = {
+  title: string;
+  videoUrl: string;
+  videoId?: string;
+  thumbnailUrl: string;
+  channel: string;
+  duration: string;
+  views?: string;
+  published?: string;
+  score: number;
+};
 
 function safeHttpUrl(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -30,21 +41,97 @@ function isAllowedSearchImageHost(value: string): boolean {
   }
 }
 
-/** Decode DuckDuckGo's image API response into safe, directly displayable URLs. */
-export function parseDuckDuckGoImages(payload: unknown, limit = 5): WebImageResult[] {
+// ---- Smart image curation (Phase: ChatGPT-caliber media) -------------------
+// Watermarked stock agencies and low-signal aggregators are demoted so the
+// gallery surfaces real, directly-relevant imagery instead of paywalled
+// previews and Pinterest re-hosts.
+
+const STOCK_WATERMARK_DOMAINS = /(?:shutterstock|istockphoto|gettyimages|alamy|123rf|dreamstime|depositphotos|bigstockphoto|vectorstock)\.com/i;
+
+/** Extracts meaningful lowercase tokens from a query (len>=3, deduped). */
+export function queryTokens(query: string): string[] {
+  const seen = new Set<string>();
+  for (const raw of String(query || "").toLocaleLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_-]{2,}/gu) || []) {
+    if (!seen.has(raw)) seen.add(raw);
+  }
+  return [...seen];
+}
+
+/**
+ * Relevance & quality score (0..100-ish) for one DuckDuckGo image row:
+ * entity/keyword overlap (+40 max), resolution & aspect ratio (+25 max,
+ * tiny icons and extreme banners penalized), and anti-stock/anti-spam
+ * demotion (-50 for watermarked agencies, -20 for Pinterest).
+ */
+export function scoreImageCandidate(row: Record<string, unknown>, queryTokensList: string[]): number {
+  const title = String(row.title || "").toLowerCase();
+  const sourceUrl = String(row.url || "").toLowerCase();
+  const width = Number(row.width) || 0;
+  const height = Number(row.height) || 0;
+  let score = 0;
+  for (const token of queryTokensList) {
+    if (title.includes(token)) score += 12;
+    if (sourceUrl.includes(token)) score += 6;
+  }
+  if (width >= 800 && height >= 450) score += 20;
+  else if (width >= 480 && height >= 300) score += 10;
+  else if (width > 0 && (width < 220 || height < 160)) score -= 30;
+  const ratio = height > 0 ? width / height : 1;
+  if (ratio > 3.8 || ratio < 0.3) score -= 20;
+  if (STOCK_WATERMARK_DOMAINS.test(sourceUrl) || STOCK_WATERMARK_DOMAINS.test(title)) score -= 50;
+  if (/pinterest\./i.test(sourceUrl)) score -= 20;
+  return score;
+}
+
+function domainOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Decode DuckDuckGo's image API response into safe, directly displayable
+ * URLs. Candidates are deduplicated (normalized title + image host/path),
+ * scored by relevance/quality, and returned best-first with dimensions and
+ * source domain metadata.
+ */
+export function parseDuckDuckGoImages(payload: unknown, limit = 5, query = ""): WebImageResult[] {
   const results = (payload as { results?: unknown })?.results;
   if (!Array.isArray(results)) return [];
-  const images: WebImageResult[] = [];
+  const tokens = queryTokens(query);
+  const seen = new Set<string>();
+  const scored: Array<{ image: WebImageResult; score: number }> = [];
   for (const item of results) {
     if (!item || typeof item !== "object") continue;
     const row = item as Record<string, unknown>;
     const imageUrl = safeHttpUrl(row.thumbnail || row.image);
     const sourceUrl = safeHttpUrl(row.url);
     if (!imageUrl || !isAllowedSearchImageHost(imageUrl) || !sourceUrl) continue;
-    images.push({ title: String(row.title || "Relevant image").slice(0, 160), imageUrl, sourceUrl });
-    if (images.length >= limit) break;
+    // Dedupe by normalized title stem and image host+path so the gallery
+    // shows diverse angles instead of four crops of the same shot.
+    const titleKey = String(row.title || "").toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 60);
+    const imageKey = `${new URL(imageUrl).host}${new URL(imageUrl).pathname}`.toLowerCase();
+    const dedupeKey = `${titleKey}|${imageKey}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    const width = Number(row.width) || 0;
+    const height = Number(row.height) || 0;
+    scored.push({
+      image: {
+        title: String(row.title || "Relevant image").slice(0, 160),
+        imageUrl,
+        sourceUrl,
+        width,
+        height,
+        domain: domainOf(sourceUrl),
+      },
+      score: scoreImageCandidate(row, tokens),
+    });
   }
-  return images;
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit).map((entry) => entry.image);
 }
 
 async function duckDuckGoImageSearch(query: string, limit = 5): Promise<WebImageResult[]> {
@@ -65,7 +152,10 @@ async function duckDuckGoImageSearch(query: string, limit = 5): Promise<WebImage
       signal: controller.signal,
     });
     if (!response.ok) throw new Error(`DuckDuckGo image search returned HTTP ${response.status}`);
-    return parseDuckDuckGoImages(await response.json(), limit);
+    // Fetch a WIDE candidate pool and let the scorer pick the best few —
+    // the raw API order is ad-influenced, not relevance-ranked.
+    const pool = parseDuckDuckGoImages(await response.json(), limit * 4 + 16, query);
+    return pool.slice(0, limit);
   } finally {
     clearTimeout(timeoutId);
   }
@@ -92,6 +182,126 @@ export function createWebImageSearchTools(opts?: { beforeSearch?: () => string |
       schema: z.object({
         query: z.string().describe("Specific subject to find useful visual references for."),
         maxResults: z.number().optional().describe("How many image results to return (1-5, default 5)."),
+      }),
+    }
+  )];
+}
+
+// ---- Web video search (YouTube InnerTube, keyless) -------------------------
+// Scores candidates by query/title token overlap, channel quality and
+// duration sanity, and returns Markdown embeds the chat renders as inline
+// video cards: ![Video: <Title> | <Channel> | <Duration>](youtubeUrl)
+
+function parseDurationSeconds(duration: string): number {
+  const parts = String(duration || "").split(":").map((n) => parseInt(n, 10) || 0);
+  if (!parts.length) return 0;
+  return parts.reverse().reduce((total, n, idx) => total + n * Math.pow(60, idx), 0);
+}
+
+function scoreVideoCandidate(candidate: { title: string; channel: string; durationSeconds: number }, tokens: string[]): number {
+  let score = 0;
+  const title = candidate.title.toLowerCase();
+  const channel = candidate.channel.toLowerCase();
+  for (const token of tokens) {
+    if (title.includes(token)) score += 14;
+    if (channel.includes(token)) score += 6;
+  }
+  // Official/quality channel signals.
+  if (/official|verified/i.test(candidate.channel)) score += 8;
+  // Duration sanity: sub-30-second clips are junk unless explicitly wanted.
+  if (candidate.durationSeconds > 0 && candidate.durationSeconds < 30) score -= 25;
+  if (candidate.durationSeconds >= 90 && candidate.durationSeconds <= 1800) score += 10;
+  return score;
+}
+
+export function parseYouTubeInnerTubeResults(payload: unknown, limit: number, tokens: string[]): WebVideoResult[] {
+  const contents = (payload as any)?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents;
+  if (!Array.isArray(contents)) return [];
+  const raw: Array<Record<string, unknown>> = [];
+  for (const section of contents) {
+    const items = section?.itemSectionRenderer?.contents;
+    if (Array.isArray(items)) raw.push(...items);
+  }
+  const seen = new Set<string>();
+  const scored: Array<{ video: WebVideoResult }> = [];
+  for (const item of raw) {
+    const renderer = (item as Record<string, unknown>)?.videoRenderer as Record<string, unknown> | undefined;
+    if (!renderer) continue;
+    const videoId = String(renderer.videoId || "");
+    if (!videoId || seen.has(videoId)) continue;
+    seen.add(videoId);
+    const title = String((renderer.title as any)?.runs?.[0]?.text || "").slice(0, 160);
+    if (!title) continue;
+    const channel = String((renderer.ownerText as any)?.runs?.[0]?.text || (renderer.longBylineText as any)?.runs?.[0]?.text || "").replace(/\s*•\s*$/, "").slice(0, 80);
+    const duration = String((renderer.lengthText as any)?.simpleText || "");
+    const durationSeconds = parseDurationSeconds(duration);
+    const views = String((renderer.viewCountText as any)?.simpleText || (renderer.shortViewCountText as any)?.simpleText || "") || undefined;
+    const published = String((renderer.publishedTimeText as any)?.simpleText || "") || undefined;
+    const score = scoreVideoCandidate({ title, channel, durationSeconds }, tokens);
+    scored.push({
+      video: {
+        title,
+        videoUrl: `https://www.youtube.com/watch?v=${videoId}`,
+        videoId,
+        thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+        channel,
+        duration: duration || "live",
+        views,
+        published,
+        score,
+      },
+    });
+  }
+  scored.sort((a, b) => b.video.score - a.video.score);
+  return scored.slice(0, limit).map((entry) => entry.video);
+}
+
+async function youTubeVideoSearch(query: string, limit: number): Promise<WebVideoResult[]> {
+  const tokens = queryTokens(query);
+  const response = await fetch("https://www.youtube.com/youtubei/v1/search", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      context: { client: { clientName: "WEB", clientVersion: "2.20240101.00.00", hl: "en", gl: "US" } },
+      query,
+    }),
+    signal: AbortSignal.timeout(DDG_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error(`YouTube search returned HTTP ${response.status}`);
+  return parseYouTubeInnerTubeResults(await response.json(), limit, tokens);
+}
+
+/** Format a video result as the Markdown embed pattern the chat renders as an inline player card. */
+export function formatVideoEmbed(video: WebVideoResult): string {
+  return `![Video: ${video.title.replace(/[\[\]]/g, "")} | ${video.channel} | ${video.duration}](${video.videoUrl})`;
+}
+
+export function createWebVideoSearchTools(opts?: { beforeSearch?: () => string | null }) {
+  return [tool(
+    async ({ query, maxResults = 4 }: { query: string; maxResults?: number }) => {
+      const guard = opts?.beforeSearch?.();
+      if (guard) return guard;
+      const cleanQuery = query.trim();
+      if (!cleanQuery) return "A video search query is required.";
+      try {
+        const results = await youTubeVideoSearch(cleanQuery, Math.min(Math.max(maxResults, 1), 6));
+        if (!results.length) return `No web videos found for "${cleanQuery}". Continue with the text results.`;
+        const lines = results.map((r, i) => {
+          const meta = [r.channel, r.duration, r.views, r.published].filter(Boolean).join(" · ");
+          return `${i + 1}. ${formatVideoEmbed(r)}
+   ${meta}${r.score >= 20 ? " · strong match" : ""}`;
+        });
+        return `Video results for "${cleanQuery}". Embed 1-3 of the MOST relevant ones directly in the answer using their exact Markdown lines (the chat renders them as playable video cards); skip videos that are tangential:\n\n${lines.join("\n")}`;
+      } catch (error) {
+        return `Web video search failed: ${error instanceof Error ? error.message : String(error)}. Continue with the text results.`;
+      }
+    },
+    {
+      name: "web_video_search",
+      description: "Search YouTube for videos relevant to the request (tutorials, reviews, event coverage, trailers, talks). Returns Markdown embed lines that render as playable inline video cards in the chat — embed 1-3 of the most relevant directly in the answer. Skip when a video would add nothing.",
+      schema: z.object({
+        query: z.string().describe("Specific subject to find useful videos for."),
+        maxResults: z.number().optional().describe("How many video results to return (1-6, default 4)."),
       }),
     }
   )];

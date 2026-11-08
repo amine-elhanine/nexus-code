@@ -122,8 +122,8 @@ function CitationHoverChip({
             zIndex: 100,
             width: 320,
             maxWidth: "85vw",
-            background: "var(--bg-elevated, #222)",
-            border: "1px solid var(--border-subtle, #444)",
+            background: "var(--panel)",
+            border: "1px solid var(--border-strong)",
             borderRadius: 6,
             padding: "8px 12px",
             boxShadow: "0 6px 18px rgba(0,0,0,0.4)",
@@ -133,7 +133,7 @@ function CitationHoverChip({
           }}
         >
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-            <strong style={{ color: "var(--accent, #3b82f6)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            <strong style={{ color: "var(--accent-strong)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {citation.sourceName}
             </strong>
             <span style={{ opacity: 0.6, fontSize: 10 }}>Score: {(citation.score || 1).toFixed(2)}</span>
@@ -788,6 +788,8 @@ export function NotebookView({
   // Link import form, shared by YouTube transcripts and website crawls.
   const [linkKind, setLinkKind] = useState<"youtube" | "website" | null>(null);
   const [linkUrl, setLinkUrl] = useState("");
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [newNotebookName, setNewNotebookName] = useState("");
 
   function submitLink() {
     const link = linkUrl.trim();
@@ -890,11 +892,56 @@ export function NotebookView({
                 spellCheck={false}
               />
             </label>
-            <button className="nb-new-pill" onClick={() => onCreateNotebook("")} title="Create a new notebook">
+            <button
+              className="nb-new-pill"
+              onClick={() => setShowCreateForm((v) => !v)}
+              title="Create a new notebook"
+            >
               <Plus size={14} /> New notebook
             </button>
           </div>
         </div>
+        {showCreateForm && (
+          <div className="nb-create-bar">
+            <BookOpen size={16} style={{ color: "var(--accent)" }} />
+            <input
+              type="text"
+              className="nb-create-input"
+              placeholder="Enter notebook title (e.g. Q4 Market Analysis, Compiler Design Study)…"
+              value={newNotebookName}
+              autoFocus
+              onChange={(e) => setNewNotebookName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  onCreateNotebook(newNotebookName.trim());
+                  setNewNotebookName("");
+                  setShowCreateForm(false);
+                } else if (e.key === "Escape") {
+                  setShowCreateForm(false);
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                onCreateNotebook(newNotebookName.trim());
+                setNewNotebookName("");
+                setShowCreateForm(false);
+              }}
+            >
+              Create Notebook
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setShowCreateForm(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
         {!!notice && <div className="input-note" style={{ margin: "0 0 8px" }}>{notice}</div>}
         <div className="nb-home-grid">
           {filtered.map((nb) => {
@@ -1331,6 +1378,60 @@ export function NotebookView({
         <div className="notebook-main">
           <div className="agent-transcript" ref={transcriptRef}>
             {!activeChat && <div className="empty-pane">Starting the chat… upload sources on the left, then ask.</div>}
+            {activeChat && sources.length > 0 && (
+              <div className="nb-overview-card">
+                <div className="nb-overview-head">
+                  <span className="nb-overview-badge">
+                    <Sparkles size={11} />
+                    Notebook Overview
+                  </span>
+                  <span className="nb-overview-stats">
+                    {readyCount}/{sources.length} sources indexed · {stats?.chunks ?? 0} passages
+                  </span>
+                </div>
+                <h3 className="nb-overview-title">{activeNotebook.name}</h3>
+                <p className="nb-overview-summary">
+                  {summaries[0]?.overview
+                    ? summaries[0].overview
+                    : stats?.digest?.topics?.length
+                      ? `Auto-indexed research workspace covering ${stats.digest.topics.slice(0, 6).join(", ")}. Ask questions below to retrieve cited passages or generate Studio outputs.`
+                      : `Grounded workspace with ${sources.length} uploaded source${sources.length === 1 ? "" : "s"} (${sources.slice(0, 3).map((s) => s.filename).join(", ")}${sources.length > 3 ? "…" : ""}). Every answer cites exact source passages.`}
+                </p>
+                {stats?.digest?.topics && stats.digest.topics.length > 0 && (
+                  <div className="nb-overview-topics">
+                    {stats.digest.topics.slice(0, 8).map((topic) => (
+                      <span key={topic} className="nb-topic-pill">{topic}</span>
+                    ))}
+                  </div>
+                )}
+                <div className="nb-overview-questions">
+                  <button
+                    type="button"
+                    className="nb-question-chip"
+                    onClick={() => setDraft("Synthesize an executive overview of all in-scope sources with key findings.")}
+                  >
+                    <Sparkles size={12} />
+                    <span>Executive synthesis</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="nb-question-chip"
+                    onClick={() => setDraft("What are the core arguments, methodologies, and supporting evidence across these sources?")}
+                  >
+                    <BookOpen size={12} />
+                    <span>Core arguments & evidence</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="nb-question-chip"
+                    onClick={() => setDraft("Identify any contradictions, trade-offs, or open questions between the uploaded documents.")}
+                  >
+                    <HelpCircle size={12} />
+                    <span>Compare & find gaps</span>
+                  </button>
+                </div>
+              </div>
+            )}
             {activeChat && !activeChat.messages.length && !streaming && (
               <div className="empty-agent">
                 <div className="empty-agent-icon">

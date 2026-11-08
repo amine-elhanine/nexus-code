@@ -1,9 +1,9 @@
 import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Brain, BookOpen, Check, ChevronDown, ChevronRight, Code2, Coins, Download, FileCode2, FileText,
-  Folder, FolderOpen, GitBranch, Home, Menu, Sparkles, X,
+  BookOpen, Check, ChevronDown, ChevronRight, Code2, Download, FileCode2, FileText,
+  Folder, FolderOpen, GitBranch, Home, Sparkles, X,
   MessageSquare, MoreHorizontal, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Search,
-  Terminal, Trash2, TriangleAlert, Activity, Globe, GitCompare, Layers, SlidersHorizontal, Share2
+  Terminal, Trash2, SlidersHorizontal, Database, Cpu, Brain, Command, TriangleAlert
 } from "lucide-react";
 import { WindowControls } from "./components/common/WindowControls.js";
 import { ConfirmModal } from "./modals/ConfirmModal.js";
@@ -12,6 +12,7 @@ import { ProviderModal } from "./modals/ProviderModal.js";
 import { McpModal } from "./modals/McpModal.js";
 import { SkillsModal } from "./modals/SkillsModal.js";
 import { SettingsModal } from "./modals/SettingsModal.js";
+import { CommandPalette } from "./components/ui/CommandPalette.js";
 import { DaemonsModal } from "./components/daemons/DaemonsModal.js";
 import { ProjectRulesModal } from "./components/rules/ProjectRulesModal.js";
 const MonacoDiffModal = lazy(() => import("./components/diff/MonacoDiffModal.js").then((module) => ({ default: module.MonacoDiffModal })));
@@ -20,7 +21,6 @@ const FilePreviewModal = lazy(() => import("./components/home/FilePreviewModal.j
 const AttachmentPreviewModal = lazy(() => import("./components/home/AttachmentPreviewModal.js").then((module) => ({ default: module.AttachmentPreviewModal })));
 import { SidebarBrowser } from "./components/browser/SidebarBrowser.js";
 const XTermView = lazy(() => import("./components/terminal/XTermView.js").then((module) => ({ default: module.XTermView })));
-import { AgentBrowserHost } from "./components/browser/AgentBrowserHost.js";
 import { VisualFullscreenLayer } from "./components/common/VisualFullscreen.js";
 import { AgentView } from "./views/AgentView.js";
 const HomeView = lazy(() => import("./views/HomeView.js").then((module) => ({ default: module.HomeView })));
@@ -30,261 +30,11 @@ const MonacoEditorView = lazy(() => import("./components/editor/MonacoEditorView
 import { useNotebookController } from "./state/useNotebookController.js";
 import { useHomeController } from "./state/useHomeController.js";
 const DiffView = lazy(() => import("./views/DiffView.js").then((module) => ({ default: module.DiffView })));
-import { MemoryView, MemoryRow } from "./views/MemoryView.js";
+import { MemoryView } from "./views/MemoryView.js";
 import { useAppController, sortSessionsByUpdatedAt } from "./state/useAppController.js";
-import { applyTheme } from "./state/theme.js";
 import { getSessionUsage, getSessionContextUsage, fileIcon } from "./utils/format.js";
-import { timeLabel } from "./utils/format.js";
-import type { ChatAttachment, UpdaterState, SessionRecord } from "./types.js";
-import { formatCost, type FileEntry } from "./types.js";
+import type { ChatAttachment, SessionRecord, UpdaterState, FileEntry } from "./types.js";
 
-function FileRow({
-  entry,
-  active,
-  expanded,
-  status,
-  onClick,
-}: {
-  entry: FileEntry;
-  active: boolean;
-  expanded: boolean;
-  status?: string;
-  onClick: () => void;
-}) {
-  const isFolder = entry.kind === "folder";
-  const depth = entry.path.split("/").length - 1;
-  return (
-    <button
-      className={`tree-row ${active ? "active" : ""}`}
-      style={{ paddingLeft: 6 + depth * 13 }}
-      onClick={onClick}
-    >
-      {isFolder ? (
-        <>
-          <span className="twist">{expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
-          <span className="ficon">{expanded ? <FolderOpen size={14} /> : <Folder size={14} />}</span>
-        </>
-      ) : (
-        <>
-          <span className="twist hidden" />
-          <span className="ficon">{fileIcon(entry.path)}</span>
-        </>
-      )}
-      <span className="fname">{entry.path.split("/").pop()}</span>
-      {status && <span className={`git-mark git-${status}`}>{status}</span>}
-    </button>
-  );
-}
-
-function SessionRow({
-  session,
-  active,
-  editing,
-  draftTitle,
-  onActivate,
-  onStartEdit,
-  onDraftChange,
-  onCommit,
-  onCancel,
-  onDelete,
-}: {
-  session: { id: string; title: string; messages: unknown[] };
-  active: boolean;
-  editing: boolean;
-  draftTitle: string;
-  onActivate: () => void;
-  onStartEdit: () => void;
-  onDraftChange: (value: string) => void;
-  onCommit: () => void;
-  onCancel: () => void;
-  onDelete: () => void;
-}) {
-  const userCount = session.messages.filter((m) => (m as { role?: string }).role === "user").length;
-  if (editing) {
-    return (
-      <div className={`session-row ${active ? "active" : ""} editing`}>
-        <MessageSquare size={13} />
-        <input
-          className="session-rename-input"
-          value={draftTitle}
-          autoFocus
-          maxLength={80}
-          onChange={(event) => onDraftChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") onCommit();
-            else if (event.key === "Escape") onCancel();
-          }}
-          onBlur={onCommit}
-          onClick={(event) => event.stopPropagation()}
-          onFocus={(event) => event.target.select()}
-        />
-      </div>
-    );
-  }
-  return (
-    <button
-      className={`session-row ${active ? "active" : ""}`}
-      onClick={onActivate}
-      onDoubleClick={onStartEdit}
-      title="Double-click to rename"
-    >
-      <MessageSquare size={13} />
-      <span>{session.title}</span>
-      <small title={`${userCount} message${userCount === 1 ? "" : "s"} from you`}>{userCount}</small>
-      <i
-        className="row-edit"
-        title="Rename session"
-        onClick={(event) => {
-          event.stopPropagation();
-          onStartEdit();
-        }}
-      >
-        <Pencil size={12} />
-      </i>
-      <i
-        className="row-delete"
-        title="Delete session"
-        onClick={(event) => {
-          event.stopPropagation();
-          onDelete();
-        }}
-      >
-        <Trash2 size={12} />
-      </i>
-    </button>
-  );
-}
-
-type HomeMemoryStructureProp = {
-  profile: string[];
-  preferences: string[];
-  facts: string[];
-  context: string[];
-  recentDeliverables: Array<{ date: string; summary: string; sessionId?: string }>;
-  customNotes?: string;
-};
-
-function MemoryFactList({
-  items,
-  category,
-  onRemove,
-  emptyText,
-}: {
-  items: string[];
-  category: string;
-  onRemove: (category: string, fact: string) => void;
-  emptyText: string;
-}) {
-  if (!items.length) return <div className="empty-pane" style={{ padding: "6px" }}>{emptyText}</div>;
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      {items.map((fact) => (
-        <div key={fact} className="home-file-row" title={fact}>
-          <Brain size={13} style={{ flex: "none", color: "var(--nexus-green)" }} />
-          <div className="home-file-info">
-            <span className="home-file-name" style={{ whiteSpace: "normal" }}>{fact}</span>
-            <small>{category}</small>
-          </div>
-          <button className="pane-action" onClick={() => onRemove(category, fact)} title={`Forget "${fact}"`}>
-            <Trash2 size={13} />
-          </button>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function HomeMemoryPanel({
-  structure,
-  sessionMemory,
-  sessionTitle,
-  onRemoveFact,
-  onClearSession,
-  onOpenChat,
-}: {
-  structure: HomeMemoryStructureProp;
-  sessionMemory: string;
-  sessionTitle?: string;
-  onRemoveFact: (category: string, fact: string) => void;
-  onClearSession: () => void;
-  onOpenChat?: (sessionId: string) => void;
-}) {
-  const durableCount = structure.profile.length + structure.preferences.length + structure.facts.length + structure.context.length;
-  return (
-    <div className="context-tab-body">
-      <div className="context-section">
-        <div className="context-section-title">
-          <span>REMEMBERED ({durableCount})</span>
-          <small>SHARED</small>
-        </div>
-        <p style={{ color: "#687588", fontSize: "11px", lineHeight: 1.5, margin: "0 0 8px" }}>
-          Durable facts shared by every Home chat. The agent sees the relevant ones for each question — manage them here, or say “remember…” in chat.
-        </p>
-        <strong style={{ fontSize: "11px" }}>User profile</strong>
-        <div style={{ height: 4 }} />
-        <MemoryFactList items={structure.profile} category="profile" onRemove={onRemoveFact} emptyText="No profile facts yet." />
-        <div style={{ height: 8 }} />
-        <strong style={{ fontSize: "11px" }}>Preferences</strong>
-        <div style={{ height: 4 }} />
-        <MemoryFactList items={structure.preferences} category="preference" onRemove={onRemoveFact} emptyText="No preferences yet." />
-        <div style={{ height: 8 }} />
-        <strong style={{ fontSize: "11px" }}>Remembered facts</strong>
-        <div style={{ height: 4 }} />
-        <MemoryFactList items={structure.facts} category="fact" onRemove={onRemoveFact} emptyText="No remembered facts yet." />
-        {structure.context.length > 0 && (
-          <>
-            <div style={{ height: 8 }} />
-            <strong style={{ fontSize: "11px" }}>Project context</strong>
-            <div style={{ height: 4 }} />
-            <MemoryFactList items={structure.context} category="context" onRemove={onRemoveFact} emptyText="No project context." />
-          </>
-        )}
-      </div>
-      <div className="context-section">
-        <div className="context-section-title">
-          <span>RECENT ACTIVITY</span>
-          <small>{structure.recentDeliverables.length} LAST</small>
-        </div>
-        {structure.recentDeliverables.length ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            {structure.recentDeliverables.slice().reverse().map((d, i) => (
-              <div
-                key={`${d.date}-${i}`}
-                className={`home-file-row${d.sessionId && onOpenChat ? " clickable" : ""}`}
-                title={d.sessionId ? "Open the originating chat" : d.summary}
-                onClick={d.sessionId && onOpenChat ? () => onOpenChat(d.sessionId!) : undefined}
-              >
-                <FileText size={13} style={{ flex: "none" }} />
-                <div className="home-file-info">
-                  <span className="home-file-name" style={{ whiteSpace: "normal" }}>{d.summary}</span>
-                  <small>{d.date}</small>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="empty-pane">No recent activity yet. Substantive work lands here — chit-chat doesn't.</div>
-        )}
-      </div>
-      <div className="context-section">
-        <div className="context-section-title">
-          <span>THIS CHAT</span>
-          <button className="pane-action" onClick={onClearSession} title="Clear this chat's session notes (transcript is kept)">
-            Clear
-          </button>
-        </div>
-        <p style={{ color: "#687588", fontSize: "11px", lineHeight: 1.5, margin: "0 0 8px" }}>
-          Short pointers for {sessionTitle ? `“${sessionTitle}”` : "this chat"} — full answers stay in the transcript, which the agent reads directly.
-        </p>
-        <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: 0, padding: "8px", border: "1px solid #28374a", borderRadius: "5px", background: "#090d14", color: "#a6b2c2", font: "10px/1.5 'DM Mono', monospace" }}>
-          {sessionMemory || "No session notes yet."}
-        </pre>
-      </div>
-    </div>
-  );
-}
-
-/** DeepSeek-style date buckets for the home chat history (Today / Yesterday / Previous 7 days / Previous 30 days / month). */
 function groupHomeSessions(sessions: SessionRecord[]): Array<{ label: string; sessions: SessionRecord[] }> {
   const now = new Date();
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -293,64 +43,19 @@ function groupHomeSessions(sessions: SessionRecord[]): Array<{ label: string; se
     { label: "Today", sessions: [] },
     { label: "Yesterday", sessions: [] },
     { label: "Previous 7 days", sessions: [] },
-    { label: "Previous 30 days", sessions: [] },
+    { label: "Older", sessions: [] },
   ];
-  const months = new Map<string, SessionRecord[]>();
   for (const session of [...sessions].sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""))) {
     const t = Date.parse(session.updatedAt || session.createdAt || "") || 0;
     if (t >= startOfToday) buckets[0].sessions.push(session);
     else if (t >= startOfToday - day) buckets[1].sessions.push(session);
     else if (t >= startOfToday - 7 * day) buckets[2].sessions.push(session);
-    else if (t >= startOfToday - 30 * day) buckets[3].sessions.push(session);
-    else {
-      const label = new Date(t).toLocaleString(undefined, { month: "long", year: "numeric" });
-      const month = months.get(label);
-      if (month) month.push(session);
-      else months.set(label, [session]);
-    }
+    else buckets[3].sessions.push(session);
   }
-  return [...buckets.filter((b) => b.sessions.length), ...[...months.entries()].map(([label, list]) => ({ label, sessions: list }))];
+  return buckets.filter((b) => b.sessions.length > 0);
 }
 
-/** Three-dots picker for the right-side panels; the chosen panel slides in from the right. */
-function PanelMenuButton({ items, onPick, title, icon }: { items: Array<{ key: string; label: string; hint?: string; open?: boolean }>; onPick: (key: string) => void; title?: string; icon?: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="panel-menu-wrap">
-      <button
-        className={`icon-plain panel-menu-btn${open ? " active" : ""}`}
-        onClick={() => setOpen((v) => !v)}
-        title={title || "Open a side panel"}
-      >
-        {icon || <MoreHorizontal size={16} />}
-      </button>
-      {open && (
-        <>
-          <div className="panel-menu-backdrop" onClick={() => setOpen(false)} />
-          <div className="panel-menu" role="menu">
-            {items.map((item) => (
-              <button
-                key={item.key}
-                className="panel-menu-item"
-                role="menuitem"
-                onClick={() => {
-                  setOpen(false);
-                  onPick(item.key);
-                }}
-              >
-                {item.open && <span className="panel-menu-dot" title="Open" />}
-                <span>{item.label}</span>
-                {item.hint && <small>{item.hint}</small>}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function App() {
+export function App() {
   const {
     projects,
     activeProject,
@@ -457,130 +162,86 @@ function App() {
     setOpenFiles,
   } = useAppController();
 
-  const sortedSessions = useMemo(() => sortSessionsByUpdatedAt(sessions), [sessions]);
-
   const api = window.nexus;
+  const sortedSessions = useMemo(() => sortSessionsByUpdatedAt(sessions), [sessions]);
+  // Codex-style sidebar: every opened project listed with its own sessions.
+  const [projectSessions, setProjectSessions] = useState<Record<string, SessionRecord[]>>({});
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+
+  // Lazily load sessions for each project (the controller only keeps the
+  // active project's sessions in `sessions`).
+  useEffect(() => {
+    if (area !== "code") return;
+    const missing = projects.filter((p) => !projectSessions[p.id]);
+    if (!missing.length) return;
+    let cancelled = false;
+    for (const p of missing) {
+      api
+        .listSessions(p.id)
+        .then((list) => {
+          if (cancelled) return;
+          setProjectSessions((prev) => ({ ...prev, [p.id]: sortSessionsByUpdatedAt(list as unknown as SessionRecord[]) }));
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setProjectSessions((prev) => ({ ...prev, [p.id]: [] }));
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [area, projects]);
+
+  // Keep the active project's block in sync with the authoritative `sessions`.
+  useEffect(() => {
+    if (activeProject) {
+      setProjectSessions((prev) => ({ ...prev, [activeProject.id]: sortedSessions }));
+    }
+  }, [activeProject?.id, sortedSessions]);
+
+  // The active project starts expanded.
+  useEffect(() => {
+    if (activeProject) {
+      setExpandedProjects((prev) => (prev.has(activeProject.id) ? prev : new Set(prev).add(activeProject.id)));
+    }
+  }, [activeProject?.id]);
+
+  const toggleProjectExpanded = (id: string) => {
+    setExpandedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const openProjectSession = async (projectId: string, sessionId: string) => {
+    if (activeProject?.id !== projectId) {
+      await activateProject(projectId);
+    }
+    await activateSession(sessionId);
+    setCodeMainTab("agent");
+  };
   const home = useHomeController(area === "home");
   const notebook = useNotebookController(area === "notebook");
-  const headerTitle = area === "notebook"
-    ? (notebook.activeNotebook ? notebook.activeNotebook.name : "Notebook sessions")
-    : area === "home"
-    ? (home.activeSession?.title || "Home")
-    : (activeSession?.title || "No session selected");
-  const currentSessionUsage = getSessionUsage(activeSession);
-  // Retained history size represents conversation context between requests.
-  const currentSessionContextUsage = getSessionContextUsage(activeSession);
-  const [homePreviewPath, setHomePreviewPath] = useState<string | null>(null);
-  // Delete-chat confirmation: fetches the high-confidence owned-file list so
-  // the user can choose "delete chat" vs "delete chat + the files it created".
-  const [homeDeleteDialog, setHomeDeleteDialog] = useState<{ session: SessionRecord; ownedFiles: Array<{ path: string; name: string; size: number; modified: string }> } | null>(null);
-  const [homeSearch, setHomeSearch] = useState("");
-  // Keep the left sidebar mounted briefly while its close animation plays.
-  const [leftSidebarClosing, setLeftSidebarClosing] = useState(false);
-  const showLeftSidebar = showSessions || leftSidebarClosing;
-  useEffect(() => {
-    if (!showSessions) {
-      setLeftSidebarClosing(true);
-      const timer = setTimeout(() => setLeftSidebarClosing(false), 250);
-      return () => clearTimeout(timer);
-    }
-    setLeftSidebarClosing(false);
-  }, [showSessions]);
-  function openHomeDeleteDialog(session: SessionRecord) {
-    const api = window.nexus;
-    api.listHomeSessionFilesForDeletion(session.id)
-      .catch(() => [])
-      .then((files) => setHomeDeleteDialog({ session, ownedFiles: files || [] }));
-  }
+
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [searchFilter, setSearchFilter] = useState("");
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsInitialSection, setSettingsInitialSection] = useState<string | undefined>(undefined);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [attachmentPreview, setAttachmentPreview] = useState<ChatAttachment | null>(null);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingSessionTitle, setEditingSessionTitle] = useState("");
-  function startSessionRename(session: { id: string; title: string }) {
-    setEditingSessionId(session.id);
-    setEditingSessionTitle(session.title);
-  }
-  function commitSessionRename() {
-    if (editingSessionId && editingSessionTitle.trim()) {
-      void renameSession(editingSessionId, editingSessionTitle);
-    }
-    setEditingSessionId(null);
-    setEditingSessionTitle("");
-  }
-  function cancelSessionRename() {
-    setEditingSessionId(null);
-    setEditingSessionTitle("");
-  }
-  function openImagePreview(src: string) {
-    const match = attachments.find((a) => a.url === src);
-    if (match) setAttachmentPreview(match);
-    else setAttachmentPreview({ url: src, name: src.split("/").pop() || "image", mimeType: "image/png", size: 0 });
-  }
-  const [showSettings, setShowSettings] = useState(false);
-  const [showProjectDropdown, setShowProjectDropdown] = useState(false);
-  const projectDropdownRef = useRef<HTMLDivElement>(null);
+  const [theme] = useState<"dark" | "light">("dark");
+  const [codeSideTab, setCodeSideTab] = useState<"tasks" | "files">("tasks");
+  const [codeMainTab, setCodeMainTab] = useState<"agent" | "editor" | "diff" | "terminal" | "browser" | "memory">("agent");
 
-  useEffect(() => {
-    if (!showProjectDropdown) return;
-    function handleClickOutside(event: MouseEvent) {
-      if (projectDropdownRef.current && !projectDropdownRef.current.contains(event.target as Node)) {
-        setShowProjectDropdown(false);
-      }
-    }
-    function handleKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.key === "Escape") setShowProjectDropdown(false);
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [showProjectDropdown]);
+  const currentSessionUsage = getSessionUsage(activeSession);
+  const currentSessionContextUsage = getSessionContextUsage(activeSession);
 
-  const [homeSideTab, setHomeSideTab] = useState<"artifacts" | "browser" | "memory">("artifacts");
-  const [homeSideTabs, setHomeSideTabs] = useState<Array<"artifacts" | "browser" | "memory">>(["artifacts"]);
-  const [codeSideTab, setCodeSideTab] = useState<"browser" | "terminal" | "diff" | "memory">("diff");
-  const [codeSideTabs, setCodeSideTabs] = useState<Array<"browser" | "terminal" | "diff" | "memory">>(["diff"]);
-  const [terminalOpened, setTerminalOpened] = useState(false);
-  // Multi-panel right sidebar: several panels can be open at once, each shown
-  // as a tab with its own close (X) button. openSidePanel adds a tab (or just
-  // activates it), closeSidePanel removes it — hiding the pane when the last
-  // tab closes, and activating a neighbor when the active one closes. The home
-  // and code sidebars share this logic, each with its own tab union type.
-  function openSidePanel<K extends string>(
-    key: K,
-    tabs: K[],
-    setTabs: (update: (tabs: K[]) => K[]) => void,
-    setTab: (tab: K) => void,
-  ) {
-    setTabs((current) => (current.includes(key) ? current : [...current, key]));
-    setTab(key);
-    setShowContext(true);
-  }
-  function closeSidePanel<K extends string>(
-    key: K,
-    tabs: K[],
-    setTabs: (tabs: K[]) => void,
-    activeTab: K,
-    setTab: (tab: K) => void,
-  ) {
-    const next = tabs.filter((tab) => tab !== key);
-    setTabs(next);
-    if (next.length === 0) setShowContext(false);
-    else if (activeTab === key) setTab(next[next.length - 1]);
-  }
-  function openHomeSidePanel(key: "artifacts" | "browser" | "memory") {
-    openSidePanel(key, homeSideTabs, setHomeSideTabs, setHomeSideTab);
-  }
-  function closeHomeSidePanel(key: "artifacts" | "browser" | "memory") {
-    closeSidePanel(key, homeSideTabs, setHomeSideTabs, homeSideTab, setHomeSideTab);
-  }
-  function openCodeSidePanel(key: "browser" | "terminal" | "diff" | "memory") {
-    openSidePanel(key, codeSideTabs, setCodeSideTabs, setCodeSideTab);
-  }
-  function closeCodeSidePanel(key: "browser" | "terminal" | "diff" | "memory") {
-    closeSidePanel(key, codeSideTabs, setCodeSideTabs, codeSideTab, setCodeSideTab);
-  }
+  // Electron Updater & System status
   const [updater, setUpdater] = useState<UpdaterState>({ status: "idle" });
   const [appVersion, setAppVersion] = useState("");
   const [approvalRequest, setApprovalRequest] = useState<{ id: string; runId?: string; command: string; cwd: string; reason: string; approvalKey?: string } | null>(null);
@@ -589,14 +250,12 @@ function App() {
 
   useEffect(() => {
     void api.getAppVersion().then(setAppVersion).catch(() => {});
-    // Pick up whatever the main process already knows (e.g. a download that
-    // finished before this view subscribed) so the install button can't get
-    // stuck hidden on "idle".
     void api.getUpdaterState?.().then((state) => {
       if (state && typeof state === "object" && "status" in state) setUpdater(state as UpdaterState);
     }).catch(() => {});
     return api.onUpdaterStatus((state) => setUpdater(state as UpdaterState));
-  }, []);
+  }, [api]);
+
   useEffect(() => api.onCommandApprovalRequest((request) => setApprovalRequest(request)), [api]);
   useEffect(() => {
     const off = (api as unknown as { onUserQuestionRequest?: (l: (r: { id: string; sessionId: string; questions: Array<{ header: string; question: string; options: string[] }> }) => void) => () => void }).onUserQuestionRequest?.((request) => {
@@ -606,622 +265,664 @@ function App() {
     return off;
   }, [api]);
 
-  useEffect(() => {
-    const typed = api as unknown as { getAppSettings?: () => Promise<{ theme?: string }> };
-    typed.getAppSettings?.().then((value) => {
-      if (value && typeof value.theme === "string" && value.theme) {
-        applyTheme(value.theme);
-      }
-    }).catch(() => {});
-  }, [api]);
-
-  // Auto-open the Browser panel while the agent is on the web: every web
-  // search and browser navigation is mirrored as browser agent activity, so
-  // the first one of a run slides the sidebar open on the Browser tab. Once
-  // per run — closing it mid-run keeps it closed.
-  const browserAutoOpenedRef = useRef(false);
-  const homeRunning = home.running;
-  const activeHomeSessionId = home.activeSession?.id;
-  const activeCodeSessionId = activeSession?.id;
-  useEffect(() => {
-    browserAutoOpenedRef.current = false;
-  }, [running, homeRunning, activeHomeSessionId, activeCodeSessionId]);
-  useEffect(() => {
-    if (typeof api.onBrowserAgentActivity !== "function") return;
-    const unsubscribe = api.onBrowserAgentActivity((payload) => {
-      if (!payload?.url || !payload.sessionId) return;
-      if (area === "home") {
-        if (!homeRunning || payload.sessionId !== activeHomeSessionId) return;
-      } else if (area === "code") {
-        if (!running || payload.sessionId !== activeCodeSessionId) return;
-      } else {
-        return;
-      }
-      if (browserAutoOpenedRef.current) return;
-      browserAutoOpenedRef.current = true;
-      if (area === "home") {
-        setHomeSideTabs((tabs) => (tabs.includes("browser") ? tabs : [...tabs, "browser"]));
-        setHomeSideTab("browser");
-      } else {
-        setCodeSideTabs((tabs) => (tabs.includes("browser") ? tabs : [...tabs, "browser"]));
-        setCodeSideTab("browser");
-      }
-      setShowContext(true);
-    });
-    return unsubscribe;
-  }, [api, area, running, homeRunning, activeHomeSessionId, activeCodeSessionId]);
-
   async function answerApproval(decision: "once" | "session" | "deny") {
     const request = approvalRequest;
     if (!request) return;
     setApprovalRequest(null);
     await api.resolveCommandApproval(request.id, decision).catch(() => {});
   }
-  const [contextWidth, setContextWidth] = useState(() => {
-    try {
-      const saved = Number(localStorage.getItem("nexus-context-width"));
-      return saved >= 220 && saved <= 600 ? saved : 300;
-    } catch {
-      return 300;
+
+  function openImagePreview(src: string) {
+    const match = attachments.find((a) => a.url === src);
+    if (match) setAttachmentPreview(match);
+    else setAttachmentPreview({ url: src, name: src.split("/").pop() || "image", mimeType: "image/png", size: 0 });
+  }
+
+  function openSettingsSection(sec?: string) {
+    setSettingsInitialSection(sec);
+    setShowSettings(true);
+  }
+
+  // Keyboard Shortcuts
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      const mod = event.ctrlKey || event.metaKey;
+      if (!mod) return;
+      const key = event.key.toLowerCase();
+      if (key === "k") {
+        event.preventDefault();
+        setShowCommandPalette((v) => !v);
+      } else if (key === "b") {
+        event.preventDefault();
+        setSidebarCollapsed((v) => !v);
+      } else if (key === ",") {
+        event.preventDefault();
+        openSettingsSection("appearance");
+      } else if (key === "1") {
+        event.preventDefault();
+        void enterHome();
+      } else if (key === "2") {
+        event.preventDefault();
+        void enterCode();
+      } else if (key === "3") {
+        event.preventDefault();
+        enterNotebook();
+      }
     }
-  });
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [enterHome, enterCode, enterNotebook]);
 
-  function startContextResize(event: React.PointerEvent) {
-    event.preventDefault();
-    const startX = event.clientX;
-    const startW = contextWidth;
-    let latest = startW;
-    const move = (ev: PointerEvent) => {
-      latest = Math.min(600, Math.max(220, startW + (startX - ev.clientX)));
-      setContextWidth(latest);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      try {
-        localStorage.setItem("nexus-context-width", String(Math.round(latest)));
-      } catch { /* private mode — width just won't persist */ }
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
+  // Filtered sessions for Home mode
+  const filteredHomeSessions = useMemo(() => {
+    const query = searchFilter.trim().toLowerCase();
+    if (!query) return home.sessions;
+    return home.sessions.filter((s) => (s.title || "").toLowerCase().includes(query));
+  }, [home.sessions, searchFilter]);
 
-  const [canvasWidth, setCanvasWidth] = useState(() => {
-    try {
-      const saved = Number(localStorage.getItem("nexus-canvas-width"));
-      return saved >= 300 && saved <= 900 ? saved : 480;
-    } catch {
-      return 480;
+  const groupedHomeSessions = useMemo(() => {
+    return groupHomeSessions(filteredHomeSessions);
+  }, [filteredHomeSessions]);
+
+  const handleStartRename = (session: { id: string; title: string }) => {
+    setEditingSessionId(session.id);
+    setEditingSessionTitle(session.title);
+  };
+
+  const handleCommitRename = () => {
+    if (editingSessionId && editingSessionTitle.trim()) {
+      if (area === "home") {
+        home.commitRename();
+      } else {
+        void renameSession(editingSessionId, editingSessionTitle);
+      }
     }
-  });
-
-  function startCanvasResize(event: React.PointerEvent) {
-    event.preventDefault();
-    const startX = event.clientX;
-    const startW = canvasWidth;
-    let latest = startW;
-    const move = (ev: PointerEvent) => {
-      latest = Math.min(900, Math.max(300, startW + (startX - ev.clientX)));
-      setCanvasWidth(latest);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      try {
-        localStorage.setItem("nexus-canvas-width", String(Math.round(latest)));
-      } catch { /* ignore */ }
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
-  function formatHomeSize(bytes: number) {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
+    setEditingSessionId(null);
+    setEditingSessionTitle("");
+  };
 
   return (
-    <ErrorBoundary label="app root">
-    <div className={`product-shell area-${area}`}>
-      <header className="product-topbar">
-        <div className="product-left">
-          {area !== "notebook" && (
-            <button
-              className={`icon-plain sidebar-toggle-btn${showSessions ? " active" : ""}`}
-              onClick={() => setShowSessions((v) => !v)}
-              title={showSessions ? "Collapse left sidebar" : "Open left sidebar"}
-            >
-              <PanelLeft size={15} />
-            </button>
+    <div className={`app-root ${theme === "light" ? "theme-light" : ""}`}>
+      {/* Top Window Drag Strip */}
+      <div className="window-drag-region">
+        {updater.status === "downloaded" && (
+          <button
+            className="badge badge-success"
+            style={{ marginRight: 12, cursor: "pointer" }}
+            onClick={() => void api.quitAndInstallUpdate()}
+          >
+            <Download size={11} /> Restart to update
+          </button>
+        )}
+        <WindowControls />
+      </div>
+
+      {/* Main Collapsible Sidebar */}
+      <aside className={`app-sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
+        {/* Sidebar Header */}
+        <div className="sidebar-header">
+          {!sidebarCollapsed && (
+            <div className="sidebar-brand">
+              <span className="brand-dot" />
+              <span>Nexus</span>
+            </div>
           )}
-          <div className="product-logo" onClick={() => void enterHome()} title="Nexus — Unified AI Workspace" style={{ cursor: "pointer" }}>
-            <span className="nexus-title">nexus<span className="nexus-cursor">_</span></span>
+          <button
+            className="btn btn-icon btn-ghost"
+            onClick={() => setSidebarCollapsed((v) => !v)}
+            title={sidebarCollapsed ? "Expand sidebar (⌘B)" : "Collapse sidebar (⌘B)"}
+          >
+            <PanelLeft size={16} />
+          </button>
+        </div>
+
+        {/* Mode Switcher */}
+        {!sidebarCollapsed && (
+          <div className="mode-switcher-container">
+            <div className="mode-switcher">
+              <button
+                className={`mode-pill mode-home ${area === "home" ? "active" : ""}`}
+                onClick={() => void enterHome()}
+                title="Home (ChatGPT conversation mode)"
+              >
+                <Sparkles size={14} />
+                <span>Home</span>
+              </button>
+              <button
+                className={`mode-pill mode-code ${area === "code" ? "active" : ""}`}
+                onClick={() => void enterCode()}
+                title="Code (Codex developer mode)"
+              >
+                <Code2 size={14} />
+                <span>Code</span>
+              </button>
+              <button
+                className={`mode-pill mode-notebook ${area === "notebook" ? "active" : ""}`}
+                onClick={() => enterNotebook()}
+                title="Notebook (NotebookLM research studio)"
+              >
+                <BookOpen size={14} />
+                <span>Notebook</span>
+              </button>
+            </div>
           </div>
-          <div className="top-separator" />
-          <div className="area-tabs" role="tablist" aria-label="Workspace mode">
-            <button
-              role="tab"
-              aria-selected={area === "home"}
-              className={`area-tab area-tab-home ${area === "home" ? "active" : ""}`}
-              onClick={() => void enterHome()}
-              title="Home — ChatGPT-style conversational assistant & deep research"
-            >
-              <Sparkles size={13} className="area-tab-icon" />
-              <span>Home</span>
-              <small className="area-tab-sub">Chat</small>
-            </button>
-            <button
-              role="tab"
-              aria-selected={area === "code"}
-              className={`area-tab area-tab-code ${area === "code" ? "active" : ""}`}
-              onClick={() => void enterCode()}
-              title="Code — Codex-style autonomous engineering & IDE workspace"
-            >
-              <Code2 size={13} className="area-tab-icon" />
-              <span>Code</span>
-              <small className="area-tab-sub">Codex</small>
-            </button>
-            <button
-              role="tab"
-              aria-selected={area === "notebook"}
-              className={`area-tab area-tab-notebook ${area === "notebook" ? "active" : ""}`}
-              onClick={() => enterNotebook()}
-              title="Notebook — NotebookLM-style grounded sources & Studio synthesis"
-            >
-              <BookOpen size={13} className="area-tab-icon" />
-              <span>Notebook</span>
-              <small className="area-tab-sub">Studio</small>
-            </button>
+        )}
+
+        {/* Primary Action Button */}
+        {!sidebarCollapsed && (
+          <div className="sidebar-action-wrap">
+            {area === "home" && (
+              <button
+                className="sidebar-new-btn"
+                onClick={() => void home.createChat()}
+              >
+                <Plus size={15} />
+                <span>New chat</span>
+              </button>
+            )}
+            {area === "code" && (
+              <button
+                className="sidebar-new-btn"
+                onClick={() => void createSession()}
+              >
+                <Plus size={15} />
+                <span>New task</span>
+              </button>
+            )}
+            {area === "notebook" && (
+              <button
+                className="sidebar-new-btn"
+                onClick={() => void notebook.createNotebook("New notebook")}
+              >
+                <Plus size={15} />
+                <span>New notebook</span>
+              </button>
+            )}
           </div>
-          {area === "code" && (
-            <>
-              <div className="top-separator" />
-              <div className="project-selector-wrap" ref={projectDropdownRef}>
+        )}
+
+        {/* Fixed Search Input in Home Sidebar so it never clips */}
+        {!sidebarCollapsed && area === "home" && (
+          <div className="sidebar-search-wrap">
+            <div className="sidebar-search-box">
+              <Search size={13} />
+              <input
+                placeholder="Search chats..."
+                value={searchFilter}
+                onChange={(e) => setSearchFilter(e.target.value)}
+              />
+              {searchFilter && (
                 <button
-                  className={`project-menu${showProjectDropdown ? " active" : ""}`}
-                  onClick={() => setShowProjectDropdown((v) => !v)}
-                  title="Select or switch project"
+                  type="button"
+                  onClick={() => setSearchFilter("")}
+                  style={{ display: "inline-flex", color: "var(--text-tertiary)" }}
                 >
-                  <FolderOpen size={13} />
-                  <strong>{activeProject?.name || "Projects"}</strong>
-                  <ChevronDown
-                    size={12}
-                    style={{
-                      transition: "transform 0.15s ease",
-                      transform: showProjectDropdown ? "rotate(180deg)" : "none",
-                    }}
-                  />
+                  <X size={12} />
                 </button>
-                {showProjectDropdown && (
-                  <div className="project-dropdown-menu">
-                    <div className="project-dropdown-head">
-                      <span>PROJECTS</span>
-                      <span className="notebook-head-count-pill">
-                        {projects.length}
-                      </span>
-                    </div>
-                    {projects
-                      .map((p) => (
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Sidebar Middle Content */}
+        {!sidebarCollapsed && (
+          <div className="sidebar-content">
+            {/* HOME MODE: Date-grouped Chat History */}
+            {area === "home" && (
+              <>
+                {groupedHomeSessions.map((group) => (
+                  <div key={group.label} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <div className="history-group-title">{group.label}</div>
+                    {group.sessions.map((s) => {
+                      const isActive = home.activeSession?.id === s.id;
+                      const isEditing = editingSessionId === s.id;
+                      return (
+                        <div
+                          key={s.id}
+                          className={`history-item ${isActive ? "active" : ""}`}
+                          onClick={() => void home.selectChat(s.id)}
+                        >
+                          {isEditing ? (
+                            <input
+                              className="input"
+                              style={{ padding: "2px 6px", fontSize: "0.82rem" }}
+                              value={editingSessionTitle}
+                              autoFocus
+                              onChange={(e) => setEditingSessionTitle(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") handleCommitRename();
+                                else if (e.key === "Escape") setEditingSessionId(null);
+                              }}
+                              onBlur={handleCommitRename}
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                          ) : (
+                            <>
+                              <span className="history-item-label">{s.title || "Untitled chat"}</span>
+                              <div className="history-actions" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  className="btn btn-icon-sm btn-ghost"
+                                  title="Rename"
+                                  onClick={() => handleStartRename(s)}
+                                >
+                                  <Pencil size={12} />
+                                </button>
+                                <button
+                                  className="btn btn-icon-sm btn-ghost"
+                                  title="Delete"
+                                  onClick={() => void home.deleteChat(s.id)}
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </>
+            )}
+
+            {/* CODE MODE: Task Sessions & File Explorer */}
+            {area === "code" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div className="history-group-title">Active Workspace</div>
+                <button
+                  className="card"
+                  style={{ padding: "8px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
+                  onClick={openProjectFromDialog}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                    <FolderOpen size={14} style={{ color: "var(--accent-code)", flexShrink: 0 }} />
+                    <span style={{ fontSize: "0.82rem", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {activeProject ? activeProject.name : "Select Project"}
+                    </span>
+                  </div>
+                  {gitBranch && (
+                    <span className="badge badge-code" style={{ fontSize: "0.68rem" }}>
+                      <GitBranch size={10} /> {gitBranch}
+                    </span>
+                  )}
+                </button>
+
+                <div className="mode-switcher" style={{ marginTop: 4 }}>
+                  <button
+                    type="button"
+                    className={`mode-pill ${codeSideTab === "tasks" ? "active mode-code" : ""}`}
+                    onClick={() => setCodeSideTab("tasks")}
+                  >
+                    <MessageSquare size={12} />
+                    <span>Tasks ({sortedSessions.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`mode-pill ${codeSideTab === "files" ? "active mode-code" : ""}`}
+                    onClick={() => setCodeSideTab("files")}
+                  >
+                    <Folder size={12} />
+                    <span>Files ({files.length})</span>
+                  </button>
+                </div>
+
+                {codeSideTab === "tasks" ? (
+                  <>
+                    <div className="history-group-title" style={{ marginTop: 4 }}>Projects</div>
+                    {projects.map((p) => {
+                      const isActiveProject = activeProject?.id === p.id;
+                      const isExpanded = expandedProjects.has(p.id);
+                      const projSessions = projectSessions[p.id];
+                      return (
+                        <div key={p.id} className="project-tree">
+                          <div
+                            className={`history-item project-row ${isActiveProject ? "active" : ""}`}
+                            onClick={() => {
+                              toggleProjectExpanded(p.id);
+                              if (!isActiveProject) void activateProject(p.id);
+                            }}
+                            title={p.name}
+                          >
+                            {isExpanded ? <ChevronDown size={12} style={{ flexShrink: 0 }} /> : <ChevronRight size={12} style={{ flexShrink: 0 }} />}
+                            <FolderOpen size={13} style={{ flexShrink: 0, color: "var(--accent-code)" }} />
+                            <span className="history-item-label">{p.name}</span>
+                            {projSessions && (
+                              <span className="project-session-count">{projSessions.length}</span>
+                            )}
+                          </div>
+                          {isExpanded && (
+                            <div className="project-sessions">
+                              {(projSessions || []).map((s) => {
+                                const isActive = activeSession?.id === s.id && isActiveProject;
+                                return (
+                                  <div
+                                    key={s.id}
+                                    className={`history-item ${isActive ? "active" : ""}`}
+                                    onClick={() => void openProjectSession(p.id, s.id)}
+                                  >
+                                    <MessageSquare size={12} style={{ flexShrink: 0 }} />
+                                    <span className="history-item-label">{s.title || "Untitled task"}</span>
+                                    <div className="history-actions" onClick={(e) => e.stopPropagation()}>
+                                      {isActiveProject && (
+                                        <button
+                                          className="btn btn-icon-sm btn-ghost"
+                                          title="Delete"
+                                          onClick={() => void deleteActiveSession(s.id)}
+                                        >
+                                          <Trash2 size={12} />
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                              {projSessions && projSessions.length === 0 && (
+                                <div className="project-empty">No sessions yet</div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 1, marginTop: 4 }}>
+                    {visibleFiles.map((entry: FileEntry) => {
+                      const isFolder = entry.kind === "folder";
+                      const isOpen = expandedFolders.has(entry.path);
+                      const isSelected = activeFile === entry.path;
+                      const parts = entry.path.split("/");
+                      const name = parts[parts.length - 1] || entry.path;
+                      const depth = Math.max(0, parts.length - 1);
+                      return (
                         <button
-                          key={p.id}
-                          className={`project-dropdown-item${p.id === activeProject?.id ? " active" : ""}`}
+                          key={entry.path}
+                          type="button"
+                          className={`tree-row ${isSelected ? "active" : ""}`}
+                          style={{ paddingLeft: `${8 + depth * 12}px` }}
                           onClick={() => {
-                            setShowProjectDropdown(false);
-                            void activateProject(p.id);
+                            if (isFolder) {
+                              toggleFolder(entry.path);
+                            } else {
+                              void openFile(entry.path);
+                              setCodeMainTab("editor");
+                            }
                           }}
                         >
-                          <span
-                            className="project-dot"
-                            style={
-                              p.id === activeProject?.id
-                                ? { background: "var(--nexus-green)", boxShadow: "0 0 8px var(--nexus-green)" }
-                                : undefined
-                            }
-                          />
-                          <span className="project-dropdown-name">{p.name}</span>
-                          <span className="project-dropdown-count">{p.sessions.length}</span>
-                          {p.id === activeProject?.id && (
-                            <Check size={12} style={{ color: "var(--nexus-bright)", flex: "none", marginLeft: "auto" }} />
-                          )}
+                          <span className="twist">
+                            {isFolder ? (isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />) : null}
+                          </span>
+                          <span className="ficon">
+                            {isFolder ? <Folder size={13} /> : fileIcon(name)}
+                          </span>
+                          <span className="fname">{name}</span>
                         </button>
-                      ))}
-                    {!projects.length && (
-                      <div className="empty-pane" style={{ padding: "8px 6px" }}>
-                        No projects yet.
-                      </div>
-                    )}
-                    <div className="project-dropdown-divider" />
-                    <button
-                      className="project-dropdown-add"
-                      onClick={() => {
-                        setShowProjectDropdown(false);
-                        void openProjectFromDialog();
-                      }}
-                    >
-                      <Plus size={12} />
-                      <span>Open project folder…</span>
-                    </button>
+                      );
+                    })}
                   </div>
                 )}
               </div>
-              <span className="branch">
-                <GitBranch size={11} /> {gitBranch}
-              </span>
-            </>
-          )}
-        </div>
-
-        <div className="session-top-title">
-          <span className={`green-dot${running || home.running || notebook.asking ? " pulsing" : ""}`} />
-          <span>{headerTitle}</span>
-        </div>
-
-        <div className="product-right">
-          {area === "code" && (
-            <button className="top-link" onClick={() => setShowDaemonsModal(true)} title="Manage long-running background processes and dev servers">
-              <Terminal size={13} /> Services
-            </button>
-          )}
-          {area !== "notebook" && (
-            <button
-              className={`icon-plain sidebar-toggle-btn${showContext ? " active" : ""}`}
-              onClick={() => setShowContext((v) => !v)}
-              title={showContext ? "Close right drawer" : "Open right drawer"}
-            >
-              <PanelRight size={15} />
-            </button>
-          )}
-          {/* Settings entry points: the ⋯/hamburger top-left and the sidebar
-              footer button — the duplicate top-right gear was removed. */}
-          {(updater.status === "available" || updater.status === "downloading") && (
-            <span
-              className="update-pill"
-              title={updater.status === "downloading" ? `Downloading update… ${updater.percent}%` : `Version ${updater.version} is downloading in the background`}
-            >
-              <RefreshCw size={11} className={updater.status === "downloading" ? "spin" : ""} />
-              {updater.status === "downloading" ? `${updater.percent}%` : `v${updater.version}`}
-            </span>
-          )}
-          {updater.status === "downloaded" && (
-            <button
-              className="update-pill ready"
-              onClick={() => void api.quitAndInstallUpdate()}
-              title={`Restart to install version ${updater.version}`}
-            >
-              <Download size={11} /> Restart to update
-            </button>
-          )}
-          {updater.status === "error" && (
-            <button
-              className="update-pill error"
-              onClick={() => void api.checkForUpdates()}
-              title={`Update check failed: ${updater.message} — click to retry`}
-            >
-              <TriangleAlert size={11} /> Update failed — retry
-            </button>
-          )}
-          <div className="top-separator window-ctrl-sep" />
-          <WindowControls />
-        </div>
-      </header>
-
-      <div className="product-body">
-        {showLeftSidebar && area === "home" && (
-          <aside className={`session-pane home-ds-sidebar${!showSessions ? " closing" : ""}`}>
-            <div className="ds-sidebar-top">
-              <div className="ds-brand-row">
-                <Sparkles size={14} className="ds-brand-icon" />
-                <span className="ds-brand">Conversations</span>
-              </div>
-              <button className="pane-action" onClick={() => setShowSessions(false)} title="Collapse sidebar">
-                <PanelLeft size={14} />
-              </button>
-            </div>
-            <button className="ds-new-chat" onClick={() => void home.createChat()} title="Start a new home chat">
-              <Plus size={15} />
-              <span>New chat</span>
-              <kbd className="ds-shortcut-badge">⌘N</kbd>
-            </button>
-            <div className="ds-search">
-              <Search size={13} />
-              <input
-                value={homeSearch}
-                onChange={(event) => setHomeSearch(event.target.value)}
-                placeholder="Search conversations…"
-                aria-label="Search home chats"
-              />
-              {homeSearch && (
-                <button className="ds-search-clear" onClick={() => setHomeSearch("")} title="Clear search">
-                  <X size={11} />
-                </button>
-              )}
-            </div>
-            <div className="session-list ds-session-list">
-              {groupHomeSessions(home.sessions)
-                .map((group) => ({
-                  label: group.label,
-                  sessions: homeSearch.trim()
-                    ? group.sessions.filter((s) => (s.title || "").toLowerCase().includes(homeSearch.trim().toLowerCase()))
-                    : group.sessions,
-                }))
-                .filter((group) => group.sessions.length)
-                .map((group) => (
-                  <div key={group.label} className="ds-group">
-                    <div className="ds-group-label">{group.label}</div>
-                    {group.sessions.map((session) => (
-                      <SessionRow
-                        key={session.id}
-                        session={session}
-                        active={session.id === home.activeSession?.id}
-                        editing={session.id === home.editingSessionId}
-                        draftTitle={home.editingSessionTitle}
-                        onActivate={() => void home.selectChat(session.id)}
-                        onStartEdit={() => home.startRename(session)}
-                        onDraftChange={home.setEditingSessionTitle}
-                        onCommit={home.commitRename}
-                        onCancel={home.cancelRename}
-                        onDelete={() => openHomeDeleteDialog(session)}
-                      />
-                    ))}
-                  </div>
-                ))}
-              {!home.sessions.length && <div className="empty-pane">Start a new chat to begin.</div>}
-              {Boolean(home.sessions.length) && !groupHomeSessions(home.sessions).some((g) => !homeSearch.trim() || g.sessions.some((s) => (s.title || "").toLowerCase().includes(homeSearch.trim().toLowerCase()))) && (
-                <div className="empty-pane">No chats match “{homeSearch.trim()}”.</div>
-              )}
-            </div>
-            <div className="ds-sidebar-footer">
-              <button className="ds-footer-btn" onClick={() => setShowSettings(true)} title="Open Settings">
-                <div className="ds-avatar-badge">N</div>
-                <div className="ds-footer-meta">
-                  <span className="ds-profile-name">Nexus Workspace</span>
-                  <small className="ds-profile-sub">{selectedModel || "Configure AI Models"}</small>
-                </div>
-                <SlidersHorizontal size={14} className="ds-footer-icon" />
-              </button>
-            </div>
-          </aside>
-        )}
-        {showLeftSidebar && area === "code" && (
-          <aside className={`session-pane codex-sidebar${!showSessions ? " closing" : ""}`}>
-            <div className="ds-sidebar-top codex-sidebar-top">
-              <div className="ds-brand-row">
-                <Code2 size={14} className="ds-brand-icon" />
-                <span className="ds-brand">Codex Workspace</span>
-              </div>
-              <button className="pane-action" onClick={() => setShowSessions(false)} title="Hide sidebar">
-                <PanelLeft size={14} />
-              </button>
-            </div>
-            {activeProject ? (
-              <button className="ds-new-chat codex-new-task" onClick={() => void createSession()} title="New coding task (⌘ N)">
-                <Plus size={15} />
-                <span>New coding task</span>
-                <kbd className="ds-shortcut-badge">⌘N</kbd>
-              </button>
-            ) : (
-              <button className="ds-new-chat codex-new-task" onClick={() => void openProjectFromDialog()} title="Open a project folder">
-                <FolderOpen size={15} />
-                <span>Open repository…</span>
-              </button>
             )}
-            <div className="pane-top">
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span className="context-kicker">REPOSITORIES</span>
-                <span className="notebook-head-count-pill">{projects.length}</span>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
-                <button className="pane-action" onClick={() => void openProjectFromDialog()} title="Add repository"><Plus size={14} /></button>
-              </div>
-            </div>
-            <div className="project-list">
-              {projects.map((project) => (
-                <button
-                  key={project.id}
-                  className={`project-row ${project.id === activeProject?.id ? "active" : ""}`}
-                  onClick={() => void activateProject(project.id)}
-                >
-                  <span className="project-dot" />
-                  <span>{project.name}</span>
-                  <small>{project.sessions.length}</small>
-                  <i
-                    className="row-delete"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void deleteProjectById(project.id);
-                    }}
-                  >
-                    <Trash2 size={12} />
-                  </i>
-                </button>
-              ))}
-              {!projects.length && <div className="empty-pane">Open a folder to start coding.</div>}
-            </div>
-            {activeProject && (
-              <>
-                <div className="pane-top sessions-label" style={{ marginTop: 4 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <span className="context-kicker">TASKS & THREADS</span>
-                    <span className="notebook-head-count-pill">{sortedSessions.length}</span>
-                  </div>
-                  <button className="pane-action" onClick={() => void createSession()} title="New coding session (⌘ N)"><Plus size={14} /></button>
-                </div>
-                <div className="session-list">
-                  {sortedSessions.map((session) => (
-                    <SessionRow
-                      key={session.id}
-                      session={session}
-                      active={session.id === activeSession?.id}
-                      editing={session.id === editingSessionId}
-                      draftTitle={editingSessionTitle}
-                      onActivate={() => void activateSession(session.id)}
-                      onStartEdit={() => startSessionRename(session)}
-                      onDraftChange={setEditingSessionTitle}
-                      onCommit={commitSessionRename}
-                      onCancel={cancelSessionRename}
-                      onDelete={() => void deleteActiveSession(session.id)}
-                    />
-                  ))}
-                </div>
-              </>
-            )}
-            <div className="ds-sidebar-footer">
-              <button className="ds-footer-btn" onClick={() => setShowSettings(true)} title="Open Settings">
-                <div className="ds-avatar-badge codex">C</div>
-                <div className="ds-footer-meta">
-                  <span className="ds-profile-name">{activeProject?.name || "Codex Agent"}</span>
-                  <small className="ds-profile-sub">{gitBranch || "local"} · {mode} mode</small>
-                </div>
-                <SlidersHorizontal size={14} className="ds-footer-icon" />
-              </button>
-            </div>
-          </aside>
-        )}
 
-        {area === "code" && view === "files" && (
-          <aside className="file-pane explorer-pane">
-            <div className="file-pane-header">
-              <span>EXPLORER</span>
-              <div>
-                <button className="pane-action" onClick={() => void loadWorkspace()} title="Refresh project files">
-                  <RefreshCw size={13} />
-                </button>
+            {/* NOTEBOOK MODE: Notebook Switcher */}
+            {area === "notebook" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <div className="history-group-title">Notebooks</div>
+                {notebook.notebooks.map((nb) => {
+                  const isActive = notebook.activeNotebook?.id === nb.id;
+                  return (
+                    <div
+                      key={nb.id}
+                      className={`history-item ${isActive ? "active" : ""}`}
+                      onClick={() => notebook.enterNotebook(nb)}
+                    >
+                      <BookOpen size={13} style={{ flexShrink: 0, color: "var(--accent-notebook)" }} />
+                      <span className="history-item-label">{nb.name}</span>
+                    </div>
+                  );
+                })}
               </div>
-            </div>
-            <div className="root-label">
-              <ChevronDown size={13} /> {activeProject?.name?.toUpperCase() || "NO WORKSPACE"}
-            </div>
-            <div className="file-tree">
-              {visibleFiles.map((entry) => (
-                <FileRow
-                  key={entry.path}
-                  entry={entry}
-                  active={entry.path === activeFile}
-                  expanded={expandedFolders.has(entry.path)}
-                  status={gitStatus[entry.path]}
-                  onClick={() => {
-                    if (entry.kind === "folder") toggleFolder(entry.path);
-                    else void openFile(entry.path);
-                  }}
-                />
-              ))}
-            </div>
-            {!activeProject && <div className="empty-pane">Open a project to browse its files.</div>}
-            <div className="file-pane-footer">
-              <span>{files.filter((entry) => entry.kind === "file").length} files</span>
-              <span>LOCAL</span>
-            </div>
-          </aside>
-        )}
-        <main className="coding-workspace">
-          {area === "code" && (
-          <div className="workspace-bar">
-            <div className="workspace-breadcrumb">
-              {!showSessions && (
-                <button className="icon-plain topbar-reopen" onClick={() => setShowSessions(true)} title="Show sidebar">
-                  <PanelLeft size={15} />
-                </button>
-              )}
-              <span className="crumb-project">{activeProject?.name || "No repository"}</span>
-              <i>/</i>
-              <strong>{view === "chat" ? (activeSession?.title || "Codex Thread") : activeFile || "Code Editor"}</strong>
-            </div>
-            <div className="workspace-actions">
-              <div className="workspace-view-seg" role="group" aria-label="Code view">
-                <button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")} title="Codex Agent Thread">
-                  <MessageSquare size={13} /> Agent
-                </button>
-                <button className={view === "files" ? "active" : ""} onClick={() => setView("files")} title="Monaco File Editor & Explorer">
-                  <FileCode2 size={13} /> Editor
-                </button>
-              </div>
-              <div className="workspace-drawer-pills">
-                <button
-                  className={`drawer-pill-btn${showContext && codeSideTab === "diff" ? " active" : ""}`}
-                  onClick={() => {
-                    void refreshDiff();
-                    if (showContext && codeSideTab === "diff") setShowContext(false);
-                    else openCodeSidePanel("diff");
-                  }}
-                  title="Toggle Git Diff Drawer"
-                >
-                  <GitCompare size={13} />
-                  <span>Diff</span>
-                  {diff.length > 0 && <em className="drawer-pill-badge">{diff.length}</em>}
-                </button>
-                <button
-                  className={`drawer-pill-btn${showContext && codeSideTab === "terminal" ? " active" : ""}`}
-                  onClick={() => {
-                    setTerminalOpened(true);
-                    if (showContext && codeSideTab === "terminal") setShowContext(false);
-                    else openCodeSidePanel("terminal");
-                  }}
-                  title="Toggle Interactive Terminal Drawer"
-                >
-                  <Terminal size={13} />
-                  <span>Terminal</span>
-                </button>
-                <button
-                  className={`drawer-pill-btn${showContext && codeSideTab === "browser" ? " active" : ""}`}
-                  onClick={() => {
-                    if (showContext && codeSideTab === "browser") setShowContext(false);
-                    else openCodeSidePanel("browser");
-                  }}
-                  title="Toggle Built-in Browser Drawer"
-                >
-                  <Globe size={13} />
-                  <span>Browser</span>
-                </button>
-                <button
-                  className={`drawer-pill-btn${showContext && codeSideTab === "memory" ? " active" : ""}`}
-                  onClick={() => {
-                    if (showContext && codeSideTab === "memory") setShowContext(false);
-                    else openCodeSidePanel("memory");
-                  }}
-                  title="Toggle Project & Session Memory Drawer"
-                >
-                  <Brain size={13} />
-                  <span>Memory</span>
-                </button>
-              </div>
-              <PanelMenuButton
-                title="More workspace actions"
-                items={[
-                  { key: "browser", label: "Browser", hint: "Built-in browser", open: codeSideTabs.includes("browser") },
-                  { key: "terminal", label: "Terminal", hint: "Interactive shell", open: codeSideTabs.includes("terminal") },
-                  { key: "diff", label: "Diff", hint: diff.length ? `${diff.length} changed file${diff.length === 1 ? "" : "s"}` : "Git changes", open: codeSideTabs.includes("diff") },
-                  { key: "memory", label: "Memory", hint: "Project & session memory", open: codeSideTabs.includes("memory") },
-                  ...(activeSession ? [{ key: "export", label: "Export chat", hint: "Standalone HTML file" }] : []),
-                ]}
-                onPick={(key) => {
-                  if (key === "terminal") setTerminalOpened(true);
-                  if (key === "diff") void refreshDiff();
-                  if (key === "export") {
-                    const sessionId = activeSession?.id;
-                    if (!sessionId) return;
-                    setConfirmDialog({
-                      title: "Export this chat?",
-                      message: "This saves the whole session — messages, agent steps and outcomes — as a standalone HTML file you can open in any browser.",
-                      confirmLabel: "Export",
-                      danger: false,
-                      onConfirm: () => {
-                        void (api as unknown as { exportSession: (id: string) => Promise<string> }).exportSession(sessionId).catch(() => undefined);
-                      },
-                    });
-                    return;
-                  }
-                  openCodeSidePanel(key as "browser" | "terminal" | "diff" | "memory");
-                }}
-              />
-            </div>
+            )}
           </div>
-          )}
+        )}
 
-          <div className="workspace-content">
-            <Suspense fallback={<section className="center-pane"><div className="empty-pane">Loading workspace…</div></section>}>
-            {area === "notebook" ? (
-              <section className="center-pane">
+        {/* Sidebar Footer */}
+        {!sidebarCollapsed && (
+          <div className="sidebar-footer">
+            <button
+              className="footer-btn"
+              onClick={() => setShowCommandPalette(true)}
+              title="Command Palette (⌘K)"
+            >
+              <Command size={14} />
+              <span>Commands</span>
+              <kbd style={{ marginLeft: "auto", fontSize: "0.7rem", opacity: 0.6 }}>⌘K</kbd>
+            </button>
+            <button
+              className="footer-btn"
+              onClick={() => openSettingsSection("general")}
+              title="Settings (⌘,)"
+            >
+              <SlidersHorizontal size={14} />
+              <span>Settings</span>
+            </button>
+          </div>
+        )}
+      </aside>
+
+      {/* Main View Area */}
+      <main className="app-main">
+        <div className={`app-view-stage${area === "home" ? " area-home" : ""}`}>
+          <ErrorBoundary>
+            <Suspense fallback={<div className="modal-overlay">Loading...</div>}>
+              {area === "home" && (
+                <HomeView
+                  messages={home.currentMessages}
+                  draft={home.draft}
+                  setDraft={home.setDraft}
+                  submit={(override) => void home.submit(override, { providerId: selectedProviderId, model: selectedModel, effort: selectedEffort })}
+                  running={home.running}
+                  onStop={() => void home.stopAgent()}
+                  streamingText={home.streamingText}
+                  liveEvents={home.liveEvents}
+                  selectedProviderId={selectedProviderId}
+                  selectedModel={selectedModel}
+                  selectedEffort={selectedEffort}
+                  providers={providers}
+                  definitions={providerDefinitions}
+                  switchModel={(pId, m, eff) => void switchModel(pId, m, eff)}
+                  switchEffort={(eff) => void switchEffort(eff)}
+                  onOpenProviders={() => setShowProviders(true)}
+                  sessionUsage={home.sessionUsage}
+                  contextUsage={getSessionContextUsage(home.activeSession)}
+                  activeSessionId={home.activeSession?.id}
+                  sessionTitle={home.activeSession?.title}
+                  onTruncateSession={(idx) => home.truncateChat(idx)}
+                  onForkSession={(idx) => home.forkChat(idx)}
+                  attachedImages={home.attachedImages}
+                  setAttachedImages={home.setAttachedImages}
+                  attachments={home.attachments}
+                  setAttachments={home.setAttachments}
+                  hasProvider={providers.length > 0}
+                  onOpenImage={(src) => setAttachmentPreview({ url: src, name: "image", mimeType: "image/png", size: 0 })}
+                  onOpenAttachment={(a) => setAttachmentPreview(a)}
+                  onDownloadFile={(path) => void api.downloadHomeFile(path)}
+                  customCommands={customCommands}
+                  skills={installedSkills}
+                  onRefreshSkills={refreshSkills}
+                />
+              )}
+
+              {area === "code" && (
+                <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden" }}>
+                  {/* Top Codex Workbench Header */}
+                  <header className="code-workbench-header">
+                    <div className="code-workbench-tabs">
+                      <button
+                        type="button"
+                        className={`code-workbench-tab ${codeMainTab === "agent" ? "active" : ""}`}
+                        onClick={() => setCodeMainTab("agent")}
+                      >
+                        <Code2 size={13} />
+                        <span>Agent</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`code-workbench-tab ${codeMainTab === "editor" ? "active" : ""}`}
+                        onClick={() => setCodeMainTab("editor")}
+                      >
+                        <FileCode2 size={13} />
+                        <span>Editor</span>
+                        {openFiles.length > 0 && <span className="code-workbench-badge">{openFiles.length}</span>}
+                      </button>
+                      <button
+                        type="button"
+                        className={`code-workbench-tab ${codeMainTab === "diff" ? "active" : ""}`}
+                        onClick={() => setCodeMainTab("diff")}
+                      >
+                        <GitBranch size={13} />
+                        <span>Diff</span>
+                        {diff.length > 0 && <span className="code-workbench-badge">{diff.length}</span>}
+                      </button>
+                      <button
+                        type="button"
+                        className={`code-workbench-tab ${codeMainTab === "terminal" ? "active" : ""}`}
+                        onClick={() => setCodeMainTab("terminal")}
+                      >
+                        <Terminal size={13} />
+                        <span>Terminal</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`code-workbench-tab ${codeMainTab === "browser" ? "active" : ""}`}
+                        onClick={() => setCodeMainTab("browser")}
+                      >
+                        <Search size={13} />
+                        <span>Browser</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`code-workbench-tab ${codeMainTab === "memory" ? "active" : ""}`}
+                        onClick={() => setCodeMainTab("memory")}
+                      >
+                        <Brain size={13} />
+                        <span>Memory</span>
+                      </button>
+                    </div>
+                  </header>
+
+                  {/* Active Code Mode Surface */}
+                  {codeMainTab === "agent" && (
+                    <AgentView
+                      hasProject={Boolean(activeProject)}
+                      activeFile={activeFile}
+                      messages={currentMessages}
+                      draft={draft}
+                      setDraft={setDraft}
+                      submit={(override) => void submit(override)}
+                      running={running}
+                      onStop={() => void stopAgent()}
+                      streamingText={streamingText}
+                      liveEvents={liveEvents}
+                      mode={mode}
+                      setMode={setMode}
+                      selectedProviderId={selectedProviderId}
+                      selectedModel={selectedModel}
+                      selectedEffort={selectedEffort}
+                      providers={providers}
+                      definitions={providerDefinitions}
+                      files={files}
+                      checkpointId={activeSession?.checkpointId}
+                      diffCount={diff.length}
+                      diffFiles={diff}
+                      undoLevels={undoLevels}
+                      onUndoRun={(id) => void undoRun(id)}
+                      onKeepChanges={() => void keepChanges()}
+                      switchModel={(pId, m, eff) => void switchModel(pId, m, eff)}
+                      switchEffort={(eff) => void switchEffort(eff)}
+                      onOpenProviders={() => setShowProviders(true)}
+                      onAttachFile={() => {
+                        setDraft((curr) => `${curr}${curr ? "\n" : ""}@${activeFile || "current-file"}`);
+                      }}
+                      onAttachDiff={() => {
+                        setDraft((curr) => `${curr}${curr ? "\n" : ""}Review the current Git diff`);
+                      }}
+                      sessionUsage={currentSessionUsage}
+                      contextUsage={currentSessionContextUsage}
+                      activeSessionId={activeSession?.id}
+                      attachedImages={attachedImages}
+                      setAttachedImages={setAttachedImages}
+                      attachments={attachments}
+                      setAttachments={setAttachments}
+                      onOpenImage={openImagePreview}
+                      onOpenAttachment={(a) => setAttachmentPreview(a)}
+                      customCommands={customCommands}
+                      skills={installedSkills}
+                      onRefreshSkills={refreshSkills}
+                      onTruncateSession={(idx: number) => truncateSession(idx)}
+                      onForkSession={(idx: number) => forkSession(idx)}
+                    />
+                  )}
+
+                  {codeMainTab === "editor" && (
+                    <MonacoEditorView
+                      activeFile={activeFile}
+                      openFiles={openFiles}
+                      setActiveFile={setActiveFile}
+                      setOpenFiles={setOpenFiles}
+                      content={fileContent}
+                      setContent={setFileContent}
+                      dirty={dirty}
+                      save={() => void saveFile()}
+                    />
+                  )}
+
+                  {codeMainTab === "diff" && (
+                    <DiffView
+                      diff={diff}
+                      checkpointId={activeSession?.checkpointId}
+                      undoing={undoing}
+                      onUndoRun={(id) => void undoRun(id)}
+                      onRefresh={() => void refreshDiff()}
+                      onRevertFile={(path) => void revertSingleFile(path)}
+                      onRevertAll={() => void revertAllChanges()}
+                      onInspectFile={(file) => setInspectDiffFile(file)}
+                      onRevertHunk={(path, hunkHeader) => void revertSingleHunk(path, hunkHeader)}
+                    />
+                  )}
+
+                  {codeMainTab === "terminal" && (
+                    <XTermView
+                      projectRoot={activeProject?.root}
+                      files={files}
+                    />
+                  )}
+
+                  {codeMainTab === "browser" && (
+                    <SidebarBrowser
+                      sessionId={activeSession?.id}
+                      browserScope="code"
+                      projectRoot={activeProject?.root}
+                      files={files}
+                      onSendToAgent={(prompt) => {
+                        setCodeMainTab("agent");
+                        void submit(prompt);
+                      }}
+                    />
+                  )}
+
+                  {codeMainTab === "memory" && (
+                    <MemoryView
+                      project={activeProject}
+                      session={activeSession}
+                      onRemoveFact={(fact) => void removeProjectFact(fact)}
+                      onClearSessionMemory={() => void clearSessionMemory()}
+                    />
+                  )}
+                </div>
+              )}
+
+              {area === "notebook" && (
                 <NotebookView
                   notebooks={notebook.notebooks}
                   sourceCounts={notebook.sourceCounts}
@@ -1341,7 +1042,7 @@ function App() {
                   onPickFiles={() => void notebook.uploadFromPicker()}
                   onImportYouTube={(url) => void notebook.importYouTube(url)}
                   onImportWebsite={(url) => void notebook.importWebsite(url)}
-                  onBrowserFiles={(files) => void notebook.uploadBrowserFiles(files)}
+                  onBrowserFiles={(browserFiles) => void notebook.uploadBrowserFiles(browserFiles)}
                   importingLink={notebook.importingLink}
                   isUploading={notebook.isUploading}
                   ingestDetail={notebook.ingestDetail}
@@ -1375,7 +1076,7 @@ function App() {
                       quiz: "Create a short quiz about this passage. Ask me one question at a time and wait for my answer.",
                     } as const;
                     notebook.closePassage();
-                    void notebook.ask(selectedProviderId, selectedModel, 8, `${prompts[action]}\n\nPassage from ${passage.sourceName} (${passage.headingPath.join(" › ")}):\n${passage.text}`);
+                    void notebook.ask(selectedProviderId, selectedModel, "8", `${prompts[action]}\n\nPassage from ${passage.sourceName} (${passage.headingPath.join(" › ")}):\n${passage.text}`);
                   }}
                   onSaveInstructions={(value) => void notebook.saveInstructions(value)}
                   onSaveNote={(note) => void notebook.saveNote(note)}
@@ -1426,7 +1127,7 @@ function App() {
                     setDraft(prompt);
                   }}
                   onHandoffToHome={(prompt) => {
-                    enterHome();
+                    void enterHome();
                     home.setDraft(prompt);
                   }}
                   selectedProviderId={selectedProviderId}
@@ -1434,437 +1135,48 @@ function App() {
                   selectedEffort={selectedEffort}
                   providers={providers}
                   definitions={providerDefinitions}
-                  switchModel={(providerId, model, effort) => void switchModel(providerId, model, effort)}
-                  switchEffort={(effort) => void switchEffort(effort)}
+                  switchModel={(pId, m, eff) => void switchModel(pId, m, eff)}
                   onOpenProviders={() => setShowProviders(true)}
                   hasProvider={providers.length > 0}
-                  customCommands={customCommands.filter((c) => !c.scope || c.scope === "all" || c.scope === "notebook")}
-                />
-              </section>
-            ) : area === "home" ? (
-              <>
-              <section className="center-pane">
-              <HomeView
-                messages={home.currentMessages}
-                draft={home.draft}
-                setDraft={home.setDraft}
-                submit={(override) => void home.submit(override, { providerId: selectedProviderId, model: selectedModel, effort: selectedEffort })}
-                running={home.running}
-                onStop={() => void home.stopAgent()}
-                streamingText={home.streamingText}
-                liveEvents={home.liveEvents}
-                selectedProviderId={selectedProviderId}
-                selectedModel={selectedModel}
-                selectedEffort={selectedEffort}
-                providers={providers}
-                definitions={providerDefinitions}
-                switchModel={(providerId, model, effort) => void switchModel(providerId, model, effort)}
-                switchEffort={(effort) => void switchEffort(effort)}
-                onOpenProviders={() => setShowProviders(true)}
-                sessionUsage={home.sessionUsage}
-                contextUsage={getSessionContextUsage(home.activeSession)}
-                activeSessionId={home.activeSession?.id}
-                sessionTitle={home.activeSession?.title}
-                onTruncateSession={(idx) => home.truncateChat(idx)}
-                onForkSession={(idx) => home.forkChat(idx)}
-                topbarLeading={
-                  !showSessions ? (
-                    <button className="icon-plain topbar-reopen" onClick={() => setShowSessions(true)} title="Show sidebar">
-                      <PanelLeft size={15} />
-                    </button>
-                  ) : undefined
-                }
-                panelMenu={
-                  <div className="workspace-drawer-pills home-drawer-pills">
-                    <button
-                      className={`drawer-pill-btn${showContext && homeSideTab === "artifacts" ? " active" : ""}`}
-                      onClick={() => {
-                        if (showContext && homeSideTab === "artifacts") setShowContext(false);
-                        else openHomeSidePanel("artifacts");
-                      }}
-                      title="Toggle Session Files & Artifacts Drawer"
-                    >
-                      <Layers size={13} />
-                      <span>Artifacts</span>
-                      {home.homeSessionFiles.length > 0 && <em className="drawer-pill-badge">{home.homeSessionFiles.length}</em>}
-                    </button>
-                    <button
-                      className={`drawer-pill-btn${showContext && homeSideTab === "browser" ? " active" : ""}`}
-                      onClick={() => {
-                        if (showContext && homeSideTab === "browser") setShowContext(false);
-                        else openHomeSidePanel("browser");
-                      }}
-                      title="Toggle Built-in Browser Drawer"
-                    >
-                      <Globe size={13} />
-                      <span>Browser</span>
-                    </button>
-                    <button
-                      className={`drawer-pill-btn${showContext && homeSideTab === "memory" ? " active" : ""}`}
-                      onClick={() => {
-                        void home.refreshHomeMemory();
-                        if (showContext && homeSideTab === "memory") setShowContext(false);
-                        else openHomeSidePanel("memory");
-                      }}
-                      title="Toggle Long-Term Memory Drawer"
-                    >
-                      <Brain size={13} />
-                      <span>Memory</span>
-                    </button>
-                    <PanelMenuButton
-                      title="Open a side panel"
-                      items={[
-                        { key: "artifacts", label: "Artifacts", hint: home.homeSessionFiles.length ? `${home.homeSessionFiles.length} file${home.homeSessionFiles.length === 1 ? "" : "s"}` : "Chat files", open: homeSideTabs.includes("artifacts") },
-                        { key: "browser", label: "Browser", hint: "Built-in browser", open: homeSideTabs.includes("browser") },
-                        { key: "memory", label: "Memory", hint: "Long-term memory", open: homeSideTabs.includes("memory") },
-                      ]}
-                      onPick={(key) => {
-                        if (key === "memory") void home.refreshHomeMemory();
-                        openHomeSidePanel(key as "artifacts" | "browser" | "memory");
-                      }}
-                    />
-                  </div>
-                }
-                onDownloadFile={(relPath) => void api.downloadHomeFile(relPath)}
-                attachedImages={home.attachedImages}
-                setAttachedImages={home.setAttachedImages}
-                attachments={home.attachments}
-                setAttachments={home.setAttachments}
-                hasProvider={providers.length > 0}
-                onOpenImage={openImagePreview}
-                onOpenAttachment={setAttachmentPreview}
-                customCommands={customCommands.filter((c) => !c.scope || c.scope === "all" || c.scope === "home")}
-                skills={installedSkills}
-                onRefreshSkills={refreshSkills}
-              />
-              </section>
-              {homePreviewPath && (
-                <HomeCanvasDrawer
-                  filePath={homePreviewPath}
-                  width={canvasWidth}
-                  onResizeStart={startCanvasResize}
-                  refreshToken={home.homeFiles.find((f) => f.path === homePreviewPath)?.modified}
-                  onClose={() => setHomePreviewPath(null)}
-                  onDownload={(p) => void api.downloadHomeFile(p)}
-                  onRefine={(instr) => {
-                    void home.submit(instr, { providerId: selectedProviderId, model: selectedModel, effort: selectedEffort });
-                  }}
+                  customCommands={customCommands}
                 />
               )}
-            </>
-            ) : (
-            <section className="center-pane">
-              {view === "chat" ? (
-                <AgentView
-                  hasProject={Boolean(activeProject)}
-                  activeFile={activeFile}
-                  messages={currentMessages}
-                  draft={draft}
-                  setDraft={setDraft}
-                  submit={(override) => void submit(override)}
-                  running={running}
-                  onStop={() => void stopAgent()}
-                  streamingText={streamingText}
-                  liveEvents={liveEvents}
-                  mode={mode}
-                  setMode={setMode}
-                  selectedProviderId={selectedProviderId}
-                  selectedModel={selectedModel}
-                  selectedEffort={selectedEffort}
-                  providers={providers}
-                  definitions={providerDefinitions}
-                  files={files}
-                  checkpointId={activeSession?.checkpointId}
-                  diffCount={diff.length}
-                  diffFiles={diff}
-                  undoLevels={undoLevels}
-                  onUndoRun={(id) => void undoRun(id)}
-                  onKeepChanges={() => void keepChanges()}
-                  switchModel={(providerId, model, effort) => void switchModel(providerId, model, effort)}
-                  switchEffort={(effort) => void switchEffort(effort)}
-                  onOpenProviders={() => setShowProviders(true)}
-                  onAttachFile={() => {
-                    setDraft((curr) => `${curr}${curr ? "\n" : ""}@${activeFile || "current-file"}`);
-                  }}
-                  onAttachDiff={() => {
-                    setDraft((curr) => `${curr}${curr ? "\n" : ""}Review the current Git diff`);
-                  }}
-                  sessionUsage={currentSessionUsage}
-                  contextUsage={currentSessionContextUsage}
-                  activeSessionId={activeSession?.id}
-                  worktreeStatus={worktreeStatus}
-                  onOpenArtifact={(art) => setActiveArtifact(art)}
-                  onOpenImage={openImagePreview}
-                  onOpenAttachment={setAttachmentPreview}
-                  onOpenDiff={() => {
-                    setCodeSideTab("diff");
-                    setShowContext(true);
-                    void refreshDiff();
-                  }}
-                  onMergeSuccess={() => {
-                    void refreshDiff();
-                    void loadWorkspace();
-                  }}
-                  onDiscardSuccess={() => {
-                    void refreshDiff();
-                    void loadWorkspace();
-                  }}
-                  attachedImages={attachedImages}
-                  setAttachedImages={setAttachedImages}
-                  attachments={attachments}
-                  setAttachments={setAttachments}
-                  customCommands={customCommands.filter((c) => !c.scope || c.scope === "all" || c.scope === "code")}
-                  skills={installedSkills}
-                  onRefreshSkills={refreshSkills}
-                  onTruncateSession={(idx) => truncateSession(idx)}
-                  onForkSession={(idx) => forkSession(idx)}
-                />
-              ) : (
-                <MonacoEditorView
-                  activeFile={activeFile}
-                  openFiles={openFiles}
-                  setActiveFile={(file) => void openFile(file)}
-                  setOpenFiles={setOpenFiles}
-                  content={fileContent}
-                  setContent={setFileContent}
-                  dirty={dirty}
-                  save={() => void saveFile()}
-                />
-              )}
-            </section>
-            )}
             </Suspense>
-          </div>
-        </main>
+          </ErrorBoundary>
+        </div>
+      </main>
 
-        {showContext && area !== "notebook" ? (
-          area === "code" ? (
-          <aside key="code-context" className={`context-pane${contextWidth <= 300 ? " narrow" : ""}`} style={{ width: contextWidth }}>
-            <div className="context-resize" onPointerDown={startContextResize} title="Drag to resize the sidebar" />
-            <div className="notebook-side-head">
-              <div className="notebook-side-head-left">
-                <span className="notebook-side-head-badge">
-                  <Activity size={13} />
-                </span>
-                <div className="notebook-side-head-text">
-                  <div className="notebook-side-head-top">
-                    <span className="context-kicker">SESSION CONTEXT</span>
-                    <span className="notebook-head-count-pill">{activeProject?.name || "No project"}</span>
-                  </div>
-                  <strong className="notebook-side-title">{headerTitle}</strong>
-                </div>
-              </div>
-              <div className="notebook-side-head-actions">
-                <button className="context-panel-icon" onClick={() => setShowContext(false)} title="Close context panel">
-                  <PanelRight size={14} />
-                </button>
-              </div>
-            </div>
-            <div className="context-tab-strip">
-              {codeSideTabs.map((tab) => (
-                <div key={tab} className={`context-tab-pill${codeSideTab === tab ? " active" : ""}`}>
-                  <button className="context-tab-label" onClick={() => setCodeSideTab(tab)}>
-                    {tab === "browser" ? "Browser" : tab === "terminal" ? "Terminal" : tab === "diff" ? "Diff" : "Memory"}
-                  </button>
-                  <button className="context-tab-close" onClick={() => closeCodeSidePanel(tab)} title="Close this panel">
-                    <X size={11} />
-                  </button>
-                </div>
-              ))}
-              <PanelMenuButton
-                icon={<Plus size={13} />}
-                title="Open another side panel"
-                items={[
-                  { key: "browser", label: "Browser", hint: "Built-in browser", open: codeSideTabs.includes("browser") },
-                  { key: "terminal", label: "Terminal", hint: "Interactive shell", open: codeSideTabs.includes("terminal") },
-                  { key: "diff", label: "Diff", hint: "Git changes", open: codeSideTabs.includes("diff") },
-                  { key: "memory", label: "Memory", hint: "Project & session memory", open: codeSideTabs.includes("memory") },
-                ]}
-                onPick={(key) => {
-                  if (key === "terminal") setTerminalOpened(true);
-                  if (key === "diff") void refreshDiff();
-                  openCodeSidePanel(key as "browser" | "terminal" | "diff" | "memory");
-                }}
-              />
-            </div>
-            {codeSideTab === "browser" && (
-              <div className="context-tab-panel">
-                <SidebarBrowser
-                  key="code-browser"
-                  sessionId={activeSession?.id}
-                  browserScope="code"
-                  projectRoot={activeProject?.root}
-                  files={files}
-                  onSendToAgent={(p) => {
-                    setDraft(p);
-                    setView("chat");
-                  }}
-                  onAgentNavigate={() => setCodeSideTab("browser")}
-                />
-              </div>
-            )}
-            {terminalOpened && codeSideTab === "terminal" && (
-              <div className="context-tab-panel">
-                <Suspense fallback={<div className="context-tab-body">Loading terminal…</div>}>
-                  <XTermView projectRoot={activeProject?.root} files={files} />
-                </Suspense>
-              </div>
-            )}
-            {codeSideTab === "diff" && <div className="context-tab-panel">
-              <DiffView
-                diff={diff}
-                checkpointId={activeSession?.checkpointId}
-                undoing={undoing}
-                onUndoRun={(id) => void undoRun(id)}
-                onRefresh={() => void refreshDiff()}
-                onRevertFile={(f) => void revertSingleFile(f)}
-                onRevertHunk={(f, h) => void revertSingleHunk(f, h)}
-                onRevertAll={() => void revertAllChanges()}
-                onInspectFile={(f) => setInspectDiffFile(f)}
-              />
-            </div>}
-            {codeSideTab === "memory" && (
-              <div className="context-tab-panel">
-                <MemoryView project={activeProject} session={activeSession} onRemoveFact={(fact) => void removeProjectFact(fact)} onClearSessionMemory={() => void clearSessionMemory()} />
-              </div>
-            )}
-          </aside>
-          ) : (
-            // Notebook owns its own 3-pane layout (sources / chat / artifacts)
-            // inside NotebookView, so the app-level context pane stays hidden.
-          <aside key="home-context" className={`context-pane${contextWidth <= 300 ? " narrow" : ""}`} style={{ width: contextWidth }}>
-            <div className="context-resize" onPointerDown={startContextResize} title="Drag to resize the sidebar" />
-            <div className="notebook-side-head">
-              <div className="notebook-side-head-left">
-                <span className="notebook-side-head-badge">
-                  <Home size={13} />
-                </span>
-                <div className="notebook-side-head-text">
-                  <div className="notebook-side-head-top">
-                    <span className="context-kicker">CURRENT CHAT</span>
-                    <span className="notebook-head-count-pill">Nexus Home</span>
-                  </div>
-                  <strong className="notebook-side-title">{headerTitle}</strong>
-                </div>
-              </div>
-              <div className="notebook-side-head-actions">
-                <button className="context-panel-icon" onClick={() => setShowContext(false)} title="Close context panel">
-                  <PanelRight size={14} />
-                </button>
-              </div>
-            </div>
-            <div className="context-tab-strip">
-              {homeSideTabs.map((tab) => (
-                <div key={tab} className={`context-tab-pill${homeSideTab === tab ? " active" : ""}`}>
-                  <button className="context-tab-label" onClick={() => setHomeSideTab(tab)}>
-                    {tab === "artifacts" ? "Artifacts" : tab === "browser" ? "Browser" : "Memory"}
-                  </button>
-                  <button className="context-tab-close" onClick={() => closeHomeSidePanel(tab)} title="Close this panel">
-                    <X size={11} />
-                  </button>
-                </div>
-              ))}
-              <PanelMenuButton
-                icon={<Plus size={13} />}
-                title="Open another side panel"
-                items={[
-                  { key: "artifacts", label: "Artifacts", hint: "Chat files", open: homeSideTabs.includes("artifacts") },
-                  { key: "browser", label: "Browser", hint: "Built-in browser", open: homeSideTabs.includes("browser") },
-                  { key: "memory", label: "Memory", hint: "Long-term memory", open: homeSideTabs.includes("memory") },
-                ]}
-                onPick={(key) => {
-                  if (key === "memory") void home.refreshHomeMemory();
-                  openHomeSidePanel(key as "artifacts" | "browser" | "memory");
-                }}
-              />
-            </div>
-            {homeSideTab === "artifacts" && (
-            <div className="context-tab-body">
-            <div className="context-section">
-              <div className="context-section-title">
-                <span>SESSION FILES</span>
-                <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                  <small>{home.homeSessionFiles.length} FILE{home.homeSessionFiles.length === 1 ? "" : "S"}</small>
-                  <button
-                    className="pane-action"
-                    onClick={() => {
-                      void home.refreshFiles();
-                      if (home.activeSession?.id) void home.refreshSessionFiles(home.activeSession.id);
-                    }}
-                    title="Refresh session files"
-                  >
-                    <RefreshCw size={12} />
-                  </button>
-                </span>
-              </div>
-              {home.activeSession ? (
-                home.homeSessionFiles.length ? (
-                  <div className="home-files-list">
-                    {home.homeSessionFiles.map((file) => (
-                      <div
-                        className="home-file-row clickable"
-                        key={file.path}
-                        title={`${file.path} — click to preview`}
-                        onClick={() => setHomePreviewPath(file.path)}
-                      >
-                        <FileText size={13} />
-                        <div className="home-file-info">
-                          <span className="home-file-name">{file.name}</span>
-                          <small>
-                            {formatHomeSize(file.size)} · {timeLabel(file.modified)}
-                          </small>
-                        </div>
-                        <button
-                          className="pane-action"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void api.downloadHomeFile(file.path);
-                          }}
-                          title={`Download ${file.name}`}
-                        >
-                          <Download size={13} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="empty-pane">No files yet in this chat. Ask for a document and it will appear here.</div>
-                )
-              ) : (
-                <div className="empty-pane">Start a chat to generate files.</div>
-              )}
-            </div>
-            </div>
-            )}
-            {homeSideTab === "browser" && (
-              <div className="context-tab-panel">
-                <SidebarBrowser key="home-browser" sessionId={home.activeSession?.id} browserScope="home" onAgentNavigate={() => setHomeSideTab("browser")} />
-              </div>
-            )}
-            {homeSideTab === "memory" && (
-              <HomeMemoryPanel
-                structure={home.homeStructure}
-                sessionMemory={home.activeSession?.memory || ""}
-                sessionTitle={home.activeSession?.title}
-                onRemoveFact={(category, fact) => void home.removeFact(category, fact)}
-                onClearSession={() => void home.clearSessionMemory()}
-                onOpenChat={(sessionId) => void home.selectChat(sessionId)}
-              />
-            )}
-          </aside>
-          )
-        ) : null}
-      </div>
-
-      {showProviders && (
-        <ProviderModal
-          providers={providers}
-          definitions={providerDefinitions}
-          onProvidersChange={handleProvidersChange}
-          onClose={() => setShowProviders(false)}
+      {/* Global Modals & Palettes */}
+      {showCommandPalette && (
+        <CommandPalette
+          open={showCommandPalette}
+          onClose={() => setShowCommandPalette(false)}
+          mainArea={area}
+          onSwitchArea={(targetArea) => {
+            if (targetArea === "home") void enterHome();
+            else if (targetArea === "code") void enterCode();
+            else if (targetArea === "notebook") enterNotebook();
+          }}
+          onNewHomeChat={() => void home.createChat()}
+          onNewCodeSession={() => void createSession()}
+          onNewNotebook={() => void notebook.createNotebook("New notebook")}
+          onOpenProject={() => void openProjectFromDialog()}
+          onToggleLeftSidebar={() => setSidebarCollapsed((v) => !v)}
+          onToggleRightDrawer={() => {}}
+          onOpenContextTab={() => {}}
+          onOpenSettingsSection={(sec) => openSettingsSection(sec)}
+          sessions={sessions}
+          homeSessions={home.sessions}
+          notebooks={notebook.notebooks}
+          onSelectCodeSession={(id) => void activateSession(id)}
+          onSelectHomeSession={(id) => void home.selectChat(id)}
+          onSelectNotebook={(id) => {
+            const match = notebook.notebooks.find((n) => n.id === id);
+            if (match) notebook.enterNotebook(match);
+          }}
         />
       )}
-      {showMcp && <McpModal onClose={() => setShowMcp(false)} />}
+
       {showSettings && (
         <SettingsModal
           area={area}
@@ -1882,189 +1194,124 @@ function App() {
           providers={providers}
           providerDefinitions={providerDefinitions}
           onProvidersChange={handleProvidersChange}
-          updater={updater}
-          appVersion={appVersion}
-          onCheckUpdates={() => void api.checkForUpdates()}
-          onQuitAndInstall={() => void api.quitAndInstallUpdate()}
           onManageServices={() => {
             setShowSettings(false);
             setShowDaemonsModal(true);
           }}
-          onClose={() => {
-            void refreshSkills();
-            setShowSettings(false);
-          }}
+          updater={updater}
+          appVersion={appVersion}
+          onCheckUpdates={() => void api.checkForUpdates()}
+          onQuitAndInstall={() => void api.quitAndInstallUpdate()}
+          onClose={() => setShowSettings(false)}
+          initialSection={settingsInitialSection}
         />
       )}
+
+      {showProviders && (
+        <ProviderModal
+          providers={providers}
+          definitions={providerDefinitions}
+          onProvidersChange={handleProvidersChange}
+          onClose={() => setShowProviders(false)}
+        />
+      )}
+
+      {showMcp && (
+        <McpModal
+          onClose={() => setShowMcp(false)}
+        />
+      )}
+
       {showSkills && (
         <SkillsModal
           hasProject={Boolean(activeProject)}
-          mode={area}
           enabled={skillsEnabled}
           onToggle={async (enabled) => {
             setSkillsEnabled(enabled);
             await api.saveSkillsConfig({ enabled });
           }}
-          onClose={() => {
-            void refreshSkills();
-            setShowSkills(false);
-          }}
+          onClose={() => setShowSkills(false)}
         />
       )}
+
       {showDaemonsModal && (
         <DaemonsModal
-          projectRoot={activeProject?.root}
           onClose={() => setShowDaemonsModal(false)}
         />
       )}
-      {inspectDiffFile && (
-        <Suspense fallback={null}>
-        <MonacoDiffModal
-          fileName={inspectDiffFile.name}
-          filePath={inspectDiffFile.path}
-          patch={inspectDiffFile.patch}
-          additions={inspectDiffFile.additions}
-          deletions={inspectDiffFile.deletions}
-          onClose={() => setInspectDiffFile(null)}
-          onRevertFile={(f) => {
-            void revertSingleFile(f);
-            setInspectDiffFile(null);
-          }}
-        />
-        </Suspense>
-      )}
-      {showRulesModal && projectRules && (
+
+      {showRulesModal && (
         <ProjectRulesModal
-          ruleFiles={projectRules.ruleFiles}
+          ruleFiles={projectRules?.ruleFiles || []}
           onClose={() => setShowRulesModal(false)}
         />
       )}
-      {activeArtifact && (
-        <Suspense fallback={null}>
-        <ArtifactViewer
-          artifact={activeArtifact}
-          onClose={() => setActiveArtifact(null)}
-          onApproveAndExecute={(plan) => {
-            setMode("Auto");
-            void submit(`Execute the approved implementation plan:\n\n${plan}`);
-          }}
-          onStatusChange={async (filename, status) => {
-            if (activeSession) {
-              const updated = await api.updateArtifactStatus(activeSession.id, filename, status);
-              if (updated) setActiveArtifact(updated);
-            }
-          }}
-        />
-        </Suspense>
-      )}
-      {confirmDialog && (
-        <ConfirmModal
-          title={confirmDialog.title}
-          message={confirmDialog.message}
-          confirmLabel={confirmDialog.confirmLabel}
-          danger={confirmDialog.danger}
-          onConfirm={confirmDialog.onConfirm}
-          onCancel={() => setConfirmDialog(null)}
-        />
-      )}
-      {homeDeleteDialog && (
-        <ConfirmModal
-          title={`Delete "${homeDeleteDialog.session.title || "chat"}"?`}
-          message={
-            homeDeleteDialog.ownedFiles.length
-              ? `This chat created ${homeDeleteDialog.ownedFiles.length} file${homeDeleteDialog.ownedFiles.length === 1 ? "" : "s"} in your Nexus folder (${homeDeleteDialog.ownedFiles.slice(0, 5).map((f) => f.name).join(", ")}${homeDeleteDialog.ownedFiles.length > 5 ? ", …" : ""}). Choose whether to keep or delete them.`
-              : "The chat transcript will be removed. No files in your Nexus folder are owned by this chat."
-          }
-          confirmLabel="Delete chat"
-          secondaryAction={
-            homeDeleteDialog.ownedFiles.length
-              ? {
-                  label: `Delete chat + ${homeDeleteDialog.ownedFiles.length} file${homeDeleteDialog.ownedFiles.length === 1 ? "" : "s"}`,
-                  onConfirm: () => {
-                    const target = homeDeleteDialog;
-                    setHomeDeleteDialog(null);
-                    void home.deleteChat(target.session.id, { deleteFiles: true });
-                  },
-                }
-              : undefined
-          }
-          danger
-          onConfirm={() => {
-            const target = homeDeleteDialog;
-            setHomeDeleteDialog(null);
-            void home.deleteChat(target.session.id);
-          }}
-          onCancel={() => setHomeDeleteDialog(null)}
-        />
-      )}
+
+      {/* Human in the loop approval request modal */}
       {approvalRequest && (
-        <div className="modal-layer confirm-layer" onClick={() => void answerApproval("deny")}>
-          <div className="modal-card confirm-card" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-card-head" style={{ marginBottom: "10px" }}>
-              <div>
-                <span className="view-kicker" style={{ color: "var(--orange)" }}>COMMAND APPROVAL</span>
-                <h2 style={{ fontSize: "16px", margin: "6px 0 4px" }}>Allow the agent to run this command?</h2>
+        <div className="modal-overlay" onClick={() => void answerApproval("deny")}>
+          <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <TriangleAlert size={18} style={{ color: "var(--warning)" }} />
+                <span>Command Approval Request</span>
               </div>
             </div>
-            <p style={{ color: "#a6b2c2", fontSize: "11px", lineHeight: "1.5", margin: "0 0 10px" }}>{approvalRequest.reason}</p>
-            <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: "0 0 18px", padding: "10px", border: "1px solid #28374a", borderRadius: "5px", background: "#090d14", color: "#e5aa64", font: "10px/1.5 'DM Mono', monospace" }}>{approvalRequest.command}</pre>
-            <small style={{ color: "#687588", display: "block", marginBottom: "14px" }}>Working directory: {approvalRequest.cwd}</small>
-            <div className="modal-actions" style={{ marginTop: "0" }}>
-              <button className="secondary" onClick={() => void answerApproval("deny")}>Deny</button>
-              <button className="secondary" onClick={() => void answerApproval("session")}>Allow for run</button>
-              <button className="primary" onClick={() => void answerApproval("once")}>Allow once</button>
+            <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <p>{approvalRequest.reason}</p>
+              <pre><code>{approvalRequest.command}</code></pre>
+              <small style={{ color: "var(--text-tertiary)" }}>Working directory: {approvalRequest.cwd}</small>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => void answerApproval("deny")}>Deny</button>
+              <button className="btn btn-secondary" onClick={() => void answerApproval("session")}>Allow for run</button>
+              <button className="btn btn-primary" onClick={() => void answerApproval("once")}>Allow once</button>
             </div>
           </div>
         </div>
       )}
+
+      {/* Agent question modal */}
       {userQuestion && (
-        <div className="modal-layer confirm-layer">
-          <div className="modal-card confirm-card" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-card-head" style={{ marginBottom: "10px" }}>
-              <div>
-                <span className="view-kicker" style={{ color: "var(--nexus-green)" }}>AGENT QUESTION</span>
-                <h2 style={{ fontSize: "16px", margin: "6px 0 4px" }}>The agent needs your input</h2>
-              </div>
+        <div className="modal-overlay">
+          <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">Agent Question</div>
             </div>
-            {userQuestion.questions.map((q) => (
-              <div key={q.header} style={{ marginBottom: "12px" }}>
-                <strong style={{ fontSize: "12px" }}>{q.header}</strong>
-                <p style={{ color: "#a6b2c2", fontSize: "11px", lineHeight: "1.5", margin: "4px 0 6px" }}>{q.question}</p>
-                {q.options.length > 0 && (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "6px" }}>
-                    {q.options.map((opt) => (
-                      <button
-                        key={opt}
-                        className={`secondary${questionAnswers[q.header] === opt ? " active" : ""}`}
-                        onClick={() => setQuestionAnswers((curr) => ({ ...curr, [q.header]: opt }))}
-                      >
-                        {opt}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                <input
-                  className="session-rename-input"
-                  style={{ width: "100%" }}
-                  placeholder={q.options.length ? "Or type a custom answer…" : "Type your answer…"}
-                  value={questionAnswers[q.header] || ""}
-                  onChange={(event) => setQuestionAnswers((curr) => ({ ...curr, [q.header]: event.target.value }))}
-                />
-              </div>
-            ))}
-            <div className="modal-actions" style={{ marginTop: "6px" }}>
+            <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {userQuestion.questions.map((q) => (
+                <div key={q.header} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <strong>{q.header}</strong>
+                  <p>{q.question}</p>
+                  {q.options.length > 0 && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {q.options.map((opt) => (
+                        <button
+                          key={opt}
+                          className={`btn btn-sm ${questionAnswers[q.header] === opt ? "btn-primary" : "btn-secondary"}`}
+                          onClick={() => setQuestionAnswers((curr) => ({ ...curr, [q.header]: opt }))}
+                        >
+                          {opt}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="modal-footer">
               <button
-                className="secondary"
+                className="btn btn-secondary"
                 onClick={() => {
                   const id = userQuestion.id;
                   setUserQuestion(null);
                   void (api as unknown as { resolveUserQuestion: (id: string, a: null, c: boolean) => Promise<unknown> }).resolveUserQuestion(id, null, true);
                 }}
               >
-                Skip (best guess)
+                Skip
               </button>
               <button
-                className="primary"
+                className="btn btn-primary"
                 onClick={() => {
                   const id = userQuestion.id;
                   const answers = { ...questionAnswers };
@@ -2078,32 +1325,29 @@ function App() {
           </div>
         </div>
       )}
-      {homePreviewPath && area !== "home" && (
+
+      {attachmentPreview && (
         <Suspense fallback={null}>
-        <FilePreviewModal
-          filePath={homePreviewPath}
-          onClose={() => setHomePreviewPath(null)}
-          onDownload={(p) => void api.downloadHomeFile(p)}
-        />
+          <AttachmentPreviewModal
+            attachment={attachmentPreview}
+            onClose={() => setAttachmentPreview(null)}
+          />
         </Suspense>
       )}
-      {workspacePreviewPath && (
-        <Suspense fallback={null}>
-        <FilePreviewModal
-          filePath={workspacePreviewPath}
-          onClose={() => setWorkspacePreviewPath(null)}
-          onDownload={(p) => void api.downloadWorkspaceFile(p)}
-          load={() => api.readWorkspaceFileBase64(workspacePreviewPath)}
+
+      {confirmDialog && (
+        <ConfirmModal
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          confirmLabel={confirmDialog.confirmLabel}
+          onConfirm={() => {
+            confirmDialog.onConfirm();
+            setConfirmDialog(null);
+          }}
+          onCancel={() => setConfirmDialog(null)}
         />
-        </Suspense>
       )}
-      {attachmentPreview && <Suspense fallback={null}><AttachmentPreviewModal attachment={attachmentPreview} onClose={() => setAttachmentPreview(null)} /></Suspense>}
-      {/* Hidden executor for the agent's browsing — same session as the tabs. */}
-      <AgentBrowserHost />
-      {/* Shared fullscreen viewer for chat visuals (charts/diagrams/widgets). */}
-      <VisualFullscreenLayer />
     </div>
-    </ErrorBoundary>
   );
 }
 

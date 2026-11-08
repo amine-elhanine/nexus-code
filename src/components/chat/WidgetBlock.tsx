@@ -10,6 +10,7 @@ import {
   computeTableRows,
   type WidgetSpec,
 } from "../../utils/widget-blocks.js";
+
 import { WidgetChartView } from "./WidgetChart.js";
 import { openVisualFullscreen } from "../common/VisualFullscreen.js";
 
@@ -189,6 +190,58 @@ export function WidgetBlock({ source }: { source: string }) {
       {spec.charts.map((chart, index) => (
         <WidgetChartView key={`${chart.title}-${index}`} chart={chart} values={values} onCopyCsv={(csv) => copyText(csv, `chart-${index}`)} />
       ))}
+
+      {spec.cards.length > 0 && (
+        <div className="widget-cards-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8 }}>
+          {spec.cards.map((card, index) => (
+            <div
+              key={index}
+              className="widget-smart-card"
+              style={{
+                border: "1px solid var(--line, #24334a)", borderRadius: 8, padding: "10px 12px",
+                background: "var(--panel2, #141c26)", display: "flex", flexDirection: "column", gap: 5,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                <strong style={{ fontSize: 11, color: "var(--text, #dce1eb)" }}>{card.title}</strong>
+                {card.badge && (
+                  <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 7px", borderRadius: 10, background: "var(--accent-soft, #12271e)", color: "var(--nexus-green, #34d399)", whiteSpace: "nowrap" }}>
+                    {card.badge}
+                  </span>
+                )}
+              </div>
+              <span style={{ fontSize: 10.5, lineHeight: 1.5, color: "var(--muted, #8b98ab)" }}>{card.body}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {spec.steps.length > 0 && (
+        <div className="widget-steps" style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+          {spec.steps.map((step, index) => (
+            <div key={index} style={{ display: "flex", gap: 10, position: "relative" }}>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flex: "none" }}>
+                <span
+                  style={{
+                    display: "grid", placeItems: "center", width: 24, height: 24, borderRadius: 999,
+                    background: "var(--accent-soft, #12271e)", border: "1px solid var(--nexus-glow, rgba(52,211,153,0.25))",
+                    color: "var(--nexus-green, #34d399)", fontSize: 10, fontWeight: 700, flex: "none",
+                  }}
+                >
+                  {step.badge}
+                </span>
+                {index < spec.steps.length - 1 && (
+                  <span style={{ width: 1.5, flex: 1, minHeight: 18, background: "var(--line, #24334a)" }} />
+                )}
+              </div>
+              <div style={{ paddingBottom: index < spec.steps.length - 1 ? 14 : 0, paddingTop: 2, minWidth: 0 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text, #dce1eb)" }}>{step.title}</div>
+                {step.detail && <div style={{ fontSize: 10.5, lineHeight: 1.5, color: "var(--muted, #8b98ab)", marginTop: 2 }}>{step.detail}</div>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {spec.tables.map((table, tableIndex) => {
         const rows = computeTableRows(table, values);

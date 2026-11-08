@@ -1,0 +1,221 @@
+/* ==========================================================================
+   DESIGN FIXES — loaded LAST (after styles/index.css) so these rules win
+   over the legacy addition layers (79/81/65) that use !important and
+   higher specificity against the current .app-root shell.
+
+   Issues addressed (from review screenshots):
+   1. In-app topbars sliding under the OS window-controls strip.
+   2. Code/Agent empty state pinned to the top with a huge void below
+      (81 forced 100px transcript bottom padding + fixed hero margin).
+   3. Transcript top padding removed by layer 65 (hero glued to header).
+   4. Home topbar right padding zeroed by layer 81 (!important).
+   5. User-message double bubble (outer slab + inner pill) — the root fix
+      lives in 03-components.css; this file re-asserts the inner bubble
+      against layer 81's competing inner-bubble rule.
+   6. Thin, quiet scrollbars on every chat/panel scroller.
+   ========================================================================== */
+
+/* ── 1. Topbars must clear the window-controls strip ─────────────────── */
+.app-root .home-topbar,
+.app-root .nb-topbar,
+.app-root .code-workbench-header {
+  padding-right: 118px !important;
+}
+
+.app-root .home-topbar-left,
+.app-root .nb-topbar-center {
+  min-width: 0;
+}
+
+.app-root .home-topbar-right,
+.app-root .nb-topbar-actions {
+  flex-shrink: 0;
+}
+
+/* ── 2+3. Transcript spacing: real top padding, no 100px void ────────── */
+.app-root .agent-transcript {
+  padding: 24px 28px 32px !important;
+  padding-bottom: 32px !important;
+  min-height: 0;
+}
+
+/* Empty state vertically centered between header and composer */
+.app-root .codex-hero {
+  margin: auto !important;
+  width: 100%;
+  max-width: 680px;
+}
+
+/* Hero glyph + badge (AgentView markup uses these class names; the base
+   sheet only styles .codex-hero-glyph, so the icon rendered unstyled) */
+.app-root .codex-hero-icon {
+  width: 44px;
+  height: 44px;
+  margin: 0 auto 14px;
+  border-radius: 12px;
+  background: var(--accent-code-subtle);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  color: #818cf8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.app-root .codex-hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  margin-bottom: 14px;
+  border-radius: 999px;
+  background: var(--accent-code-subtle);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  color: #a5b4fc;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+/* ── 4. Home topbar (layer 81 zeroed the right padding) ──────────────── */
+.app-root .home-topbar {
+  padding-left: 16px !important;
+}
+
+/* ── 4b. Completed activity rows hug their content (ChatGPT-style):
+        the chevron sits next to the title instead of being pushed to the
+        far edge of a full-width row. Running rows keep the wide layout. ── */
+.app-root .activity-group.completed .activity-group-summary,
+.app-root .activity-group.error .activity-group-summary {
+  width: fit-content;
+  max-width: 100%;
+}
+
+.app-root .activity-group.completed .activity-group-title,
+.app-root .activity-group.error .activity-group-title {
+  flex: 0 1 auto;
+}
+
+/* ── 5. User bubble: outer row transparent, inner text is the bubble ─── */
+.app-root .chat-message.user,
+.app-root .chat-item.user {
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0 !important;
+  max-width: none !important;
+  width: 100% !important;
+  align-self: stretch !important;
+  align-items: flex-end !important;
+}
+
+.app-root .chat-message.user .chat-message-text,
+.app-root .chat-item.user .chat-text {
+  max-width: min(82%, 660px) !important;
+  width: fit-content !important;
+}
+
+.app-root .chat-message.user .chat-author,
+.app-root .chat-item.user .chat-author {
+  align-self: flex-end !important;
+}
+
+.app-root .chat-message.user .message-actions-bar,
+.app-root .chat-item.user .message-actions-bar {
+  align-self: flex-end !important;
+}
+
+/* Assistant rows stay full-width editorial text (no bubble, no indent) */
+.app-root .chat-message.assistant,
+.app-root .chat-item.assistant {
+  width: 100% !important;
+}
+
+.app-root .chat-message.assistant .chat-message-text {
+  padding-left: 0 !important;
+  margin-left: 0 !important;
+}
+
+/* ── 6. Quiet scrollbars everywhere ──────────────────────────────────── */
+.app-root .agent-transcript,
+.app-root .home-messages-viewport,
+.app-root .notebook-side-body,
+.app-root .sidebar-content {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(140, 140, 150, 0.35) transparent;
+}
+
+.app-root .agent-transcript::-webkit-scrollbar,
+.app-root .home-messages-viewport::-webkit-scrollbar,
+.app-root .notebook-side-body::-webkit-scrollbar,
+.app-root .sidebar-content::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.app-root .agent-transcript::-webkit-scrollbar-thumb,
+.app-root .home-messages-viewport::-webkit-scrollbar-thumb,
+.app-root .notebook-side-body::-webkit-scrollbar-thumb,
+.app-root .sidebar-content::-webkit-scrollbar-thumb {
+  background: rgba(140, 140, 150, 0.25);
+  border-radius: 999px;
+}
+
+/* ── Composer footers wrap instead of overflowing ────────────────────── */
+.app-root .input-footer {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.app-root .input-left {
+  min-width: 0;
+  flex: 1;
+}
+
+.app-root .model-select-wrapper {
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
+.app-root .agent-input-area {
+  min-width: 0;
+}
+
+/* ── Notebook panels: never let the center column be squeezed to 0 ──── */
+.app-root .notebook-main {
+  min-width: 320px;
+}
+
+@media (max-width: 1280px) {
+  .app-root .notebook-side-sources {
+    width: 220px !important;
+  }
+
+  .app-root .notebook-side-studio {
+    width: 250px !important;
+  }
+}
+
+@media (max-width: 1024px) {
+  .app-root .notebook-main {
+    min-width: 0;
+  }
+
+  .app-root .notebook-side-sources {
+    width: 200px !important;
+  }
+
+  .app-root .notebook-side-studio {
+    width: 220px !important;
+  }
+}
+
+/* ── Charts inside chat: contain, never crop ─────────────────────────── */
+.app-root .chat-inline-image-img {
+  object-fit: contain;
+}
+
+.app-root .chat-message-text img {
+  max-width: 100%;
+  height: auto;
+}

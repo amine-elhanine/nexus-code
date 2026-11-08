@@ -20,6 +20,9 @@ import {
   AlertCircle,
   GitBranch,
   Pencil,
+  RotateCcw,
+  ThumbsUp,
+  ThumbsDown,
 } from "lucide-react";
 import { RichMarkdown } from "../common/RichMarkdown.js";
 import { timeLabel } from "../../utils/format.js";
@@ -947,6 +950,7 @@ export function ChatItemView({
   onOpenAttachment,
   onEditMessage,
   onForkChat,
+  onRegenerate,
 }: {
   message: ChatItem;
   index?: number;
@@ -955,7 +959,9 @@ export function ChatItemView({
   onOpenAttachment?: (attachment: ChatAttachment) => void;
   onEditMessage?: (index: number, text: string) => void;
   onForkChat?: (index: number) => void;
+  onRegenerate?: (index: number) => void;
 }) {
+  const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
   if (message.artifact) {
     return (
       <ArtifactCard
@@ -1059,46 +1065,76 @@ export function ChatItemView({
       )}
       <RichMarkdown source={message.text} className="chat-message-text" />
       {message.role === "user" && (
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
+        <div className="message-actions-bar">
           <CopyTextButton text={message.text} />
           {onEditMessage && typeof index === "number" && (
             <button
-              className="pane-action"
-              style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11 }}
+              type="button"
+              className="msg-action-btn"
               onClick={() => onEditMessage(index, message.text)}
               title="Edit & retry from this message"
             >
-              <Pencil size={11} />
+              <Pencil size={12} />
               <span>Edit</span>
             </button>
           )}
           {onForkChat && typeof index === "number" && (
             <button
-              className="pane-action"
-              style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11 }}
+              type="button"
+              className="msg-action-btn"
               onClick={() => onForkChat(index)}
               title="Fork chat from here into a new branch"
             >
-              <GitBranch size={11} />
+              <GitBranch size={12} />
               <span>Fork</span>
             </button>
           )}
         </div>
       )}
       {message.role === "assistant" && Boolean(message.text?.trim()) && (
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
+        <div className="message-actions-bar">
           <CopyTextButton text={message.text} />
+          {onRegenerate && typeof index === "number" && (
+            <button
+              type="button"
+              className="msg-action-btn"
+              onClick={() => onRegenerate(index)}
+              title="Regenerate response from this turn"
+            >
+              <RotateCcw size={12} />
+              <span>Regenerate</span>
+            </button>
+          )}
           {onForkChat && typeof index === "number" && (
             <button
-              className="pane-action"
-              style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11 }}
+              type="button"
+              className="msg-action-btn"
               onClick={() => onForkChat(index)}
               title="Fork chat from here into a new branch"
             >
-              <GitBranch size={11} />
+              <GitBranch size={12} />
               <span>Fork</span>
             </button>
           )}
+          <span className="msg-action-divider" />
+          <button
+            type="button"
+            className={`msg-action-btn feedback-up ${feedback === "up" ? "active" : ""}`}
+            onClick={() => setFeedback((prev) => (prev === "up" ? null : "up"))}
+            title="Helpful response"
+            aria-label="Helpful response"
+          >
+            <ThumbsUp size={12} />
+          </button>
+          <button
+            type="button"
+            className={`msg-action-btn feedback-down ${feedback === "down" ? "active" : ""}`}
+            onClick={() => setFeedback((prev) => (prev === "down" ? null : "down"))}
+            title="Needs improvement"
+            aria-label="Needs improvement"
+          >
+            <ThumbsDown size={12} />
+          </button>
         </div>
       )}
     </div>
