@@ -169,7 +169,7 @@ export interface NexusApi {
   // Agent browser (headless toggle + activity from the agent's window)
   getBrowserHeadless: () => Promise<boolean>;
   setBrowserHeadless: (value: boolean) => Promise<boolean>;
-  onBrowserAgentActivity: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean; forceFollow?: boolean; sessionId?: string }) => void) => () => void;
+  onBrowserAgentActivity: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean; forceFollow?: boolean; sessionId?: string; scope?: "home" | "code" }) => void) => () => void;
   // Agent browser bridge: main asks the hidden in-app webviews to act.
   onAgentBrowserRequest: (
     handler: (request: { id: string; scope?: string; kind: string; url?: string; js?: string; keyCode?: string }) => Promise<unknown>
@@ -196,6 +196,7 @@ export interface NexusApi {
   maximizeWindow: () => Promise<boolean>;
   closeWindow: () => Promise<void>;
   isWindowMaximized: () => Promise<boolean>;
+  onWindowMaximizeChange?: (listener: (isMax: boolean) => void) => () => void;
 
   // Home (isolated general assistant)
   getHome: () => Promise<{ project: ProjectRecord; root: string }>;
@@ -216,6 +217,7 @@ export interface NexusApi {
   readHomeFile: (relativePath: string) => Promise<{ name: string; path: string; size: number; base64: string }>;
   downloadHomeFile: (relativePath: string) => Promise<string | null>;
   openHomeFolder: () => Promise<void>;
+  openHomeFile?: (relativePath: string) => Promise<boolean>;
   truncateHomeSession: (sessionId: string, fromIndex: number) => Promise<SessionRecord>;
   forkHomeSession: (sessionId: string, fromIndex: number, newTitle?: string) => Promise<SessionRecord>;
   getArtifactVersions: (relativePath: string) => Promise<{ filePath: string; currentVersion: number; versions: Array<{ version: number; updatedAt: string; sizeBytes: number; snapshotRelPath: string }> } | null>;

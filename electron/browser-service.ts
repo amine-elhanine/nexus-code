@@ -57,14 +57,12 @@ class AgentBrowserService {
   }
 
   private async ensureSettings(): Promise<void> {
-    if (this.settingsLoaded) return;
     try {
       const settings = await getAppSettings();
       this.headless = settings.browserHeadless !== false;
     } catch {
       this.headless = true;
     }
-    this.settingsLoaded = true;
   }
 
   async isHeadless(): Promise<boolean> {
@@ -238,10 +236,15 @@ class AgentBrowserService {
     await this.ensureSettings();
     const scope = this.scopeOf(meta);
     const targetUrl = this.normalizeUrl(rawUrl);
-    const loaded = await this.request({ kind: "load", url: targetUrl }, scope, 20000);
-    if (!loaded.ok) throw new Error(loaded.error || `Could not load ${targetUrl}.`);
-    this.lastUrl = loaded.url || targetUrl;
-    this.report(this.lastUrl, !this.headless, meta?.sessionId, scope);
+    this.lastUrl = targetUrl;
+    this.report(targetUrl, !this.headless, meta?.sessionId, scope);
+    try {
+      const loaded = await this.request({ kind: "load", url: targetUrl }, scope, 20000);
+      if (loaded.ok) {
+        this.lastUrl = loaded.url || targetUrl;
+        this.report(this.lastUrl, !this.headless, meta?.sessionId, scope);
+      }
+    } catch { /* best effort */ }
     return this.lastUrl;
   }
 
@@ -251,6 +254,8 @@ class AgentBrowserService {
     await this.ensureSettings();
     const scope = this.scopeOf(meta);
     const targetUrl = this.normalizeUrl(rawUrl);
+    this.lastUrl = targetUrl;
+    this.report(targetUrl, !this.headless, meta?.sessionId, scope);
     const startTime = Date.now();
     const loaded = await this.request({ kind: "load", url: targetUrl }, scope, 20000);
     if (!loaded.ok) throw new Error(loaded.error || `Could not load ${targetUrl}.`);
@@ -315,6 +320,8 @@ class AgentBrowserService {
       }
       case "navigate": {
         const targetUrl = this.normalizeUrl(input.url || "");
+        this.lastUrl = targetUrl;
+        this.report(this.lastUrl, !this.headless || Boolean(meta?.openInBrowser), meta?.sessionId, scope, Boolean(meta?.openInBrowser));
         const loaded = await this.request({ kind: "load", url: targetUrl }, scope, 20000);
         if (!loaded.ok) throw new Error(loaded.error || `Could not load ${targetUrl}.`);
         this.lastUrl = loaded.url || targetUrl;
@@ -330,7 +337,7 @@ class AgentBrowserService {
           ),
           "click"
         );
-        this.report(this.lastUrl, false, meta?.sessionId, scope);
+        this.report(this.lastUrl, !this.headless, meta?.sessionId, scope);
         return `Clicked <${res.tag}> "${res.text}". Snapshot again to see what changed.`;
       }
       case "fill": {
@@ -350,7 +357,7 @@ class AgentBrowserService {
           ),
           "fill"
         );
-        this.report(this.lastUrl, false, meta?.sessionId, scope);
+        this.report(this.lastUrl, !this.headless, meta?.sessionId, scope);
         if (res.selected != null) return `Selected "${res.selected}".`;
         if (res.checked != null) return `Checkbox is now ${res.checked ? "checked" : "unchecked"}.`;
         return `Filled <${res.tag || "field"}>.`;
@@ -368,7 +375,7 @@ class AgentBrowserService {
           ),
           "type"
         );
-        this.report(this.lastUrl, false, meta?.sessionId, scope);
+        this.report(this.lastUrl, !this.headless, meta?.sessionId, scope);
         return "Typed into the field (appended).";
       }
       case "press": {
@@ -382,7 +389,7 @@ class AgentBrowserService {
         const keyCode = alias[key.toLowerCase()] || (/^f\d{1,2}$/i.test(key) ? key.toUpperCase() : key);
         const pressed = await this.request({ kind: "press", keyCode }, scope);
         if (!pressed.ok) throw new Error(pressed.error || "Key press failed.");
-        this.report(this.lastUrl, false, meta?.sessionId, scope);
+        this.report(this.lastUrl, !this.headless, meta?.sessionId, scope);
         return `Pressed ${keyCode}. Snapshot again to see what changed.`;
       }
       case "scroll": {
@@ -409,13 +416,13 @@ class AgentBrowserService {
       case "back": {
         const went = await this.request({ kind: "back" }, scope, 15000);
         if (!went.ok) throw new Error(went.error || "Could not go back.");
-        this.report(this.lastUrl, false, meta?.sessionId, scope);
+        this.report(this.lastUrl, !this.headless, meta?.sessionId, scope);
         return "Went back. Snapshot again to see the page.";
       }
       case "reload": {
         const reloaded = await this.request({ kind: "reload" }, scope, 20000);
         if (!reloaded.ok) throw new Error(reloaded.error || "Could not reload.");
-        this.report(this.lastUrl, false, meta?.sessionId, scope);
+        this.report(this.lastUrl, !this.headless, meta?.sessionId, scope);
         return "Reloaded. Snapshot again to see the page.";
       }
       case "text": {

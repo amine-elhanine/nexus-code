@@ -398,15 +398,22 @@ export function useAppController() {
     }
   }
 
-  async function activateProject(projectId: string) {
+  async function activateProject(projectId: string, targetSessionId?: string) {
     resetWorkspace();
     const result = await api.activateProject(projectId);
     setActiveProject(result.project);
-    setActiveSession(result.session);
+    let chosenSession = result.session;
+    if (targetSessionId && targetSessionId !== result.session?.id) {
+      try {
+        const target = await api.activateSession(projectId, targetSessionId);
+        if (target) chosenSession = target;
+      } catch { /* fallback to default session */ }
+    }
+    setActiveSession(chosenSession);
     setSessions(sortSessionsByUpdatedAt(result.project.sessions));
     const currentProviders = await api.listProviders();
     setProviders(currentProviders);
-    const sessionModel = result.session?.model;
+    const sessionModel = chosenSession?.model;
     const targetProvider = sessionModel ? currentProviders.find((p) => p.id === sessionModel.providerId) : undefined;
     const isValid = targetProvider && sessionModel ? targetProvider.models.includes(sessionModel.model) : false;
     if (isValid && sessionModel) {

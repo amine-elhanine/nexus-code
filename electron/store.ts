@@ -208,6 +208,8 @@ export function calculateSessionUsage(messages: SessionRecord["messages"]): Agen
   let totalTokens = 0;
   let costKnown = true;
   let estimatedCost = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
   for (const message of messages || []) {
     // Assistant turns carry per-turn usage. Failed/cancelled runs persist
     // their burned tokens on the terminal error event (see main.ts failure
@@ -221,6 +223,8 @@ export function calculateSessionUsage(messages: SessionRecord["messages"]): Agen
       totalTokens += message.usage.totalTokens || 0;
       if (message.usage.estimatedCost == null) costKnown = false;
       else estimatedCost += message.usage.estimatedCost;
+      if (message.usage.cacheReadTokens) cacheReadTokens += message.usage.cacheReadTokens;
+      if (message.usage.cacheCreationTokens) cacheCreationTokens += message.usage.cacheCreationTokens;
     }
   }
   return {
@@ -228,6 +232,7 @@ export function calculateSessionUsage(messages: SessionRecord["messages"]): Agen
     outputTokens,
     totalTokens,
     estimatedCost: costKnown ? Number(estimatedCost.toFixed(4)) : null,
+    ...(cacheReadTokens > 0 || cacheCreationTokens > 0 ? { cacheReadTokens, cacheCreationTokens } : {}),
   };
 }
 

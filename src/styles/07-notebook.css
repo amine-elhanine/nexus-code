@@ -253,7 +253,6 @@
   background-color: var(--bg-app);
   flex-shrink: 0;
   gap: 12px;
-  -webkit-app-region: drag;
 }
 
 .nb-topbar button,

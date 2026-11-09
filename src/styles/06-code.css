@@ -15,7 +15,6 @@
   background-color: var(--bg-app);
   flex-shrink: 0;
   z-index: 25;
-  -webkit-app-region: drag;
 }
 
 .code-workbench-header button,

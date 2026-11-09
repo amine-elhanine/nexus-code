@@ -36,9 +36,21 @@ const MAX_USER_TABS = 7;
 type PersistedBrowser = { tabs: SideTab[]; activeTabId: string };
 const browsersByScope: Record<string, PersistedBrowser> = {};
 const mirroredByScope: Record<string, string | null> = {};
-// Last agent-viewed URL per session: each chat's agent page memory, feeding
-// the agent tab on mount and on chat switches within a mode.
+// Last agent-viewed URL per session & scope: feeding
+// the agent tab on mount, even if the sidebar wasn't mounted when navigation began.
 const lastAgentUrlBySession: Record<string, string> = {};
+const lastAgentUrlByScope: Record<string, string> = {};
+
+if (typeof window !== "undefined") {
+  const api = (window as unknown as { nexus?: { onBrowserAgentActivity?: (cb: (payload: { url: string; sessionId?: string; scope?: "home" | "code" }) => void) => void } }).nexus;
+  if (typeof api?.onBrowserAgentActivity === "function") {
+    api.onBrowserAgentActivity((payload) => {
+      if (!payload?.url) return;
+      if (payload.sessionId) lastAgentUrlBySession[payload.sessionId] = payload.url;
+      if (payload.scope) lastAgentUrlByScope[payload.scope] = payload.url;
+    });
+  }
+}
 
 function resolveMiniUrl(input: string): string {
   const query = input.trim();
@@ -83,7 +95,8 @@ export const SidebarBrowser: React.FC<{
   files?: Array<{ path: string; kind: "file" | "folder" }>;
   onSendToAgent?: (prompt: string) => void;
   onAgentNavigate?: () => void;
-}> = ({ sessionId, browserScope, projectRoot, files = [], onSendToAgent, onAgentNavigate }) => {
+  initialUrl?: string;
+}> = ({ sessionId, browserScope, projectRoot, files = [], onSendToAgent, onAgentNavigate, initialUrl }) => {
   const makeTab = (id: string, url: string, isAgent: boolean): SideTab => ({
     id,
     title: titleFor(url, isAgent),
@@ -95,15 +108,24 @@ export const SidebarBrowser: React.FC<{
 
   const firstUserTabId = useRef(`tab-${Date.now()}`).current;
   const sessionKey = sessionId || "none";
+  const initialAgentUrl = initialUrl || lastAgentUrlBySession[sessionKey] || lastAgentUrlByScope[browserScope];
   const [tabs, setTabs] = useState<SideTab[]>(() => {
     const saved = browsersByScope[browserScope];
-    if (saved) return saved.tabs;
+    if (saved) {
+      if (initialAgentUrl) {
+        return saved.tabs.map((t) =>
+          t.isAgent ? { ...t, url: initialAgentUrl, inputUrl: initialAgentUrl, title: titleFor(initialAgentUrl, true) } : t
+        );
+      }
+      return saved.tabs;
+    }
     return [
-      makeTab(AGENT_TAB_ID, lastAgentUrlBySession[sessionKey] || "about:blank", true),
+      makeTab(AGENT_TAB_ID, initialAgentUrl || "about:blank", true),
       makeTab(firstUserTabId, NEW_TAB_URL, false),
     ];
   });
   const [activeTabId, setActiveTabId] = useState<string>(() => {
+    if (initialAgentUrl) return AGENT_TAB_ID;
     const saved = browsersByScope[browserScope];
     if (saved && saved.tabs.some((t) => t.id === saved.activeTabId)) return saved.activeTabId;
     return firstUserTabId;
@@ -260,7 +282,7 @@ export const SidebarBrowser: React.FC<{
         // Foreign sessions never touch this browser: each chat owns its
         // agent page, so a background run from another chat/area is ignored
         // here (its own sidebar mirrors it when mounted).
-        if (payload.sessionId && payload.sessionId !== sessionIdRef.current) return;
+        if (payload.sessionId && sessionIdRef.current && payload.sessionId !== sessionIdRef.current) return;
         lastAgentUrlBySession[sessionIdRef.current || "none"] = payload.url;
         // Only page loads mirror into the agent tab — clicks/fills/etc. show
         // in the chat transcript; remounting on those would just flash.
@@ -274,7 +296,7 @@ export const SidebarBrowser: React.FC<{
             )
           );
         }
-        if (payload.forceFollow || !headlessRef.current) {
+        if (payload.forceFollow || payload.autoFollow || !headlessRef.current) {
           // Watching mode follows all agent browsing. Explicit preview requests
           // also open the Browser pane even when headless browsing is enabled.
           setActiveTabId(AGENT_TAB_ID);
@@ -305,6 +327,22 @@ export const SidebarBrowser: React.FC<{
     setAgentBanner(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionKey]);
+
+  // When initialUrl is provided from agent activity, synchronize and flip to the agent tab immediately
+  useEffect(() => {
+    if (!initialUrl) return;
+    mirroredByScope[browserScope] = initialUrl;
+    lastAgentUrlBySession[sessionKey] = initialUrl;
+    lastAgentUrlByScope[browserScope] = initialUrl;
+    bumpEpoch(AGENT_TAB_ID);
+    setTabs((prev) =>
+      prev.map((t) =>
+        t.isAgent ? { ...t, url: initialUrl, inputUrl: initialUrl, title: titleFor(initialUrl, true), loading: true } : t
+      )
+    );
+    setActiveTabId(AGENT_TAB_ID);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialUrl]);
 
   return (
     <div className="side-browser">

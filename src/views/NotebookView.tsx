@@ -17,7 +17,7 @@ import { MindmapViewerModal } from "../components/notebook/MindmapViewerModal.js
 import { AudioPlayerModal } from "../components/notebook/AudioPlayerModal.js";
 import { FilePreviewModal } from "../components/home/FilePreviewModal.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
-import type { ChatItem, NotebookAudioOverview, NotebookChat, NotebookCitation, NotebookDocument, NotebookEvaluation, NotebookFlashcardSet, NotebookMeta, NotebookMindmap, NotebookNote, NotebookPassage, NotebookQuiz, NotebookQuizType, NotebookSettings, NotebookSource, NotebookStats, NotebookSummary, NotebookSummaryLength, ProviderConfig, ProviderDefinition } from "../types.js";
+import type { ChatItem, NotebookAudioOverview, NotebookChat, NotebookCitation, NotebookDocument, NotebookEvaluation, NotebookFlashcardSet, NotebookMeta, NotebookMindmap, NotebookNote, NotebookPassage, NotebookQuiz, NotebookQuizType, NotebookSettings, NotebookSource, NotebookStats, NotebookSummary, NotebookSummaryLength, ProviderConfig, ProviderDefinition, AgentUsage, AgentContextUsageSnapshot } from "../types.js";
 
 function verdictColor(verdict?: string) {
   if (verdict === "grounded") return "#3fb950";
@@ -855,6 +855,50 @@ export function NotebookView({
 
   const latestPlan = useMemo(() => extractLatestPlan(undefined, activeChat?.messages as any, asking), [activeChat?.messages, asking]);
 
+  const notebookSessionUsage = useMemo<AgentUsage | null>(() => {
+    if (!activeChat || !activeChat.messages?.length) return null;
+    let inChars = 0;
+    let outChars = 0;
+    for (const msg of activeChat.messages) {
+      if (msg.role === "user") {
+        inChars += (msg.text || "").length;
+      } else {
+        outChars += (msg.text || "").length;
+        if (msg.citations) {
+          for (const c of msg.citations) inChars += (c.snippet || "").length;
+        }
+      }
+    }
+    const inputTokens = Math.max(0, Math.round(inChars / 4));
+    const outputTokens = Math.max(0, Math.round(outChars / 4));
+    return {
+      inputTokens,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+      estimatedCost: null,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    };
+  }, [activeChat]);
+
+  const notebookContextUsage = useMemo<AgentContextUsageSnapshot | null>(() => {
+    if (!activeChat) return null;
+    const inTokens = notebookSessionUsage?.inputTokens ?? 0;
+    const outTokens = notebookSessionUsage?.outputTokens ?? 0;
+    const used = inTokens + outTokens;
+    return {
+      usedTokens: used,
+      inputTokens: inTokens,
+      outputTokens: outTokens,
+      totalTokens: used,
+      estimatedCost: null,
+      estimated: true,
+      cacheInputTokens: inTokens,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    };
+  }, [activeChat, notebookSessionUsage]);
+
   function exportTranscript() {
     if (!activeChat || !activeNotebook) return;
     const lines = [`# ${activeNotebook.name} — ${activeChat.title}`, ""];
@@ -1670,6 +1714,9 @@ export function NotebookView({
                     switchModel={switchModel}
                     switchEffort={switchEffort}
                     onOpenProviders={onOpenProviders}
+                    sessionUsage={notebookSessionUsage}
+                    contextUsage={notebookContextUsage}
+                    activeSessionId={activeChat?.id}
                   />
                 </div>
                 <button className={`send-button${asking ? " stop" : ""}`} disabled={(!asking && !draft.trim()) || (!hasProvider && !asking)} onClick={asking ? onStop : onAsk} title={asking ? "Stop" : "Ask notebook"}>

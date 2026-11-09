@@ -13,40 +13,55 @@
 /* Window Drag Strip (Desktop App Titlebar)
    It overlays the same 38px band as every in-app topbar, so it must never
    swallow clicks meant for the topbar pills underneath it. The strip
-   itself is click-through; only the window controls opt back in. */
+   itself is click-through; the actual draggable band is an inner element
+   that stops before the window controls (real clicks over .win-btn were
+   being consumed by the drag region even though the buttons are marked
+   no-drag). */
 .window-drag-region {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  height: 38px;
-  -webkit-app-region: drag;
+  height: 50px;
   pointer-events: none;
   z-index: 500; /* above every view topbar/panel (topmost is 100) but below modals (1000+) */
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  padding-right: 6px;
+  padding-right: 12px;
 }
 
 .window-drag-region .window-controls,
 .window-drag-region button {
-  pointer-events: auto;
+  pointer-events: auto !important;
 }
 
-.window-drag-region button,
-.window-controls,
-.window-controls button {
-  -webkit-app-region: no-drag;
+/* The actually-draggable band of the titlebar strip. It ends before the
+   window controls (the controls need the top-right ~120px), so the drag
+   region never overlaps them and real mouse clicks always reach the
+   buttons — no dependence on -webkit-app-region: no-drag exclusion. */
+.window-drag-band {
+  position: absolute;
+  inset: 0 150px 0 0;
+  height: 50px;
+  pointer-events: none;
+  -webkit-app-region: drag;
 }
 
 .window-controls {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 8px; /* space between buttons */
   height: 32px;
+  width: auto;
+  position: relative;
+  z-index: 501;
+  -webkit-app-region: no-drag !important;
+  pointer-events: auto !important;
 }
 
+.window-drag-region button,
+.window-controls button,
 .win-btn {
   width: 34px;
   height: 28px;
@@ -56,7 +71,17 @@
   border-radius: var(--radius-sm);
   color: var(--text-tertiary);
   background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  -webkit-app-region: no-drag !important;
+  pointer-events: auto !important;
   transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.win-btn * {
+  pointer-events: none;
+  -webkit-app-region: no-drag !important;
 }
 
 .win-btn:hover {
@@ -93,7 +118,6 @@
   align-items: center;
   justify-content: space-between;
   padding: 0 12px;
-  -webkit-app-region: drag;
   border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
 }
@@ -258,7 +282,11 @@
   justify-content: space-between;
   gap: 8px;
   width: 100%;
-  padding: 7px 10px;
+  height: 36px;
+  min-height: 36px;
+  max-height: 36px;
+  box-sizing: border-box;
+  padding: 0 8px 0 10px;
   border-radius: var(--radius-md);
   font-size: 0.83rem;
   color: var(--text-secondary);
@@ -284,13 +312,21 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+  min-width: 0;
 }
 
 .history-actions {
-  display: none;
+  display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   flex-shrink: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast);
+}
+
+.history-actions:empty {
+  display: none;
 }
 
 /* Codex-style project tree in the Code sidebar: collapsible projects with
@@ -318,6 +354,10 @@
 }
 
 .project-sessions .history-item {
+  height: 32px;
+  min-height: 32px;
+  max-height: 32px;
+  padding: 0 6px 0 8px;
   font-size: 0.8rem;
 }
 
@@ -329,7 +369,8 @@
 
 .history-item:hover .history-actions,
 .history-item.active .history-actions {
-  display: flex;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* File Tree Rows in Code Sidebar */

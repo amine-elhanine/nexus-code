@@ -4,49 +4,52 @@
    ========================================================================== */
 
 :root {
-  /* Color Palette - Neutrals (Dark Theme by default) */
-  --bg-app: #0d0d10;
-  --bg-sidebar: #131316;
-  --bg-surface: #18181d;
-  --bg-surface-hover: #202027;
-  --bg-surface-active: #272730;
-  --bg-surface-elevated: #1f1f26;
-  --bg-card: #18181d;
-  --bg-card-hover: #202027;
-  --bg-composer: #1e1e24;
-  --bg-composer-focus: #22222a;
-  --bg-overlay: rgba(8, 8, 10, 0.75);
+  /* Color Palette - Neutrals mapped dynamically to active theme tokens */
+  --bg-app: var(--bg, #080a0f);
+  --bg-sidebar: var(--panel, #0d1219);
+  --bg-surface: var(--panel, #0d1219);
+  --bg-surface-hover: var(--panel2, #121822);
+  --bg-surface-active: var(--line, #1c2635);
+  --bg-surface-elevated: var(--panel2, #121822);
+  --bg-card: var(--panel, #0d1219);
+  --bg-card-hover: var(--panel2, #121822);
+  --bg-composer: var(--panel2, #121822);
+  --bg-composer-focus: var(--panel, #0d1219);
+  --bg-overlay: rgba(0, 0, 0, 0.75);
 
   /* Borders & Dividers */
-  --border-subtle: rgba(255, 255, 255, 0.07);
-  --border-default: rgba(255, 255, 255, 0.12);
-  --border-strong: rgba(255, 255, 255, 0.2);
-  --border-focus: rgba(255, 255, 255, 0.35);
+  --border-subtle: var(--line, #1c2635);
+  --border-default: var(--line, #1c2635);
+  --border-strong: var(--line2, #27364b);
+  --border-focus: var(--nexus-green, #34d399);
 
   /* Typography Colors */
-  --text-primary: #f4f4f6;
-  --text-secondary: #a0a0ab;
-  --text-tertiary: #6e6e7a;
-  --text-muted: #52525c;
-  --text-inverse: #0d0d10;
+  --text-primary: var(--text, #e2e8f0);
+  --text-secondary: var(--muted, #7b8ea3);
+  --text-tertiary: var(--faint, #526377);
+  --text-muted: var(--faint, #526377);
+  --text-inverse: var(--bg, #080a0f);
 
-  /* Accent Colors */
-  --accent-home: #3b82f6;
-  --accent-home-subtle: rgba(59, 130, 246, 0.12);
-  --accent-code: #6366f1;
-  --accent-code-subtle: rgba(99, 102, 241, 0.14);
-  --accent-notebook: #e07a5f;
-  --accent-notebook-subtle: rgba(224, 122, 95, 0.14);
+  /* Accent Colors mapped to active theme accent */
+  --accent: var(--nexus-green, #34d399);
+  --accent-strong: var(--nexus-bright, #3ee695);
+  --accent-soft: var(--accent-soft, rgba(52, 211, 153, 0.12));
+  --accent-home: var(--nexus-green, #34d399);
+  --accent-home-subtle: var(--accent-soft, rgba(52, 211, 153, 0.12));
+  --accent-code: var(--nexus-green, #34d399);
+  --accent-code-subtle: var(--accent-soft, rgba(52, 211, 153, 0.12));
+  --accent-notebook: var(--nexus-green, #34d399);
+  --accent-notebook-subtle: var(--accent-soft, rgba(52, 211, 153, 0.12));
 
   /* Status & Functional */
-  --success: #22c55e;
-  --success-subtle: rgba(34, 197, 94, 0.14);
-  --warning: #f59e0b;
-  --warning-subtle: rgba(245, 158, 11, 0.14);
-  --danger: #ef4444;
-  --danger-subtle: rgba(239, 68, 68, 0.14);
-  --info: #0ea5e9;
-  --info-subtle: rgba(14, 165, 233, 0.14);
+  --success: var(--green, #34d399);
+  --success-subtle: rgba(52, 211, 153, 0.14);
+  --warning: var(--orange, #e5aa64);
+  --warning-subtle: rgba(229, 170, 100, 0.14);
+  --danger: var(--red, #eb808a);
+  --danger-subtle: rgba(235, 128, 138, 0.14);
+  --info: var(--nexus-bright, #3ee695);
+  --info-subtle: var(--accent-soft, rgba(52, 211, 153, 0.14));
 
   /* Fonts */
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -77,41 +80,48 @@
   --chat-max-width: 780px;
 }
 
-/* Light Theme */
+/* Light Themes: Alabaster & Daylight */
+html[data-theme="alabaster"],
+html[data-theme="daylight"],
+html.theme-light,
+.app-root.theme-light,
 [data-theme="light"],
 .theme-light {
-  --bg-app: #ffffff;
-  --bg-sidebar: #f7f7f9;
-  --bg-surface: #f1f1f4;
-  --bg-surface-hover: #e8e8ed;
-  --bg-surface-active: #dfdfe6;
+  color-scheme: light;
+  --bg-app: var(--bg, #ede5d8);
+  --bg-sidebar: var(--panel, #e2d7c5);
+  --bg-surface: var(--panel, #e2d7c5);
+  --bg-surface-hover: rgba(0, 0, 0, 0.05);
+  --bg-surface-active: var(--line, #c6b79f);
   --bg-surface-elevated: #ffffff;
-  --bg-card: #ffffff;
-  --bg-card-hover: #f7f7f9;
+  --bg-card: var(--panel, #e2d7c5);
+  --bg-card-hover: var(--panel2, #d5c8b2);
   --bg-composer: #ffffff;
   --bg-composer-focus: #ffffff;
-  --bg-overlay: rgba(20, 20, 25, 0.4);
+  --bg-overlay: rgba(30, 25, 20, 0.45);
 
-  --border-subtle: rgba(0, 0, 0, 0.06);
-  --border-default: rgba(0, 0, 0, 0.11);
-  --border-strong: rgba(0, 0, 0, 0.2);
-  --border-focus: rgba(0, 0, 0, 0.4);
+  --border-subtle: var(--line, #c6b79f);
+  --border-default: var(--line, #c6b79f);
+  --border-strong: var(--line2, #b4a38a);
+  --border-focus: var(--nexus-green, #d9530f);
 
-  --text-primary: #141416;
-  --text-secondary: #585863;
-  --text-tertiary: #878794;
-  --text-muted: #a5a5b2;
+  --text-primary: var(--text, #241e17);
+  --text-secondary: var(--muted, #635444);
+  --text-tertiary: var(--faint, #8f7d6a);
+  --text-muted: var(--faint, #8f7d6a);
   --text-inverse: #ffffff;
 
-  --accent-home: #2563eb;
-  --accent-home-subtle: rgba(37, 99, 235, 0.08);
-  --accent-code: #4f46e5;
-  --accent-code-subtle: rgba(79, 70, 229, 0.08);
-  --accent-notebook: #c85a3c;
-  --accent-notebook-subtle: rgba(200, 90, 60, 0.08);
+  --accent-home: var(--nexus-green, #d9530f);
+  --accent-home-subtle: var(--accent-soft, rgba(217, 83, 15, 0.12));
+  --accent-code: var(--nexus-green, #d9530f);
+  --accent-code-subtle: var(--accent-soft, rgba(217, 83, 15, 0.12));
+  --accent-notebook: var(--nexus-green, #d9530f);
+  --accent-notebook-subtle: var(--accent-soft, rgba(217, 83, 15, 0.12));
+  --accent: var(--nexus-green, #d9530f);
+  --accent-strong: var(--nexus-bright, #ea580c);
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
-  --shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.12);
-  --shadow-composer: 0 6px 24px rgba(0, 0, 0, 0.1);
+  --shadow-sm: 0 1px 2px rgba(40, 25, 10, 0.08);
+  --shadow-md: 0 4px 12px rgba(40, 25, 10, 0.10);
+  --shadow-lg: 0 12px 28px rgba(40, 25, 10, 0.14);
+  --shadow-composer: 0 4px 20px rgba(40, 25, 10, 0.10);
 }

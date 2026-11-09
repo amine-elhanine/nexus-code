@@ -39,6 +39,9 @@ protocol.registerSchemesAsPrivileged([
   { scheme: "nexus-attachment", privileges: { standard: true, secure: true, supportFetchAPI: true } }
 ]);
 
+// Prevent ERR_HTTP2_PROTOCOL_ERROR across webviews for sites with broken HTTP/2 framing/LiteSpeed/Cloudflare
+app.commandLine.appendSwitch("disable-http2");
+
 // Single instance: two app instances would concurrently rewrite
 // nexus-state.json and double-bind daemons/terminals/pty hosts.
 if (!app.requestSingleInstanceLock()) {
@@ -115,6 +118,9 @@ function createWindow() {
       plugins: true,
     },
   });
+  mainWindow.on("maximize", () => { mainWindow?.webContents.send("window:maximize-change", true); });
+  mainWindow.on("unmaximize", () => { mainWindow?.webContents.send("window:maximize-change", false); });
+
   const devMode = isDevMode();
   if (devMode) void mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL || "http://127.0.0.1:5173");
   else void mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));

@@ -1,7 +1,7 @@
 import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen, Check, ChevronDown, ChevronRight, Code2, Download, FileCode2, FileText,
-  Folder, FolderOpen, GitBranch, Home, Sparkles, X,
+  Folder, FolderOpen, GitBranch, Home, Sparkles, X, Globe,
   MessageSquare, MoreHorizontal, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Search,
   Terminal, Trash2, SlidersHorizontal, Database, Cpu, Brain, Command, TriangleAlert
 } from "lucide-react";
@@ -20,6 +20,7 @@ const ArtifactViewer = lazy(() => import("./components/artifacts/ArtifactViewer.
 const FilePreviewModal = lazy(() => import("./components/home/FilePreviewModal.js").then((module) => ({ default: module.FilePreviewModal })));
 const AttachmentPreviewModal = lazy(() => import("./components/home/AttachmentPreviewModal.js").then((module) => ({ default: module.AttachmentPreviewModal })));
 import { SidebarBrowser } from "./components/browser/SidebarBrowser.js";
+import { AgentBrowserHost } from "./components/browser/AgentBrowserHost.js";
 const XTermView = lazy(() => import("./components/terminal/XTermView.js").then((module) => ({ default: module.XTermView })));
 import { VisualFullscreenLayer } from "./components/common/VisualFullscreen.js";
 import { AgentView } from "./views/AgentView.js";
@@ -32,6 +33,7 @@ import { useHomeController } from "./state/useHomeController.js";
 const DiffView = lazy(() => import("./views/DiffView.js").then((module) => ({ default: module.DiffView })));
 import { MemoryView } from "./views/MemoryView.js";
 import { useAppController, sortSessionsByUpdatedAt } from "./state/useAppController.js";
+import { getStoredThemeId, isThemeLight } from "./state/theme.js";
 import { getSessionUsage, getSessionContextUsage, fileIcon } from "./utils/format.js";
 import type { ChatAttachment, SessionRecord, UpdaterState, FileEntry } from "./types.js";
 
@@ -211,16 +213,29 @@ export function App() {
     setExpandedProjects((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
-      else next.add(id);
+      else {
+        next.add(id);
+        if (!projectSessions[id] && typeof api?.listSessions === "function") {
+          api
+            .listSessions(id)
+            .then((list) => {
+              setProjectSessions((p) => ({ ...p, [id]: sortSessionsByUpdatedAt(list as unknown as SessionRecord[]) }));
+            })
+            .catch(() => {
+              setProjectSessions((p) => ({ ...p, [id]: [] }));
+            });
+        }
+      }
       return next;
     });
   };
 
   const openProjectSession = async (projectId: string, sessionId: string) => {
     if (activeProject?.id !== projectId) {
-      await activateProject(projectId);
+      await activateProject(projectId, sessionId);
+    } else {
+      await activateSession(sessionId);
     }
-    await activateSession(sessionId);
     setCodeMainTab("agent");
   };
   const home = useHomeController(area === "home");
@@ -234,9 +249,41 @@ export function App() {
   const [attachmentPreview, setAttachmentPreview] = useState<ChatAttachment | null>(null);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingSessionTitle, setEditingSessionTitle] = useState("");
-  const [theme] = useState<"dark" | "light">("dark");
+  const [currentThemeId, setCurrentThemeId] = useState(() => getStoredThemeId());
+
+  useEffect(() => {
+    const handleThemeChange = (e: Event) => {
+      const customEvent = e as CustomEvent<{ id: string; isLight: boolean }>;
+      if (customEvent.detail?.id) {
+        setCurrentThemeId(customEvent.detail.id);
+      }
+    };
+    window.addEventListener("nexus-theme-change", handleThemeChange);
+    return () => window.removeEventListener("nexus-theme-change", handleThemeChange);
+  }, []);
+
+  const isLightTheme = isThemeLight(currentThemeId);
   const [codeSideTab, setCodeSideTab] = useState<"tasks" | "files">("tasks");
   const [codeMainTab, setCodeMainTab] = useState<"agent" | "editor" | "diff" | "terminal" | "browser" | "memory">("agent");
+  const [codeSelectedArtifact, setCodeSelectedArtifact] = useState<string | null>(null);
+  const [codeSidebarExpanded, setCodeSidebarExpanded] = useState(false);
+  const [codeBrowserActive, setCodeBrowserActive] = useState(false);
+  const [codeBrowserLatestUrl, setCodeBrowserLatestUrl] = useState<string | null>(null);
+  const [codeRightSidebarTab, setCodeRightSidebarTab] = useState<"artifact" | "browser">("artifact");
+
+  useEffect(() => {
+    if (typeof api?.onBrowserAgentActivity === "function") {
+      const unsub = api.onBrowserAgentActivity((payload) => {
+        if (!payload?.url) return;
+        if (payload.autoFollow) {
+          setCodeBrowserLatestUrl(payload.url);
+          setCodeBrowserActive(true);
+          setCodeRightSidebarTab("browser");
+        }
+      });
+      return unsub;
+    }
+  }, [api]);
 
   const currentSessionUsage = getSessionUsage(activeSession);
   const currentSessionContextUsage = getSessionContextUsage(activeSession);
@@ -342,20 +389,7 @@ export function App() {
   };
 
   return (
-    <div className={`app-root ${theme === "light" ? "theme-light" : ""}`}>
-      {/* Top Window Drag Strip */}
-      <div className="window-drag-region">
-        {updater.status === "downloaded" && (
-          <button
-            className="badge badge-success"
-            style={{ marginRight: 12, cursor: "pointer" }}
-            onClick={() => void api.quitAndInstallUpdate()}
-          >
-            <Download size={11} /> Restart to update
-          </button>
-        )}
-        <WindowControls />
-      </div>
+    <div className={`app-root ${isLightTheme ? "theme-light" : ""}`} data-theme={currentThemeId}>
 
       {/* Main Collapsible Sidebar */}
       <aside className={`app-sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
@@ -579,7 +613,6 @@ export function App() {
                             className={`history-item project-row ${isActiveProject ? "active" : ""}`}
                             onClick={() => {
                               toggleProjectExpanded(p.id);
-                              if (!isActiveProject) void activateProject(p.id);
                             }}
                             title={p.name}
                           >
@@ -813,55 +846,173 @@ export function App() {
 
                   {/* Active Code Mode Surface */}
                   {codeMainTab === "agent" && (
-                    <AgentView
-                      hasProject={Boolean(activeProject)}
-                      activeFile={activeFile}
-                      messages={currentMessages}
-                      draft={draft}
-                      setDraft={setDraft}
-                      submit={(override) => void submit(override)}
-                      running={running}
-                      onStop={() => void stopAgent()}
-                      streamingText={streamingText}
-                      liveEvents={liveEvents}
-                      mode={mode}
-                      setMode={setMode}
-                      selectedProviderId={selectedProviderId}
-                      selectedModel={selectedModel}
-                      selectedEffort={selectedEffort}
-                      providers={providers}
-                      definitions={providerDefinitions}
-                      files={files}
-                      checkpointId={activeSession?.checkpointId}
-                      diffCount={diff.length}
-                      diffFiles={diff}
-                      undoLevels={undoLevels}
-                      onUndoRun={(id) => void undoRun(id)}
-                      onKeepChanges={() => void keepChanges()}
-                      switchModel={(pId, m, eff) => void switchModel(pId, m, eff)}
-                      switchEffort={(eff) => void switchEffort(eff)}
-                      onOpenProviders={() => setShowProviders(true)}
-                      onAttachFile={() => {
-                        setDraft((curr) => `${curr}${curr ? "\n" : ""}@${activeFile || "current-file"}`);
-                      }}
-                      onAttachDiff={() => {
-                        setDraft((curr) => `${curr}${curr ? "\n" : ""}Review the current Git diff`);
-                      }}
-                      sessionUsage={currentSessionUsage}
-                      contextUsage={currentSessionContextUsage}
-                      activeSessionId={activeSession?.id}
-                      attachedImages={attachedImages}
-                      setAttachedImages={setAttachedImages}
-                      attachments={attachments}
-                      setAttachments={setAttachments}
-                      onOpenImage={openImagePreview}
-                      onOpenAttachment={(a) => setAttachmentPreview(a)}
-                      customCommands={customCommands}
-                      skills={installedSkills}
-                      onRefreshSkills={refreshSkills}
-                      onTruncateSession={(idx: number) => truncateSession(idx)}
-                      onForkSession={(idx: number) => forkSession(idx)}
-                    />
+                    <div className="code-agent-container" style={{ display: "flex", flex: 1, minHeight: 0, width: "100%", height: "100%", overflow: "hidden" }}>
+                      <div style={{ display: "flex", flex: 1, minWidth: 0, minHeight: 0, height: "100%" }}>
+                        <AgentView
+                          hasProject={Boolean(activeProject)}
+                          activeFile={activeFile}
+                          messages={currentMessages}
+                          draft={draft}
+                          setDraft={setDraft}
+                          submit={(override) => void submit(override)}
+                          running={running}
+                          onStop={() => void stopAgent()}
+                          streamingText={streamingText}
+                          liveEvents={liveEvents}
+                          mode={mode}
+                          setMode={setMode}
+                          selectedProviderId={selectedProviderId}
+                          selectedModel={selectedModel}
+                          selectedEffort={selectedEffort}
+                          providers={providers}
+                          definitions={providerDefinitions}
+                          files={files}
+                          checkpointId={activeSession?.checkpointId}
+                          diffCount={diff.length}
+                          diffFiles={diff}
+                          undoLevels={undoLevels}
+                          onUndoRun={(id) => void undoRun(id)}
+                          onKeepChanges={() => void keepChanges()}
+                          switchModel={(pId, m, eff) => void switchModel(pId, m, eff)}
+                          switchEffort={(eff) => void switchEffort(eff)}
+                          onOpenProviders={() => setShowProviders(true)}
+                          onAttachFile={() => {
+                            setDraft((curr) => `${curr}${curr ? "\n" : ""}@${activeFile || "current-file"}`);
+                          }}
+                          onAttachDiff={() => {
+                            setDraft((curr) => `${curr}${curr ? "\n" : ""}Review the current Git diff`);
+                          }}
+                          sessionUsage={currentSessionUsage}
+                          contextUsage={currentSessionContextUsage}
+                          activeSessionId={activeSession?.id}
+                          attachedImages={attachedImages}
+                          setAttachedImages={setAttachedImages}
+                          attachments={attachments}
+                          setAttachments={setAttachments}
+                          onOpenImage={openImagePreview}
+                          onOpenAttachment={(a) => setAttachmentPreview(a)}
+                          onOpenArtifact={(art) => {
+                            setCodeSelectedArtifact(art.path || art.filename || art.name);
+                            setCodeRightSidebarTab("artifact");
+                          }}
+                          customCommands={customCommands}
+                          skills={installedSkills}
+                          onRefreshSkills={refreshSkills}
+                          onTruncateSession={(idx: number) => truncateSession(idx)}
+                          onForkSession={(idx: number) => forkSession(idx)}
+                        />
+                      </div>
+                      {(codeSelectedArtifact || codeBrowserActive) && (
+                        <aside
+                          className="workbench-right-sidebar"
+                          style={{
+                            width: codeSidebarExpanded ? 780 : 480,
+                            maxWidth: codeSidebarExpanded ? "75%" : "55%",
+                            height: "100%",
+                            borderLeft: "1px solid var(--border-default)",
+                            background: "var(--bg-surface)",
+                            display: "flex",
+                            flexDirection: "column",
+                            minWidth: 340,
+                            position: "relative",
+                            zIndex: 10,
+                            transition: "width 0.22s cubic-bezier(0.16, 1, 0.3, 1), max-width 0.22s cubic-bezier(0.16, 1, 0.3, 1)",
+                          }}
+                        >
+                          {codeSelectedArtifact && codeBrowserActive && (
+                            <div className="sidebar-tab-strip">
+                              <button
+                                type="button"
+                                className={`sidebar-tab ${codeRightSidebarTab === "artifact" ? "active" : ""}`}
+                                onClick={() => setCodeRightSidebarTab("artifact")}
+                                title={codeSelectedArtifact}
+                              >
+                                <FileText size={12} />
+                                <span className="sidebar-tab-text">{codeSelectedArtifact.split("/").pop() || "Artifact"}</span>
+                              </button>
+                              <button
+                                type="button"
+                                className={`sidebar-tab ${codeRightSidebarTab === "browser" ? "active" : ""}`}
+                                onClick={() => setCodeRightSidebarTab("browser")}
+                                title="Agent Browser"
+                              >
+                                <Globe size={12} />
+                                <span className="sidebar-tab-text">Browser</span>
+                              </button>
+                              <div style={{ flex: 1 }} />
+                              <button
+                                type="button"
+                                className="sidebar-tab-close"
+                                onClick={() => {
+                                  if (codeRightSidebarTab === "artifact") {
+                                    setCodeSelectedArtifact(null);
+                                    setCodeRightSidebarTab("browser");
+                                  } else {
+                                    setCodeBrowserActive(false);
+                                    setCodeRightSidebarTab("artifact");
+                                  }
+                                }}
+                                title="Close active tab"
+                              >
+                                <X size={13} />
+                              </button>
+                            </div>
+                          )}
+
+                          {codeRightSidebarTab === "artifact" && codeSelectedArtifact && (
+                            <div style={{ display: "flex", flex: 1, minHeight: 0, width: "100%", height: "100%" }}>
+                              <HomeCanvasDrawer
+                                filePath={codeSelectedArtifact}
+                                scope="code"
+                                width="100%"
+                                isExpanded={codeSidebarExpanded}
+                                onToggleExpand={() => setCodeSidebarExpanded((p) => !p)}
+                                refreshToken={running ? "running" : `${currentMessages.length}`}
+                                onClose={() => {
+                                  setCodeSelectedArtifact(null);
+                                  if (codeBrowserActive) setCodeRightSidebarTab("browser");
+                                }}
+                                onDownload={(path: string) => {
+                                  void (api.downloadWorkspaceFile ? api.downloadWorkspaceFile(path) : api.downloadHomeFile(path));
+                                }}
+                                onRefine={(prompt: string) => void submit(prompt)}
+                              />
+                            </div>
+                          )}
+
+                          {codeRightSidebarTab === "browser" && codeBrowserActive && (
+                            <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%", height: "100%", position: "relative" }}>
+                              {!codeSelectedArtifact && (
+                                <div className="sidebar-single-header">
+                                  <div className="sidebar-single-title">
+                                    <Globe size={13} style={{ color: "#38bdf8" }} />
+                                    <span>Agent Browser</span>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="icon-plain"
+                                    onClick={() => setCodeBrowserActive(false)}
+                                    title="Close Browser Sidebar"
+                                  >
+                                    <X size={14} />
+                                  </button>
+                                </div>
+                              )}
+                              <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+                                <SidebarBrowser
+                                  sessionId={activeSession?.id}
+                                  browserScope="code"
+                                  initialUrl={codeBrowserLatestUrl || undefined}
+                                  projectRoot={activeProject?.root}
+                                  files={files}
+                                  onSendToAgent={(prompt) => void submit(prompt)}
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </aside>
+                      )}
+                    </div>
                   )}
 
                   {codeMainTab === "editor" && (
@@ -1347,6 +1498,26 @@ export function App() {
           onCancel={() => setConfirmDialog(null)}
         />
       )}
+    
+
+      {/* Top Window Drag Strip & Controls (rendered last so controls always receive clicks) */}
+      <div className="window-drag-region">
+        <div className="window-drag-band" />
+        {updater.status === "downloaded" && (
+          <button
+            type="button"
+            className="badge badge-success"
+            style={{ marginRight: 12, cursor: "pointer" }}
+            onClick={() => void api.quitAndInstallUpdate()}
+          >
+            <Download size={11} /> Restart to update
+          </button>
+        )}
+        <WindowControls />
+      </div>
+
+      {/* Background Agent Webviews Host for real in-browser navigation & inspection */}
+      <AgentBrowserHost />
     </div>
   );
 }

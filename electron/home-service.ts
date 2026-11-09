@@ -10,7 +10,10 @@ const electronRequire = createRequire(import.meta.url);
 type ElectronShim = {
   app?: { getPath: (name: string) => string };
   dialog?: { showSaveDialog: (options: unknown) => Promise<{ canceled: boolean; filePath?: string }> };
-  shell?: { openPath: (path: string) => Promise<string> };
+  shell?: {
+    openPath: (path: string) => Promise<string>;
+    showItemInFolder?: (path: string) => void;
+  };
 };
 function electronMod(): ElectronShim {
   try {
@@ -345,6 +348,19 @@ export async function openHomeFolder(): Promise<void> {
   if (shell) {
     await shell.openPath(root);
   }
+}
+
+export async function openHomeFile(relativePath: string): Promise<boolean> {
+  const root = await ensureHomeDir();
+  const source = safePath(root, relativePath);
+  const shell = electronMod().shell;
+  if (!shell) return false;
+  const errorMsg = await shell.openPath(source);
+  if (errorMsg && typeof shell.showItemInFolder === "function") {
+    // If opening with default app fails, reveal the item in the folder
+    shell.showItemInFolder(source);
+  }
+  return true;
 }
 
 // After a Home run produces document deliverable(s) (docx, xlsx, pptx, pdf…),

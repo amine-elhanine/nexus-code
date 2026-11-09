@@ -18,6 +18,7 @@ html[data-theme="nexus"] {
   --nexus-bright: #3ee695;
   --nexus-glow: rgba(52, 211, 153, 0.25);
   --accent-soft: rgba(52, 211, 153, 0.12);
+  --panel3: var(--panel2);
 
   /* ── Nexus design system: semantic aliases + scales ────────────────────────
      Defined ONCE here on :root; every value that references another token
@@ -265,8 +266,93 @@ html[data-theme] body {
   color: var(--text);
 }
 
+html[data-theme] .app-root,
 html[data-theme] .product-shell {
-  background: var(--bg);
+  background-color: var(--bg);
+  color: var(--text);
+}
+
+html[data-theme] .app-sidebar {
+  background-color: var(--panel);
+  border-right-color: var(--line);
+}
+
+html[data-theme] .home-container,
+html[data-theme] .home-topbar,
+html[data-theme] .code-workbench-header {
+  background-color: var(--bg);
+  border-color: var(--line);
+}
+
+html[data-theme] .home-composer-box {
+  background-color: var(--panel2);
+  border-color: var(--line2);
+}
+
+html[data-theme] .sidebar-header,
+html[data-theme] .sidebar-footer {
+  border-color: var(--line);
+}
+
+html[data-theme] .history-item {
+  color: var(--muted);
+}
+
+html[data-theme] .history-item:hover {
+  background-color: var(--panel2);
+  color: var(--text);
+}
+
+html[data-theme] .history-item.active {
+  background-color: var(--panel2);
+  color: var(--nexus-bright);
+}
+
+/* Light theme specific overrides for primary canvas & composer */
+html[data-theme="alabaster"] .app-root,
+html[data-theme="daylight"] .app-root {
+  background-color: var(--bg);
+  color: var(--text);
+}
+
+html[data-theme="alabaster"] .home-container,
+html[data-theme="daylight"] .home-container {
+  background-color: var(--bg);
+}
+
+html[data-theme="alabaster"] .home-topbar,
+html[data-theme="daylight"] .home-topbar {
+  background-color: var(--bg);
+  border-bottom-color: var(--line);
+}
+
+html[data-theme="alabaster"] .home-composer-box,
+html[data-theme="daylight"] .home-composer-box {
+  background-color: #ffffff !important;
+  border-color: var(--line) !important;
+  box-shadow: var(--shadow-composer) !important;
+}
+
+html[data-theme="alabaster"] .home-composer-textarea,
+html[data-theme="daylight"] .home-composer-textarea {
+  color: var(--text) !important;
+}
+
+html[data-theme="alabaster"] .home-composer-textarea::placeholder,
+html[data-theme="daylight"] .home-composer-textarea::placeholder {
+  color: var(--muted) !important;
+}
+
+html[data-theme="alabaster"] .history-item:hover,
+html[data-theme="daylight"] .history-item:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+  color: var(--text);
+}
+
+html[data-theme="alabaster"] .history-item.active,
+html[data-theme="daylight"] .history-item.active {
+  background-color: var(--panel2);
+  color: var(--nexus-green);
 }
 
 html[data-theme] .product-topbar {
