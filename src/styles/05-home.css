@@ -34,7 +34,6 @@
   background-color: var(--bg-app);
   flex-shrink: 0;
   z-index: 20;
-  -webkit-app-region: drag;
 }
 
 .home-topbar-left {

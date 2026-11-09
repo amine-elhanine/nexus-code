@@ -540,7 +540,13 @@ export async function runProjectAgent(options: {
   // Home can search for illustrative image results and embed selected ones
   // in its Markdown response. Image lookups are charged to the same research
   // cap by loopPreventionMiddleware (isResearchTool).
-  const webImageSearchTools = isGeneral ? createWebImageSearchTools({}) : [];
+  const webImageSearchTools = isGeneral
+    ? createWebImageSearchTools({
+        onSearch: (_query, url) => {
+          void agentBrowserService.visit(url, { sessionId, scope: isGeneral ? "home" : "code" }).catch(() => {});
+        },
+      })
+    : [];
   const webVideoSearchTools = isGeneral ? createWebVideoSearchTools({}) : [];
   const usage = new UsageAccumulator();
   let recursionLimit = isSimple
@@ -782,7 +788,15 @@ export async function runProjectAgent(options: {
   // from the model's Markdown CONTENT — no model-authored Python, no pip, no
   // one-shot script risk. Small models write content, not code.
   const homeDeliverableTool = isGeneral
-    ? [createDeliverableTool({ projectRoot, request, runId: sessionId, beforeEdit: editGate ? (info) => editGate(info) : undefined })]
+    ? [createDeliverableTool({
+        projectRoot,
+        request,
+        runId: sessionId,
+        beforeEdit: editGate ? (info) => editGate(info) : undefined,
+        onArtifact: (art) => {
+          emit("artifact", `Generated deliverable ${art.filename}`, undefined, undefined, undefined, art);
+        },
+      })]
     : [];
   // Neural image generation (OpenAI/Imagen) — bound only when the run's
   // provider can actually serve an image endpoint.
@@ -2433,6 +2447,28 @@ export async function runProjectAgent(options: {
             name: "Walkthrough Report",
           });
           emit("artifact", `Generated Walkthrough Report`, undefined, undefined, undefined, artifact);
+        }
+      } else if (isGeneral && homeFreshFiles && homeFreshFiles.length > 0) {
+        for (const file of homeFreshFiles) {
+          const ext = path.extname(file).toLowerCase();
+          if ([".pptx", ".xlsx", ".docx", ".pdf", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".csv", ".txt", ".md"].includes(ext)) {
+            const fileName = path.basename(file);
+            const deliverableArtifact: ArtifactItem = {
+              id: `${sessionId}_${fileName}`,
+              sessionId,
+              name: fileName,
+              filename: fileName,
+              path: file,
+              content: "",
+              status: "completed",
+              userFacing: true,
+              requestFeedback: false,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            };
+            if (!artifact) artifact = deliverableArtifact;
+            emit("artifact", `Generated deliverable ${fileName}`, undefined, undefined, undefined, deliverableArtifact);
+          }
         }
       }
     } catch { /* ignore artifact save errors */ }

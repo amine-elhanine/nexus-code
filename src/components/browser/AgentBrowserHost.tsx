@@ -38,25 +38,34 @@ export const AgentBrowserHost: React.FC = () => {
     if (typeof api.onAgentBrowserRequest !== "function") return undefined;
 
     function waitFor(wv: AgentWebview, okEvents: string[], timeoutMs: number): Promise<void> {
-      return new Promise((resolve, reject) => {
+      return new Promise((resolve) => {
+        let settled = false;
         const timer = setTimeout(() => {
           cleanup();
-          reject(new Error("Page load timed out."));
+          resolve(); // Resolve on timeout: allow inspecting partial content instead of failing
         }, timeoutMs);
         const cleanup = () => {
+          if (settled) return;
+          settled = true;
           clearTimeout(timer);
           for (const ev of okEvents) wv.removeEventListener(ev, onOk as never);
           wv.removeEventListener("did-fail-load", onFail as never);
+          wv.removeEventListener("dom-ready", onOk as never);
         };
         const onOk = () => {
           cleanup();
           resolve();
         };
-        const onFail = (event?: { errorDescription?: string }) => {
+        const onFail = (event?: { errorDescription?: string; isMainFrame?: boolean; errorCode?: number }) => {
+          // Ignore subframe and asset failures (ads, analytics, tracking pixels, etc.)
+          if (event && event.isMainFrame === false) return;
+          // Ignore aborted requests (redirects)
+          if (event && (event.errorCode === -3 || event.errorCode === -301)) return;
           cleanup();
-          reject(new Error(`Page failed to load: ${event?.errorDescription || "unknown error"}`));
+          resolve();
         };
         for (const ev of okEvents) wv.addEventListener(ev, onOk);
+        wv.addEventListener("dom-ready", onOk);
         wv.addEventListener("did-fail-load", onFail);
       });
     }
@@ -71,15 +80,19 @@ export const AgentBrowserHost: React.FC = () => {
         switch (req.kind) {
           case "load": {
             if (!req.url) return { ok: false, error: "No URL to load." };
-            const gate = waitFor(wv, ["did-finish-load"], 20000);
-            void wv.loadURL(req.url).catch(() => {});
+            const gate = waitFor(wv, ["did-finish-load", "dom-ready"], 12000);
+            try {
+              void wv.loadURL(req.url).catch(() => {});
+            } catch { /* proceed to gate */ }
             await gate;
             await settle();
             let title = "";
+            let currentUrl = req.url;
             try {
+              currentUrl = wv.getURL() || req.url;
               title = String(await wv.executeJavaScript("document.title || ''"));
             } catch { /* title is best-effort */ }
-            return { ok: true, url: wv.getURL(), title };
+            return { ok: true, url: currentUrl, title };
           }
           case "eval": {
             const value = await wv.executeJavaScript(req.js || "null");

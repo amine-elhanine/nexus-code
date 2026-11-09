@@ -1,8 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback, type KeyboardEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   Sparkles, GitBranch, RotateCcw, Check, FileCode2,
   Paperclip, FileText, Plus, Square, ArrowUp, ShieldCheck, ChevronDown, X,
-  Bug, Code2, CheckCircle2, Compass, MessageSquare, Zap, Flame, Terminal
+  Bug, Code2, CheckCircle2, Compass, MessageSquare, Zap, Flame, Terminal, Cpu,
+  Search, Settings
 } from "lucide-react";
 import { WorktreeBar } from "../components/worktree/WorktreeBar.js";
 import { SlashCommandPopup, filterSlashCommands, DEFAULT_SLASH_COMMANDS, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
@@ -43,6 +45,13 @@ export function ModelContextLine({
   const [isHovered, setIsHovered] = useState(false);
   const [isCompacting, setIsCompacting] = useState(false);
   const [compactNotice, setCompactNotice] = useState<string | null>(null);
+  const [tooltipPos, setTooltipPos] = useState<{
+    left: number;
+    top?: number;
+    bottom?: number;
+    arrowLeft: number;
+    placement: "above" | "below";
+  } | null>(null);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lineRef = useRef<HTMLDivElement | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
@@ -55,13 +64,35 @@ export function ModelContextLine({
     }
   };
 
-  // The hover card must track the real pointer position, not just enter/leave
-  // events: a stationary cursor never re-fires mouseenter, so any layout shift
-  // under it (composer re-flow, the badge label changing as usage streams in)
-  // or a 1px miss of the 23px-tall pill fired a mouseleave that closed the
-  // card while the cursor was still visibly on it.
+  const updateTooltipPos = useCallback(() => {
+    if (!lineRef.current) return;
+    const rect = lineRef.current.getBoundingClientRect();
+    const tooltipWidth = 340;
+    const pillCenter = rect.left + rect.width / 2;
+    let left = pillCenter - tooltipWidth / 2;
+    left = Math.max(16, Math.min(window.innerWidth - tooltipWidth - 16, left));
+    const arrowLeft = Math.max(20, Math.min(tooltipWidth - 20, pillCenter - left));
+
+    const spaceAbove = rect.top;
+    if (spaceAbove >= 280) {
+      setTooltipPos({
+        left,
+        bottom: Math.max(8, window.innerHeight - rect.top + 8),
+        arrowLeft,
+        placement: "above",
+      });
+    } else {
+      setTooltipPos({
+        left,
+        top: Math.max(8, rect.bottom + 8),
+        arrowLeft,
+        placement: "below",
+      });
+    }
+  }, []);
+
   const withinHoverRegion = (x: number, y: number) => {
-    const pad = 6;
+    const pad = 12;
     const rects = [lineRef.current?.getBoundingClientRect(), tooltipRef.current?.getBoundingClientRect()];
     return rects.some((rect) => rect && x >= rect.left - pad && x <= rect.right + pad && y >= rect.top - pad && y <= rect.bottom + pad);
   };
@@ -70,9 +101,7 @@ export function ModelContextLine({
     hoverTimerRef.current = null;
     const point = lastPointerRef.current;
     if (point && withinHoverRegion(point.x, point.y)) {
-      // Still on the bar/card — the leave was spurious (layout moved under a
-      // stationary cursor). Re-check shortly instead of hiding.
-      hoverTimerRef.current = setTimeout(hideIfPointerLeft, 400);
+      hoverTimerRef.current = setTimeout(hideIfPointerLeft, 350);
       return;
     }
     setIsHovered(false);
@@ -80,12 +109,13 @@ export function ModelContextLine({
 
   const scheduleHide = () => {
     cancelPendingHide();
-    hoverTimerRef.current = setTimeout(hideIfPointerLeft, 220);
+    hoverTimerRef.current = setTimeout(hideIfPointerLeft, 200);
   };
 
   const handleMouseEnter = (event?: React.MouseEvent) => {
     if (event) lastPointerRef.current = { x: event.clientX, y: event.clientY };
     cancelPendingHide();
+    updateTooltipPos();
     setIsHovered(true);
   };
 
@@ -108,14 +138,21 @@ export function ModelContextLine({
       if (withinHoverRegion(event.clientX, event.clientY)) {
         cancelPendingHide();
       } else if (!hoverTimerRef.current) {
-        // Pointer left without a matching mouseleave (enter/leave desynced
-        // after an earlier shift) — start the grace countdown ourselves.
-        hoverTimerRef.current = setTimeout(hideIfPointerLeft, 220);
+        hoverTimerRef.current = setTimeout(hideIfPointerLeft, 200);
       }
     };
+    const onScrollOrResize = () => {
+      updateTooltipPos();
+    };
     window.addEventListener("pointermove", onPointerMove);
-    return () => window.removeEventListener("pointermove", onPointerMove);
-  }, [isHovered]);
+    window.addEventListener("scroll", onScrollOrResize, true);
+    window.addEventListener("resize", onScrollOrResize);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("scroll", onScrollOrResize, true);
+      window.removeEventListener("resize", onScrollOrResize);
+    };
+  }, [isHovered, updateTooltipPos]);
 
   useEffect(() => {
     setDetectedContext(null);
@@ -149,25 +186,19 @@ export function ModelContextLine({
   const thresholdPct = Math.min(95, Math.max(5, (compactionThreshold / contextWindow) * 100));
 
   const ctxLabel = formatContextWindow(contextWindow);
-  // Measure the retained context that future turns inherit, not per-call
-  // prompt tokens (which restart from the fixed system prompt every request).
-  const usedTokens = contextUsage?.usedTokens || contextUsage?.inputTokens || contextUsage?.totalTokens || 0;
+  const usedTokens = contextUsage?.usedTokens || contextUsage?.inputTokens || contextUsage?.totalTokens || sessionUsage?.inputTokens || sessionUsage?.totalTokens || 0;
   const pct = Math.min(100, Math.max(0, (usedTokens / contextWindow) * 100));
   const remainingTokens = Math.max(0, contextWindow - usedTokens);
   const tokensToThreshold = Math.max(0, compactionThreshold - usedTokens);
 
-  // Per-category prompt composition (System tools / MCP tools / System prompt /
-  // Skills / Meta context / Messages) — shares of the estimated prompt payload.
+  // Per-category prompt composition
   const breakdownRows = contextUsage?.breakdown?.length ? contextUsage.breakdown : null;
   const breakdownTotal = breakdownRows ? breakdownRows.reduce((sum, entry) => sum + entry.tokens, 0) : 0;
 
-  // Prompt-cache hit rate for the current run: provider-reported cached input
-  // tokens over the exact input total. Only shown when the provider reports
-  // cache accounting (Anthropic-family; OpenAI/DeepSeek/GLM via their
-  // cached-token fields).
-  const cacheInput = contextUsage?.cacheInputTokens ?? 0;
-  const cacheRead = contextUsage?.cacheReadTokens ?? 0;
-  const cacheRate = cacheInput > 0 && cacheRead > 0 ? (cacheRead / cacheInput) * 100 : null;
+  // Prompt-cache hit rate for the run / session
+  const cacheInput = contextUsage?.cacheInputTokens ?? sessionUsage?.inputTokens ?? 0;
+  const cacheRead = contextUsage?.cacheReadTokens ?? sessionUsage?.cacheReadTokens ?? 0;
+  const cacheRate = cacheInput > 0 ? (cacheRead / cacheInput) * 100 : 0;
 
   const isNearThreshold = usedTokens >= compactionThreshold * 0.85;
   const isAtThreshold = usedTokens >= compactionThreshold;
@@ -233,15 +264,29 @@ export function ModelContextLine({
         />
       </div>
 
-      {isHovered && (
+      {isHovered && tooltipPos && typeof document !== "undefined" && createPortal(
         <div
           ref={tooltipRef}
-          className="context-info-tooltip"
+          className={`context-info-tooltip placement-${tooltipPos.placement}`}
+          style={{
+            position: "fixed",
+            left: `${tooltipPos.left}px`,
+            top: tooltipPos.top !== undefined ? `${tooltipPos.top}px` : undefined,
+            bottom: tooltipPos.bottom !== undefined ? `${tooltipPos.bottom}px` : undefined,
+            zIndex: 99999,
+            transform: "none",
+            ["--arrow-left" as any]: `${tooltipPos.arrowLeft}px`,
+          }}
           onMouseEnter={handleMouseEnter}
           onMouseLeave={handleMouseLeave}
         >
           <div className="ctx-tip-header">
-            <span className="ctx-tip-title">Context window</span>
+            <div className="ctx-tip-title-wrap">
+              <span className="ctx-tip-title">Context Window</span>
+              <span className="ctx-tip-model-pill" title={model}>
+                {model}
+              </span>
+            </div>
             <span
               className="ctx-total"
               title={`${usedTokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (${pct.toFixed(1)}%)`}
@@ -256,7 +301,7 @@ export function ModelContextLine({
               <div
                 className="ctx-bar-threshold-mark"
                 style={{ left: `${thresholdPct}%` }}
-                title={`Auto-compacts at ${thresholdPct.toFixed(0)}%`}
+                title={`Auto-compacts at ${thresholdPct.toFixed(0)}% (${formatTokenCount(compactionThreshold)} tokens)`}
               />
               <div
                 className={`ctx-bar-fill status-${statusTone}`}
@@ -266,73 +311,93 @@ export function ModelContextLine({
           </div>
 
           {breakdownRows && (
-            <div className="ctx-breakdown">
-              {breakdownRows.map((entry, index) => (
-                <div
-                  key={entry.label}
-                  className="ctx-breakdown-row"
-                  title={`${entry.label}: ~${entry.tokens.toLocaleString()} tokens`}
-                >
-                  <span className="ctx-breakdown-dot" style={{ opacity: Math.max(0.35, 1 - index * 0.12) }} />
-                  <span className="ctx-breakdown-label">{entry.label}</span>
-                  <span className="ctx-breakdown-pct">
-                    {breakdownTotal > 0 ? ((entry.tokens / breakdownTotal) * 100).toFixed(1) : "0.0"}%
-                  </span>
-                </div>
-              ))}
+            <div className="ctx-breakdown-section">
+              <div className="ctx-breakdown-grid">
+                {breakdownRows.map((entry, index) => (
+                  <div
+                    key={entry.label}
+                    className="ctx-breakdown-item"
+                    title={`${entry.label}: ~${entry.tokens.toLocaleString()} tokens`}
+                  >
+                    <span className="ctx-breakdown-dot" style={{ opacity: Math.max(0.4, 1 - index * 0.12) }} />
+                    <span className="ctx-breakdown-label">{entry.label}</span>
+                    <span className="ctx-breakdown-pct">
+                      {breakdownTotal > 0 ? ((entry.tokens / breakdownTotal) * 100).toFixed(1) : "0.0"}%
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
-          <div className="ctx-details-grid">
-            <div className="ctx-detail-item">
-              <span className="ctx-detail-label">Model</span>
-              <span className="ctx-detail-value ctx-model-value" title={model}>{model}</span>
+          <div className="ctx-stats-grid">
+            <div
+              className={`ctx-stat-card${cacheRead > 0 ? " highlight-success" : ""}`}
+              title={
+                cacheInput > 0
+                  ? `${formatTokenCount(cacheRead)} (${cacheRead.toLocaleString()}) of ${formatTokenCount(cacheInput)} (${cacheInput.toLocaleString()}) input tokens served from prompt cache`
+                  : "Prompt cache accounting for this session"
+              }
+            >
+              <span className="ctx-stat-label">Cache Hit</span>
+              <span className="ctx-stat-val">
+                {cacheRead > 0
+                  ? `${cacheRate.toFixed(cacheRate < 10 ? 1 : 0)}% (${formatTokenCount(cacheRead)})`
+                  : cacheInput > 0
+                  ? "0% (0 cached)"
+                  : "0% (fresh)"}
+              </span>
             </div>
-            <div className="ctx-detail-item">
-              <span className="ctx-detail-label">Context Window</span>
-              <span className="ctx-detail-value">{formatTokenCount(contextWindow)}</span>
+
+            <div className="ctx-stat-card" title={`${contextWindow.toLocaleString()} tokens total context limit`}>
+              <span className="ctx-stat-label">Context Limit</span>
+              <span className="ctx-stat-val">
+                {formatTokenCount(contextWindow)} <span className="ctx-stat-sub">({contextWindow.toLocaleString()})</span>
+              </span>
             </div>
-            <div className="ctx-detail-item">
-              <span className="ctx-detail-label">Auto-Compact At</span>
-              <span className="ctx-detail-value highlighted">{formatTokenCount(compactionThreshold)} ({thresholdPct.toFixed(0)}%)</span>
+
+            <div className="ctx-stat-card" title={`${usedTokens.toLocaleString()} of ${contextWindow.toLocaleString()} tokens used (${pct.toFixed(1)}%)`}>
+              <span className="ctx-stat-label">Retained Context</span>
+              <span className="ctx-stat-val">
+                {formatTokenCount(usedTokens)} <span className="ctx-stat-sub">({pct.toFixed(1)}%)</span>
+              </span>
             </div>
-            <div className="ctx-detail-item">
-              <span className="ctx-detail-label">Headroom to Compact</span>
-              <span className="ctx-detail-value">{formatTokenCount(tokensToThreshold)} tokens</span>
+
+            <div
+              className="ctx-stat-card highlight-warning"
+              title={`Auto-compaction threshold: ${compactionThreshold.toLocaleString()} tokens (${thresholdPct.toFixed(1)}%)`}
+            >
+              <span className="ctx-stat-label">Auto-Compact At</span>
+              <span className="ctx-stat-val">
+                {formatTokenCount(compactionThreshold)} <span className="ctx-stat-sub">({thresholdPct.toFixed(0)}%)</span>
+              </span>
             </div>
-            {maxOutput ? (
-              <div className="ctx-detail-item">
-                <span className="ctx-detail-label">Max Output</span>
-                <span className="ctx-detail-value">{formatTokenCount(maxOutput)}</span>
-              </div>
-            ) : null}
-            {cacheRate !== null && (
-              <div
-                className="ctx-detail-item"
-                title={`${formatTokenCount(cacheRead)} of ${formatTokenCount(cacheInput)} input tokens served from the prompt cache`}
-              >
-                <span className="ctx-detail-label">Cache Hit Rate</span>
-                <span className="ctx-detail-value highlighted">
-                  {cacheRate.toFixed(cacheRate < 10 ? 1 : 0)}% ({formatTokenCount(cacheRead)} cached)
-                </span>
-              </div>
-            )}
-            {sessionUsage && sessionUsage.totalTokens > 0 ? (
-              <>
-                <div className="ctx-detail-item">
-                  <span className="ctx-detail-label">Session In / Out</span>
-                  <span className="ctx-detail-value">
-                    {formatTokenCount(sessionUsage.inputTokens)} / {formatTokenCount(sessionUsage.outputTokens)}
-                  </span>
-                </div>
-                {sessionUsage?.estimatedCost != null && sessionUsage.estimatedCost > 0 && (
-                  <div className="ctx-detail-item">
-                    <span className="ctx-detail-label">Est. Cost</span>
-                    <span className="ctx-detail-value">{formatCost(sessionUsage.estimatedCost)}</span>
-                  </div>
-                )}
-              </>
-            ) : null}
+
+            <div className="ctx-stat-card" title={`${tokensToThreshold.toLocaleString()} tokens remaining before auto-compaction triggers`}>
+              <span className="ctx-stat-label">Headroom</span>
+              <span className="ctx-stat-val">{formatTokenCount(tokensToThreshold)} tokens</span>
+            </div>
+
+            <div className="ctx-stat-card" title={maxOutput ? `${maxOutput.toLocaleString()} tokens max completion limit` : "Default max output"}>
+              <span className="ctx-stat-label">Max Output</span>
+              <span className="ctx-stat-val">{maxOutput ? `${formatTokenCount(maxOutput)}` : "Default"}</span>
+            </div>
+
+            <div className="ctx-stat-card" title={`Input: ${(sessionUsage?.inputTokens ?? 0).toLocaleString()} • Output: ${(sessionUsage?.outputTokens ?? 0).toLocaleString()} tokens`}>
+              <span className="ctx-stat-label">Session In / Out</span>
+              <span className="ctx-stat-val">
+                {formatTokenCount(sessionUsage?.inputTokens ?? 0)} / {formatTokenCount(sessionUsage?.outputTokens ?? 0)}
+              </span>
+            </div>
+
+            <div className="ctx-stat-card" title="Estimated cost for current session">
+              <span className="ctx-stat-label">Est. Cost</span>
+              <span className="ctx-stat-val">
+                {sessionUsage?.estimatedCost != null && sessionUsage.estimatedCost > 0
+                  ? formatCost(sessionUsage.estimatedCost)
+                  : "$0.00"}
+              </span>
+            </div>
           </div>
 
           <div className="ctx-actions">
@@ -359,7 +424,8 @@ export function ModelContextLine({
           <div className="ctx-tip-footer">
             <span>Auto-compacts near context window limit like Claude Code & Codex</span>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
@@ -393,9 +459,143 @@ export function ModelSelect({
   const provider = providers.find((item) => item.id === selectedProviderId);
   const def = definitions.find((d) => d.id === (provider?.provider || selectedProviderId));
   const modelExists = provider?.models.includes(selectedModel);
-  const selectValue = provider && modelExists ? `${selectedProviderId}::${selectedModel}` : "";
 
   const [discoveredEfforts, setDiscoveredEfforts] = useState<string[] | null>(null);
+  const [isModelOpen, setIsModelOpen] = useState(false);
+  const [isEffortOpen, setIsEffortOpen] = useState(false);
+  const [modelSearch, setModelSearch] = useState("");
+  const [modelMenuPos, setModelMenuPos] = useState<{
+    left: number;
+    top?: number;
+    bottom?: number;
+    placement: "above" | "below";
+  } | null>(null);
+  const [effortMenuPos, setEffortMenuPos] = useState<{
+    left: number;
+    top?: number;
+    bottom?: number;
+    placement: "above" | "below";
+  } | null>(null);
+
+  const modelBtnRef = useRef<HTMLButtonElement | null>(null);
+  const modelMenuRef = useRef<HTMLDivElement | null>(null);
+  const effortBtnRef = useRef<HTMLButtonElement | null>(null);
+  const effortMenuRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  const updateModelMenuPos = useCallback(() => {
+    if (!modelBtnRef.current) return;
+    const rect = modelBtnRef.current.getBoundingClientRect();
+    const menuWidth = 290;
+    let left = rect.left;
+    left = Math.max(12, Math.min(window.innerWidth - menuWidth - 12, left));
+
+    const spaceAbove = rect.top;
+    if (spaceAbove >= 280) {
+      setModelMenuPos({
+        left,
+        bottom: Math.max(8, window.innerHeight - rect.top + 6),
+        placement: "above",
+      });
+    } else {
+      setModelMenuPos({
+        left,
+        top: Math.max(8, rect.bottom + 6),
+        placement: "below",
+      });
+    }
+  }, []);
+
+  const updateEffortMenuPos = useCallback(() => {
+    if (!effortBtnRef.current) return;
+    const rect = effortBtnRef.current.getBoundingClientRect();
+    const menuWidth = 180;
+    let left = rect.left;
+    left = Math.max(12, Math.min(window.innerWidth - menuWidth - 12, left));
+
+    const spaceAbove = rect.top;
+    if (spaceAbove >= 220) {
+      setEffortMenuPos({
+        left,
+        bottom: Math.max(8, window.innerHeight - rect.top + 6),
+        placement: "above",
+      });
+    } else {
+      setEffortMenuPos({
+        left,
+        top: Math.max(8, rect.bottom + 6),
+        placement: "below",
+      });
+    }
+  }, []);
+
+  // Click outside & Escape for model menu
+  useEffect(() => {
+    if (!isModelOpen) return;
+    const handlePointerDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (
+        modelMenuRef.current &&
+        !modelMenuRef.current.contains(target) &&
+        modelBtnRef.current &&
+        !modelBtnRef.current.contains(target)
+      ) {
+        setIsModelOpen(false);
+      }
+    };
+    const handleKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setIsModelOpen(false);
+      }
+    };
+    const handleResizeOrScroll = () => {
+      updateModelMenuPos();
+    };
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("scroll", handleResizeOrScroll, true);
+    window.addEventListener("resize", handleResizeOrScroll);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("scroll", handleResizeOrScroll, true);
+      window.removeEventListener("resize", handleResizeOrScroll);
+    };
+  }, [isModelOpen, updateModelMenuPos]);
+
+  // Click outside & Escape for effort menu
+  useEffect(() => {
+    if (!isEffortOpen) return;
+    const handlePointerDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (
+        effortMenuRef.current &&
+        !effortMenuRef.current.contains(target) &&
+        effortBtnRef.current &&
+        !effortBtnRef.current.contains(target)
+      ) {
+        setIsEffortOpen(false);
+      }
+    };
+    const handleKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setIsEffortOpen(false);
+      }
+    };
+    const handleResizeOrScroll = () => {
+      updateEffortMenuPos();
+    };
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("scroll", handleResizeOrScroll, true);
+    window.addEventListener("resize", handleResizeOrScroll);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("scroll", handleResizeOrScroll, true);
+      window.removeEventListener("resize", handleResizeOrScroll);
+    };
+  }, [isEffortOpen, updateEffortMenuPos]);
 
   // Background auto-discover efforts for selected model if not cached yet
   useEffect(() => {
@@ -425,66 +625,229 @@ export function ModelSelect({
 
   const hasSelectedModel = Boolean(selectedModel);
 
+  const totalModelsCount = useMemo(() => {
+    return providers.reduce((sum, p) => sum + (p.enabled !== false ? p.models.length : 0), 0);
+  }, [providers]);
+
+  const filteredProviders = useMemo(() => {
+    const q = modelSearch.trim().toLowerCase();
+    const enabled = providers.filter((p) => p.enabled !== false);
+    if (!q) return enabled;
+    return enabled
+      .map((p) => {
+        const matchesProvider = p.label.toLowerCase().includes(q);
+        const matchingModels = p.models.filter(
+          (m) => matchesProvider || m.toLowerCase().includes(q)
+        );
+        return {
+          ...p,
+          models: matchingModels,
+        };
+      })
+      .filter((p) => p.models.length > 0);
+  }, [providers, modelSearch]);
+
   return (
     <div className="model-select-wrapper">
-      <div className="model-select">
-        <select
-          value={selectValue}
-          onChange={(event) => {
-            const val = event.target.value;
-            if (!val) {
-              onOpenProviders();
-              return;
-            }
-            const [id, ...rest] = val.split("::");
-            switchModel(id, rest.join("::"));
-          }}
-        >
-          <option value="">{providers.length ? "Select model…" : "Configure provider…"}</option>
-          {providers.filter((item) => item.enabled !== false).map((item) => (
-            <optgroup key={item.id} label={item.label}>
-              {item.models.map((model) => (
-                <option key={`${item.id}-${model}`} value={`${item.id}::${model}`}>
-                  {model}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-        {provider && (
-          <span className="provider-dot" style={{ pointerEvents: "none" }}>
-            {provider.label.slice(0, 1)}
-          </span>
-        )}
-        <ChevronDown size={12} style={{ pointerEvents: "none" }} />
-      </div>
+      <button
+        ref={modelBtnRef}
+        type="button"
+        className={`model-select${isModelOpen ? " active" : ""}`}
+        onClick={() => {
+          if (!isModelOpen) {
+            updateModelMenuPos();
+            setIsEffortOpen(false);
+            setModelSearch("");
+            setIsModelOpen(true);
+            setTimeout(() => searchInputRef.current?.focus(), 60);
+          } else {
+            setIsModelOpen(false);
+          }
+        }}
+        title={selectedModel ? `Model: ${selectedModel}` : "Select model"}
+        aria-haspopup="dialog"
+        aria-expanded={isModelOpen}
+      >
+        <Cpu size={12} className="model-select-icon" />
+        <span className="model-select-text">
+          {selectedModel || (providers.length ? "Select model…" : "Configure provider…")}
+        </span>
+        <ChevronDown size={11} className={`model-select-chevron${isModelOpen ? " open" : ""}`} />
+      </button>
 
-      <div
-        className={`effort-select${!hasSelectedModel ? " disabled" : ""}`}
+      {isModelOpen && modelMenuPos && typeof document !== "undefined" && createPortal(
+        <div
+          ref={modelMenuRef}
+          className={`model-menu-popover placement-${modelMenuPos.placement}`}
+          style={{
+            position: "fixed",
+            left: `${modelMenuPos.left}px`,
+            top: modelMenuPos.top !== undefined ? `${modelMenuPos.top}px` : undefined,
+            bottom: modelMenuPos.bottom !== undefined ? `${modelMenuPos.bottom}px` : undefined,
+            zIndex: 99999,
+          }}
+          role="dialog"
+          aria-label="Select Model"
+        >
+          {totalModelsCount > 4 && (
+            <div className="model-menu-search-box">
+              <Search size={12} className="model-search-icon" />
+              <input
+                ref={searchInputRef}
+                type="text"
+                className="model-search-input"
+                placeholder="Search models…"
+                value={modelSearch}
+                onChange={(e) => setModelSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setIsModelOpen(false);
+                  }
+                }}
+              />
+              {modelSearch && (
+                <button
+                  type="button"
+                  className="model-search-clear"
+                  onClick={() => setModelSearch("")}
+                  title="Clear search"
+                >
+                  <X size={10} />
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="model-menu-list">
+            {filteredProviders.length === 0 ? (
+              <div className="model-menu-empty">No matching models found</div>
+            ) : (
+              filteredProviders.map((item) => (
+                <div key={item.id} className="model-menu-group">
+                  <div className="model-menu-group-header">
+                    <span>{item.label}</span>
+                  </div>
+                  {item.models.map((m) => {
+                    const isSelected = item.id === selectedProviderId && m === selectedModel;
+                    return (
+                      <button
+                        key={`${item.id}-${m}`}
+                        type="button"
+                        className={`model-menu-item${isSelected ? " selected" : ""}`}
+                        onClick={() => {
+                          switchModel(item.id, m);
+                          setIsModelOpen(false);
+                        }}
+                        title={m}
+                      >
+                        <span className="model-item-name">{m}</span>
+                        {isSelected && <Check size={12} className="model-item-check" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="model-menu-footer">
+            <button
+              type="button"
+              className="model-menu-action-btn"
+              onClick={() => {
+                setIsModelOpen(false);
+                onOpenProviders();
+              }}
+            >
+              <Settings size={12} />
+              <span>Configure Providers…</span>
+            </button>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      <button
+        ref={effortBtnRef}
+        type="button"
+        disabled={!hasSelectedModel}
+        className={`effort-select${isEffortOpen ? " active" : ""}${!hasSelectedModel ? " disabled" : ""}`}
+        onClick={() => {
+          if (!hasSelectedModel) return;
+          if (!isEffortOpen) {
+            updateEffortMenuPos();
+            setIsModelOpen(false);
+            setIsEffortOpen(true);
+          } else {
+            setIsEffortOpen(false);
+          }
+        }}
         title={hasSelectedModel ? `Reasoning effort for ${selectedModel}` : "Select a model to set reasoning effort"}
+        aria-haspopup="dialog"
+        aria-expanded={isEffortOpen}
       >
         <span className="effort-badge">EFFORT</span>
-        <select
-          disabled={!hasSelectedModel}
-          value={selectedEffort || ""}
-          onChange={(e) => {
-            const val = e.target.value;
-            if (switchEffort) {
-              switchEffort(val);
-            } else {
-              switchModel(selectedProviderId, selectedModel, val);
-            }
+        <span className="effort-select-text">{formatEffortLabel(selectedEffort || "auto")}</span>
+        <ChevronDown size={11} className={`effort-select-chevron${isEffortOpen ? " open" : ""}`} />
+      </button>
+
+      {isEffortOpen && effortMenuPos && typeof document !== "undefined" && createPortal(
+        <div
+          ref={effortMenuRef}
+          className={`effort-menu-popover placement-${effortMenuPos.placement}`}
+          style={{
+            position: "fixed",
+            left: `${effortMenuPos.left}px`,
+            top: effortMenuPos.top !== undefined ? `${effortMenuPos.top}px` : undefined,
+            bottom: effortMenuPos.bottom !== undefined ? `${effortMenuPos.bottom}px` : undefined,
+            zIndex: 99999,
           }}
+          role="dialog"
+          aria-label="Reasoning Effort"
         >
-          <option value="">Auto</option>
-          {displayEfforts.map((eff) => (
-            <option key={eff} value={eff}>
-              {formatEffortLabel(eff)}
-            </option>
-          ))}
-        </select>
-        <ChevronDown size={12} style={{ pointerEvents: "none" }} />
-      </div>
+          <div className="effort-menu-header">
+            <span>Reasoning Effort</span>
+          </div>
+
+          <div className="effort-menu-list">
+            <button
+              type="button"
+              className={`effort-menu-item${!selectedEffort ? " selected" : ""}`}
+              onClick={() => {
+                if (switchEffort) switchEffort("");
+                else switchModel(selectedProviderId, selectedModel, "");
+                setIsEffortOpen(false);
+              }}
+            >
+              <div className="effort-item-text">
+                <span className="effort-item-name">Auto</span>
+                <span className="effort-item-badge">Default</span>
+              </div>
+              {!selectedEffort && <Check size={12} className="effort-item-check" />}
+            </button>
+
+            {displayEfforts.map((eff) => {
+              const isSelected = selectedEffort?.toLowerCase() === eff.toLowerCase();
+              return (
+                <button
+                  key={eff}
+                  type="button"
+                  className={`effort-menu-item${isSelected ? " selected" : ""}`}
+                  onClick={() => {
+                    if (switchEffort) switchEffort(eff);
+                    else switchModel(selectedProviderId, selectedModel, eff);
+                    setIsEffortOpen(false);
+                  }}
+                >
+                  <span className="effort-item-name">{formatEffortLabel(eff)}</span>
+                  {isSelected && <Check size={12} className="effort-item-check" />}
+                </button>
+              );
+            })}
+          </div>
+        </div>,
+        document.body
+      )}
 
       {hasSelectedModel && (
         <ModelContextLine
@@ -1070,7 +1433,7 @@ export function AgentView({
           />
         )}
         {running && streamingText && (
-          <StreamingAssistantMessage text={streamingText} />
+          <StreamingAssistantMessage text={streamingText} onOpenArtifact={onOpenArtifact} />
         )}
       </div>
       {checkpointId && !running && (diffCount > 0 || (undoLevels || 0) > 0) && (

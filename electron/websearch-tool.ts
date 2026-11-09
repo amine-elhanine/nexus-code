@@ -161,13 +161,16 @@ async function duckDuckGoImageSearch(query: string, limit = 5): Promise<WebImage
   }
 }
 
-export function createWebImageSearchTools(opts?: { beforeSearch?: () => string | null }) {
+export function createWebImageSearchTools(opts?: { onSearch?: (query: string, url: string) => void; beforeSearch?: () => string | null }) {
   return [tool(
     async ({ query, maxResults = 5 }: { query: string; maxResults?: number }) => {
       const guard = opts?.beforeSearch?.();
       if (guard) return guard;
       const cleanQuery = query.trim();
       if (!cleanQuery) return "An image search query is required.";
+      try {
+        opts?.onSearch?.(cleanQuery, `https://duckduckgo.com/?q=${encodeURIComponent(cleanQuery)}&iax=images&ia=images`);
+      } catch { /* mirror is best-effort */ }
       try {
         const results = await duckDuckGoImageSearch(cleanQuery, Math.min(Math.max(maxResults, 1), 5));
         if (!results.length) return `No web images found for "${cleanQuery}". Continue with the text search results.`;

@@ -98,14 +98,29 @@ export function getStoredThemeId(): string {
   return DEFAULT_THEME_ID;
 }
 
+export function isThemeLight(id: string): boolean {
+  return id === "alabaster" || id === "daylight";
+}
+
 /** Apply a theme immediately by setting data-theme on <html>. Persists to localStorage. */
 export function applyTheme(themeId: string): string {
   const id = isValidThemeId(themeId) ? themeId : DEFAULT_THEME_ID;
   document.documentElement.dataset.theme = id;
+  const isLight = isThemeLight(id);
+  if (isLight) {
+    document.documentElement.classList.add("theme-light");
+    if (document.body) document.body.classList.add("theme-light");
+  } else {
+    document.documentElement.classList.remove("theme-light");
+    if (document.body) document.body.classList.remove("theme-light");
+  }
   try {
     localStorage.setItem(THEME_STORAGE_KEY, id);
   } catch {
     /* ignore */
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("nexus-theme-change", { detail: { id, isLight } }));
   }
   return id;
 }

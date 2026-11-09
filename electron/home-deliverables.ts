@@ -26,6 +26,7 @@ import {
 } from "./notebook-documents.js";
 import { validateHomeArtifact } from "./home-artifact-service.js";
 import { inspectDeliverable } from "./deliverable-inspect.js";
+import type { ArtifactItem } from "./artifacts-service.js";
 
 export type DeliverableFormat = "docx" | "pptx" | "xlsx" | "pdf" | "tex" | "md" | "csv" | "txt";
 
@@ -255,6 +256,7 @@ export function createDeliverableTool(options: {
   runId?: string;
   /** Edit-approval gate (AppSettings.editPolicy === "ask"). */
   beforeEdit?: (info: { tool: string; files: string[] }) => Promise<string | null>;
+  onArtifact?: (artifact: ArtifactItem) => void;
 }): AgentTool {
   return tool(
     async ({ file_name, format, content, title }: { file_name: string; format: DeliverableFormat; content: string; title?: string }) => {
@@ -270,6 +272,23 @@ export function createDeliverableTool(options: {
         title,
         request: options.request,
       });
+      if (result.ok && options.onArtifact && result.path) {
+        try {
+          options.onArtifact({
+            id: `${options.runId || "session"}_${result.path}`,
+            sessionId: options.runId || "",
+            name: result.path,
+            filename: result.path,
+            path: result.path,
+            content: "",
+            status: "completed",
+            userFacing: true,
+            requestFeedback: false,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
+        } catch { /* best effort */ }
+      }
       return result.message;
     },
     {

@@ -54,6 +54,92 @@ export async function copyTextToClipboard(text: string): Promise<boolean> {
   }
 }
 
+export type DeliverableChipItem = {
+  filename: string;
+  name: string;
+  extension: string;
+  meta?: string;
+};
+
+export function extractDeliverablesFromText(text: string): DeliverableChipItem[] {
+  if (!text) return [];
+  const results: DeliverableChipItem[] = [];
+  const seen = new Set<string>();
+  const extGroup = "(?:pptx|ppsx|xlsx|xls|pdf|docx|doc|png|jpg|jpeg|svg|webp|gif|csv|txt|md|html|tex)";
+
+  // 1. Explicit lines with File / Deliverable / Generated / Output / Document / Presentation etc.
+  // e.g. **File:** `Attack on Titan Presentation.pptx` (13 slides), File: ElGrande Toto.pptx, Deliverable created: foo.pptx
+  const linePattern = new RegExp(
+    "(?:^|\\n)[^\\r\\n]*?(?:File|Deliverable(?:\\s+created)?|Generated(?:\\s+file)?|Document|Presentation|Spreadsheet|Report|Output):?(?:\\*\\*)?\\s*:?\\s*[`\"'*]*([^\\r\\n`\"'*()<>]+\\." + extGroup + ")[`\"'*]*(?:\\s*\\(([^)]+)\\))?",
+    "gi"
+  );
+  let m: RegExpExecArray | null;
+  while ((m = linePattern.exec(text)) !== null) {
+    const rawPath = m[1].trim();
+    const filename = rawPath.replace(/\\/g, "/").split("/").pop() || rawPath;
+    if (!seen.has(filename.toLowerCase())) {
+      seen.add(filename.toLowerCase());
+      const ext = filename.split(".").pop()?.toLowerCase() || "";
+      results.push({
+        filename,
+        name: filename.replace(/\.[^.]+$/, ""),
+        extension: ext,
+        meta: m[2]?.trim(),
+      });
+    }
+  }
+
+  // 2. Markdown links: [name.pptx](...) or [Download](name.pptx)
+  const linkPattern = new RegExp("\\[([^\\]]+?\\." + extGroup + ")\\]\\([^)]+\\)", "gi");
+  while ((m = linkPattern.exec(text)) !== null) {
+    const rawPath = m[1].trim();
+    const filename = rawPath.replace(/\\/g, "/").split("/").pop() || rawPath;
+    if (!seen.has(filename.toLowerCase())) {
+      seen.add(filename.toLowerCase());
+      const ext = filename.split(".").pop()?.toLowerCase() || "";
+      results.push({
+        filename,
+        name: filename.replace(/\.[^.]+$/, ""),
+        extension: ext,
+      });
+    }
+  }
+
+  // 3. Fallback scan for inline filenames in backticks: `file.pptx` or `file.docx`
+  const codePattern = new RegExp("`([^`\\r\\n]+\\." + extGroup + ")`", "gi");
+  while ((m = codePattern.exec(text)) !== null) {
+    const rawPath = m[1].trim();
+    const filename = rawPath.replace(/\\/g, "/").split("/").pop() || rawPath;
+    if (!seen.has(filename.toLowerCase())) {
+      seen.add(filename.toLowerCase());
+      const ext = filename.split(".").pop()?.toLowerCase() || "";
+      results.push({
+        filename,
+        name: filename.replace(/\.[^.]+$/, ""),
+        extension: ext,
+      });
+    }
+  }
+
+  // 4. Bold filenames: **file.pptx** or **financial_summary.xlsx**
+  const boldPattern = new RegExp("\\*\\*([^*\\r\\n]+\\." + extGroup + ")\\*\\*", "gi");
+  while ((m = boldPattern.exec(text)) !== null) {
+    const rawPath = m[1].trim();
+    const filename = rawPath.replace(/\\/g, "/").split("/").pop() || rawPath;
+    if (!seen.has(filename.toLowerCase())) {
+      seen.add(filename.toLowerCase());
+      const ext = filename.split(".").pop()?.toLowerCase() || "";
+      results.push({
+        filename,
+        name: filename.replace(/\.[^.]+$/, ""),
+        extension: ext,
+      });
+    }
+  }
+
+  return results;
+}
+
 export function CopyTextButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<number | null>(null);
@@ -962,12 +1048,19 @@ export function ChatItemView({
   onRegenerate?: (index: number) => void;
 }) {
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
+  const deliverables = useMemo(() => {
+    if (message.role !== "assistant" || !message.text) return [];
+    return extractDeliverablesFromText(message.text);
+  }, [message.role, message.text]);
+
   if (message.artifact) {
     return (
-      <ArtifactCard
-        artifact={message.artifact}
-        onClick={() => onOpenArtifact?.(message.artifact!)}
-      />
+      <div className="chat-artifact-single-wrap">
+        <ArtifactCard
+          artifact={message.artifact}
+          onClick={() => onOpenArtifact?.(message.artifact!)}
+        />
+      </div>
     );
   }
   if (message.role === "event" && message.kind === "subagent" && message.subagent) {
@@ -1063,6 +1156,42 @@ export function ChatItemView({
             ))}
         </div>
       )}
+      {deliverables.length > 0 && (
+        <div className="chat-message-deliverables-strip">
+          {deliverables.map((item) => (
+            <ArtifactCard
+              key={item.filename}
+              artifact={{
+                id: item.filename,
+                sessionId: "",
+                name: item.name,
+                filename: item.filename,
+                path: item.filename,
+                content: "",
+                status: "completed",
+                userFacing: true,
+                requestFeedback: false,
+                createdAt: message.createdAt,
+                updatedAt: message.createdAt,
+              }}
+              metaText={item.meta}
+              onClick={() => onOpenArtifact?.({
+                id: item.filename,
+                sessionId: "",
+                name: item.name,
+                filename: item.filename,
+                path: item.filename,
+                content: "",
+                status: "completed",
+                userFacing: true,
+                requestFeedback: false,
+                createdAt: message.createdAt,
+                updatedAt: message.createdAt,
+              })}
+            />
+          ))}
+        </div>
+      )}
       <RichMarkdown source={message.text} className="chat-message-text" />
       {message.role === "user" && (
         <div className="message-actions-bar">
@@ -1141,8 +1270,16 @@ export function ChatItemView({
   );
 }
 
-export function StreamingAssistantMessage({ text }: { text: string }) {
+export function StreamingAssistantMessage({
+  text,
+  onOpenArtifact,
+}: {
+  text: string;
+  onOpenArtifact?: (artifact: ArtifactItem) => void;
+}) {
   if (!text) return null;
+  const deliverables = extractDeliverablesFromText(text);
+
   return (
     <div className="chat-message assistant streaming">
       <div className="chat-author">
@@ -1152,6 +1289,44 @@ export function StreamingAssistantMessage({ text }: { text: string }) {
         Nexus
         <time>{timeLabel(new Date().toISOString())}</time>
       </div>
+
+      {deliverables.length > 0 && (
+        <div className="chat-message-deliverables-strip">
+          {deliverables.map((item) => (
+            <ArtifactCard
+              key={item.filename}
+              artifact={{
+                id: item.filename,
+                sessionId: "",
+                name: item.name,
+                filename: item.filename,
+                path: item.filename,
+                content: "",
+                status: "completed",
+                userFacing: true,
+                requestFeedback: false,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              }}
+              metaText={item.meta}
+              onClick={() => onOpenArtifact?.({
+                id: item.filename,
+                sessionId: "",
+                name: item.name,
+                filename: item.filename,
+                path: item.filename,
+                content: "",
+                status: "completed",
+                userFacing: true,
+                requestFeedback: false,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              })}
+            />
+          ))}
+        </div>
+      )}
+
       <RichMarkdown source={text} className="chat-message-text" />
     </div>
   );

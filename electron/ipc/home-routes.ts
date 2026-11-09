@@ -4,7 +4,7 @@ import { ipcMain } from "electron";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { getHomeMemory, getHomeSession, listHomeSessions, createHomeSession, deleteHomeSession, updateHomeMemory, updateHomeSession, truncateHomeSessionFromMessage, forkHomeSessionAtMessage } from "../store.js";
-import { removeSessionFromManifest, downloadHomeFile, ensureHomeDir, listHomeFiles, listHomeSessionFiles, listHomeSessionFilesForDeletion, openHomeFolder, readHomeFile } from "../home-service.js";
+import { removeSessionFromManifest, downloadHomeFile, ensureHomeDir, listHomeFiles, listHomeSessionFiles, listHomeSessionFilesForDeletion, openHomeFolder, openHomeFile, readHomeFile } from "../home-service.js";
 import { homeTaskJournalPath } from "../home-task-service.js";
 import { codeTaskJournalPath } from "../code-task-service.js";
 import { deleteSessionTelemetry } from "../artifacts-service.js";
@@ -64,6 +64,7 @@ export function registerHomeRoutes(_ctx: MainIpcContext): void {
   ipcMain.handle("home:readFile", (_event, relativePath: string) => readHomeFile(relativePath));
   ipcMain.handle("home:download", (_event, relativePath: string) => downloadHomeFile(relativePath));
   ipcMain.handle("home:openFolder", () => openHomeFolder());
+  ipcMain.handle("home:openFile", (_event, relativePath: string) => openHomeFile(relativePath));
   ipcMain.handle("home:memory:get", () => getHomeMemory());
   ipcMain.handle("home:memory:update", (_event, memory: string) => updateHomeMemory(memory));
   ipcMain.handle("home:memory:structured", async () => {

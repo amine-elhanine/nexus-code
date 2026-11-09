@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect, useMemo, KeyboardEvent, type ReactNode } from "react";
 import {
   Sparkles, Paperclip, ArrowUp, Square, Search, BarChart3, FileText,
-  X, Presentation, Table2
+  X, Presentation, Table2, Globe
 } from "lucide-react";
 import { ChatItemView, StreamingAssistantMessage, ActivityGroupView } from "../components/chat/ChatMessageItem.js";
 import { SlashCommandPopup, filterSlashCommands, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
@@ -10,6 +10,7 @@ import { insertAtCursor } from "../utils/textarea.js";
 import type { ChatItem, ProviderConfig, ProviderDefinition, ChatAttachment, SkillInfo, AgentUsage, AgentContextUsageSnapshot } from "../types.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
 import { HomeCanvasDrawer } from "../components/home/HomeCanvasDrawer.js";
+import { SidebarBrowser } from "../components/browser/SidebarBrowser.js";
 import { ModelSelect } from "./AgentView.js";
 
 type RenderBlock =
@@ -131,13 +132,38 @@ export function HomeView({
 
   const [activePill, setActivePill] = useState<string | null>(null);
   const [selectedCanvasFile, setSelectedCanvasFile] = useState<string | null>(null);
+  const [browserActive, setBrowserActive] = useState(false);
+  const [browserLatestUrl, setBrowserLatestUrl] = useState<string | null>(null);
+  const [rightSidebarTab, setRightSidebarTab] = useState<"artifact" | "browser">("artifact");
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
+
+  // Automatically follow browser agent activity in Watching mode (autoFollow === true)
+  useEffect(() => {
+    const api = window.nexus;
+    if (typeof api?.onBrowserAgentActivity === "function") {
+      const unsub = api.onBrowserAgentActivity((payload) => {
+        if (!payload?.url) return;
+        if (payload.autoFollow) {
+          setBrowserLatestUrl(payload.url);
+          setBrowserActive(true);
+          setRightSidebarTab("browser");
+        }
+      });
+      return unsub;
+    }
+  }, []);
 
   // Group messages & events into RenderBlocks so tool runs collapse cleanly into ActivityGroupView
   const renderBlocks = useMemo<RenderBlock[]>(() => {
     const blocks: RenderBlock[] = [];
     messages.forEach((message, index) => {
+      // Artifact events are user deliverables: display them as top-level message chips
+      if (message.role === "event" && (message.artifact || message.kind === "artifact")) {
+        blocks.push({ kind: "message", message, index });
+        return;
+      }
       if (message.role === "event") {
         const last = blocks[blocks.length - 1];
         if (last && last.kind === "events") {
@@ -254,21 +280,24 @@ export function HomeView({
 
   return (
     <div className="home-container">
-      {/* Main Chat Pane */}
-      <div className="home-chat-pane">
-        {/* Top Minimal Strip */}
-        <header className="home-topbar">
-          <div className="home-topbar-left">
-            {topbarLeading}
-            {sessionTitle && (
-              <span className="home-session-title">{sessionTitle}</span>
-            )}
-          </div>
+      {/* Top Minimal Strip spanning full width */}
+      <header className="home-topbar">
+        <div className="home-topbar-left">
+          {topbarLeading}
+          {sessionTitle && (
+            <span className="home-session-title">{sessionTitle}</span>
+          )}
+        </div>
 
-          <div className="home-topbar-right">
-            {panelMenu}
-          </div>
-        </header>
+        <div className="home-topbar-right">
+          {panelMenu}
+        </div>
+      </header>
+
+      {/* Main Content Area: Chat Pane + Right Sidebar */}
+      <div className="home-content-row">
+        {/* Main Chat Pane */}
+        <div className="home-chat-pane">
 
         {/* Messages Scroll Area */}
         <div className="home-messages-viewport" ref={messagesViewportRef}>
@@ -308,7 +337,10 @@ export function HomeView({
                     key={`events-${block.startIndex}`}
                     events={block.events}
                     running={false}
-                    onOpenArtifact={(art) => setSelectedCanvasFile(art.path || art.filename || art.name)}
+                    onOpenArtifact={(art) => {
+                      setSelectedCanvasFile(art.path || art.filename || art.name);
+                      setRightSidebarTab("artifact");
+                    }}
                     onOpenImage={onOpenImage}
                   />
                 ) : (
@@ -318,7 +350,10 @@ export function HomeView({
                     index={block.index}
                     onOpenAttachment={onOpenAttachment}
                     onOpenImage={onOpenImage}
-                    onOpenArtifact={(art) => setSelectedCanvasFile(art.path || art.filename || art.name)}
+                    onOpenArtifact={(art) => {
+                      setSelectedCanvasFile(art.path || art.filename || art.name);
+                      setRightSidebarTab("artifact");
+                    }}
                     onEditMessage={
                       onTruncateSession && block.message.role === "user" && !running
                         ? async (idx, newText) => {
@@ -357,14 +392,23 @@ export function HomeView({
                   events={liveEvents}
                   running={true}
                   currentText={streamingText}
-                  onOpenArtifact={(art) => setSelectedCanvasFile(art.path || art.filename || art.name)}
+                  onOpenArtifact={(art) => {
+                    setSelectedCanvasFile(art.path || art.filename || art.name);
+                    setRightSidebarTab("artifact");
+                  }}
                   onOpenImage={onOpenImage}
                 />
               )}
 
               {/* Live Streaming Assistant Message */}
               {(streamingText || (running && liveEvents.length === 0)) && (
-                <StreamingAssistantMessage text={streamingText} />
+                <StreamingAssistantMessage
+                  text={streamingText}
+                  onOpenArtifact={(art) => {
+                    setSelectedCanvasFile(art.path || art.filename || art.name);
+                    setRightSidebarTab("artifact");
+                  }}
+                />
               )}
             </div>
           )}
@@ -512,15 +556,117 @@ export function HomeView({
         </div>
       </div>
 
-      {/* Side-by-Side Canvas Drawer if file is selected */}
-      {selectedCanvasFile && (
-        <HomeCanvasDrawer
-          filePath={selectedCanvasFile}
-          onClose={() => setSelectedCanvasFile(null)}
-          onDownload={(path: string) => onDownloadFile?.(path)}
-          onRefine={(prompt: string) => submit(prompt)}
-        />
+      {/* Right Sidebar: Artifact Canvas and/or Live Browser */}
+      {(selectedCanvasFile || browserActive) && (
+        <aside
+          className="workbench-right-sidebar"
+          style={{
+            width: isSidebarExpanded ? 780 : 480,
+            maxWidth: isSidebarExpanded ? "75%" : "55%",
+            height: "100%",
+            borderLeft: "1px solid var(--border-default)",
+            background: "var(--bg-surface)",
+            display: "flex",
+            flexDirection: "column",
+            minWidth: 340,
+            position: "relative",
+            zIndex: 10,
+            transition: "width 0.22s cubic-bezier(0.16, 1, 0.3, 1), max-width 0.22s cubic-bezier(0.16, 1, 0.3, 1)",
+          }}
+        >
+          {/* Top tab switcher when both artifact & browser are open */}
+          {selectedCanvasFile && browserActive && (
+            <div className="sidebar-tab-strip">
+              <button
+                type="button"
+                className={`sidebar-tab ${rightSidebarTab === "artifact" ? "active" : ""}`}
+                onClick={() => setRightSidebarTab("artifact")}
+                title={selectedCanvasFile}
+              >
+                <FileText size={12} />
+                <span className="sidebar-tab-text">{selectedCanvasFile.split("/").pop() || "Artifact"}</span>
+              </button>
+              <button
+                type="button"
+                className={`sidebar-tab ${rightSidebarTab === "browser" ? "active" : ""}`}
+                onClick={() => setRightSidebarTab("browser")}
+                title="Agent Browser"
+              >
+                <Globe size={12} />
+                <span className="sidebar-tab-text">Browser</span>
+              </button>
+              <div style={{ flex: 1 }} />
+              <button
+                type="button"
+                className="sidebar-tab-close"
+                onClick={() => {
+                  if (rightSidebarTab === "artifact") {
+                    setSelectedCanvasFile(null);
+                    setRightSidebarTab("browser");
+                  } else {
+                    setBrowserActive(false);
+                    setRightSidebarTab("artifact");
+                  }
+                }}
+                title="Close active tab"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          )}
+
+          {/* Artifact Preview */}
+          {rightSidebarTab === "artifact" && selectedCanvasFile && (
+            <div style={{ display: "flex", flex: 1, minHeight: 0, width: "100%", height: "100%" }}>
+              <HomeCanvasDrawer
+                filePath={selectedCanvasFile}
+                scope="home"
+                width="100%"
+                isExpanded={isSidebarExpanded}
+                onToggleExpand={() => setIsSidebarExpanded((prev) => !prev)}
+                refreshToken={running ? "running" : `${messages.length}`}
+                onClose={() => {
+                  setSelectedCanvasFile(null);
+                  if (browserActive) setRightSidebarTab("browser");
+                }}
+                onDownload={(path: string) => onDownloadFile?.(path)}
+                onRefine={(prompt: string) => submit(prompt)}
+              />
+            </div>
+          )}
+
+          {/* Live Browser Pane */}
+          {rightSidebarTab === "browser" && browserActive && (
+            <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%", height: "100%", position: "relative" }}>
+              {!selectedCanvasFile && (
+                <div className="sidebar-single-header">
+                  <div className="sidebar-single-title">
+                    <Globe size={13} style={{ color: "#38bdf8" }} />
+                    <span>Agent Browser</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="icon-plain"
+                    onClick={() => setBrowserActive(false)}
+                    title="Close Browser Sidebar"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
+              <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+                <SidebarBrowser
+                  sessionId={activeSessionId || null}
+                  browserScope="home"
+                  initialUrl={browserLatestUrl || undefined}
+                  onSendToAgent={(prompt) => submit(prompt)}
+                />
+              </div>
+            </div>
+          )}
+        </aside>
       )}
+      </div>
     </div>
   );
 }

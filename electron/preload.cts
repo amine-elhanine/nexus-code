@@ -147,8 +147,8 @@ const nexusApi = {
   // Agent browser (headless toggle + activity from the agent's window)
   getBrowserHeadless: () => invoke("browser:headless:get"),
   setBrowserHeadless: (value: boolean) => invoke("browser:headless:set", value),
-  onBrowserAgentActivity: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean; forceFollow?: boolean; sessionId?: string }) => void) => {
-    const handler = (_event: IpcRendererEvent, payload: { url: string; timestamp: string; autoFollow?: boolean; forceFollow?: boolean; sessionId?: string }) => listener(payload);
+  onBrowserAgentActivity: (listener: (payload: { url: string; timestamp: string; autoFollow?: boolean; forceFollow?: boolean; sessionId?: string; scope?: "home" | "code" }) => void) => {
+    const handler = (_event: IpcRendererEvent, payload: { url: string; timestamp: string; autoFollow?: boolean; forceFollow?: boolean; sessionId?: string; scope?: "home" | "code" }) => listener(payload);
     ipcRenderer.on("browser:agent-activity", handler);
     return () => ipcRenderer.removeListener("browser:agent-activity", handler);
   },
@@ -198,6 +198,11 @@ const nexusApi = {
   maximizeWindow: () => invoke("window:maximize"),
   closeWindow: () => invoke("window:close"),
   isWindowMaximized: () => invoke("window:isMaximized"),
+  onWindowMaximizeChange: (listener: (isMax: boolean) => void) => {
+    const handler = (_event: IpcRendererEvent, isMax: boolean) => listener(isMax);
+    ipcRenderer.on("window:maximize-change", handler);
+    return () => ipcRenderer.removeListener("window:maximize-change", handler);
+  },
 
   // Home (isolated general assistant)
   getHome: () => invoke("home:get"),
@@ -218,6 +223,7 @@ const nexusApi = {
   readHomeFile: (relativePath: string) => invoke("home:readFile", relativePath),
   downloadHomeFile: (relativePath: string) => invoke("home:download", relativePath),
   openHomeFolder: () => invoke("home:openFolder"),
+  openHomeFile: (relativePath: string) => invoke("home:openFile", relativePath),
   truncateHomeSession: (sessionId: string, fromIndex: number) => invoke("home:session:truncate", sessionId, fromIndex),
   forkHomeSession: (sessionId: string, fromIndex: number, newTitle?: string) => invoke("home:session:fork", sessionId, fromIndex, newTitle),
   getArtifactVersions: (relativePath: string) => invoke("home:artifact:versions", relativePath),

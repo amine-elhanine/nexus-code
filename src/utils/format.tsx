@@ -57,6 +57,8 @@ export function getSessionUsage(session?: SessionRecord | null): AgentUsage | un
   let outputTokens = session.usage?.outputTokens || 0;
   let totalTokens = session.usage?.totalTokens || 0;
   let costKnown = session.usage?.estimatedCost != null;
+  let cacheReadTokens = session.usage?.cacheReadTokens || 0;
+  let cacheCreationTokens = session.usage?.cacheCreationTokens || 0;
 
   // Aggregate all messages that contain usage info
   let msgInput = 0;
@@ -64,6 +66,8 @@ export function getSessionUsage(session?: SessionRecord | null): AgentUsage | un
   let msgTotal = 0;
   let msgCost = 0;
   let msgCostKnown = true;
+  let msgCacheRead = 0;
+  let msgCacheCreation = 0;
   for (const message of session.messages || []) {
     // Mirrors calculateSessionUsage (store.ts): assistant turns plus terminal
     // error events from failed/cancelled runs, so header totals include burn.
@@ -76,6 +80,8 @@ export function getSessionUsage(session?: SessionRecord | null): AgentUsage | un
       msgTotal += message.usage.totalTokens || 0;
       if (message.usage.estimatedCost == null) msgCostKnown = false;
       else msgCost += message.usage.estimatedCost;
+      if (message.usage.cacheReadTokens) msgCacheRead += message.usage.cacheReadTokens;
+      if (message.usage.cacheCreationTokens) msgCacheCreation += message.usage.cacheCreationTokens;
     }
   }
 
@@ -85,11 +91,14 @@ export function getSessionUsage(session?: SessionRecord | null): AgentUsage | un
     outputTokens = msgOutput;
     totalTokens = msgTotal;
     costKnown = msgCostKnown;
+    cacheReadTokens = msgCacheRead;
+    cacheCreationTokens = msgCacheCreation;
     return {
       inputTokens,
       outputTokens,
       totalTokens,
       estimatedCost: costKnown ? Number(msgCost.toFixed(4)) : null,
+      ...(cacheReadTokens > 0 || cacheCreationTokens > 0 ? { cacheReadTokens, cacheCreationTokens } : {}),
     };
   }
 
@@ -99,6 +108,7 @@ export function getSessionUsage(session?: SessionRecord | null): AgentUsage | un
       outputTokens,
       totalTokens,
       estimatedCost: costKnown ? Number((session.usage?.estimatedCost || 0).toFixed(4)) : null,
+      ...(cacheReadTokens > 0 || cacheCreationTokens > 0 ? { cacheReadTokens, cacheCreationTokens } : {}),
     };
   }
   return session.usage;
@@ -124,6 +134,21 @@ export function getSessionContextUsage(session?: SessionRecord | null): AgentCon
       cacheInputTokens: message.context.cacheInputTokens,
       cacheReadTokens: message.context.cacheReadTokens,
       cacheCreationTokens: message.context.cacheCreationTokens,
+    };
+  }
+  // Fallback to session usage if context snapshot has not been emitted yet
+  const usage = getSessionUsage(session);
+  if (usage && usage.totalTokens > 0) {
+    const used = usage.inputTokens || usage.totalTokens;
+    return {
+      usedTokens: used,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      totalTokens: usage.totalTokens,
+      estimatedCost: usage.estimatedCost,
+      cacheInputTokens: usage.inputTokens,
+      cacheReadTokens: usage.cacheReadTokens,
+      cacheCreationTokens: usage.cacheCreationTokens,
     };
   }
   return undefined;
