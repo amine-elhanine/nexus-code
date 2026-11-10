@@ -529,7 +529,16 @@ function SideTabWebview({
 
   useEffect(() => {
     registerRef(ref.current);
-    return () => registerRef(null);
+    return () => {
+      try {
+        if (ref.current && typeof (ref.current as unknown as { blur?: () => void }).blur === "function") {
+          (ref.current as unknown as { blur: () => void }).blur();
+        }
+      } catch {
+        // ignore
+      }
+      registerRef(null);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -594,10 +603,24 @@ function SideTabWebview({
       ref={ref as never}
       src={committedSrc.current}
       useragent={CHROME_DESKTOP_UA}
-      className="browser-iframe"
+      className={`browser-iframe ${visible ? "active" : "inactive"}`}
       partition={partition}
+      tabIndex={visible ? undefined : -1}
       webpreferences="contextIsolation=yes"
-      style={{ display: visible ? undefined : "none", flex: visible ? 1 : undefined }}
+      style={
+        visible
+          ? { flex: 1, width: "100%", height: "100%", display: "flex" }
+          : {
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              height: "100%",
+              visibility: "hidden",
+              pointerEvents: "none",
+              zIndex: -1,
+            }
+      }
     />
   );
 }

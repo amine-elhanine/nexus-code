@@ -638,6 +638,7 @@ export function useAppController() {
     const sess = await api.activateSession(activeProject.id, sessionId);
     setActiveSession(sess);
     setStreamingText("");
+    setWorkspacePreviewPath(null);
     try {
       const wt = await api.getWorktreeStatus(sessionId);
       setWorktreeStatus(wt);

@@ -72,7 +72,7 @@ import { prepareContextBudget } from "./agent/context-budget.js";
 // Backward-compatible re-exports: main.ts and tests import these from
 // agent-service; the implementations now live in the focused modules above.
 export type { AgentMode, PlanItem, AgentTurn, HistoryEventItem, HistoryInput, AgentSettings, AgentUsage, AgentEvent, AgentMemoryContext, AgentTaskKind, HomeTaskContract, AttachmentDoc } from "./agent-types.js";
-export { inferHomeTaskContract, inferHomeOutputFormats, homeRequestNamesFileFormat } from "./agent-prompt.js";
+export { inferHomeTaskContract, inferHomeOutputFormats, homeRequestNamesFileFormat, isIdentityOrGreeting, isHomeEditRequest } from "./agent-prompt.js";
 export { DoomLoopError, RESEARCH_BUDGET_BASE, RESEARCH_BUDGET_WITH_RESEARCH, resolveResearchBudget, normalizeToolCallArgs, loopPreventionMiddleware } from "./loop-prevention.js";
 export type { PackageManagerName, PackageManager, TaskComplexity } from "./task-routing.js";
 export { detectPackageManager, pickVerificationCommand, pickVerificationCommands, pickAffectedPackageCommands, pickFileScopedVerification, findTargetedTests, buildVerificationBatch, classifyTaskComplexity, shouldSkipMcpForTask, isWebTask, isProjectRunRequest, isNewProjectTask, isContinueRequest } from "./task-routing.js";
@@ -231,17 +231,21 @@ export async function runProjectAgent(options: {
   // than being routed through the text-only quick-lookup path. Greetings and
   // short acknowledgements remain lightweight.
   const homeNeedsVisualResponse = isGeneral && Boolean(request.trim()) &&
-    !/^(?:hi|hello|hey|thanks?|thank you|ok(?:ay)?|yes|no|good morning|good evening)[!.\s]*$/i.test(request.trim());
+    !/^(?:hi|hello|hey|thanks?|thank you|ok(?:ay)?|yes|no|good morning|good evening|who are you|what are you|what can you do|what do you do|help|what are your capabilities|introduce yourself)[!.\s]*$/i.test(request.trim());
   // A "continue" that resumes prior tool state is never a simple task: it
   // needs the full budget, todo tracking and delegation to finish the job.
   const hasResume = Boolean((resumeMessages && resumeMessages.length) || resumeNote);
-  let effectiveComplexity: TaskComplexity = hasResume || homeNeedsVisualResponse ? "complex" : complexity;
+  let effectiveComplexity: TaskComplexity = hasResume || (isGeneral ? Boolean(
+    (homeTaskContract?.expectsOutput && homeRequestNamesFileFormat(request)) ||
+    homeTaskContract?.needsResearch ||
+    /\b(chart|charts|graph|graphs|diagram|diagrams|plot|plots|visual|visuals|visualization|analyze|analysis|dataset|csv|compare|benchmark|deep\s+research)\b/i.test(request)
+  ) : false) ? "complex" : complexity;
   let isSimple = effectiveComplexity === "simple";
   const isNewProject = isNewProjectTask(request);
   // Setup I/O (MCP servers, project rules, skills config, repo map) is
   // independent — fetch in parallel instead of serially.
   const [mcpResult, rulesResult, skillsConfig, repoMapSection, projectInstructions] = await Promise.all([
-    ((isGeneral || shouldSkipMcpForTask(request) || (taskKind === "code" && !/\b(github|repository|repositories|issue|pull request|slack|notion|web search|latest|research|external)\b/i.test(`${request} ${resumeNote || ""}`)))
+    ((shouldSkipMcpForTask(request) || (taskKind === "code" && !/\b(github|repository|repositories|issue|pull request|slack|notion|web search|latest|research|external)\b/i.test(`${request} ${resumeNote || ""}`)))
       ? Promise.resolve({ tools: [], serverNames: [], warnings: undefined })
       : withSetupTimeout(getMcpTools(), 20000, "MCP servers")).then(
       (r) => ({ ok: true as const, tools: r.tools, serverNames: r.serverNames, warnings: r.warnings }),
@@ -510,7 +514,7 @@ export async function runProjectAgent(options: {
           : null;
       }
     : undefined;
-  const allCodeTools = createCodeIntelligenceTools(projectRoot, { readOnly: mode === "plan", beforeEdit: editGate });
+  const allCodeTools = isGeneral ? [] : createCodeIntelligenceTools(projectRoot, { readOnly: mode === "plan", beforeEdit: editGate });
   const browserTools = wantsBrowser || isGeneral
     ? createBrowserTools(projectRoot, {
         agentBrowser: {
@@ -560,7 +564,7 @@ export async function runProjectAgent(options: {
   // tool-registration boundary too: custom tools must not bypass the backend.
   // importableAttachments covers every file type (images + docs); the legacy
   // attachedImages alias keeps image imports working for older callers.
-  const editTools = mode === "plan" ? [] : createEditTools(projectRoot, { attachedImages: attachments, attachedFiles: importableAttachments ?? attachments, beforeEdit: editGate });
+  const editTools = mode === "plan" ? [] : createEditTools(projectRoot, { attachedImages: attachments, attachedFiles: importableAttachments ?? attachments, beforeEdit: editGate }).filter((t: any) => !isGeneral || t?.name !== "apply_patch");
   // Skill helper scripts run through the workspace: plan mode stays read-only.
   const skillFilesTools = mode === "plan" || !skillsConfig.enabled ? [] : [createSkillFilesTool(eligibleSkillCatalog, projectRoot, { beforeEdit: editGate })];
   const questionTool = createQuestionTool(async (questions) => {
@@ -1684,7 +1688,7 @@ export async function runProjectAgent(options: {
           response: String(stateResponse || ""),
           currentRepairs,
           maxRepairs,
-          wantsDeliverable,
+          wantsDeliverable: (wantsDeliverable && !homeRequestNamesFileFormat(request) && !(homeTaskContract?.expectedFormats?.length) && !requestWantsVisuals && !createdDeliverable && !/:\s*$/s.test(responseTextTrimmed) && responseTextTrimmed.length >= 40) ? false : wantsDeliverable,
           freshFiles,
           createdDeliverable,
           artifactValid: artifactContract.valid,

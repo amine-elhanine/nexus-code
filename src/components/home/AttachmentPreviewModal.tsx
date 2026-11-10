@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Download, FileText, Loader2, TriangleAlert, X } from "lucide-react";
 import { renderMarkdown } from "../../markdown.js";
 import { attachmentKind, formatAttachmentSize, loadAttachmentBytes } from "../../utils/attachments.js";
+import { fixPptxRenderedSlide } from "../../utils/pptx-preview.js";
 import type { ChatAttachment } from "../../types.js";
 
 export function AttachmentPreviewModal({
@@ -78,6 +79,7 @@ export function AttachmentPreviewModal({
             const viewer = await PptxViewer.open(buffer, libRef.current, {
               zipLimits: RECOMMENDED_ZIP_LIMITS,
               listOptions: { windowed: true },
+              onSlideRendered: (_idx, slideEl) => fixPptxRenderedSlide(slideEl),
             });
             viewerRef.current = viewer as { destroy?: () => void };
           } catch {

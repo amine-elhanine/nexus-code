@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import { X, Download, FileText, Loader2, TriangleAlert, History } from "lucide-react";
 import { safeMarkdown } from "../../markdown.js";
 import type { ArtifactVersionManifest } from "../../types.js";
+import { fixPptxRenderedSlide } from "../../utils/pptx-preview.js";
 
 type PreviewKind =
   | "markdown" | "pdf" | "image" | "docx" | "xlsx" | "pptx" | "text" | "unsupported";
@@ -130,6 +131,7 @@ export function FilePreviewModal({
         const viewer = await PptxViewer.open(bytes.buffer as ArrayBuffer, libRef.current, {
           zipLimits: RECOMMENDED_ZIP_LIMITS,
           listOptions: { windowed: true },
+          onSlideRendered: (_idx, slideEl) => fixPptxRenderedSlide(slideEl),
         });
         viewerRef.current = viewer as { destroy?: () => void };
       }

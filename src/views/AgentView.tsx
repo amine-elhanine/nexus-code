@@ -15,13 +15,21 @@ import { insertAtCursor } from "../utils/textarea.js";
 import { formatCost } from "../types.js";
 import type { ChatItem, FileEntry, ProviderConfig, ProviderDefinition, AgentUsage, AgentContextUsageSnapshot, ArtifactItem, ChatAttachment, SkillInfo, WorkspaceDiffFile } from "../types.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
+import { CodeOverviewCard } from "../components/code/CodeOverviewCard.js";
 import { resolveModelEfforts, formatEffortLabel, resolveModelContextWindow, resolveModelMaxOutput, formatContextWindow, formatTokenCount, computeCompactionThreshold } from "../utils/modelEfforts.js";
 
 const AGENT_STARTERS = [
-  { icon: <Sparkles size={13} className="file-icon-text" />, label: "Add feature", prompt: "Add a feature to " },
-  { icon: <Bug size={13} className="file-icon-video" />, label: "Fix bug", prompt: "Debug and fix the issue where " },
-  { icon: <Code2 size={13} className="file-icon-doc" />, label: "Refactor", prompt: "Refactor and clean up " },
-  { icon: <CheckCircle2 size={13} className="file-icon-ppt" />, label: "Write tests", prompt: "Write comprehensive unit tests for " },
+  { icon: <Sparkles size={14} style={{ color: "#60a5fa" }} />, label: "Review changes & test", desc: "Inspect git diff, run test suites, and fix any failures", prompt: "Review all recent Git changes, run the test suites, and fix any failing tests or type errors." },
+  { icon: <Bug size={14} style={{ color: "#f87171" }} />, label: "Fix bug or regression", desc: "Locate error stacktraces and repair broken logic", prompt: "Debug and fix the issue where " },
+  { icon: <Code2 size={14} style={{ color: "#34d399" }} />, label: "Add feature or endpoint", desc: "Design and implement new functionality with full type safety", prompt: "Add a feature to " },
+  { icon: <Compass size={14} style={{ color: "#a78bfa" }} />, label: "Explore architecture", desc: "Map out project modules, symbol references, and flow", prompt: "Analyze the workspace architecture, list the main entry points, and summarize the key design patterns used." },
+];
+
+const CODE_ACTION_PILLS = [
+  { id: "diff", label: "Review Diff", icon: <GitBranch size={13} />, prefix: "Review current git diff and changes: ", placeholder: "Ask to review git diff, inspect modified files, or explain changes..." },
+  { id: "test", label: "Run Tests", icon: <CheckCircle2 size={13} />, prefix: "Run workspace tests and fix any failures: ", placeholder: "Ask to run unit or integration tests, fix broken suites, or check coverage..." },
+  { id: "inspect", label: "Inspect Code", icon: <Search size={13} />, prefix: "Inspect and trace codebase architecture for: ", placeholder: "Ask to trace functions, inspect dependencies, or map symbols in the workspace..." },
+  { id: "terminal", label: "Terminal Run", icon: <Terminal size={13} />, prefix: "Run build or terminal command: ", placeholder: "Describe a terminal command, dev server check, or build task to execute..." },
 ];
 
 export function ModelContextLine({
@@ -913,6 +921,13 @@ export function AgentView({
   onRefreshSkills,
   onTruncateSession,
   onForkSession,
+  codeRightSidebarOpen,
+  onOpenInspector,
+  onOpenEditor,
+  onOpenTerminal,
+  onOpenExtensions,
+  tasksCount,
+  goalsCount,
 }: {
   hasProject: boolean;
   activeFile: string;
@@ -962,6 +977,13 @@ export function AgentView({
   onRefreshSkills?: () => void;
   onTruncateSession?: (fromIndex: number) => Promise<any>;
   onForkSession?: (fromIndex: number) => Promise<any>;
+  codeRightSidebarOpen?: boolean;
+  onOpenInspector?: (section?: "tasks" | "goals") => void;
+  onOpenEditor?: () => void;
+  onOpenTerminal?: () => void;
+  onOpenExtensions?: () => void;
+  tasksCount?: number;
+  goalsCount?: number;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
@@ -972,6 +994,16 @@ export function AgentView({
 
   const api = window.nexus;
   const [showComposerMenu, setShowComposerMenu] = useState(false);
+  const [activeCodePill, setActiveCodePill] = useState<string | null>(null);
+
+  // Auto-resize textarea seamlessly (matching Home mode)
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const nextHeight = Math.min(Math.max(el.scrollHeight, 28), 180);
+    el.style.height = `${nextHeight}px`;
+  }, [draft]);
 
   // ZCode-style change summary: collapsed "N files changed +a −d" row whose
   // file list expands underneath.
@@ -1040,6 +1072,7 @@ export function AgentView({
 
   const transcriptNodes: ReactNode[] = [];
   let pendingActivity: ChatItem[] = [];
+  let pendingArtifacts: ArtifactItem[] = [];
   const flushActivity = () => {
     if (pendingActivity.length) {
       transcriptNodes.push(
@@ -1059,14 +1092,21 @@ export function AgentView({
     openChatAttachment(attachment, onOpenAttachment, onOpenImage);
   }
   messages.forEach((message, index) => {
-    if (message.role === "event") pendingActivity.push(message);
-    else {
+    if (message.role === "event") {
+      pendingActivity.push(message);
+      if (message.artifact) {
+        pendingArtifacts.push(message.artifact);
+      }
+    } else {
       flushActivity();
+      const turnArtifacts = message.role === "assistant" && pendingArtifacts.length > 0 ? [...pendingArtifacts] : undefined;
+      pendingArtifacts = [];
       transcriptNodes.push(
         <ChatItemView
           key={`${message.createdAt}-${index}`}
           message={message}
           index={index}
+          artifacts={turnArtifacts}
           onOpenArtifact={onOpenArtifact}
           onOpenImage={onOpenImage}
           onOpenAttachment={onOpenAttachment}
@@ -1340,12 +1380,32 @@ export function AgentView({
         return;
       }
       event.preventDefault();
-      handleSendMessage();
+      const pillObj = CODE_ACTION_PILLS.find((p) => p.id === activeCodePill);
+      if (pillObj && draft.trim() && !draft.startsWith(pillObj.prefix)) {
+        handleSendMessage(`${pillObj.prefix}${draft.trim()}`);
+      } else {
+        handleSendMessage();
+      }
+      setActiveCodePill(null);
     }
   }
 
   return (
-    <div className="agent-view">
+    <div className="agent-view" style={{ position: "relative" }}>
+      {/* Floating Compact Overview Card pinned to top right when sidebar is collapsed */}
+      {!codeRightSidebarOpen && (
+        <CodeOverviewCard
+          diffTotals={diffTotals}
+          tasksCount={tasksCount ?? 31}
+          goalsCount={goalsCount ?? (latestPlan?.plan?.steps?.length || 2)}
+          onOpenDiff={() => onOpenDiff?.()}
+          onOpenEditor={() => onOpenEditor?.()}
+          onOpenTerminal={() => onOpenTerminal?.()}
+          onOpenExtensions={() => onOpenExtensions?.()}
+          onOpenInspector={(sec) => onOpenInspector?.(sec)}
+        />
+      )}
+
       {activeSessionId && worktreeStatus?.isGit && worktreeStatus.worktree && (
         <WorktreeBar
           sessionId={activeSessionId}
@@ -1355,25 +1415,27 @@ export function AgentView({
           onDiscardSuccess={onDiscardSuccess}
         />
       )}
-      <div className="agent-view-head">
-        <div>
-          <span className="view-kicker">CODING AGENT</span>
-          <h1>
-            {running
-              ? "Working on your task"
-              : hasProject
-              ? "Ready for your task"
-              : "Open a project to begin"}
-          </h1>
-          <p>
-            {running
-              ? "The agent is using the selected project context."
-              : hasProject
-              ? "Describe the outcome. Nexus will inspect, plan, implement and validate."
-              : "Create or open a local project. Nothing is preloaded."}
-          </p>
+      {!messages.length && (
+        <div className="agent-view-head">
+          <div>
+            <span className="view-kicker">CODING AGENT</span>
+            <h1>
+              {running
+                ? "Working on your task"
+                : hasProject
+                ? "Ready for your task"
+                : "Open a project to begin"}
+            </h1>
+            <p>
+              {running
+                ? "The agent is using the selected project context."
+                : hasProject
+                ? "Describe the outcome. Nexus will inspect, plan, implement and validate."
+                : "Create or open a local project. Nothing is preloaded."}
+            </p>
+          </div>
         </div>
-      </div>
+      )}
       <div
         className="agent-transcript"
         ref={transcriptRef}
@@ -1404,8 +1466,11 @@ export function AgentView({
                     textareaRef.current?.focus();
                   }}
                 >
-                  <span className="codex-starter-icon">{starter.icon}</span>
-                  <span className="codex-starter-label">{starter.label}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span className="codex-starter-icon">{starter.icon}</span>
+                    <span className="codex-starter-card-title">{starter.label}</span>
+                  </div>
+                  <span className="codex-starter-card-desc">{starter.desc}</span>
                 </button>
               ))}
             </div>
@@ -1455,14 +1520,25 @@ export function AgentView({
               </span>
             </button>
             <div className="rollback-actions">
+              {onOpenDiff && (
+                <button
+                  type="button"
+                  className="btn-review"
+                  onClick={onOpenDiff}
+                  title="Open the full Git diff inspection panel"
+                >
+                  <GitBranch size={12} /> Review
+                </button>
+              )}
               <button
+                type="button"
                 className="secondary"
                 onClick={() => onUndoRun(checkpointId)}
                 title="Restore pre-run files and roll back Nexus-only session commits"
               >
                 <RotateCcw size={12} /> {(undoLevels || 0) > 1 ? `Undo (${undoLevels})` : "Undo"}
               </button>
-              <button className="primary" onClick={onKeepChanges} title="Accept and clear all undo history for this session">
+              <button type="button" className="primary" onClick={onKeepChanges} title="Accept and clear all undo history for this session">
                 <Check size={12} /> Keep changes
               </button>
             </div>
@@ -1486,7 +1562,7 @@ export function AgentView({
           ) : null}
         </div>
       )}
-      <div className="agent-input-area">
+      <div className="code-composer-wrapper home-composer-wrapper">
         <input
           type="file"
           ref={imageInputRef}
@@ -1501,7 +1577,7 @@ export function AgentView({
           isInterrupted={latestPlan?.isInterrupted}
           onContinue={() => submit("continue")}
         />
-        <div className="agent-input" style={{ position: "relative" }}>
+        <div className="code-composer-box home-composer-box" style={{ position: "relative" }}>
           {mentionQuery !== null && mentionItems.length > 0 && (
             <div className="mention-dropdown">
               {mentionItems.map((item, idx) => (
@@ -1537,23 +1613,23 @@ export function AgentView({
             />
           )}
           {attachments.length > 0 && (
-            <div className="image-attachments-bar">
+            <div className="home-composer-attachments">
               {attachments.map((attachment, idx) => (
-                <div className="image-preview-chip" key={`${attachment.url}-${idx}`}>
+                <div className="home-attachment-pill" key={`${attachment.url}-${idx}`}>
                   <button
+                    type="button"
                     className="attachment-chip-main"
                     onClick={() => openAttachment(attachment)}
                     title={`${attachment.name} — click to preview`}
                   >
                     {isImageAttachment(attachment)
                       ? <img src={attachment.url} alt={attachment.name} className="image-preview-thumb" />
-                      : <FileText size={14} />}
-                    <span className="attachment-file-chip">
-                      <span className="attachment-file-name">{attachment.name}</span>
-                      <small>{formatAttachmentSize(attachment.size)}</small>
-                    </span>
+                      : <FileText size={13} />}
+                    <span className="attachment-file-name">{attachment.name}</span>
+                    <small>{formatAttachmentSize(attachment.size)}</small>
                   </button>
                   <button
+                    type="button"
                     className="image-preview-remove"
                     onClick={() => {
                       setAttachments((current) => current.filter((_, i) => i !== idx));
@@ -1569,6 +1645,7 @@ export function AgentView({
           )}
           <textarea
             ref={textareaRef}
+            className="home-composer-textarea code-composer-textarea"
             value={draft}
             onFocus={() => {
               onRefreshSkills?.();
@@ -1588,23 +1665,26 @@ export function AgentView({
             }}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            placeholder="Ask the agent to inspect, change, test, or review your project… (paste images with Ctrl+V, type @ for files, / for commands)"
-            rows={3}
+            placeholder={
+              CODE_ACTION_PILLS.find((p) => p.id === activeCodePill)?.placeholder ||
+              "Ask Nexus to inspect, edit, test, or review your project… (Ctrl+V images, @ files/skills, / commands)"
+            }
           />
-          <div className="input-footer">
-            <div className="input-left">
+          <div className="code-composer-toolbar home-composer-toolbar">
+            <div className="code-composer-tools-group home-composer-tools-group">
               <div className="composer-more-wrap">
                 <button
-                  className="attach-button"
+                  type="button"
+                  className="attach-button composer-tool-btn"
                   onClick={() => setShowComposerMenu(!showComposerMenu)}
-                  title="Attach context"
+                  title="Attach context (Current file, Git diff, files, images)"
                 >
                   <Plus size={14} />
                 </button>
                 {showComposerMenu && (
                   <div className="composer-menu">
                     <button disabled={!activeFile} onClick={onAttachFile}>
-                      <FileCode2 size={13} /> Attach current file
+                      <FileCode2 size={13} /> Attach current file {activeFile ? `(${activeFile.split("/").pop()})` : ""}
                     </button>
                     <button onClick={onAttachDiff}>
                       <GitBranch size={13} /> Attach Git diff
@@ -1654,19 +1734,47 @@ export function AgentView({
                 contextUsage={contextUsage}
                 activeSessionId={activeSessionId}
               />
+              {CODE_ACTION_PILLS.map((pill) => (
+                <button
+                  key={pill.id}
+                  type="button"
+                  className={`composer-tool-btn ${activeCodePill === pill.id ? "active" : ""}`}
+                  onClick={() => {
+                    if (activeCodePill === pill.id) {
+                      setActiveCodePill(null);
+                    } else {
+                      setActiveCodePill(pill.id);
+                    }
+                    textareaRef.current?.focus();
+                  }}
+                  title={pill.placeholder}
+                >
+                  {pill.icon}
+                  <span>{pill.label}</span>
+                </button>
+              ))}
             </div>
             <button
-              className={`send-button${running ? " stop" : ""}`}
+              type="button"
+              className={`composer-send-btn ${running ? "composer-stop-btn" : ""}`}
               disabled={!running && !draft.trim() && attachments.length === 0}
-              onClick={running ? onStop : () => handleSendMessage()}
-              title={running ? "Stop the agent" : "Send"}
+              onClick={running ? onStop : () => {
+                const pillObj = CODE_ACTION_PILLS.find((p) => p.id === activeCodePill);
+                if (pillObj && draft.trim() && !draft.startsWith(pillObj.prefix)) {
+                  handleSendMessage(`${pillObj.prefix}${draft.trim()}`);
+                } else {
+                  handleSendMessage();
+                }
+                setActiveCodePill(null);
+              }}
+              title={running ? "Stop agent execution" : "Send message (Enter)"}
             >
               {running ? <Square size={13} fill="currentColor" /> : <ArrowUp size={16} />}
             </button>
           </div>
         </div>
         <div className="input-note">
-          <ShieldCheck size={12} /> Nexus runs real commands and edits files in this workspace — review the Diff tab before keeping changes
+          <ShieldCheck size={12} /> Nexus Coding Agent · Review live diffs and terminal execution before keeping changes
         </div>
       </div>
     </div>

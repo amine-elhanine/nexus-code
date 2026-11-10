@@ -1031,6 +1031,7 @@ export function ActivityGroupView({
 export function ChatItemView({
   message,
   index,
+  artifacts,
   onOpenArtifact,
   onOpenImage,
   onOpenAttachment,
@@ -1040,6 +1041,7 @@ export function ChatItemView({
 }: {
   message: ChatItem;
   index?: number;
+  artifacts?: ArtifactItem[];
   onOpenArtifact?: (artifact: ArtifactItem) => void;
   onOpenImage?: (src: string) => void;
   onOpenAttachment?: (attachment: ChatAttachment) => void;
@@ -1048,10 +1050,50 @@ export function ChatItemView({
   onRegenerate?: (index: number) => void;
 }) {
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
-  const deliverables = useMemo(() => {
-    if (message.role !== "assistant" || !message.text) return [];
-    return extractDeliverablesFromText(message.text);
-  }, [message.role, message.text]);
+  const deliverables = useMemo<ArtifactItem[]>(() => {
+    if (message.role !== "assistant") return [];
+    const seen = new Set<string>();
+    const list: ArtifactItem[] = [];
+
+    const norm = (fn: string) => fn.trim().replace(/^.*[\\/]/, "").toLowerCase();
+
+    // 1. Artifacts produced in this turn (rich with file size, metadata)
+    if (artifacts && artifacts.length > 0) {
+      for (const art of artifacts) {
+        const key = norm(art.filename || art.name || art.path || art.id || "");
+        if (key && !seen.has(key)) {
+          seen.add(key);
+          list.push(art);
+        }
+      }
+    }
+
+    // 2. Deliverables mentioned in assistant prose (deduplicated by filename)
+    if (message.text) {
+      const fromText = extractDeliverablesFromText(message.text);
+      for (const item of fromText) {
+        const key = norm(item.filename || item.name);
+        if (key && !seen.has(key)) {
+          seen.add(key);
+          list.push({
+            id: item.filename,
+            sessionId: "",
+            name: item.name,
+            filename: item.filename,
+            path: item.filename,
+            content: "",
+            status: "completed",
+            userFacing: true,
+            requestFeedback: false,
+            createdAt: message.createdAt,
+            updatedAt: message.createdAt,
+          });
+        }
+      }
+    }
+
+    return list;
+  }, [message.role, message.text, message.createdAt, artifacts]);
 
   if (message.artifact) {
     return (
@@ -1160,34 +1202,9 @@ export function ChatItemView({
         <div className="chat-message-deliverables-strip">
           {deliverables.map((item) => (
             <ArtifactCard
-              key={item.filename}
-              artifact={{
-                id: item.filename,
-                sessionId: "",
-                name: item.name,
-                filename: item.filename,
-                path: item.filename,
-                content: "",
-                status: "completed",
-                userFacing: true,
-                requestFeedback: false,
-                createdAt: message.createdAt,
-                updatedAt: message.createdAt,
-              }}
-              metaText={item.meta}
-              onClick={() => onOpenArtifact?.({
-                id: item.filename,
-                sessionId: "",
-                name: item.name,
-                filename: item.filename,
-                path: item.filename,
-                content: "",
-                status: "completed",
-                userFacing: true,
-                requestFeedback: false,
-                createdAt: message.createdAt,
-                updatedAt: message.createdAt,
-              })}
+              key={item.filename || item.id}
+              artifact={item}
+              onClick={() => onOpenArtifact?.(item)}
             />
           ))}
         </div>

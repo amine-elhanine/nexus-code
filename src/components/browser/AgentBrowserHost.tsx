@@ -143,6 +143,7 @@ export const AgentBrowserHost: React.FC = () => {
         useragent={CHROME_DESKTOP_UA}
         partition="persist:browser-home"
         webpreferences="contextIsolation=yes"
+        tabIndex={-1}
       />
       <webview
         ref={codeRef as never}
@@ -150,6 +151,7 @@ export const AgentBrowserHost: React.FC = () => {
         useragent={CHROME_DESKTOP_UA}
         partition="persist:browser-code"
         webpreferences="contextIsolation=yes"
+        tabIndex={-1}
       />
     </div>
   );

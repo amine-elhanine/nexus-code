@@ -785,6 +785,18 @@ export function NotebookView({
   const viewMap = viewMapId ? mindmaps.find((m) => m.id === viewMapId) || null : null;
   const viewSummary = viewSummaryId ? summaries.find((s) => s.id === viewSummaryId) || null : null;
   const viewAudio = viewAudioId ? audioOverviews.find((a) => a.id === viewAudioId) || null : null;
+
+  // Close any opened document, note, quiz, mind map, flashcards, or audio when switching notebooks
+  useEffect(() => {
+    setViewDocId(null);
+    setViewNoteId(null);
+    setViewQuizId(null);
+    setViewFichesId(null);
+    setViewMapId(null);
+    setViewSummaryId(null);
+    setViewAudioId(null);
+  }, [activeNotebook?.id]);
+
   // Link import form, shared by YouTube transcripts and website crawls.
   const [linkKind, setLinkKind] = useState<"youtube" | "website" | null>(null);
   const [linkUrl, setLinkUrl] = useState("");

@@ -273,6 +273,20 @@ export async function inspectDeliverable(root: string, relativePath: string, req
     if (metrics.wordCount < MIN_WORDS_BY_KIND[ext]) problems.push(`file contains only ~${metrics.wordCount} words`);
   }
 
+  // Depth-aware checks: requests asking for courses, tutorials, guides, or manuals
+  // require substantial content, not a 1-page outline or empty stub.
+  const comprehensiveMatch = request.match(/\b(course|tutorial|guide|manual|book|mastery|curriculum|handbook|in-depth|deep dive|comprehensive)\b/i);
+  if (comprehensiveMatch && (ext === "docx" || ext === "pdf" || ext === "md" || ext === "markdown")) {
+    if (metrics.wordCount < 250) {
+      problems.push(`the request asks for a ${comprehensiveMatch[1].toLowerCase()}, but the document contains only ~${metrics.wordCount} words — provide comprehensive educational content with complete modules and working examples instead of an outline`);
+    }
+  }
+
+  // Detect empty or truncated code stubs
+  if (metrics.textSample && /(def\s+\w+\([^)]*\):(?:\s*(?:pass|#\s*TODO|\.\.\.))+)/i.test(metrics.textSample)) {
+    problems.push("code examples contain empty or truncated stubs ('pass' / '# TODO') — provide complete, working code implementations");
+  }
+
   // Topic coverage: the request's significant terms should appear in the
   // artifact text. Require 2 of the top keywords (1 when only 1 exists) so a
   // single odd word can never fail an otherwise-good deliverable.

@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect, useMemo, KeyboardEvent, type ReactNode } from "react";
+import React, { useRef, useState, useEffect, useMemo, useCallback, KeyboardEvent, type ReactNode } from "react";
 import {
   Sparkles, Paperclip, ArrowUp, Square, Search, BarChart3, FileText,
   X, Presentation, Table2, Globe
@@ -7,14 +7,14 @@ import { ChatItemView, StreamingAssistantMessage, ActivityGroupView } from "../c
 import { SlashCommandPopup, filterSlashCommands, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
 import { ATTACHMENT_ACCEPT } from "../utils/attachments.js";
 import { insertAtCursor } from "../utils/textarea.js";
-import type { ChatItem, ProviderConfig, ProviderDefinition, ChatAttachment, SkillInfo, AgentUsage, AgentContextUsageSnapshot } from "../types.js";
+import type { ChatItem, ProviderConfig, ProviderDefinition, ChatAttachment, SkillInfo, AgentUsage, AgentContextUsageSnapshot, ArtifactItem } from "../types.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
 import { HomeCanvasDrawer } from "../components/home/HomeCanvasDrawer.js";
 import { SidebarBrowser } from "../components/browser/SidebarBrowser.js";
 import { ModelSelect } from "./AgentView.js";
 
 type RenderBlock =
-  | { kind: "message"; message: ChatItem; index: number }
+  | { kind: "message"; message: ChatItem; index: number; artifacts?: ArtifactItem[] }
   | { kind: "events"; events: ChatItem[]; startIndex: number };
 
 export type HomeFile = { path: string; name: string; size: number; modified: string };
@@ -58,10 +58,10 @@ export interface HomeViewProps {
 }
 
 const TOOL_PILLS = [
-  { id: "search", label: "Search", icon: <Search size={13} />, prefix: "Search the web for " },
-  { id: "visualize", label: "Visualize", icon: <BarChart3 size={13} />, prefix: "Create an interactive visual diagram or chart of " },
-  { id: "document", label: "Document", icon: <FileText size={13} />, prefix: "Generate a polished report on " },
-  { id: "research", label: "Deep Research", icon: <Sparkles size={13} />, prefix: "Conduct deep multi-source research with citations on " },
+  { id: "search", label: "Search", icon: <Search size={13} />, prefix: "Search the web for: ", placeholder: "Search the web for current facts, news, or sources..." },
+  { id: "visualize", label: "Visualize", icon: <BarChart3 size={13} />, prefix: "Create an interactive visual diagram or chart for: ", placeholder: "Describe the chart, graph, or interactive widget to build..." },
+  { id: "document", label: "Document", icon: <FileText size={13} />, prefix: "Create a polished document deliverable for: ", placeholder: "Describe the report (.docx/.pdf), slide deck (.pptx), or sheet (.xlsx)..." },
+  { id: "research", label: "Deep Research", icon: <Sparkles size={13} />, prefix: "Conduct deep multi-source research with citations on: ", placeholder: "Ask a complex topic for deep multi-source web research..." },
 ];
 
 const STARTER_PROMPTS = [
@@ -139,6 +139,64 @@ export function HomeView({
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
 
+  const [rightSidebarWidth, setRightSidebarWidth] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("nexus_home_right_sidebar_width");
+      if (saved) {
+        const parsed = parseInt(saved, 10);
+        if (!isNaN(parsed) && parsed >= 320 && parsed <= 1600) return parsed;
+      }
+    } catch {
+      // ignore
+    }
+    return 480;
+  });
+  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false);
+
+  const handleResizePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingRightSidebar(true);
+    document.body.classList.add("sidebar-resizing-active");
+
+    const startX = e.clientX;
+    const startWidth = rightSidebarWidth;
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const delta = startX - moveEvent.clientX;
+      const maxWidth = Math.max(340, Math.floor(window.innerWidth * 0.85));
+      const nextWidth = Math.max(320, Math.min(maxWidth, startWidth + delta));
+      setRightSidebarWidth(nextWidth);
+    };
+
+    const handlePointerUp = (upEvent: PointerEvent) => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+      document.body.classList.remove("sidebar-resizing-active");
+      setIsResizingRightSidebar(false);
+      const delta = startX - upEvent.clientX;
+      const maxWidth = Math.max(340, Math.floor(window.innerWidth * 0.85));
+      const finalWidth = Math.max(320, Math.min(maxWidth, startWidth + delta));
+      try {
+        localStorage.setItem("nexus_home_right_sidebar_width", String(finalWidth));
+      } catch {
+        // ignore
+      }
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+  }, [rightSidebarWidth]);
+
+  // Close opened artifact/file in sidebar whenever active session switches
+  useEffect(() => {
+    setSelectedCanvasFile(null);
+    setIsSidebarExpanded(false);
+    setRightSidebarTab("browser");
+  }, [activeSessionId]);
+
   // Automatically follow browser agent activity in Watching mode (autoFollow === true)
   useEffect(() => {
     const api = window.nexus;
@@ -158,23 +216,44 @@ export function HomeView({
   // Group messages & events into RenderBlocks so tool runs collapse cleanly into ActivityGroupView
   const renderBlocks = useMemo<RenderBlock[]>(() => {
     const blocks: RenderBlock[] = [];
+    let pendingEvents: ChatItem[] = [];
+    let pendingArtifacts: ArtifactItem[] = [];
+
     messages.forEach((message, index) => {
-      // Artifact events are user deliverables: display them as top-level message chips
-      if (message.role === "event" && (message.artifact || message.kind === "artifact")) {
-        blocks.push({ kind: "message", message, index });
-        return;
-      }
       if (message.role === "event") {
-        const last = blocks[blocks.length - 1];
-        if (last && last.kind === "events") {
-          last.events.push(message);
-        } else {
-          blocks.push({ kind: "events", events: [message], startIndex: index });
+        pendingEvents.push(message);
+        if (message.artifact) {
+          pendingArtifacts.push(message.artifact);
         }
       } else {
-        blocks.push({ kind: "message", message, index });
+        if (pendingEvents.length > 0) {
+          blocks.push({
+            kind: "events",
+            events: pendingEvents,
+            startIndex: index - pendingEvents.length,
+          });
+          pendingEvents = [];
+        }
+        blocks.push({
+          kind: "message",
+          message,
+          index,
+          artifacts: message.role === "assistant" && pendingArtifacts.length > 0 ? [...pendingArtifacts] : undefined,
+        });
+        if (message.role === "assistant") {
+          pendingArtifacts = [];
+        }
       }
     });
+
+    if (pendingEvents.length > 0) {
+      blocks.push({
+        kind: "events",
+        events: pendingEvents,
+        startIndex: messages.length - pendingEvents.length,
+      });
+    }
+
     return blocks;
   }, [messages]);
 
@@ -233,7 +312,13 @@ export function HomeView({
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (!running && (draft.trim() || attachments.length > 0)) {
-        submit();
+
+        let submitOverride: string | undefined;
+        const pillObj = TOOL_PILLS.find((p) => p.id === activePill);
+        if (pillObj && draft.trim() && !draft.startsWith(pillObj.prefix)) {
+          submitOverride = `${pillObj.prefix}${draft.trim()}`;
+        }
+        submit(submitOverride);
         setActivePill(null);
         setSlashQuery(null);
       }
@@ -244,12 +329,12 @@ export function HomeView({
     if (activePill === pill.id) {
       setActivePill(null);
       if (draft.startsWith(pill.prefix)) {
-        setDraft(draft.slice(pill.prefix.length));
+        // Keep user draft clean without mutating text
       }
     } else {
       setActivePill(pill.id);
       if (!draft.startsWith(pill.prefix)) {
-        setDraft(pill.prefix + draft);
+        // Mode guidance is applied cleanly on submit
       }
     }
     textareaRef.current?.focus();
@@ -348,6 +433,7 @@ export function HomeView({
                     key={`msg-${block.index}`}
                     message={block.message}
                     index={block.index}
+                    artifacts={block.artifacts}
                     onOpenAttachment={onOpenAttachment}
                     onOpenImage={onOpenImage}
                     onOpenArtifact={(art) => {
@@ -470,7 +556,7 @@ export function HomeView({
             <textarea
               ref={textareaRef}
               className="home-composer-textarea"
-              placeholder={isEmpty ? "Ask anything, or request a document..." : "Ask anything... (Enter to send)"}
+              placeholder={TOOL_PILLS.find((p) => p.id === activePill)?.placeholder || (isEmpty ? "Ask anything, or request a document..." : "Ask anything... (Enter to send)")}
               value={draft}
               onChange={(e) => {
                 const val = e.target.value;
@@ -544,7 +630,15 @@ export function HomeView({
                     type="button"
                     className="composer-send-btn"
                     disabled={!draft.trim() && attachments.length === 0}
-                    onClick={() => submit()}
+                    onClick={() => {
+                      const pillObj = TOOL_PILLS.find((p) => p.id === activePill);
+                      if (pillObj && draft.trim() && !draft.startsWith(pillObj.prefix)) {
+                        submit(`${pillObj.prefix}${draft.trim()}`);
+                      } else {
+                        submit();
+                      }
+                      setActivePill(null);
+                    }}
                     title="Send message (Enter)"
                   >
                     <ArrowUp size={16} />
@@ -559,21 +653,27 @@ export function HomeView({
       {/* Right Sidebar: Artifact Canvas and/or Live Browser */}
       {(selectedCanvasFile || browserActive) && (
         <aside
-          className="workbench-right-sidebar"
+          className={`workbench-right-sidebar ${isResizingRightSidebar ? "resizing" : ""}`}
           style={{
-            width: isSidebarExpanded ? 780 : 480,
-            maxWidth: isSidebarExpanded ? "75%" : "55%",
+            width: isSidebarExpanded ? Math.max(rightSidebarWidth, 780) : rightSidebarWidth,
+            maxWidth: "85%",
             height: "100%",
             borderLeft: "1px solid var(--border-default)",
             background: "var(--bg-surface)",
             display: "flex",
             flexDirection: "column",
-            minWidth: 340,
+            minWidth: 320,
             position: "relative",
             zIndex: 10,
-            transition: "width 0.22s cubic-bezier(0.16, 1, 0.3, 1), max-width 0.22s cubic-bezier(0.16, 1, 0.3, 1)",
+            transition: isResizingRightSidebar ? "none" : "width 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
           }}
         >
+          {/* Draggable left edge resize handle */}
+          <div
+            className="sidebar-resize-handle"
+            onPointerDown={handleResizePointerDown}
+            title="Drag to resize sidebar"
+          />
           {/* Top tab switcher when both artifact & browser are open */}
           {selectedCanvasFile && browserActive && (
             <div className="sidebar-tab-strip">

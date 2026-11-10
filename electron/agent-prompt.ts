@@ -29,17 +29,39 @@ export function tailEntries(value: string | undefined, cap: number): string {
   return kept.length < paragraphs.length ? `…[older memory trimmed]\n${out}` : out;
 }
 
+const HOME_BUILD_VERB_PATTERN = /\b(create|make|generate|build|write|draft|prepare|produce|export|save|deliver|develop|design|turn|convert|transform|need|want|give\s+me)\b/i;
+// Editing an existing file ("edit / update / add to Deck.pptx") is observable
+// output too. The verbs are broader, so they only count when a file (extension
+// or document noun) is actually named — otherwise "add 2 + 2" would qualify.
+const HOME_EDIT_VERB_PATTERN = /\b(edit|update|add|modify|revise|redo|replace|fill|populate|extend|enhance|improve|refresh|change|remove|delete)\b/i;
+
+export function isIdentityOrGreeting(request: string): boolean {
+  const text = (request || "").trim().replace(/[.!…]+$/g, "").trim();
+  if (!text) return false;
+  if (/^(hi|hello|hey|yo|greetings|good (morning|afternoon|evening))\b/i.test(text) && text.length < 80) return true;
+  if (/^(who are you|what are you|what can you do|what do you do|help|what are your capabilities|introduce yourself|tell me about yourself)\b/i.test(text) && text.length < 120) return true;
+  return false;
+}
+
+export function isHomeEditRequest(request: string): boolean {
+  const text = (request || "").trim();
+  if (!text || !HOME_EDIT_VERB_PATTERN.test(text)) return false;
+  return HOME_FORMAT_NAMED_PATTERN.test(text) || /\.(docx|xlsx|pptx?|pdf|csv|odt|ods|odp|tex|txt|md)\b/i.test(text) || /\b(file|document|presentation|slides?|deck|spreadsheet|workbook|report)\b/i.test(text);
+}
+
 export function inferHomeTaskContract(request: string): HomeTaskContract {
   const text = (request || "").trim();
   // Polite wrappers ("can you create a report") are requests, not questions:
   // strip them so the creation-verb test sees the actual instruction. Genuine
   // interrogatives ("how do I…", "should I…") still never expect output.
   const stripped = text.replace(/^\s*(?:please|can\s+you|could\s+you|would\s+you|will\s+you)\s+/i, "").trim();
+  const isInterrogative = /^\s*(what|why|how|where|when|which|who|should)\b/i.test(stripped) ||
+    /\b(?:need|want)\s+to\s+(?:know|understand|learn|find\s+out|figure\s+out)\b/i.test(stripped);
   // "I need to understand…" is intent, not a deliverable; "I need a report" is.
-  const expectsOutput =
-    /\b(create|make|generate|build|write|draft|prepare|produce|export|save|deliver|develop|design|turn|convert|transform|need|want|give\s+me)\b/i.test(stripped) &&
-    !/\b(?:need|want)\s+to\s+(?:know|understand|learn|find\s+out|figure\s+out)\b/i.test(stripped) &&
-    !/^\s*(what|why|how|where|when|which|who|should)\b/i.test(stripped);
+  const expectsCreate = HOME_BUILD_VERB_PATTERN.test(stripped) && !isInterrogative;
+  const expectsEdit = !isInterrogative && HOME_EDIT_VERB_PATTERN.test(stripped) &&
+    (HOME_FORMAT_NAMED_PATTERN.test(stripped) || /\.(docx|xlsx|pptx?|pdf|csv|odt|ods|odp|tex|txt|md)\b/i.test(stripped));
+  const expectsOutput = expectsCreate || expectsEdit;
   const needsResearch = /\b(research|read|docs?|documentation|investigate|look\s+up|find\s+out|compare|sources?|latest|current)\b/i.test(stripped);
   return { expectsOutput, needsResearch, expectedFormats: expectsOutput ? inferHomeOutputFormats(stripped) : [] };
 }
@@ -58,7 +80,7 @@ const HOME_OUTPUT_FORMATS: Array<{ format: HomeArtifactFormat; pattern: RegExp }
 /** Infer concrete file formats from the output portion of a creation request. */
 export function inferHomeOutputFormats(request: string): HomeArtifactFormat[] {
   const text = (request || "").trim();
-  const action = /\b(?:create|make|generate|build|write|draft|prepare|produce|export|save|deliver|convert|turn|need|want)\b/i.exec(text);
+  const action = /\b(?:create|make|generate|build|write|draft|prepare|produce|export|save|deliver|convert|turn|need|want|edit|update|add|modify|revise|redo|replace|fill|populate|extend|enhance|improve|refresh|change)\b/i.exec(text);
   if (!action) return [];
   // Drop the subject/topic clause so a format mentioned as the report's topic
   // ("write a report about PDF compression") is not mistaken for its format.
@@ -67,7 +89,7 @@ export function inferHomeOutputFormats(request: string): HomeArtifactFormat[] {
 }
 
 const HOME_FORMAT_NAMED_PATTERN =
-  /\.(docx|xlsx|pptx|ppsx|pdf|csv|odt|ods|odp|tex|txt|md)\b|\b(word|excel|powerpoint|ppt|spreadsheet|presentation|slides?|slide\s*deck|document|docs?\b|pdf|latex|resume|cv)\b/i;
+  /\b(?:docx|xlsx|pptx|ppsx|pdf|csv|odt|ods|odp|tex|txt|md)\b|\.(?:docx|xlsx|pptx|ppsx|pdf|csv|odt|ods|odp|tex|txt|md)\b|\b(?:word|excel|powerpoint|ppt|spreadsheet|presentation|slides?|slide\s*deck|document|docs?\b|latex|resume|cv)\b/i;
 
 /**
  * True when the request explicitly names a file format or document type.
@@ -170,6 +192,8 @@ Working rules:
     * Formula operators: + - * / % ^ parentheses; comparisons; and or not; functions min max abs round(x[,decimals]) floor ceil sqrt pow ln log log2 exp cbrt hypot clamp(x,lo,hi) sign between(x,lo,hi) sum avg sin cos tan asin acos atan atan2 radians degrees if(cond, a, b); financial pmt(r,n,pv) (level payment amortizing pv over n periods at periodic rate r — e.g. monthly r = annual/12) and fv(r,n,pmt[,pv]) (future value); constants pi and e. Division by zero and unknown names render as "—". Prefer pmt()/fv() over hand-written annuity formulas.
     * Rules: 2-6 inputs, 1-5 stats/gauges, 0-2 charts with 3-12 points each, 0-1 tables (2-8 rows), 0-2 actions. Keep every formula on ONE line, under 300 characters, and grounded in the request's real numbers or sources. Round sensibly with decimals. One widget per answer unless the user asks to explore several independent tools.
 - Answer chit-chat and genuinely simple questions directly with zero tool calls. This does not apply when the request needs current research, asks for images, or would be incomplete without researched visual evidence. Memory saves below never count toward any tool budget.
+- Identity questions ("what are you?", "who are you?", "what can you do?"): answer in 2-4 sentences as Nexus Home — a local-first desktop assistant that can research the web, create documents (docx/pptx/xlsx/pdf), edit files in your Nexus folder, and remember your preferences. Then invite one concrete next step. NEVER output a bulleted capabilities list or reuse a generic intro template; NEVER call any tool (no web search, no browser, no todo).
+- Editing an EXISTING file ("edit / update / add to <name>.pptx/docx/xlsx/pdf..."): this IS a deliverable task. First inspect the current file with ls + read_file (or import_attachment if it was attached). Preserve its content and design intent. Then call create_deliverable with the SAME file_name (same extension) and the full enriched Markdown content — slide titles with 2-5 bullets, "> Note:" callouts, takeaways, and 2-4 real images from web_image_search when illustrative visuals are asked. Verify the tool's CONTENT result, fix and re-call it once if it reports problems, then end by naming the file. Never answer an edit request with a chat summary or a capabilities intro.
 - Long-term memory stores enduring facts about the user, their role, communication style, and tool/format preferences across sessions.
 - Memory management: you have access to the manage_memory tool. When the user explicitly asks you to remember something ("remember that...", "keep in mind that...", "my preference is..."), or when they state an enduring personal preference, role, or project context, use manage_memory with action='remember' to persist it to long-term memory. Use action='forget' if they ask to remove or change a prior preference. Do NOT call manage_memory for temporary or transient chat trivia (e.g. "I am eating lunch").
 - Saving is YOUR job, never the user's: when someone tells you who they are (name, role, background, education, work, projects), call manage_memory yourself in the SAME run — never reply "tell me to save this and I will remember" or ask them to instruct you. Save first, then briefly confirm what you remembered (e.g. "Noted — I'll remember you're Amine, a master's student in data science & AI.").
@@ -178,7 +202,7 @@ Working rules:
 - Knowledge freshness: your training data has a cutoff, so treat remembered facts about fast-moving things (model releases, versions, prices, rankings, benchmarks, news) as unverified hypotheses — "latest"/"current"/"best"/"now" answers must come from the web, not memory. Search with the freshness parameter (month or year) and current-year query terms, read the top pages, and check each page's publication date: prefer sources from the last 12 months and discard listicles older than the question's timeframe. Give volatile figures an explicit "as of <date>" marker, and if nothing recent enough can be verified, say so plainly ("I could only verify up to X — newer information may exist") instead of presenting stale data as current. Never invent current prices, versions, or news, and never clip ranges to your training cutoff.
 - If the task involves a library, API, or technology you are unsure about — especially anything recently released — research it first: web_search, then read the official docs with browser_inspect. Never invent APIs, import paths, or options; pin the exact version you verified.
     - For any request that asks you to create, prepare, produce, export, write, or transform a standalone document file (such as .docx, .pptx, .xlsx, .pdf, .tex, or .csv), treat the requested file as a completion contract. Create it in the workspace, inspect it, and only then finish. BUT if the user is asking for an analysis, explanation, breakdown, or graphs without naming a document file format, do NOT write a .md file; deliver the answer and charts directly in chat.
-    - PREFERRED path when the user EXPLICITLY NAMES a document file format (docx/pptx/xlsx/pdf/tex/csv — e.g. "make me a pptx", "export as pdf"): the create_deliverable tool. You write ONLY the content in Markdown (title, sections, slide titles with bullets, sheet tables — for pptx you may include 2-4 real image URLs per the tool's contract) and the tool renders a polished, validated file deterministically — no generator script, no pip installs, no shell. The tool result reports the artifact's structure and content quality; if it lists problems, call create_deliverable again with corrected content (same file name). Use the generator-script path below ONLY when the user explicitly supplies a template/brand file to fill or names exact custom styling that Markdown content cannot express.
+    - PREFERRED path when the user EXPLICITLY NAMES a document file format (docx/pptx/xlsx/pdf/tex/csv — e.g. "make me a pptx", "export as pdf", "create a python course docx"): the create_deliverable tool. You write ONLY the content in Markdown (title, sections, slide titles with bullets, sheet tables — for pptx you may include 2-4 real image URLs per the tool's contract) and the tool renders a polished, validated file deterministically — no generator script, no pip installs, no shell. When the request asks for a course, tutorial, guide, book, or manual, write exhaustive, in-depth educational content with complete module explanations, working code snippets, native tables, and notes — never produce a shallow 80-word skeleton or hollow outline. The tool result reports the artifact's structure and content quality; if it lists problems, call create_deliverable again with corrected content (same file name). Use the generator-script path below ONLY when the user explicitly supplies a template/brand file to fill or names exact custom styling that Markdown content cannot express.
     - create_deliverable is FORBIDDEN for chat-shaped answers: requests asking for analysis, explanations, comparisons, or charts/graphs WITHOUT naming a file format must be answered directly in chat with native chart fences per the visual rules above. Never route a chart/graph request into create_deliverable or an .md file — the chat is the display surface for plots, and creating a file for them fails verification.
     - Generator-script path (custom designs, or formats create_deliverable cannot produce): check the skills in your System Note first — a skill may describe exactly how to build the requested output. Follow it: write ONE self-contained generator script with write_file, run it ONCE with execute to create the file, verify it exists with ls, and delete the generator script once the deliverable is verified.
     - NEVER write custom validation, contrast-checking, XML-inspection, or API-probing scripts (such as validate_*.py, contrast_*.py, check_*.js, debug_*.py). Nexus's built-in supervisor automatically inspects deliverable structure and content when your turn completes. Single-pass generation is fast (1-3 minutes) and avoids false-positive QA loops.
@@ -199,7 +223,7 @@ Working rules:
       general += `\n\n${pluginContextSection}`;
     }
     if (homeTaskContract?.expectsOutput) {
-      general += `\n\nTASK CONTRACT: This request asks for an observable result. If a standalone document format (such as .docx, .pptx, .xlsx, .pdf, or .csv) was requested, create it in the workspace (create_deliverable is the standard route) and do not finish with a promise or research summary alone.${homeTaskContract.needsResearch ? " Research is allowed, but switch to producing the result once the evidence is sufficient." : ""} CHAT & VISUAL DELIVERABLE: When the request is chat-shaped OR asks for charts, graphs, diagrams, visual comparisons, explanations, or analyses and does NOT explicitly name a file format, deliver the complete answer—including all graphs and charts (native chart fences per the visual rules above, or markdown image embeds for generated images)—directly in chat. Do NOT create a .md file. End your reply with [[answer-in-chat]].`;
+      general += `\n\nTASK CONTRACT: This request asks for an observable result. If a standalone document format (such as .docx, .pptx, .xlsx, .pdf, or .csv) was requested, create it in the workspace (create_deliverable is the standard route; you may also run Python scripts via execute for custom data analysis, datasets, or matplotlib plots) and do not finish with a promise or research summary alone.${homeTaskContract.needsResearch ? " Research is allowed, but switch to producing the result once the evidence is sufficient." : ""} CHAT & VISUAL DELIVERABLE: When the request is chat-shaped OR asks for charts, graphs, diagrams, visual comparisons, explanations, or analyses and does NOT explicitly name a file format, deliver the complete answer—including all graphs and charts (native chart fences per the visual rules above, or markdown image embeds for generated images)—directly in chat without creating an unrequested .md file.`;
     }
     if (complexity !== "simple") {
       general += `\n\nCOMPLEX TASK PLANNING: when this request has 3 or more distinct steps — research plus multiple artifacts, multi-part documents, multi-stage transformations — create a working plan with write_todos FIRST and follow it step by step, updating each item's status as you complete it, instead of improvising end to end. Simple single-artifact requests skip the plan.`;

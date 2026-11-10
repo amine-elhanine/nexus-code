@@ -19,6 +19,7 @@ import {
   FileCode,
 } from "lucide-react";
 import { safeMarkdown } from "../../markdown.js";
+import { fixPptxRenderedSlide } from "../../utils/pptx-preview.js";
 
 type PreviewKind =
   | "markdown"
@@ -268,6 +269,7 @@ export function HomeCanvasDrawer({
         const viewer = await PptxViewer.open(bytes.buffer as ArrayBuffer, libRef.current, {
           zipLimits: RECOMMENDED_ZIP_LIMITS,
           listOptions: { windowed: true },
+          onSlideRendered: (_idx, slideEl) => fixPptxRenderedSlide(slideEl),
         });
         viewerRef.current = viewer as { destroy?: () => void };
       }

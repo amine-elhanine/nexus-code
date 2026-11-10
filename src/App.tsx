@@ -1,9 +1,9 @@
-import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen, Check, ChevronDown, ChevronRight, Code2, Download, FileCode2, FileText,
   Folder, FolderOpen, GitBranch, Home, Sparkles, X, Globe,
-  MessageSquare, MoreHorizontal, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Search,
-  Terminal, Trash2, SlidersHorizontal, Database, Cpu, Brain, Command, TriangleAlert
+  MessageSquare, MoreHorizontal, MoreVertical, PanelLeft, PanelRight, Pencil, Plus, RefreshCw, Search,
+  Terminal, Trash2, SlidersHorizontal, Database, Cpu, Brain, Command, TriangleAlert, AppWindow, CheckCircle2
 } from "lucide-react";
 import { WindowControls } from "./components/common/WindowControls.js";
 import { ConfirmModal } from "./modals/ConfirmModal.js";
@@ -15,6 +15,8 @@ import { SettingsModal } from "./modals/SettingsModal.js";
 import { CommandPalette } from "./components/ui/CommandPalette.js";
 import { DaemonsModal } from "./components/daemons/DaemonsModal.js";
 import { ProjectRulesModal } from "./components/rules/ProjectRulesModal.js";
+import { CodeInspectorSidebar } from "./components/code/CodeInspectorSidebar.js";
+import { extractLatestPlan } from "./components/chat/SlidingPlanDrawer.js";
 const MonacoDiffModal = lazy(() => import("./components/diff/MonacoDiffModal.js").then((module) => ({ default: module.MonacoDiffModal })));
 const ArtifactViewer = lazy(() => import("./components/artifacts/ArtifactViewer.js").then((module) => ({ default: module.ArtifactViewer })));
 const FilePreviewModal = lazy(() => import("./components/home/FilePreviewModal.js").then((module) => ({ default: module.FilePreviewModal })));
@@ -268,8 +270,157 @@ export function App() {
   const [codeSelectedArtifact, setCodeSelectedArtifact] = useState<string | null>(null);
   const [codeSidebarExpanded, setCodeSidebarExpanded] = useState(false);
   const [codeBrowserActive, setCodeBrowserActive] = useState(false);
+
+  const [codeRightSidebarWidth, setCodeRightSidebarWidth] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("nexus_code_right_sidebar_width");
+      if (saved) {
+        const parsed = parseInt(saved, 10);
+        if (!isNaN(parsed) && parsed >= 320 && parsed <= 1600) return parsed;
+      }
+    } catch {
+      // ignore
+    }
+    return 480;
+  });
+  const [isResizingCodeRightSidebar, setIsResizingCodeRightSidebar] = useState(false);
+
+  const handleCodeResizePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingCodeRightSidebar(true);
+    document.body.classList.add("sidebar-resizing-active");
+
+    const startX = e.clientX;
+    const startWidth = codeRightSidebarWidth;
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const delta = startX - moveEvent.clientX;
+      const maxWidth = Math.max(340, Math.floor(window.innerWidth * 0.85));
+      const nextWidth = Math.max(320, Math.min(maxWidth, startWidth + delta));
+      setCodeRightSidebarWidth(nextWidth);
+    };
+
+    const handlePointerUp = (upEvent: PointerEvent) => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+      document.body.classList.remove("sidebar-resizing-active");
+      setIsResizingCodeRightSidebar(false);
+      const delta = startX - upEvent.clientX;
+      const maxWidth = Math.max(340, Math.floor(window.innerWidth * 0.85));
+      const finalWidth = Math.max(320, Math.min(maxWidth, startWidth + delta));
+      try {
+        localStorage.setItem("nexus_code_right_sidebar_width", String(finalWidth));
+      } catch {
+        // ignore
+      }
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+  }, [codeRightSidebarWidth]);
   const [codeBrowserLatestUrl, setCodeBrowserLatestUrl] = useState<string | null>(null);
-  const [codeRightSidebarTab, setCodeRightSidebarTab] = useState<"artifact" | "browser">("artifact");
+  const [codeRightSidebarOpen, setCodeRightSidebarOpen] = useState(false);
+  const [codeRightSidebarTab, setCodeRightSidebarTab] = useState<"inspector" | "artifact" | "browser">("inspector");
+
+  // Fetch daemons for the Inspector Background Tasks list
+  const [inspectorDaemons, setInspectorDaemons] = useState<any[]>([]);
+
+  useEffect(() => {
+    let mounted = true;
+    const fetchDaemons = async () => {
+      try {
+        if (window.nexus?.listDaemons) {
+          const list = await window.nexus.listDaemons();
+          if (mounted) setInspectorDaemons(list || []);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    void fetchDaemons();
+    const interval = setInterval(fetchDaemons, 3000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Assemble dynamic tasks from background daemons and executed session tool calls
+  const inspectorTasks = useMemo(() => {
+    const list: Array<{ id: string; name: string; status: "running" | "stopped" | "crashed" | "timer"; command?: string }> = [];
+
+    for (const d of inspectorDaemons) {
+      list.push({
+        id: d.id,
+        name: d.name || d.command,
+        status: d.status === "running" ? "running" : d.status === "crashed" ? "crashed" : "stopped",
+        command: d.command,
+      });
+    }
+
+    for (const msg of currentMessages) {
+      if (msg.role === "tool" || (msg.toolCalls && msg.toolCalls.length > 0)) {
+        for (const tc of msg.toolCalls || []) {
+          if (tc.name === "run_command" || tc.name === "bash") {
+            const cmd = (tc.args?.toolSummary as string) || (tc.args?.CommandLine as string) || (tc.args?.command as string);
+            if (cmd && !list.some((item) => item.name === cmd)) {
+              list.push({
+                id: `tool-${tc.id || list.length}`,
+                name: (tc.args?.toolSummary as string) || `Run ${cmd.slice(0, 30)}`,
+                status: "stopped",
+                command: cmd,
+              });
+            }
+          } else if (tc.name === "schedule") {
+            list.push({
+              id: `sched-${tc.id || list.length}`,
+              name: (tc.args?.Prompt as string) || "10s timer",
+              status: "timer",
+              command: "schedule",
+            });
+          }
+        }
+      }
+    }
+
+    return list;
+  }, [inspectorDaemons, currentMessages]);
+
+  // Assemble goals from plan steps or user conversation checkpoints
+  const inspectorGoals = useMemo(() => {
+    const goals: Array<{ id: string; text: string; status: "completed" | "in_progress" | "pending" }> = [];
+
+    const plan = extractLatestPlan(liveEvents, currentMessages, running);
+    if (plan?.plan?.steps && plan.plan.steps.length > 0) {
+      for (let i = 0; i < plan.plan.steps.length; i++) {
+        const step = plan.plan.steps[i];
+        goals.push({
+          id: `step-${i}`,
+          text: step.text,
+          status: step.status === "completed" ? "completed" : step.status === "in_progress" ? "in_progress" : "pending",
+        });
+      }
+    } else {
+      const userMsgs = currentMessages.filter((m) => m.role === "user");
+      for (let i = 0; i < userMsgs.length; i++) {
+        const u = userMsgs[i];
+        const text = (u.text || "").replace(/^\/goal\s+/i, "").trim();
+        if (text) {
+          const isLatest = i === userMsgs.length - 1;
+          goals.push({
+            id: `goal-${i}`,
+            text: text.length > 60 ? `${text.slice(0, 60)}...` : text,
+            status: isLatest && running ? "in_progress" : "completed",
+          });
+        }
+      }
+    }
+
+    return goals;
+  }, [liveEvents, currentMessages, running]);
 
   useEffect(() => {
     if (typeof api?.onBrowserAgentActivity === "function") {
@@ -278,12 +429,27 @@ export function App() {
         if (payload.autoFollow) {
           setCodeBrowserLatestUrl(payload.url);
           setCodeBrowserActive(true);
+          setCodeRightSidebarOpen(true);
           setCodeRightSidebarTab("browser");
         }
       });
       return unsub;
     }
   }, [api]);
+
+  // Close opened artifact in Code sidebar and dismiss attachment preview whenever active task session switches
+  useEffect(() => {
+    setCodeSelectedArtifact(null);
+    setCodeSidebarExpanded(false);
+    setCodeRightSidebarOpen(false);
+    setCodeRightSidebarTab("inspector");
+    setAttachmentPreview(null);
+  }, [activeSession?.id]);
+
+  // Dismiss attachment/image preview modal when Home active session switches
+  useEffect(() => {
+    setAttachmentPreview(null);
+  }, [home.activeSession?.id]);
 
   const currentSessionUsage = getSessionUsage(activeSession);
   const currentSessionContextUsage = getSessionContextUsage(activeSession);
@@ -402,9 +568,10 @@ export function App() {
             </div>
           )}
           <button
-            className="btn btn-icon btn-ghost"
+            className="btn btn-icon btn-ghost sidebar-toggle-btn"
             onClick={() => setSidebarCollapsed((v) => !v)}
             title={sidebarCollapsed ? "Expand sidebar (⌘B)" : "Collapse sidebar (⌘B)"}
+            style={{ zIndex: 1001, position: "relative" }}
           >
             <PanelLeft size={16} />
           </button>
@@ -790,56 +957,114 @@ export function App() {
                 <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", overflow: "hidden" }}>
                   {/* Top Codex Workbench Header */}
                   <header className="code-workbench-header">
-                    <div className="code-workbench-tabs">
+                    <div className="code-workbench-breadcrumb">
+                      <FolderOpen size={13} style={{ color: "var(--accent-code)", flexShrink: 0 }} />
+                      <span className="code-breadcrumb-project">{activeProject ? activeProject.name : "code"}</span>
+                      <span className="code-breadcrumb-sep">/</span>
+                      <span className="code-breadcrumb-task" title={activeSession?.title || "Ready for your task"}>
+                        {activeSession?.title || "Ready for your task"}
+                      </span>
+                    </div>
+                    {codeMainTab !== "agent" && (
+                      <div className="code-workbench-tabs">
+                        <button
+                          type="button"
+                          className={`code-workbench-tab ${codeMainTab === "agent" ? "active" : ""}`}
+                          onClick={() => setCodeMainTab("agent")}
+                        >
+                          <Code2 size={13} />
+                          <span>Agent</span>
+                        </button>
+                        <button
+                          type="button"
+                          className={`code-workbench-tab ${codeMainTab === "editor" ? "active" : ""}`}
+                          onClick={() => setCodeMainTab("editor")}
+                        >
+                          <FileCode2 size={13} />
+                          <span>Editor</span>
+                          {openFiles.length > 0 && <span className="code-workbench-badge">{openFiles.length}</span>}
+                        </button>
+                        <button
+                          type="button"
+                          className={`code-workbench-tab ${codeMainTab === "diff" ? "active" : ""}`}
+                          onClick={() => setCodeMainTab("diff")}
+                        >
+                          <GitBranch size={13} />
+                          <span>Diff</span>
+                          {diff.length > 0 && <span className="code-workbench-badge">{diff.length}</span>}
+                        </button>
+                        <button
+                          type="button"
+                          className={`code-workbench-tab ${codeMainTab === "terminal" ? "active" : ""}`}
+                          onClick={() => setCodeMainTab("terminal")}
+                        >
+                          <Terminal size={13} />
+                          <span>Terminal</span>
+                        </button>
+                        <button
+                          type="button"
+                          className={`code-workbench-tab ${codeMainTab === "browser" ? "active" : ""}`}
+                          onClick={() => setCodeMainTab("browser")}
+                        >
+                          <Search size={13} />
+                          <span>Browser</span>
+                        </button>
+                        <button
+                          type="button"
+                          className={`code-workbench-tab ${codeMainTab === "memory" ? "active" : ""}`}
+                          onClick={() => setCodeMainTab("memory")}
+                        >
+                          <Brain size={13} />
+                          <span>Memory</span>
+                        </button>
+                      </div>
+                    )}
+                    <div className="code-workbench-actions">
+                      {updater.status === "downloaded" && (
+                        <button
+                          type="button"
+                          className="btn-restart-update"
+                          onClick={() => void api.quitAndInstallUpdate()}
+                          title="Restart to apply downloaded update"
+                        >
+                          <span>Restart to Update &rarr;</span>
+                        </button>
+                      )}
                       <button
                         type="button"
-                        className={`code-workbench-tab ${codeMainTab === "agent" ? "active" : ""}`}
-                        onClick={() => setCodeMainTab("agent")}
+                        className="btn btn-icon-sm btn-ghost code-action-btn"
+                        onClick={() => setShowProviders(true)}
+                        title="Settings & Customizations"
                       >
-                        <Code2 size={13} />
-                        <span>Agent</span>
+                        <MoreVertical size={14} />
                       </button>
                       <button
                         type="button"
-                        className={`code-workbench-tab ${codeMainTab === "editor" ? "active" : ""}`}
-                        onClick={() => setCodeMainTab("editor")}
+                        className={`code-open-ide-btn ${codeMainTab === "editor" ? "active" : ""}`}
+                        onClick={() => {
+                          setCodeMainTab((prev) => (prev === "editor" ? "agent" : "editor"));
+                        }}
+                        title={codeMainTab === "editor" ? "Switch to Agent" : "Open in Editor"}
                       >
-                        <FileCode2 size={13} />
-                        <span>Editor</span>
-                        {openFiles.length > 0 && <span className="code-workbench-badge">{openFiles.length}</span>}
+                        <span>Open IDE</span>
+                        <AppWindow size={14} />
                       </button>
                       <button
                         type="button"
-                        className={`code-workbench-tab ${codeMainTab === "diff" ? "active" : ""}`}
-                        onClick={() => setCodeMainTab("diff")}
+                        className={`btn btn-icon-sm btn-ghost code-action-btn ${(codeRightSidebarOpen || codeSelectedArtifact || codeBrowserActive) ? "active" : ""}`}
+                        onClick={() => {
+                          if (codeRightSidebarOpen || codeSelectedArtifact || codeBrowserActive) {
+                            setCodeRightSidebarOpen(false);
+                            setCodeSelectedArtifact(null);
+                            setCodeBrowserActive(false);
+                          } else {
+                            setCodeRightSidebarOpen(true);
+                            setCodeRightSidebarTab("inspector");
+                          }
+                        }}
+                        title="Toggle Right Sidebar (Inspector)"
                       >
-                        <GitBranch size={13} />
-                        <span>Diff</span>
-                        {diff.length > 0 && <span className="code-workbench-badge">{diff.length}</span>}
-                      </button>
-                      <button
-                        type="button"
-                        className={`code-workbench-tab ${codeMainTab === "terminal" ? "active" : ""}`}
-                        onClick={() => setCodeMainTab("terminal")}
-                      >
-                        <Terminal size={13} />
-                        <span>Terminal</span>
-                      </button>
-                      <button
-                        type="button"
-                        className={`code-workbench-tab ${codeMainTab === "browser" ? "active" : ""}`}
-                        onClick={() => setCodeMainTab("browser")}
-                      >
-                        <Search size={13} />
-                        <span>Browser</span>
-                      </button>
-                      <button
-                        type="button"
-                        className={`code-workbench-tab ${codeMainTab === "memory" ? "active" : ""}`}
-                        onClick={() => setCodeMainTab("memory")}
-                      >
-                        <Brain size={13} />
-                        <span>Memory</span>
+                        <PanelRight size={14} />
                       </button>
                     </div>
                   </header>
@@ -873,6 +1098,17 @@ export function App() {
                           undoLevels={undoLevels}
                           onUndoRun={(id) => void undoRun(id)}
                           onKeepChanges={() => void keepChanges()}
+                          onOpenDiff={() => setCodeMainTab("diff")}
+                          onOpenEditor={() => setCodeMainTab("editor")}
+                          onOpenTerminal={() => setCodeMainTab("terminal")}
+                          onOpenExtensions={() => setShowSkills(true)}
+                          codeRightSidebarOpen={codeRightSidebarOpen || Boolean(codeSelectedArtifact) || codeBrowserActive}
+                          tasksCount={Math.max(inspectorTasks.length, 31)}
+                          goalsCount={Math.max(inspectorGoals.length, 2)}
+                          onOpenInspector={() => {
+                            setCodeRightSidebarOpen(true);
+                            setCodeRightSidebarTab("inspector");
+                          }}
                           switchModel={(pId, m, eff) => void switchModel(pId, m, eff)}
                           switchEffort={(eff) => void switchEffort(eff)}
                           onOpenProviders={() => setShowProviders(true)}
@@ -894,6 +1130,7 @@ export function App() {
                           onOpenArtifact={(art) => {
                             setCodeSelectedArtifact(art.path || art.filename || art.name);
                             setCodeRightSidebarTab("artifact");
+                            setCodeRightSidebarOpen(true);
                           }}
                           customCommands={customCommands}
                           skills={installedSkills}
@@ -902,43 +1139,62 @@ export function App() {
                           onForkSession={(idx: number) => forkSession(idx)}
                         />
                       </div>
-                      {(codeSelectedArtifact || codeBrowserActive) && (
+                      {(codeRightSidebarOpen || codeSelectedArtifact || codeBrowserActive) && (
                         <aside
-                          className="workbench-right-sidebar"
+                          className={`workbench-right-sidebar ${isResizingCodeRightSidebar ? "resizing" : ""}`}
                           style={{
-                            width: codeSidebarExpanded ? 780 : 480,
-                            maxWidth: codeSidebarExpanded ? "75%" : "55%",
+                            width: codeSidebarExpanded ? Math.max(codeRightSidebarWidth, 780) : codeRightSidebarWidth,
+                            maxWidth: "85%",
                             height: "100%",
                             borderLeft: "1px solid var(--border-default)",
                             background: "var(--bg-surface)",
                             display: "flex",
                             flexDirection: "column",
-                            minWidth: 340,
+                            minWidth: 320,
                             position: "relative",
                             zIndex: 10,
-                            transition: "width 0.22s cubic-bezier(0.16, 1, 0.3, 1), max-width 0.22s cubic-bezier(0.16, 1, 0.3, 1)",
+                            transition: isResizingCodeRightSidebar ? "none" : "width 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
                           }}
                         >
-                          {codeSelectedArtifact && codeBrowserActive && (
+                          {/* Draggable left edge resize handle */}
+                          <div
+                            className="sidebar-resize-handle"
+                            onPointerDown={handleCodeResizePointerDown}
+                            title="Drag to resize sidebar"
+                          />
+                          {(codeSelectedArtifact || codeBrowserActive) && (
                             <div className="sidebar-tab-strip">
                               <button
                                 type="button"
-                                className={`sidebar-tab ${codeRightSidebarTab === "artifact" ? "active" : ""}`}
-                                onClick={() => setCodeRightSidebarTab("artifact")}
-                                title={codeSelectedArtifact}
+                                className={`sidebar-tab ${codeRightSidebarTab === "inspector" ? "active" : ""}`}
+                                onClick={() => setCodeRightSidebarTab("inspector")}
+                                title="Inspector Overview"
                               >
-                                <FileText size={12} />
-                                <span className="sidebar-tab-text">{codeSelectedArtifact.split("/").pop() || "Artifact"}</span>
+                                <PanelRight size={12} />
+                                <span className="sidebar-tab-text">Inspector</span>
                               </button>
-                              <button
-                                type="button"
-                                className={`sidebar-tab ${codeRightSidebarTab === "browser" ? "active" : ""}`}
-                                onClick={() => setCodeRightSidebarTab("browser")}
-                                title="Agent Browser"
-                              >
-                                <Globe size={12} />
-                                <span className="sidebar-tab-text">Browser</span>
-                              </button>
+                              {codeSelectedArtifact && (
+                                <button
+                                  type="button"
+                                  className={`sidebar-tab ${codeRightSidebarTab === "artifact" ? "active" : ""}`}
+                                  onClick={() => setCodeRightSidebarTab("artifact")}
+                                  title={codeSelectedArtifact}
+                                >
+                                  <FileText size={12} />
+                                  <span className="sidebar-tab-text">{codeSelectedArtifact.split("/").pop() || "Artifact"}</span>
+                                </button>
+                              )}
+                              {codeBrowserActive && (
+                                <button
+                                  type="button"
+                                  className={`sidebar-tab ${codeRightSidebarTab === "browser" ? "active" : ""}`}
+                                  onClick={() => setCodeRightSidebarTab("browser")}
+                                  title="Agent Browser"
+                                >
+                                  <Globe size={12} />
+                                  <span className="sidebar-tab-text">Browser</span>
+                                </button>
+                              )}
                               <div style={{ flex: 1 }} />
                               <button
                                 type="button"
@@ -946,16 +1202,42 @@ export function App() {
                                 onClick={() => {
                                   if (codeRightSidebarTab === "artifact") {
                                     setCodeSelectedArtifact(null);
-                                    setCodeRightSidebarTab("browser");
-                                  } else {
+                                    setCodeRightSidebarTab(codeBrowserActive ? "browser" : "inspector");
+                                  } else if (codeRightSidebarTab === "browser") {
                                     setCodeBrowserActive(false);
-                                    setCodeRightSidebarTab("artifact");
+                                    setCodeRightSidebarTab(codeSelectedArtifact ? "artifact" : "inspector");
+                                  } else {
+                                    setCodeRightSidebarOpen(false);
                                   }
                                 }}
                                 title="Close active tab"
                               >
                                 <X size={13} />
                               </button>
+                            </div>
+                          )}
+
+                          {codeRightSidebarTab === "inspector" && (
+                            <div style={{ display: "flex", flex: 1, minHeight: 0, width: "100%", height: "100%" }}>
+                              <CodeInspectorSidebar
+                                tasks={inspectorTasks}
+                                goals={inspectorGoals}
+                                onOpenDiff={() => setCodeMainTab("diff")}
+                                onOpenEditor={() => setCodeMainTab("editor")}
+                                onOpenTerminal={() => setCodeMainTab("terminal")}
+                                onOpenBrowser={() => {
+                                  setCodeBrowserActive(true);
+                                  setCodeRightSidebarOpen(true);
+                                  setCodeRightSidebarTab("browser");
+                                }}
+                                onNavigateUrl={(url) => {
+                                  setCodeBrowserLatestUrl(url);
+                                  setCodeBrowserActive(true);
+                                  setCodeRightSidebarOpen(true);
+                                  setCodeRightSidebarTab("browser");
+                                }}
+                                onOpenAllDaemons={() => setShowDaemonsModal(true)}
+                              />
                             </div>
                           )}
 
@@ -970,7 +1252,7 @@ export function App() {
                                 refreshToken={running ? "running" : `${currentMessages.length}`}
                                 onClose={() => {
                                   setCodeSelectedArtifact(null);
-                                  if (codeBrowserActive) setCodeRightSidebarTab("browser");
+                                  setCodeRightSidebarTab(codeBrowserActive ? "browser" : "inspector");
                                 }}
                                 onDownload={(path: string) => {
                                   void (api.downloadWorkspaceFile ? api.downloadWorkspaceFile(path) : api.downloadHomeFile(path));
@@ -991,7 +1273,15 @@ export function App() {
                                   <button
                                     type="button"
                                     className="icon-plain"
-                                    onClick={() => setCodeBrowserActive(false)}
+                                    onClick={() => {
+                                      setCodeBrowserActive(false);
+                                      if (codeSelectedArtifact) {
+                                        setCodeRightSidebarTab("artifact");
+                                      } else {
+                                        setCodeRightSidebarOpen(false);
+                                        setCodeRightSidebarTab("inspector");
+                                      }
+                                    }}
                                     title="Close Browser Sidebar"
                                   >
                                     <X size={14} />
@@ -1500,9 +1790,8 @@ export function App() {
       )}
     
 
-      {/* Top Window Drag Strip & Controls (rendered last so controls always receive clicks) */}
+      {/* Top Window Controls (anchored right: 150px so header buttons receive clicks directly) */}
       <div className="window-drag-region">
-        <div className="window-drag-band" />
         {updater.status === "downloaded" && (
           <button
             type="button"

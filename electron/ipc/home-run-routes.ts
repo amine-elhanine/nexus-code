@@ -87,13 +87,20 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
 
       const history: HistoryInput[] = priorMessages.map((message) => {
         if (message.role === "event") {
+          // Preserve event role (same as agent-routes): flattening status/tool
+          // events into assistant turns floods the conversation with fake
+          // answers and teaches the model to repeat its previous output
+          // (e.g. the canned "I'm Nexus Home..." intro) instead of answering
+          // the current user message.
           return {
-            role: "assistant",
+            role: "event" as const,
             text: message.text,
             kind: message.kind,
-            createdAt: message.createdAt,
-            plan: message.plan,
             detail: message.detail,
+            plan: message.plan,
+            subagent: message.subagent
+              ? { role: message.subagent.role, task: message.subagent.task, status: message.subagent.status }
+              : undefined,
           };
         }
         return { role: message.role as "user" | "assistant", text: message.text };

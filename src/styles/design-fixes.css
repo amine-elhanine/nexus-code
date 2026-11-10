@@ -1596,6 +1596,60 @@
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35) !important;
 }
 
+/* ==========================================================================
+   PPTX In-App Preview: Fully Visible Tables & Slide Resolution Polish
+   ========================================================================== */
+
+.file-preview-card {
+  width: min(1180px, 95vw) !important;
+  max-width: 1180px !important;
+  height: min(92vh, 900px) !important;
+  max-height: 92vh !important;
+}
+
+/* Ensure table container div rendered by @aiden0z/pptx-renderer does not clip rows */
+.file-preview-lib [data-slide-index] div:has(> table),
+.file-preview-lib div:has(> table),
+.modal-layer [data-slide-index] div:has(> table),
+.attachment-preview-layer div:has(> table),
+.canvas-body-container div:has(> table) {
+  height: auto !important;
+  min-height: fit-content !important;
+  overflow: visible !important;
+}
+
+.file-preview-lib [data-slide-index] table,
+.file-preview-lib table,
+.modal-layer [data-slide-index] table,
+.attachment-preview-layer table,
+.canvas-body-container table {
+  height: auto !important;
+  min-height: fit-content !important;
+  table-layout: auto !important;
+  overflow: visible !important;
+}
+
+.file-preview-lib [data-slide-index] table tr,
+.file-preview-lib table tr,
+.attachment-preview-layer table tr,
+.canvas-body-container table tr {
+  height: auto !important;
+}
+
+.file-preview-lib [data-slide-index] table td,
+.file-preview-lib [data-slide-index] table th,
+.file-preview-lib table td,
+.file-preview-lib table th,
+.attachment-preview-layer table td,
+.attachment-preview-layer table th,
+.canvas-body-container table td,
+.canvas-body-container table th {
+  overflow: visible !important;
+  word-break: break-word !important;
+  white-space: normal !important;
+  box-sizing: border-box !important;
+}
+
 .canvas-state-center {
   display: flex !important;
   flex-direction: column !important;
@@ -1888,3 +1942,1077 @@
   margin: 0 !important;
   transform: none !important;
 }
+
+/* ==========================================================================
+   Generated Charts & Graph Action Buttons Polish (ChatGPT-grade UI)
+   ========================================================================== */
+
+.app-root .rich-chart,
+.app-root .rich-scatter {
+  position: relative !important;
+  container-type: inline-size !important;
+  container-name: richchart !important;
+  width: min(100%, 780px) !important;
+  margin: 14px 0 !important;
+  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.08)) !important;
+  border-radius: var(--radius-lg, 10px) !important;
+  background: var(--bg-surface, var(--panel, #141823)) !important;
+  padding: 12px 14px 16px !important;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.22) !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+
+.app-root .rich-chart:hover,
+.app-root .rich-scatter:hover {
+  border-color: var(--line2, rgba(255, 255, 255, 0.16)) !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.28) !important;
+}
+
+.app-root .chart-header-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 8px !important;
+  margin-bottom: 12px !important;
+  flex-wrap: wrap !important;
+  min-height: 28px !important;
+  width: 100% !important;
+}
+
+.app-root .chart-header-title {
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  color: var(--text-primary, #f1f5f9) !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+}
+
+.app-root .chart-view-switcher {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 2px !important;
+  padding: 2px !important;
+  border: 1px solid var(--border-subtle, var(--line, #24334a)) !important;
+  border-radius: var(--radius-md, 7px) !important;
+  background: var(--bg-app, #0b0f16) !important;
+  flex-shrink: 0 !important;
+}
+
+.app-root .chart-view-switcher button,
+.app-root .chart-view-btn {
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--text-muted, var(--muted, #7e8b9d)) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  padding: 3px 9px !important;
+  border-radius: 5px !important;
+  cursor: pointer !important;
+  text-transform: capitalize !important;
+  white-space: nowrap !important;
+  line-height: 1.2 !important;
+  transition: all 0.15s ease !important;
+}
+
+.app-root .chart-view-switcher button:hover,
+.app-root .chart-view-btn:hover {
+  color: var(--text-primary, #ffffff) !important;
+  background: var(--bg-surface-hover, rgba(255, 255, 255, 0.05)) !important;
+}
+
+.app-root .chart-view-switcher button.active,
+.app-root .chart-view-btn.active {
+  background: var(--bg-surface-elevated, var(--panel2, #17202d)) !important;
+  color: var(--nexus-bright, #6ee7b7) !important;
+  font-weight: 600 !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2) !important;
+}
+
+.app-root .rich-chart-actions {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 5px !important;
+  flex-wrap: nowrap !important;
+  flex-shrink: 0 !important;
+  z-index: 10 !important;
+  margin-left: auto !important;
+}
+
+.app-root .rich-chart > .rich-chart-actions,
+.app-root .rich-scatter > .rich-chart-actions {
+  position: absolute !important;
+  top: 10px !important;
+  right: 12px !important;
+}
+
+.app-root .chart-header-row .rich-chart-actions {
+  position: static !important;
+  opacity: 1 !important;
+}
+
+.app-root .rich-chart-btn {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 5px !important;
+  height: 26px !important;
+  min-height: 26px !important;
+  max-height: 26px !important;
+  width: auto !important;
+  min-width: 26px !important;
+  padding: 0 8px !important;
+  background: var(--bg-surface-elevated, var(--panel2, rgba(35, 39, 56, 0.85))) !important;
+  border: 1px solid var(--border-default, var(--line, rgba(255, 255, 255, 0.12))) !important;
+  border-radius: 6px !important;
+  color: var(--text-secondary, var(--muted, #94a3b8)) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  font-family: inherit !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+  word-break: keep-all !important;
+  flex-shrink: 0 !important;
+  box-sizing: border-box !important;
+  cursor: pointer !important;
+  user-select: none !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12) !important;
+  transition: all 0.15s ease !important;
+  overflow: hidden !important;
+}
+
+.app-root .rich-chart-btn:not(:has(span)),
+.app-root .rich-chart-btn:has(span:empty) {
+  width: 26px !important;
+  min-width: 26px !important;
+  max-width: 26px !important;
+  padding: 0 !important;
+  justify-content: center !important;
+}
+
+.app-root .rich-chart-btn span,
+.app-root .rich-chart-btn .rich-chart-btn-label {
+  display: inline-block !important;
+  white-space: nowrap !important;
+  word-break: keep-all !important;
+  line-height: 1 !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.01em !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.app-root .rich-chart-btn svg {
+  display: inline-block !important;
+  flex-shrink: 0 !important;
+  width: 12px !important;
+  height: 12px !important;
+  margin: 0 !important;
+}
+
+@container richchart (max-width: 540px) {
+  .app-root .chart-header-row .rich-chart-btn-label,
+  .app-root .chart-header-row .rich-chart-btn span {
+    display: none !important;
+  }
+  .app-root .chart-header-row .rich-chart-btn {
+    width: 26px !important;
+    min-width: 26px !important;
+    max-width: 26px !important;
+    padding: 0 !important;
+    justify-content: center !important;
+  }
+}
+
+@media (max-width: 768px) {
+  .app-root .chart-header-row .rich-chart-btn-label,
+  .app-root .chart-header-row .rich-chart-btn span {
+    display: none !important;
+  }
+  .app-root .chart-header-row .rich-chart-btn {
+    width: 26px !important;
+    min-width: 26px !important;
+    max-width: 26px !important;
+    padding: 0 !important;
+    justify-content: center !important;
+  }
+}
+
+.app-root .rich-chart-btn:hover {
+  background: var(--bg-surface-hover, var(--panel, #243044)) !important;
+  color: var(--text-primary, var(--text, #f8fafc)) !important;
+  border-color: var(--border-strong, var(--line2, #7aa8d1)) !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25) !important;
+}
+
+.app-root .rich-chart-btn:active {
+  transform: translateY(0) !important;
+}
+
+.app-root .rich-chart-btn:has(svg.lucide-check),
+.app-root .rich-chart-btn.saved {
+  border-color: var(--nexus-green, #10b981) !important;
+  color: var(--nexus-green, #10b981) !important;
+  background: var(--accent-soft, rgba(16, 185, 129, 0.12)) !important;
+}
+
+
+/* ==========================================================================
+   Sidebar Collapse Button & Resizable Right Sidebar Fixes
+   ========================================================================== */
+
+.app-sidebar {
+  z-index: 600 !important;
+}
+
+.sidebar-header button,
+.sidebar-toggle-btn {
+  -webkit-app-region: no-drag !important;
+  pointer-events: auto !important;
+  cursor: pointer !important;
+  position: relative !important;
+  z-index: 1001 !important;
+}
+
+/* Draggable left-edge handle for workbench right sidebar */
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  left: -4px;
+  width: 8px;
+  bottom: 0;
+  cursor: col-resize;
+  z-index: 50;
+  touch-action: none;
+}
+
+.sidebar-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.sidebar-resize-handle:hover::after,
+.workbench-right-sidebar.resizing .sidebar-resize-handle::after {
+  background: var(--nexus-accent, #3b82f6) !important;
+}
+
+.workbench-right-sidebar.resizing {
+  user-select: none !important;
+}
+
+body.sidebar-resizing-active,
+body.sidebar-resizing-active * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+body.sidebar-resizing-active iframe,
+body.sidebar-resizing-active webview {
+  pointer-events: none !important;
+}
+
+
+/* ==========================================================================
+   Code Mode & Antigravity Coding Agent Transformation
+   ========================================================================== */
+
+/* Top Workbench Header Breadcrumb (Antigravity Inspired) */
+.code-workbench-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+  font-size: 0.85rem;
+}
+
+.code-breadcrumb-project {
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.code-breadcrumb-sep {
+  color: var(--text-muted);
+}
+
+.code-breadcrumb-task {
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+
+/* Sidebar Task Relative Time (e.g. 14m, 2h, 2d) */
+.history-item-time {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+  margin-right: 4px;
+  flex-shrink: 0;
+  transition: opacity 0.15s ease;
+}
+
+.history-item:hover .history-item-time {
+  opacity: 0;
+}
+
+/* Modern Antigravity Rollback / Diff Pill */
+.rollback-anchor {
+  margin: 14px auto 8px !important;
+  width: 100% !important;
+  max-width: var(--chat-max-width, 920px) !important;
+}
+
+.rollback-card {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  background: rgba(18, 25, 38, 0.9) !important;
+  backdrop-filter: blur(12px) !important;
+  border: 1px solid rgba(71, 85, 105, 0.45) !important;
+  border-radius: 9999px !important;
+  padding: 6px 14px !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3) !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+
+.rollback-card:hover {
+  border-color: rgba(99, 102, 241, 0.5) !important;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.4) !important;
+}
+
+.rollback-summary {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  background: transparent !important;
+  border: none !important;
+  color: var(--text-primary) !important;
+  font-size: 0.82rem !important;
+  cursor: pointer !important;
+  padding: 0 !important;
+}
+
+.rollback-actions {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+.rollback-actions button {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  padding: 4px 10px !important;
+  border-radius: 9999px !important;
+  font-size: 0.76rem !important;
+  font-weight: 500 !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+}
+
+.rollback-actions .btn-review {
+  background: rgba(99, 102, 241, 0.15) !important;
+  color: #a5b4fc !important;
+  border: 1px solid rgba(99, 102, 241, 0.35) !important;
+}
+
+.rollback-actions .btn-review:hover {
+  background: rgba(99, 102, 241, 0.28) !important;
+  color: #c7d2fe !important;
+}
+
+/* Modern Unified Code Composer (Floating Pill Architecture) */
+.code-composer-wrapper {
+  width: 100% !important;
+  max-width: var(--chat-max-width, 920px) !important;
+  margin: 0 auto !important;
+  padding: 0 20px 18px !important;
+  position: relative !important;
+  z-index: 30 !important;
+  flex-shrink: 0 !important;
+}
+
+.code-composer-box {
+  background-color: var(--bg-composer, #0d1117) !important;
+  border: 1px solid var(--border-default, #232c3d) !important;
+  border-radius: 22px !important;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.38) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  padding: 10px 14px 12px !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+
+.code-composer-box:focus-within {
+  border-color: rgba(99, 102, 241, 0.6) !important;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.16), 0 12px 36px rgba(0, 0, 0, 0.45) !important;
+}
+
+.code-composer-textarea {
+  width: 100% !important;
+  min-height: 28px !important;
+  max-height: 180px !important;
+  padding: 4px 6px 8px !important;
+  font-size: 0.93rem !important;
+  line-height: 1.5 !important;
+  color: var(--text-primary) !important;
+  resize: none !important;
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+}
+
+.code-composer-textarea::placeholder {
+  color: var(--text-muted) !important;
+}
+
+.code-composer-toolbar {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding-top: 8px !important;
+  border-top: 1px solid var(--border-subtle) !important;
+  gap: 8px !important;
+}
+
+.code-composer-tools-group {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  flex-wrap: wrap !important;
+}
+
+.code-composer-tools-group .mode-select {
+  display: inline-flex !important;
+  align-items: center !important;
+  background: rgba(255, 255, 255, 0.04) !important;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: 9999px !important;
+  padding: 2px !important;
+  gap: 2px !important;
+}
+
+.code-composer-tools-group .mode-pill-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  padding: 3px 8px !important;
+  border-radius: 9999px !important;
+  font-size: 0.72rem !important;
+  font-weight: 500 !important;
+  color: var(--text-tertiary) !important;
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  transition: all 0.15s ease !important;
+  cursor: pointer !important;
+}
+
+.code-composer-tools-group .mode-pill-btn:hover {
+  color: var(--text-primary) !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+.code-composer-tools-group .mode-pill-btn.active {
+  background: rgba(99, 102, 241, 0.18) !important;
+  border-color: rgba(99, 102, 241, 0.4) !important;
+  color: #a5b4fc !important;
+  font-weight: 600 !important;
+}
+
+.code-composer-tools-group .mode-pill-btn.active.mode-full {
+  background: rgba(239, 68, 68, 0.15) !important;
+  border-color: rgba(239, 68, 68, 0.35) !important;
+  color: #f87171 !important;
+}
+
+/* Empty State / Codex Hero (Modernized) */
+.codex-hero {
+  margin: auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  text-align: center !important;
+  max-width: 680px !important;
+  padding: 36px 20px !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.codex-hero-icon {
+  width: 52px !important;
+  height: 52px !important;
+  border-radius: 9999px !important;
+  background: rgba(99, 102, 241, 0.12) !important;
+  border: 1px solid rgba(99, 102, 241, 0.3) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  margin-bottom: 16px !important;
+  color: #818cf8 !important;
+}
+
+.codex-hero h2 {
+  font-size: 1.6rem !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.025em !important;
+  margin-bottom: 8px !important;
+  color: var(--text-primary) !important;
+}
+
+.codex-hero p {
+  font-size: 0.92rem !important;
+  color: var(--text-secondary) !important;
+  margin-bottom: 28px !important;
+  line-height: 1.55 !important;
+}
+
+.codex-starter-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, 1fr) !important;
+  gap: 12px !important;
+  width: 100% !important;
+}
+
+.codex-starter-card {
+  padding: 14px 16px !important;
+  border-radius: var(--radius-lg, 12px) !important;
+  background-color: var(--bg-surface) !important;
+  border: 1px solid var(--border-subtle) !important;
+  text-align: left !important;
+  cursor: pointer !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 4px !important;
+  transition: all var(--transition-fast) !important;
+}
+
+.codex-starter-card:hover {
+  background-color: var(--bg-surface-hover) !important;
+  border-color: var(--border-strong) !important;
+  transform: translateY(-2px) !important;
+}
+
+.codex-starter-card-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.codex-starter-card-desc {
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+}
+
+
+/* ==========================================================================
+   Header Draggable Surfaces & Interactive Header Buttons Fix
+   ========================================================================== */
+
+/* Topbars act as native titlebar drag surfaces */
+.home-topbar,
+.nb-topbar,
+.code-workbench-header,
+.sidebar-header {
+  -webkit-app-region: drag !important;
+}
+
+/* All interactive elements inside topbars must opt-out of dragging */
+.home-topbar button,
+.home-topbar select,
+.home-topbar input,
+.home-topbar-right,
+.home-topbar-right button,
+.nb-topbar button,
+.nb-topbar input,
+.nb-topbar-actions,
+.sidebar-header button,
+.sidebar-toggle-btn,
+.code-workbench-header button,
+.code-workbench-header select,
+.code-workbench-tabs,
+.code-workbench-tab,
+.code-workbench-tab *,
+.code-workbench-actions,
+.code-workbench-actions button,
+.code-action-btn {
+  -webkit-app-region: no-drag !important;
+  pointer-events: auto !important;
+  cursor: pointer !important;
+  position: relative !important;
+  z-index: 10 !important;
+}
+
+/* Ensure the top window drag region never extends over workbench tabs */
+.window-drag-region {
+  left: auto !important;
+  right: 0 !important;
+  width: 150px !important;
+  height: 50px !important;
+  pointer-events: none !important;
+  z-index: 1000 !important;
+}
+
+.window-drag-band {
+  display: none !important;
+}
+
+.window-controls,
+.window-controls button,
+.win-btn {
+  -webkit-app-region: no-drag !important;
+  pointer-events: auto !important;
+  cursor: pointer !important;
+  z-index: 1002 !important;
+}
+
+.code-workbench-actions {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  flex-shrink: 0 !important;
+}
+
+.code-action-btn {
+  width: 32px !important;
+  height: 32px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: var(--radius-md, 8px) !important;
+  color: var(--text-secondary) !important;
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-subtle) !important;
+  cursor: pointer !important;
+  transition: all var(--transition-fast) !important;
+}
+
+.code-action-btn:hover {
+  background: var(--bg-surface-hover) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-strong) !important;
+}
+
+.code-action-btn.active {
+  background: var(--bg-surface-elevated) !important;
+  color: #818cf8 !important;
+  border-color: rgba(99, 102, 241, 0.4) !important;
+}
+
+/* ── Antigravity Code Mode: Floating Overview Card & Inspector Sidebar ── */
+
+.code-overview-card {
+  position: absolute;
+  top: 16px;
+  right: 24px;
+  width: 220px;
+  box-sizing: border-box;
+  background: rgba(18, 21, 28, 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.3);
+  padding: 10px 12px;
+  user-select: none;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: fadeInOverview 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes fadeInOverview {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.code-overview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  padding: 0 4px;
+}
+
+.code-overview-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: #9ca3af;
+  letter-spacing: -0.01em;
+}
+
+.code-overview-menu-btn {
+  background: transparent;
+  border: none;
+  color: #9ca3af;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.code-overview-menu-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+
+.code-overview-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.code-overview-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: #d1d5db;
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.code-overview-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+}
+
+.code-overview-row-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.code-overview-icon {
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+
+.code-overview-diff-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-family: var(--font-mono, monospace);
+  font-weight: 500;
+}
+
+.code-overview-diff-badge .diff-add {
+  color: #22c55e;
+}
+
+.code-overview-diff-badge .diff-del {
+  color: #ef4444;
+}
+
+.code-overview-chevron {
+  color: #6b7280;
+  margin-left: auto;
+}
+
+.code-overview-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.07);
+  margin: 6px 0;
+}
+
+.code-overview-summary-row {
+  font-weight: 400;
+}
+
+.code-overview-count {
+  font-size: 11.5px;
+  font-family: var(--font-mono, monospace);
+  color: #9ca3af;
+}
+
+/* ── Expanded Right Sidebar: CodeInspectorSidebar ── */
+
+.code-inspector-sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  padding: 14px 16px;
+  gap: 16px;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.inspector-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  padding: 6px 10px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.inspector-search-bar:focus-within {
+  border-color: rgba(99, 102, 241, 0.5);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.inspector-search-icon {
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+
+.inspector-search-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 12.5px;
+  color: #f3f4f6;
+}
+
+.inspector-search-input::placeholder {
+  color: #6b7280;
+}
+
+.inspector-menu-btn {
+  background: transparent;
+  border: none;
+  color: #9ca3af;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.inspector-menu-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+
+.inspector-actions-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.inspector-action-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: transparent;
+  border: none;
+  color: #e5e7eb;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+
+.inspector-action-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #ffffff;
+}
+
+.inspector-action-icon {
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+
+.inspector-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inspector-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 500;
+  color: #9ca3af;
+  padding: 0 4px;
+}
+
+.inspector-section-title {
+  letter-spacing: -0.01em;
+}
+
+.inspector-section-count {
+  font-size: 11.5px;
+  font-family: var(--font-mono, monospace);
+  color: #9ca3af;
+}
+
+.inspector-tasks-list,
+.inspector-goals-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.inspector-task-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: transparent;
+  color: #d1d5db;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.inspector-task-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: #ffffff;
+}
+
+.inspector-task-icon,
+.inspector-goal-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+}
+
+.inspector-task-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inspector-see-all-btn {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  color: #9ca3af;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 8px;
+  margin-top: 2px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.inspector-see-all-btn:hover {
+  color: #38bdf8;
+  text-decoration: underline;
+}
+
+.inspector-goal-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: transparent;
+  color: #d1d5db;
+  font-size: 12.5px;
+  user-select: none;
+  transition: all 0.15s ease;
+}
+
+.inspector-goal-item:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: #ffffff;
+}
+
+.inspector-goal-text {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Header buttons matching Antigravity */
+
+.btn-restart-update {
+  background: #2563eb !important;
+  color: #ffffff !important;
+  font-size: 11.5px !important;
+  font-weight: 500 !important;
+  padding: 5px 12px !important;
+  border-radius: 9999px !important;
+  border: none !important;
+  cursor: pointer !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  transition: background 0.15s ease !important;
+  -webkit-app-region: no-drag !important;
+}
+
+.btn-restart-update:hover {
+  background: #1d4ed8 !important;
+}
+
+.code-open-ide-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  font-size: 12px !important;
+  color: #d1d5db !important;
+  padding: 5px 10px !important;
+  border-radius: 6px !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  background: rgba(255, 255, 255, 0.02) !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+  -webkit-app-region: no-drag !important;
+}
+
+.code-open-ide-btn:hover {
+  background: rgba(255, 255, 255, 0.07) !important;
+  color: #ffffff !important;
+}
+
+.code-open-ide-btn.active {
+  background: rgba(99, 102, 241, 0.15) !important;
+  border-color: rgba(99, 102, 241, 0.4) !important;
+  color: #818cf8 !important;
+}
+
