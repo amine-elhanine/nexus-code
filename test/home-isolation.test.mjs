@@ -120,6 +120,13 @@ test("Home Mode Continuity: complexity classification and continuation phrases",
   assert.equal(isContinueRequest("What is the capital of France?"), false);
   assert.equal(isContinueRequest("create a new file called test.txt"), false);
 
+  // Identity questions stay simple (no tool loop / capabilities dump);
+  // editing a named document file is complex even when short.
+  assert.equal(classifyTaskComplexity("what are you?"), "simple");
+  assert.equal(classifyTaskComplexity("who are you?"), "simple");
+  assert.equal(classifyTaskComplexity("Please edit Attack on Titan Presentation.pptx add slides"), "complex");
+  assert.equal(classifyTaskComplexity("edit Deck.pptx add a slide"), "complex");
+
   // Home uses a generic output contract, not a PDF/course-specific branch.
   assert.deepEqual(inferHomeTaskContract("read the CrewAI docs and generate me a PDF course"), {
     expectsOutput: true,

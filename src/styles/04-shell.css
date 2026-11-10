@@ -20,11 +20,11 @@
 .window-drag-region {
   position: absolute;
   top: 0;
-  left: 0;
   right: 0;
+  width: 150px;
   height: 50px;
   pointer-events: none;
-  z-index: 500; /* above every view topbar/panel (topmost is 100) but below modals (1000+) */
+  z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -37,15 +37,11 @@
 }
 
 /* The actually-draggable band of the titlebar strip. It ends before the
-   window controls (the controls need the top-right ~120px), so the drag
-   region never overlaps them and real mouse clicks always reach the
-   buttons — no dependence on -webkit-app-region: no-drag exclusion. */
+   window controls (the controls need the top-right ~120px) and starts after
+   the sidebar header (~260px) so clicks on sidebar toggle and window controls
+   always reach the buttons directly. */
 .window-drag-band {
-  position: absolute;
-  inset: 0 150px 0 0;
-  height: 50px;
-  pointer-events: none;
-  -webkit-app-region: drag;
+  display: none !important;
 }
 
 .window-controls {
@@ -103,7 +99,7 @@
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  z-index: 40;
+  z-index: 600;
   transition: width var(--transition-normal);
   position: relative;
 }

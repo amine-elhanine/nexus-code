@@ -22,6 +22,9 @@ import {
   renderDocx,
   renderPdf,
   renderPptx,
+  renderMarkdownToDocx,
+  renderMarkdownToPdf,
+  pickDocumentTheme,
   safeStem,
 } from "./notebook-documents.js";
 import { validateHomeArtifact } from "./home-artifact-service.js";
@@ -42,9 +45,16 @@ const FORMAT_EXTENSION: Record<DeliverableFormat, string> = {
 };
 
 const MARKDOWN_CONTRACT = `Content contract (plain Markdown — this is ALL you write, the file is rendered for you):
-- Reports (docx/pdf): "# Title"; the paragraphs BEFORE the first "## " heading become the executive summary; "## Section heading" starts a section (plain paragraphs + "- " bullet key points); a "## Key takeaways" section at the end becomes the takeaways list. 2-5 substantive sections.
-- Presentations (pptx): "# Deck title"; one "## Slide title" per slide with 2-5 "- " bullets under it; "> Note: text" becomes a highlighted callout card; a fenced code block becomes a dark code card; a standalone image line "![alt](https://...)" embeds the picture beside that slide's bullets (png/jpg/gif — find real image URLs with web_image_search first; 2-4 images across the deck). Bullets formatted "Lead — explanation" render the lead bold. The first slide is an automatic designed cover; keep 6-12 slides.
-- Spreadsheets (xlsx): one "## Sheet name" heading per worksheet, each containing ONE Markdown table ("| col | col |" rows, first row = headers). 4+ data rows per sheet.
+- Documents / Reports / Courses / Guides (docx/pdf):
+  * "# Title" for the main title.
+  * Use "## Module / Chapter / Section" and "### Subtopic" for hierarchy.
+  * Write full, comprehensive, educational content — never shallow outlines or truncated stubs. If asked for a course, tutorial, guide, or book, write complete modules with in-depth explanations and working code examples.
+  * Fenced code blocks (\`\`\`python ... \`\`\`) render as highlighted code cards with Consolas font and preserved indentation.
+  * Tables ("| col | col |" with separator rows) render as native styled tables.
+  * Callouts ("> Note: text" or "> Tip: text") render as styled callout cards.
+  * Bold (**text**), italics (*text*), and inline code (\`code\`) render cleanly throughout.
+- Presentations (pptx): "# Deck title"; one "## Slide title" per slide with 2-6 "- " bullets, descriptive paragraphs, or Markdown tables; "> Note: text" becomes a highlighted callout card; fenced code blocks render as syntax cards; standalone image lines "![alt](https://...)" or "![alt](local.png)" embed pictures. Bullets formatted "Lead — explanation" render the lead bold. The first slide is an automatic designed cover; up to 30 slides.
+- Spreadsheets (xlsx): one "## Sheet name" heading per worksheet, each containing ONE Markdown table ("| col | col |" rows, first row = headers). 4+ data rows per sheet. Use currency ($1,200), percentages (15.5%), or formulas (=SUM(B2:B10)) as needed. Total/Summary rows are automatically highlighted.
 - tex/csv/md/txt: content is written to the file verbatim (for csv use comma-separated rows with a header row).`;
 
 /** Sanitizes a model-provided file name: basename only, safe characters, forced extension. */
@@ -94,16 +104,20 @@ function parseNumericCell(raw: string): { v: number; z?: string } | null {
   const currency = /^\$\s*-?[\d,]+(\.\d+)?$/.test(trimmed);
   const percent = /^-?[\d,]+(\.\d+)?\s*%$/.test(trimmed);
   const plain = /^-?[\d,]+(\.\d+)?$/.test(trimmed);
+  const hasComma = trimmed.includes(",");
+  const hasDec = trimmed.includes(".");
   const num = Number(trimmed.replace(/[$,%\s]/g, ""));
-  if (!Number.isFinite(num) || !plain && !currency && !percent) return null;
-  if (currency) return { v: num, z: "$#,##0.00" };
-  if (percent) return { v: num / 100, z: "0.0%" };
+  if (!Number.isFinite(num) || (!plain && !currency && !percent)) return null;
+  if (currency) return { v: num, z: hasDec ? "$#,##0.00" : "$#,##0" };
+  if (percent) return { v: num / 100, z: hasDec ? "0.0%" : "0%" };
+  if (hasComma) return { v: num, z: hasDec ? "#,##0.00" : "#,##0" };
   return { v: num };
 }
 
 async function renderXlsxSheets(sheets: Array<{ name: string; rows: string[][] }>): Promise<Buffer> {
   const XLSX = (await import("xlsx")).default ?? (await import("xlsx"));
   const workbook = XLSX.utils.book_new();
+  const theme = pickDocumentTheme(sheets[0]?.name || "");
   for (const sheet of sheets) {
     const worksheet = XLSX.utils.aoa_to_sheet(sheet.rows.map((row) =>
       row.map((cell) => {
@@ -118,7 +132,19 @@ async function renderXlsxSheets(sheets: Array<{ name: string; rows: string[][] }
     for (let col = range.s.c; col <= range.e.c; col++) {
       const addr = XLSX.utils.encode_cell({ r: range.s.r, c: col });
       if (!worksheet[addr]) continue;
-      worksheet[addr].s = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: "1F3864" } } };
+      worksheet[addr].s = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: theme.ink } } };
+    }
+    // Highlight Total / Summary rows in bold
+    for (let row = range.s.r + 1; row <= range.e.r; row++) {
+      const firstCellAddr = XLSX.utils.encode_cell({ r: row, c: range.s.c });
+      const firstVal = String(worksheet[firstCellAddr]?.v || "").trim().toLowerCase();
+      if (/^(total|summary|average|subtotal|grand total)/.test(firstVal)) {
+        for (let col = range.s.c; col <= range.e.c; col++) {
+          const addr = XLSX.utils.encode_cell({ r: row, c: col });
+          if (!worksheet[addr]) continue;
+          worksheet[addr].s = { ...(worksheet[addr].s || {}), font: { bold: true } };
+        }
+      }
     }
     // Auto-fit column widths from header and cell content lengths.
     if (!worksheet["!cols"]) worksheet["!cols"] = [];
@@ -194,11 +220,9 @@ export async function createDeliverable(options: {
   let bytes: Buffer;
   try {
     if (format === "docx") {
-      const plan = markdownToReportPlan(resolvedContent, options.title || safeStem(fileName, "Report"));
-      bytes = await renderDocx(plan, []);
+      bytes = await renderMarkdownToDocx(resolvedContent, options.title || safeStem(fileName, "Report"));
     } else if (format === "pdf") {
-      const plan = markdownToReportPlan(resolvedContent, options.title || safeStem(fileName, "Report"));
-      bytes = await renderPdf(plan, []);
+      bytes = await renderMarkdownToPdf(resolvedContent, options.title || safeStem(fileName, "Report"));
     } else if (format === "pptx") {
       const plan = markdownToSlidesPlan(resolvedContent, options.title || safeStem(fileName, "Presentation"));
       bytes = await renderPptx(plan, [], { coverBadge: "" });
@@ -300,7 +324,7 @@ Use the bundled skill + generator-script path instead ONLY when the user asks fo
         file_name: z.string().min(1).max(150).describe("Output file name, e.g. 'Quarterly Report.pptx' or 'study-guide.docx'. The correct extension is appended automatically."),
         format: z.enum(["docx", "pptx", "xlsx", "pdf", "tex", "md", "csv", "txt"]).describe("Target file format."),
         title: z.string().optional().describe("Fallback document title when the content has no '# Title' heading."),
-        content: z.string().min(1).max(60_000).describe("Full document content in the Markdown contract from the tool description."),
+        content: z.string().min(1).max(150_000).describe("Full document content in the Markdown contract from the tool description."),
       }),
     }
   );

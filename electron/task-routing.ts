@@ -392,6 +392,17 @@ const HIGH_IMPACT_CHANGE_PATTERN =
 export function classifyTaskComplexity(request: string): TaskComplexity {
   const text = (request || "").trim();
   if (!text) return "simple";
+  // Identity / greeting questions are direct chat answers — never route them
+  // through research, todo planning, or the visual-response budget. Without
+  // this they get forced into the full tool loop and the model answers with a
+  // generic capabilities dump instead of a concise self-description.
+  if (/^(who are you|what are you|what can you do|what do you do|help|what are your capabilities|introduce yourself|tell me about yourself)\b/i.test(text) && text.length < 120) return "simple";
+  if (/^(hi|hello|hey|yo|greetings|good (morning|afternoon|evening))\b/i.test(text) && text.length < 80) return "simple";
+  // Editing a named document file is real multi-step work (inspect → enrich →
+  // render → verify) even when the request is one short sentence. A short
+  // "edit Deck.pptx, add a slide" must not be capped at 3 tool calls.
+  if (/\b(edit|update|add|modify|revise|redo|replace|fill|populate|extend|enhance|improve|refresh)\b/i.test(text) &&
+      /\.(docx|xlsx|pptx?|pdf|csv|odt|ods|odp|tex|txt|md)\b/i.test(text)) return "complex";
   // Pure questions are lookups, not projects — even long ones. Only promote
   // when the text carries explicit edit verbs.
   if (/^(what|where|which|how\s+(does|do|is|are|can)|why|explain|describe|show|list|tell\s+me)\b/i.test(text) &&

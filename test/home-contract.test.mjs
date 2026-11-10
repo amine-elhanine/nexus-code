@@ -54,6 +54,9 @@ await test("research flag follows the request", () => {
 
 await test("format-named requests are detectable for the chat-answer guardrail", () => {
   assert.equal(homeRequestNamesFileFormat("Create a report.docx about X"), true);
+  assert.equal(homeRequestNamesFileFormat("i want a full python cours as docx file"), true);
+  assert.equal(homeRequestNamesFileFormat("give me a presentation as pptx"), true);
+  assert.equal(homeRequestNamesFileFormat("save as xlsx"), true);
   assert.equal(homeRequestNamesFileFormat("Build a PowerPoint presentation"), true);
   assert.equal(homeRequestNamesFileFormat("Make me a spreadsheet for expenses"), true);
   assert.equal(homeRequestNamesFileFormat("Export the data as PDF"), true);
@@ -87,6 +90,16 @@ await test("visual requests without named file formats do not infer file deliver
   assert.equal(radarContract.expectsOutput, true);
   assert.deepEqual(radarContract.expectedFormats, []);
   assert.equal(homeRequestNamesFileFormat("Generate a radar chart comparing models"), false);
+});
+
+await test("editing an existing file expects output (pptx edit regression)", () => {
+  const edit = inferHomeTaskContract('Please edit and update the file "Attack on Titan Presentation.pptx": Please add illustrative bullet callouts, takeaways, and visual descriptions to "Attack on Titan Presentation.pptx".');
+  assert.equal(edit.expectsOutput, true);
+  assert.deepEqual(edit.expectedFormats, ["pptx"]);
+  assert.equal(inferHomeTaskContract("update Q3 deck.pptx with new chart").expectsOutput, true);
+  assert.deepEqual(inferHomeOutputFormats("edit Deck.pptx and add a slide"), ["pptx"]);
+  // Bare verb without a file is not a deliverable.
+  assert.equal(inferHomeTaskContract("add 2 + 2").expectsOutput, false);
 });
 
 await test("output contract extracts requested file formats without mistaking topic mentions", () => {

@@ -127,40 +127,44 @@ function ChartActions({
         type="button"
         className="rich-chart-btn"
         onClick={handleFullscreen}
-        title="Open fullscreen with zoom"
+        title="Fullscreen view (zoom, pan, inspect)"
+        aria-label="Fullscreen view"
       >
-        <Maximize2 size={11} />
-        <span>Full</span>
+        <Maximize2 size={12} />
+        <span className="rich-chart-btn-label">Full</span>
       </button>
       {dataText && (
         <button
           type="button"
-          className="rich-chart-btn"
+          className={`rich-chart-btn ${copiedData ? "saved" : ""}`}
           onClick={handleCopyData}
-          title="Copy chart data as CSV"
+          title={copiedData ? "Copied CSV to clipboard" : "Copy chart data as CSV"}
+          aria-label="Copy CSV data"
         >
-          {copiedData ? <Check size={11} /> : <Copy size={11} />}
-          <span>{copiedData ? "Copied" : "Data"}</span>
+          {copiedData ? <Check size={12} /> : <Copy size={12} />}
+          <span className="rich-chart-btn-label">{copiedData ? "Copied" : "Data"}</span>
         </button>
       )}
       <button
         type="button"
-        className="rich-chart-btn"
+        className={`rich-chart-btn ${downloaded ? "saved" : ""}`}
         onClick={handleDownloadSvg}
-        title="Download chart as SVG"
+        title={downloaded ? "Saved SVG file" : "Download chart as SVG"}
+        aria-label="Download SVG"
       >
-        {downloaded ? <Check size={11} /> : <Download size={11} />}
-        <span>{downloaded ? "Saved" : "SVG"}</span>
+        {downloaded ? <Check size={12} /> : <Download size={12} />}
+        <span className="rich-chart-btn-label">{downloaded ? "Saved" : "SVG"}</span>
       </button>
       <button
         type="button"
-        className="rich-chart-btn"
+        className={`rich-chart-btn ${pngDone ? "saved" : ""}`}
         onClick={handleDownloadPng}
         disabled={pngBusy}
-        title="Download chart as PNG (2x)"
+        title={pngDone ? "Saved PNG image" : "Download chart as PNG (2x)"}
+        aria-label="Download PNG image"
       >
-        {pngDone ? <Check size={11} /> : <Download size={11} />}
-        <span>{pngBusy ? "…" : pngDone ? "Saved" : "PNG"}</span>
+        {pngDone ? <Check size={12} /> : <ImageIcon size={12} />}
+        <span className="rich-chart-btn-label">{pngBusy ? "…" : pngDone ? "Saved" : "PNG"}</span>
       </button>
     </div>
   );
@@ -391,7 +395,10 @@ function ScatterBlock({ source }: { source: string }) {
 
   return (
     <div className="rich-scatter" role="img" aria-label={spec.title || "Scatter plot"}>
-      <ChartActions title={spec.title || "scatter-plot"} svgRef={svgRef} dataText={csv} />
+      <div className="chart-header-row">
+        <span className="chart-header-title">{spec.title || "Scatter Plot"}</span>
+        <ChartActions title={spec.title || "scatter-plot"} svgRef={svgRef} dataText={csv} />
+      </div>
       <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet">
         {spec.title && <text x={width / 2} y={22} textAnchor="middle" className="rich-chart-title">{spec.title}</text>}
         <line x1={left} y1={top} x2={left} y2={top + plotH} className="rich-chart-axis" />
@@ -584,19 +591,14 @@ function CategoryChartBlock({ source, kind }: { source: string; kind: "bar" | "l
 
   return (
     <div className="rich-chart" role="img" aria-label={spec.title || labelKind}>
-      <div className="chart-header-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-        <div className="chart-view-switcher" role="group" aria-label="Chart view" style={{ display: "inline-flex", gap: 2, padding: 2, border: "1px solid var(--line, #24334a)", borderRadius: 7, background: "var(--bg, #0b0f16)" }}>
+      <div className="chart-header-row">
+        <div className="chart-view-switcher" role="group" aria-label="Chart view">
           {(["bar", "line", "area", "table"] as const).map((v) => (
             <button
               key={v}
               type="button"
+              className={`chart-view-btn ${activeView === v ? "active" : ""}`}
               onClick={() => setView(v)}
-              style={{
-                border: 0, background: activeView === v ? "var(--panel2, #17202d)" : "transparent",
-                color: activeView === v ? "var(--nexus-bright, #6ee7b7)" : "var(--muted, #7e8b9d)",
-                fontSize: 10, fontWeight: 600, padding: "3px 9px", borderRadius: 5, cursor: "pointer",
-                textTransform: "capitalize",
-              }}
             >
               {v}
             </button>
@@ -731,7 +733,10 @@ function HBarBlock({ source }: { source: string }) {
 
   return (
     <div className="rich-chart" role="img" aria-label={spec.title || "Horizontal bar chart"}>
-      <ChartActions title={spec.title || "hbar-chart"} svgRef={svgRef} dataText={csv} />
+      <div className="chart-header-row">
+        <span className="chart-header-title">{spec.title || "Horizontal Bar Chart"}</span>
+        <ChartActions title={spec.title || "hbar-chart"} svgRef={svgRef} dataText={csv} />
+      </div>
       <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet">
         {spec.title && <text x={width / 2} y={22} textAnchor="middle" className="rich-chart-title">{spec.title}</text>}
         {ticks.map((tick, index) => (
@@ -801,7 +806,10 @@ function PieBlock({ source, donut = false }: { source: string; donut?: boolean }
 
   return (
     <div className="rich-chart" role="img" aria-label={spec.title || (isDonut ? "Donut chart" : "Pie chart")}>
-      <ChartActions title={spec.title || (isDonut ? "donut-chart" : "pie-chart")} svgRef={svgRef} dataText={csv} />
+      <div className="chart-header-row">
+        <span className="chart-header-title">{spec.title || (isDonut ? "Donut Chart" : "Pie Chart")}</span>
+        <ChartActions title={spec.title || (isDonut ? "donut-chart" : "pie-chart")} svgRef={svgRef} dataText={csv} />
+      </div>
       <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet">
         {spec.title && <text x={width / 2} y={24} textAnchor="middle" className="rich-chart-title">{spec.title}</text>}
         <g>
@@ -947,7 +955,10 @@ function RadarBlock({ source }: { source: string }) {
 
   return (
     <div className="rich-chart" role="img" aria-label={spec.title || "Radar chart"}>
-      <ChartActions title={spec.title || "radar-chart"} svgRef={svgRef} dataText={csv} />
+      <div className="chart-header-row">
+        <span className="chart-header-title">{spec.title || "Radar Chart"}</span>
+        <ChartActions title={spec.title || "radar-chart"} svgRef={svgRef} dataText={csv} />
+      </div>
       <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet">
         {spec.title && <text x={width / 2} y={24} textAnchor="middle" className="rich-chart-title">{spec.title}</text>}
         {ringPolygons.map((pts, idx) => (

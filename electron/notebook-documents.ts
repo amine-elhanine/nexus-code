@@ -63,7 +63,9 @@ type SlideCallout = { title: string; text: string };
 type SlidePlan = {
   title: string;
   subtitle?: string;
+  paragraphs?: string[];
   bullets: string[];
+  table?: { headers: string[]; rows: string[][] };
   code?: string;
   callouts?: SlideCallout[];
   notes?: string;
@@ -75,6 +77,7 @@ type SlidePlan = {
 type SlidesPlan = {
   title: string;
   subtitle?: string;
+  coverImage?: string;
   slides: SlidePlan[];
 };
 
@@ -745,14 +748,167 @@ export function markdownToReportPlan(md: string, fallbackTitle: string): ReportP
   if (!sections.length) throw new Error("empty-report");
   return {
     title: (title || fallbackTitle).slice(0, 160),
-    executiveSummary: summary.join("\n").slice(0, 4000),
-    sections: sections.slice(0, 12).map((s) => ({
+    executiveSummary: summary.join("\n").slice(0, 10000),
+    sections: sections.slice(0, 50).map((s) => ({
       heading: s.heading,
-      body: s.body.join("\n").slice(0, 6000),
-      keyPoints: s.keyPoints.length ? s.keyPoints.slice(0, 6) : undefined,
+      body: s.body.join("\n").slice(0, 30000),
+      keyPoints: s.keyPoints.length ? s.keyPoints.slice(0, 20) : undefined,
     })),
-    takeaways: takeaways.slice(0, 8),
+    takeaways: takeaways.slice(0, 20),
   };
+}
+
+export interface DocumentTheme {
+  name: string;
+  ink: string;         // Primary dark tone (cover background, titles, table headers)
+  accent: string;      // Primary accent (kickers, highlights, key phrases)
+  accentSoft: string;  // Subtle accent tint (card borders, callouts)
+  card: string;        // Card / section fill
+  muted: string;       // Secondary / metadata text
+  body: string;        // Primary body text
+  light: string;       // Border lines, dividers
+  bgLight: string;     // Content slide background (clean white or subtle tint)
+  fontTitle: string;   // Title font
+  fontBody: string;    // Body font
+}
+
+export const DOCUMENT_THEMES: Record<string, DocumentTheme> = {
+  heritage: {
+    name: "heritage",
+    ink: "3E2723",       // Rich Walnut / Bronze
+    accent: "D97706",    // Warm Terracotta Gold
+    accentSoft: "FEF3C7",
+    card: "FDFBF7",
+    muted: "78716C",
+    body: "292524",
+    light: "E7E5E4",
+    bgLight: "FFFFFF",
+    fontTitle: "Georgia",
+    fontBody: "Calibri",
+  },
+  navy: {
+    name: "navy",
+    ink: "0F172A",       // Slate Navy
+    accent: "2563EB",    // Royal Blue
+    accentSoft: "DBEAFE",
+    card: "F8FAFC",
+    muted: "64748B",
+    body: "1E293B",
+    light: "CBD5E1",
+    bgLight: "FFFFFF",
+    fontTitle: "Calibri",
+    fontBody: "Calibri",
+  },
+  emerald: {
+    name: "emerald",
+    ink: "064E3B",       // Deep Forest
+    accent: "059669",    // Emerald Green
+    accentSoft: "D1FAE5",
+    card: "F0FDF4",
+    muted: "4B7268",
+    body: "132E27",
+    light: "A7F3D0",
+    bgLight: "FFFFFF",
+    fontTitle: "Calibri",
+    fontBody: "Calibri",
+  },
+  ocean: {
+    name: "ocean",
+    ink: "0C2340",       // Deep Oceanic
+    accent: "0284C7",    // Bright Sky / Teal
+    accentSoft: "E0F2FE",
+    card: "F0F9FF",
+    muted: "475569",
+    body: "0F172A",
+    light: "BAE6FD",
+    bgLight: "FFFFFF",
+    fontTitle: "Calibri",
+    fontBody: "Calibri",
+  },
+  crimson: {
+    name: "crimson",
+    ink: "450A0A",       // Deep Burgundy
+    accent: "DC2626",    // Crimson Red
+    accentSoft: "FEE2E2",
+    card: "FFF5F5",
+    muted: "713F3F",
+    body: "1F1212",
+    light: "FECACA",
+    bgLight: "FFFFFF",
+    fontTitle: "Arial",
+    fontBody: "Arial",
+  },
+  indigo: {
+    name: "indigo",
+    ink: "1E1B4B",       // Deep Midnight Indigo
+    accent: "6366F1",    // Vibrant Indigo
+    accentSoft: "E0E7FF",
+    card: "F5F7FF",
+    muted: "6B7280",
+    body: "1F2937",
+    light: "C7D2FE",
+    bgLight: "FFFFFF",
+    fontTitle: "Calibri",
+    fontBody: "Calibri",
+  },
+  regal: {
+    name: "regal",
+    ink: "2E1065",       // Deep Violet
+    accent: "9333EA",    // Purple Accent
+    accentSoft: "F3E8FF",
+    card: "FAF5FF",
+    muted: "6B7280",
+    body: "1F2937",
+    light: "E9D5FF",
+    bgLight: "FFFFFF",
+    fontTitle: "Georgia",
+    fontBody: "Calibri",
+  },
+  charcoal: {
+    name: "charcoal",
+    ink: "18181B",       // Zinc Charcoal
+    accent: "0D9488",    // Teal Accent
+    accentSoft: "CCFBF1",
+    card: "F4F4F5",
+    muted: "71717A",
+    body: "27272A",
+    light: "E4E4E7",
+    bgLight: "FFFFFF",
+    fontTitle: "Arial",
+    fontBody: "Calibri",
+  },
+};
+
+export function pickDocumentTheme(topic: string): DocumentTheme {
+  const t = String(topic || "").toLowerCase();
+
+  if (/\b(history|ancient|pharaoh|pyramid|nile|rome|roman|greek|greece|egypt|morocco|ottoman|dynasty|kingdom|archaeol|civilization|medieval|antiquity|persian|byzantine|sultan|caliphate|century|bc\b|bce\b|heritage|monument)\b/i.test(t)) {
+    return DOCUMENT_THEMES.heritage;
+  }
+  if (/\b(nature|biology|green|forest|plant|animal|wildlife|ecosystem|climate|earth|sustainab|agricul|ecolog|organic|botany|conservation)\b/i.test(t)) {
+    return DOCUMENT_THEMES.emerald;
+  }
+  if (/\b(ocean|sea|marine|water|aqua|beach|river|lake|deep sea)\b/i.test(t)) {
+    return DOCUMENT_THEMES.ocean;
+  }
+  if (/\b(war|battle|conflict|revolution|sports|fitness|boxing|military|attack|titan|anime|action|speed|energy|combat|martial)\b/i.test(t)) {
+    return DOCUMENT_THEMES.crimson;
+  }
+  if (/\b(tech|software|code|ai|machine learning|developer|engineering|cyber|data|algorithm|neural|api|crypto|programming|python|javascript|cloud)\b/i.test(t)) {
+    return DOCUMENT_THEMES.indigo;
+  }
+  if (/\b(art|music|literature|poetry|drama|theatre|film|cinema|philosophy|culture|fashion|design|creative)\b/i.test(t)) {
+    return DOCUMENT_THEMES.regal;
+  }
+  if (/\b(finance|business|market|stock|bank|banking|economy|revenue|invest|manage|strategy|law|legal|corporate|enterprise|consulting|guide|solar|space|planet|astronomy|physics|science)\b/i.test(t)) {
+    return DOCUMENT_THEMES.navy;
+  }
+
+  // Deterministic fallback based on string hash so distinct topics get consistent varied themes
+  const themeKeys = Object.keys(DOCUMENT_THEMES);
+  let hash = 0;
+  for (let i = 0; i < t.length; i++) hash = (hash * 31 + t.charCodeAt(i)) >>> 0;
+  return DOCUMENT_THEMES[themeKeys[hash % themeKeys.length]];
 }
 
 /** Parses a plain-Markdown slide outline into a plan. Conventions:
@@ -761,23 +917,48 @@ export function markdownToReportPlan(md: string, fallbackTitle: string): ReportP
 export function markdownToSlidesPlan(md: string, fallbackTitle: string): SlidesPlan {
   const lines = md.split("\n");
   let title = "";
+  let subtitle = "";
+  let coverImage: string | undefined;
+  let coverImageAlt: string | undefined;
   const slides: SlidePlan[] = [];
   let current: SlidePlan | null = null;
   let inCode = false;
   let skipping = false;
   let codeBuf: string[] = [];
+  let tableLines: string[] = [];
+
+  const flushTable = () => {
+    if (current && tableLines.length >= 2) {
+      const headers = tableLines[0].replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+      const dataRows = tableLines.slice(1).filter((r) => {
+        const cells = r.replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+        return !cells.every((c) => /^:?-+:?$/.test(c));
+      }).map((r) => r.replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim()));
+      if (headers.length && dataRows.length) {
+        current.table = { headers: headers.slice(0, 6), rows: dataRows.slice(0, 8).map((r) => r.slice(0, 6)) };
+      }
+    }
+    tableLines = [];
+  };
+
   const flush = () => {
-    if (current && (current.title !== "Slide" || current.bullets.length || current.code || current.callouts?.length || current.image)) {
-      slides.push({ ...current, callouts: current.callouts?.length ? current.callouts : undefined });
+    flushTable();
+    if (current && (current.title !== "Slide" || current.bullets.length || current.paragraphs?.length || current.table || current.code || current.callouts?.length || current.image)) {
+      slides.push({
+        ...current,
+        callouts: current.callouts?.length ? current.callouts : undefined,
+        paragraphs: current.paragraphs?.length ? current.paragraphs : undefined,
+      });
     }
     current = null;
     codeBuf = [];
   };
+
   for (const raw of lines) {
     const line = raw.trim();
     if (/^```/.test(line)) {
       if (inCode && current && codeBuf.length && !skipping) {
-        current.code = (current.code ? `${current.code}\n` : "") + codeBuf.join("\n").slice(0, 600);
+        current.code = (current.code ? `${current.code}\n` : "") + codeBuf.join("\n").slice(0, 1500);
       }
       codeBuf = [];
       // Mermaid diagrams can't render in pptx — skip the block, never paste it.
@@ -803,27 +984,58 @@ export function markdownToSlidesPlan(md: string, fallbackTitle: string): SlidesP
       continue;
     }
     if (inCode) {
-      if (current && codeBuf.join("\n").length < 600) codeBuf.push(raw.replace(/\t/g, "  ").slice(0, 120));
+      if (current && codeBuf.join("\n").length < 1500) codeBuf.push(raw.replace(/\t/g, "  ").slice(0, 160));
       continue;
     }
-    if (!line) continue;
+    if (!line) {
+      flushTable();
+      continue;
+    }
+
+    if (line.startsWith("|") && line.endsWith("|")) {
+      if (current) tableLines.push(line);
+      continue;
+    } else if (tableLines.length) {
+      flushTable();
+    }
+
     const h1 = line.match(/^#\s+(.*)/);
     if (h1 && !title) {
       title = h1[1].trim().slice(0, 160);
       continue;
     }
+
+    // Capture subtitle or image before the first slide
+    if (!current && title && !line.startsWith("#")) {
+      const coverImg = line.match(/^!\[([^\]]*)\]\(([^)\s]+)\)\s*;?$/);
+      if (coverImg) {
+        coverImage = coverImg[2].trim().slice(0, 500_000);
+        coverImageAlt = coverImg[1].trim().slice(0, 160) || undefined;
+        continue;
+      }
+      if (!subtitle) {
+        subtitle = line.slice(0, 200);
+        continue;
+      }
+    }
+
     const h2 = line.match(/^#{2,3}\s+(.*)/);
     if (h2) {
-      const heading = h2[1].trim();
-      if (/source|citation|reference/i.test(heading)) {
+      const rawHeading = h2[1].trim();
+      if (/source|citation|reference/i.test(rawHeading)) {
         flush();
         current = null;
         break;
       }
       flush();
-      current = { title: heading.replace(/^slide\s*\d+\s*[:.-]?\s*/i, "").slice(0, 120) || "Slide", bullets: [] };
+      const cleanHeading = rawHeading
+        .replace(/^slide\s*\d+\s*[:.—–-]?\s*/i, "")
+        .replace(/^[:.—–-]\s*/, "")
+        .trim();
+      current = { title: cleanHeading.slice(0, 120) || "Slide", bullets: [] };
       continue;
     }
+
     const quote = line.match(/^>\s?(.*)/);
     if (quote && current) {
       const text = quote[1].trim();
@@ -836,13 +1048,13 @@ export function markdownToSlidesPlan(md: string, fallbackTitle: string): SlidesP
       continue;
     }
     const bullet = line.match(/^[-*•+]\s+(.*)/);
-    if (bullet && current && current.bullets.length < 5) {
+    if (bullet && current && current.bullets.length < 8) {
       const text = bullet[1].trim();
       if (!text || /```/.test(text)) continue;
       // Lone citation markers and emptied formulas carry no content.
       const residue = text.replace(/\$/g, "").replace(/\s+/g, " ").trim();
       if (!residue || /^\[S\d+\]$/.test(residue)) continue;
-      current.bullets.push(text.slice(0, 220));
+      current.bullets.push(text.slice(0, 260));
       continue;
     }
     // Standalone image lines attach to the current slide (the renderer
@@ -854,11 +1066,335 @@ export function markdownToSlidesPlan(md: string, fallbackTitle: string): SlidesP
         current.image = image[2].trim().slice(0, 500_000);
         current.imageAlt = image[1].trim().slice(0, 160) || undefined;
       }
+      continue;
+    }
+
+    // Descriptive prose on slide
+    if (current && !line.startsWith("#")) {
+      const paras = current.paragraphs || (current.paragraphs = []);
+      if (paras.length < 3) paras.push(line.slice(0, 300));
     }
   }
   flush();
   if (!slides.length) throw new Error("empty-slides");
-  return { title: (title || fallbackTitle).slice(0, 160), slides: slides.slice(0, 14) };
+
+  // Check if first slide is a redundant Cover / Title slide:
+  const first = slides[0];
+  const isCover = /^(cover|title|title slide|cover slide)$/i.test(first.title.trim()) ||
+    first.title.trim().toLowerCase() === title.trim().toLowerCase();
+  if (isCover && slides.length > 1) {
+    if (!subtitle) {
+      if (first.paragraphs?.length) subtitle = first.paragraphs[0];
+      else if (first.bullets?.length) subtitle = first.bullets[0];
+    }
+    if (!coverImage && first.image) {
+      coverImage = first.image;
+      coverImageAlt = first.imageAlt;
+    }
+    slides.shift();
+  }
+
+  return {
+    title: (title || fallbackTitle).slice(0, 160),
+    subtitle: subtitle.slice(0, 200) || undefined,
+    coverImage,
+    slides: slides.slice(0, 30),
+  };
+}
+
+export function parseInlineDocxRuns(text: string, TextRunClass: any, ShadingTypeClass: any): any[] {
+  const runs: any[] = [];
+  const regex = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      runs.push(new TextRunClass({ text: text.slice(lastIndex, match.index), color: "1E293B" }));
+    }
+    const raw = match[0];
+    if (raw.startsWith("`")) {
+      runs.push(new TextRunClass({
+        text: raw.slice(1, -1),
+        font: "Consolas",
+        color: "9D174D",
+        shading: { fill: "F1F5F9", type: ShadingTypeClass.CLEAR },
+      }));
+    } else if (raw.startsWith("**")) {
+      runs.push(new TextRunClass({ text: raw.slice(2, -2), bold: true, color: "0F172A" }));
+    } else if (raw.startsWith("*")) {
+      runs.push(new TextRunClass({ text: raw.slice(1, -1), italics: true, color: "334155" }));
+    }
+    lastIndex = regex.lastIndex;
+  }
+  if (lastIndex < text.length) {
+    runs.push(new TextRunClass({ text: text.slice(lastIndex), color: "1E293B" }));
+  }
+  return runs.length ? runs : [new TextRunClass({ text: "", color: "1E293B" })];
+}
+
+export async function renderMarkdownToDocx(md: string, fallbackTitle = "Document"): Promise<Buffer> {
+  const {
+    Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
+    HeadingLevel, WidthType, BorderStyle, ShadingType
+  } = await import("docx");
+
+  const theme = pickDocumentTheme(fallbackTitle + " " + md.slice(0, 500));
+  const PRIMARY = theme.ink;
+  const ACCENT = theme.accent;
+
+  const lines = md.split(/\r?\n/);
+  const children: any[] = [];
+  let titleFound = false;
+
+  let inCode = false;
+  let codeLang = "";
+  let codeBuffer: string[] = [];
+
+  let inTable = false;
+  let tableRows: string[][] = [];
+
+  let inQuote = false;
+  let quoteBuffer: string[] = [];
+
+  const flushCode = () => {
+    if (!codeBuffer.length && !inCode) return;
+    const table = new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      borders: {
+        top: { style: BorderStyle.SINGLE, size: 1, color: theme.light },
+        bottom: { style: BorderStyle.SINGLE, size: 1, color: theme.light },
+        left: { style: BorderStyle.SINGLE, size: 4, color: ACCENT },
+        right: { style: BorderStyle.SINGLE, size: 1, color: theme.light },
+      },
+      rows: [
+        new TableRow({
+          children: [
+            new TableCell({
+              shading: { fill: theme.card, type: ShadingType.CLEAR },
+              margins: { top: 120, bottom: 120, left: 160, right: 160 },
+              children: [
+                ...(codeLang ? [new Paragraph({
+                  children: [new TextRun({ text: codeLang.toUpperCase(), font: "Consolas", size: 16, bold: true, color: ACCENT })],
+                  spacing: { after: 60 },
+                })] : []),
+                ...codeBuffer.map((cLine) => new Paragraph({
+                  children: [new TextRun({ text: cLine || " ", font: "Consolas", size: 19, color: PRIMARY })],
+                  spacing: { line: 240, after: 20 },
+                })),
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    children.push(table);
+    children.push(new Paragraph({ spacing: { after: 100 } }));
+    inCode = false;
+    codeLang = "";
+    codeBuffer = [];
+  };
+
+  const flushTable = () => {
+    if (!tableRows.length) return;
+    const rows = tableRows.map((r, rIdx) => {
+      const isHeader = rIdx === 0;
+      return new TableRow({
+        tableHeader: isHeader,
+        children: r.map((cellText) => new TableCell({
+          shading: isHeader ? { fill: PRIMARY, type: ShadingType.CLEAR } : (rIdx % 2 === 0 ? { fill: theme.card, type: ShadingType.CLEAR } : undefined),
+          margins: { top: 80, bottom: 80, left: 120, right: 120 },
+          borders: {
+            top: { style: BorderStyle.SINGLE, size: 1, color: theme.light },
+            bottom: { style: BorderStyle.SINGLE, size: 1, color: theme.light },
+            left: { style: BorderStyle.SINGLE, size: 1, color: theme.light },
+            right: { style: BorderStyle.SINGLE, size: 1, color: theme.light },
+          },
+          children: [
+            new Paragraph({
+              children: isHeader
+                ? [new TextRun({ text: cellText, bold: true, color: "FFFFFF" })]
+                : parseInlineDocxRuns(cellText, TextRun, ShadingType),
+              spacing: { line: 240 },
+            }),
+          ],
+        })),
+      });
+    });
+    children.push(new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows,
+    }));
+    children.push(new Paragraph({ spacing: { after: 120 } }));
+    inTable = false;
+    tableRows = [];
+  };
+
+  const flushQuote = () => {
+    if (!quoteBuffer.length) return;
+    const table = new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      borders: {
+        top: { style: BorderStyle.NONE },
+        bottom: { style: BorderStyle.NONE },
+        left: { style: BorderStyle.SINGLE, size: 4, color: ACCENT },
+        right: { style: BorderStyle.NONE },
+      },
+      rows: [
+        new TableRow({
+          children: [
+            new TableCell({
+              shading: { fill: theme.accentSoft, type: ShadingType.CLEAR },
+              margins: { top: 100, bottom: 100, left: 160, right: 160 },
+              children: quoteBuffer.map((q) => new Paragraph({
+                children: parseInlineDocxRuns(q, TextRun, ShadingType),
+                spacing: { after: 60 },
+              })),
+            }),
+          ],
+        }),
+      ],
+    });
+    children.push(table);
+    children.push(new Paragraph({ spacing: { after: 100 } }));
+    inQuote = false;
+    quoteBuffer = [];
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const trimmed = rawLine.trim();
+
+    if (trimmed.startsWith("```")) {
+      if (inCode) {
+        flushCode();
+      } else {
+        if (inTable) flushTable();
+        if (inQuote) flushQuote();
+        inCode = true;
+        codeLang = trimmed.slice(3).trim();
+        codeBuffer = [];
+      }
+      continue;
+    }
+    if (inCode) {
+      codeBuffer.push(rawLine.replace(/\t/g, "    "));
+      continue;
+    }
+
+    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+      if (inQuote) flushQuote();
+      const cells = trimmed.slice(1, -1).split("|").map((c) => c.trim());
+      if (cells.every((c) => /^:?-+:?$/.test(c))) {
+        continue;
+      }
+      inTable = true;
+      tableRows.push(cells);
+      continue;
+    } else if (inTable) {
+      flushTable();
+    }
+
+    if (trimmed.startsWith(">")) {
+      inQuote = true;
+      quoteBuffer.push(trimmed.replace(/^>\s?/, ""));
+      continue;
+    } else if (inQuote) {
+      flushQuote();
+    }
+
+    if (!trimmed) continue;
+
+    if (/^---+$|^\*\*\*+$/.test(trimmed)) {
+      children.push(new Paragraph({
+        border: { bottom: { style: BorderStyle.SINGLE, size: 1, color: theme.light } },
+        spacing: { before: 160, after: 160 },
+      }));
+      continue;
+    }
+
+    const h1 = trimmed.match(/^#\s+(.*)/);
+    if (h1) {
+      titleFound = true;
+      children.push(new Paragraph({
+        heading: HeadingLevel.TITLE,
+        children: [new TextRun({ text: h1[1], color: PRIMARY, bold: true, size: 48 })],
+        spacing: { before: 240, after: 160 },
+      }));
+      continue;
+    }
+
+    const h2 = trimmed.match(/^##\s+(.*)/);
+    if (h2) {
+      children.push(new Paragraph({
+        heading: HeadingLevel.HEADING_1,
+        children: [new TextRun({ text: h2[1], color: PRIMARY, bold: true, size: 32 })],
+        spacing: { before: 320, after: 120 },
+      }));
+      continue;
+    }
+
+    const h3 = trimmed.match(/^###\s+(.*)/);
+    if (h3) {
+      children.push(new Paragraph({
+        heading: HeadingLevel.HEADING_2,
+        children: [new TextRun({ text: h3[1], color: ACCENT, bold: true, size: 26 })],
+        spacing: { before: 240, after: 80 },
+      }));
+      continue;
+    }
+
+    const h4 = trimmed.match(/^####\s+(.*)/);
+    if (h4) {
+      children.push(new Paragraph({
+        heading: HeadingLevel.HEADING_3,
+        children: [new TextRun({ text: h4[1], color: theme.muted, bold: true, size: 22 })],
+        spacing: { before: 180, after: 60 },
+      }));
+      continue;
+    }
+
+    const bulletMatch = trimmed.match(/^[-*•]\s+(.*)/);
+    if (bulletMatch) {
+      children.push(new Paragraph({
+        children: parseInlineDocxRuns(bulletMatch[1], TextRun, ShadingType),
+        bullet: { level: 0 },
+        spacing: { after: 60 },
+      }));
+      continue;
+    }
+
+    const numMatch = trimmed.match(/^(\d+)[.)]\s+(.*)/);
+    if (numMatch) {
+      children.push(new Paragraph({
+        children: [
+          new TextRun({ text: `${numMatch[1]}. `, bold: true, color: PRIMARY }),
+          ...parseInlineDocxRuns(numMatch[2], TextRun, ShadingType),
+        ],
+        spacing: { after: 60 },
+      }));
+      continue;
+    }
+
+    children.push(new Paragraph({
+      children: parseInlineDocxRuns(trimmed, TextRun, ShadingType),
+      spacing: { after: 120, line: 276 },
+    }));
+  }
+
+  if (inCode) flushCode();
+  if (inTable) flushTable();
+  if (inQuote) flushQuote();
+
+  if (!titleFound && fallbackTitle) {
+    children.unshift(new Paragraph({
+      heading: HeadingLevel.TITLE,
+      children: [new TextRun({ text: fallbackTitle, color: PRIMARY, bold: true, size: 48 })],
+      spacing: { before: 240, after: 160 },
+    }));
+  }
+
+  const doc = new Document({ sections: [{ children }] });
+  return Buffer.from(await Packer.toBuffer(doc));
 }
 
 export async function renderDocx(plan: ReportPlan, citations: NotebookSourceCitation[]): Promise<Buffer> {
@@ -867,12 +1403,16 @@ export async function renderDocx(plan: ReportPlan, citations: NotebookSourceCita
   const MUTED = "808080";
   const children: InstanceType<typeof Paragraph>[] = [
     new Paragraph({ heading: HeadingLevel.TITLE, children: [new TextRun({ text: plan.title, color: NAVY })] }),
-    new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun({ text: "Executive summary", color: NAVY })] }),
-    new Paragraph({ children: [new TextRun(plan.executiveSummary || "No summary.")] }),
   ];
+  if (plan.executiveSummary && plan.executiveSummary.trim() && !/^no summary/i.test(plan.executiveSummary.trim())) {
+    children.push(
+      new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun({ text: "Executive summary", color: NAVY })] }),
+      new Paragraph({ children: [new TextRun(plan.executiveSummary)] })
+    );
+  }
   plan.sections.forEach((s, i) => {
     children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun({ text: `${i + 1}. ${s.heading}`, color: NAVY })] }));
-    for (const para of s.body.split(/\n+/).slice(0, 12)) {
+    for (const para of s.body.split(/\n+/)) {
       const text = para.trim().replace(/^#{1,3}\s+/, "");
       if (!text) continue;
       const bullet = text.match(/^[-*]\s+(.*)/);
@@ -887,12 +1427,216 @@ export async function renderDocx(plan: ReportPlan, citations: NotebookSourceCita
     children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun({ text: "Key takeaways", color: NAVY })] }));
     for (const t of plan.takeaways) children.push(new Paragraph({ text: t, bullet: { level: 0 } }));
   }
-  children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun({ text: "Sources", color: NAVY })] }));
-  for (const c of citations) {
-    children.push(new Paragraph({ children: [new TextRun({ text: `[S${c.index}] ${c.sourceName} — ${c.heading}`, color: MUTED, size: 20 })] }));
+  if (citations.length) {
+    children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun({ text: "Sources", color: NAVY })] }));
+    for (const c of citations) {
+      children.push(new Paragraph({ children: [new TextRun({ text: `[S${c.index}] ${c.sourceName} — ${c.heading}`, color: MUTED, size: 20 })] }));
+    }
   }
   const doc = new Document({ sections: [{ children }] });
   return Buffer.from(await Packer.toBuffer(doc));
+}
+
+function parseInlineHtml(text: string): string {
+  let out = escapeHtml(text);
+  out = out.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
+  out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  return out;
+}
+
+export function markdownToDocumentHtml(markdown: string, fallbackTitle = "Document"): string {
+  const theme = pickDocumentTheme(fallbackTitle + " " + markdown.slice(0, 500));
+  const lines = markdown.split(/\r?\n/);
+  const bodyParts: string[] = [];
+  let title = fallbackTitle;
+
+  let inCode = false;
+  let codeLang = "";
+  let codeBuffer: string[] = [];
+
+  let inTable = false;
+  let tableRows: string[][] = [];
+
+  let inList = false;
+
+  const flushCode = () => {
+    if (!codeBuffer.length && !inCode) return;
+    const escaped = escapeHtml(codeBuffer.join("\n"));
+    bodyParts.push(`<div class="code-card">${codeLang ? `<div class="code-lang">${escapeHtml(codeLang.toUpperCase())}</div>` : ""}<pre><code>${escaped}</code></pre></div>`);
+    inCode = false;
+    codeLang = "";
+    codeBuffer = [];
+  };
+
+  const flushTable = () => {
+    if (!tableRows.length) return;
+    const header = tableRows[0];
+    const data = tableRows.slice(1);
+    const ths = header.map((c) => `<th>${parseInlineHtml(c)}</th>`).join("");
+    const trs = data.map((row) => `<tr>${row.map((c) => `<td>${parseInlineHtml(c)}</td>`).join("")}</tr>`).join("\n");
+    bodyParts.push(`<table class="doc-table"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`);
+    inTable = false;
+    tableRows = [];
+  };
+
+  const flushList = () => {
+    if (inList) {
+      bodyParts.push("</ul>");
+      inList = false;
+    }
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const trimmed = rawLine.trim();
+
+    if (trimmed.startsWith("```")) {
+      if (inCode) {
+        flushCode();
+      } else {
+        flushList();
+        if (inTable) flushTable();
+        inCode = true;
+        codeLang = trimmed.slice(3).trim();
+        codeBuffer = [];
+      }
+      continue;
+    }
+    if (inCode) {
+      codeBuffer.push(rawLine.replace(/\t/g, "    "));
+      continue;
+    }
+
+    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+      flushList();
+      const cells = trimmed.slice(1, -1).split("|").map((c) => c.trim());
+      if (cells.every((c) => /^:?-+:?$/.test(c))) continue;
+      inTable = true;
+      tableRows.push(cells);
+      continue;
+    } else if (inTable) {
+      flushTable();
+    }
+
+    if (!trimmed) {
+      flushList();
+      continue;
+    }
+
+    if (trimmed.startsWith(">")) {
+      flushList();
+      const quoteText = trimmed.replace(/^>\s?/, "");
+      bodyParts.push(`<blockquote class="callout"><p>${parseInlineHtml(quoteText)}</p></blockquote>`);
+      continue;
+    }
+
+    if (/^---+$|^\*\*\*+$/.test(trimmed)) {
+      flushList();
+      bodyParts.push('<hr class="divider"/>');
+      continue;
+    }
+
+    const h1 = trimmed.match(/^#\s+(.*)/);
+    if (h1) {
+      flushList();
+      title = h1[1].trim();
+      bodyParts.push(`<h1>${parseInlineHtml(h1[1])}</h1>`);
+      continue;
+    }
+
+    const h2 = trimmed.match(/^##\s+(.*)/);
+    if (h2) {
+      flushList();
+      bodyParts.push(`<h2>${parseInlineHtml(h2[1])}</h2>`);
+      continue;
+    }
+
+    const h3 = trimmed.match(/^###\s+(.*)/);
+    if (h3) {
+      flushList();
+      bodyParts.push(`<h3>${parseInlineHtml(h3[1])}</h3>`);
+      continue;
+    }
+
+    const h4 = trimmed.match(/^####\s+(.*)/);
+    if (h4) {
+      flushList();
+      bodyParts.push(`<h4>${parseInlineHtml(h4[1])}</h4>`);
+      continue;
+    }
+
+    const bulletMatch = trimmed.match(/^[-*•]\s+(.*)/);
+    if (bulletMatch) {
+      if (!inList) {
+        bodyParts.push('<ul class="bullet-list">');
+        inList = true;
+      }
+      bodyParts.push(`<li>${parseInlineHtml(bulletMatch[1])}</li>`);
+      continue;
+    } else {
+      flushList();
+    }
+
+    bodyParts.push(`<p>${parseInlineHtml(trimmed)}</p>`);
+  }
+
+  if (inCode) flushCode();
+  if (inTable) flushTable();
+  flushList();
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>${escapeHtml(title)}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Georgia, serif; max-width: 820px; margin: 36px auto; padding: 0 28px; color: #${theme.body}; line-height: 1.65; }
+    h1 { font-size: 28px; color: #${theme.ink}; margin-bottom: 20px; border-bottom: 2px solid #${theme.accent}; padding-bottom: 8px; }
+    h2 { font-size: 20px; color: #${theme.ink}; margin-top: 32px; margin-bottom: 12px; }
+    h3 { font-size: 16px; color: #${theme.accent}; margin-top: 24px; margin-bottom: 8px; }
+    h4 { font-size: 14px; color: #${theme.muted}; margin-top: 18px; margin-bottom: 6px; }
+    p { margin: 8px 0 12px; }
+    .code-card { background: #${theme.card}; border: 1px solid #${theme.light}; border-left: 4px solid #${theme.accent}; border-radius: 6px; padding: 12px 16px; margin: 16px 0; overflow-x: auto; }
+    .code-lang { font-family: Consolas, monospace; font-size: 11px; font-weight: bold; color: #${theme.accent}; margin-bottom: 6px; letter-spacing: 0.5px; }
+    pre { margin: 0; }
+    code { font-family: Consolas, "Courier New", monospace; font-size: 13.5px; color: #${theme.ink}; line-height: 1.5; }
+    .inline-code { background: #${theme.card}; color: #${theme.accent}; padding: 2px 5px; border-radius: 4px; font-size: 13px; }
+    .doc-table { width: 100%; border-collapse: collapse; margin: 18px 0; font-size: 13.5px; }
+    .doc-table th { background: #${theme.ink}; color: #ffffff; text-align: left; padding: 10px 12px; font-weight: 600; }
+    .doc-table td { padding: 9px 12px; border-bottom: 1px solid #${theme.light}; }
+    .doc-table tr:nth-child(even) td { background: #${theme.card}; }
+    .callout { border-left: 4px solid #${theme.accent}; background: #${theme.accentSoft}; margin: 16px 0; padding: 10px 16px; border-radius: 0 6px 6px 0; color: #${theme.body}; }
+    .callout p { margin: 4px 0; }
+    .bullet-list { padding-left: 24px; margin: 8px 0 14px; }
+    .bullet-list li { margin: 4px 0; }
+    .divider { border: 0; border-top: 1px solid #${theme.light}; margin: 28px 0; }
+  </style>
+</head>
+<body>
+  ${bodyParts.join("\n  ")}
+</body>
+</html>`;
+}
+
+export async function renderMarkdownToPdf(md: string, fallbackTitle = "Document"): Promise<Buffer> {
+  const electronRequire = createRequire(import.meta.url);
+  type Win = { loadURL: (url: string) => Promise<void>; webContents: { printToPDF: (opts: unknown) => Promise<Uint8Array> }; destroy: () => void };
+  let BrowserWindow: (new (opts: unknown) => Win) | null = null;
+  try {
+    const mod = electronRequire("electron") as unknown as { BrowserWindow?: new (opts: unknown) => Win };
+    if (mod && typeof mod === "object") BrowserWindow = mod.BrowserWindow || null;
+  } catch { /* plain node */ }
+  if (!BrowserWindow) throw new Error("PDF export needs the desktop app — pick DOCX instead.");
+  const html = markdownToDocumentHtml(md, fallbackTitle);
+  const win = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
+  try {
+    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    const data = await win.webContents.printToPDF({ printBackground: true });
+    return Buffer.from(data);
+  } finally {
+    try { win.destroy(); } catch { /* ignore */ }
+  }
 }
 
 export async function renderPdf(plan: ReportPlan, citations: NotebookSourceCitation[]): Promise<Buffer> {
@@ -946,7 +1690,11 @@ function cleanSlideText(text: string): string {
 }
 
 export function cleanSlideTitle(title: string): string {
-  const cleaned = cleanSlideText(title).replace(/[:;,.]+$/, "").trim();
+  const cleaned = cleanSlideText(title)
+    .replace(/^slide\s*\d+\s*[:.—–-]?\s*/i, "")
+    .replace(/^[:.—–-]\s*/, "")
+    .replace(/[:;,.]+$/, "")
+    .trim();
   return cleaned.slice(0, 120) || "Slide";
 }
 
@@ -960,46 +1708,44 @@ function cleanBullets(bullets: string[]): string[] {
 export async function renderPptx(
   plan: SlidesPlan,
   citations: NotebookSourceCitation[],
-  /** Mode-neutral rendering for non-notebook callers (Home deliverables). */
-  opts: { coverBadge?: string } = {}
+  opts: { coverBadge?: string; theme?: DocumentTheme } = {}
 ): Promise<Buffer> {
-  // Designed deck renderer: a real theme (ink cover, accent-underlined
-  // titles, lead-bold bullets, two-column dense slides, callout cards, dark
-  // code cards) plus image embedding from slide content. The skill-driven
-  // python path stays available for fully custom brand designs.
-  const INK = "0F172A";
-  const ACCENT = "2563EB";
-  const ACCENT_SOFT = "DBEAFE";
-  const CARD = "F1F5F9";
-  const MUTED = "64748B";
-  const BODY = "1E293B";
-  const LIGHT = "CBD5E1";
+  const theme = opts.theme || pickDocumentTheme(plan.title);
+  const INK = theme.ink;
+  const ACCENT = theme.accent;
+  const ACCENT_SOFT = theme.accentSoft;
+  const CARD = theme.card;
+  const MUTED = theme.muted;
+  const BODY = theme.body;
+  const LIGHT = theme.light;
+  const BG_LIGHT = theme.bgLight;
+  const FONT_TITLE = theme.fontTitle;
+  const FONT_BODY = theme.fontBody;
+
   const today = new Date().toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
   const mod = (await import("pptxgenjs")) as unknown as { default?: unknown } & Record<string, unknown>;
+  type Slide = {
+    addText: (t: unknown, o?: unknown) => void;
+    addImage: (o: unknown) => void;
+    addShape: (shape: unknown, o?: unknown) => void;
+    addTable: (rows: unknown, o?: unknown) => void;
+  };
   const PptxGenJS = (mod.default || mod) as unknown as new () => {
     title: string;
     defineLayout: (layout: { name: string; width: number; height: number }) => void;
     layout: string;
-    addSlide: () => {
-      addText: (t: unknown, o?: unknown) => void;
-      addImage: (o: unknown) => void;
-      addShape: (shape: unknown, o?: unknown) => void;
-    };
+    addSlide: () => Slide;
     write: (opts: { outputType: "nodebuffer" }) => Promise<Buffer>;
   };
   const pres = new PptxGenJS();
   pres.defineLayout({ name: "NEXUS_WIDE", width: 13.33, height: 7.5 });
   pres.layout = "NEXUS_WIDE";
   pres.title = plan.title;
-  let slideNo = 0;
-  type Slide = {
-    addText: (t: unknown, o?: unknown) => void;
-    addImage: (o: unknown) => void;
-    addShape: (shape: unknown, o?: unknown) => void;
-  };
+
+  const totalContentSlides = plan.slides.length;
   const footer = (slide: Slide, n: number) => {
-    slide.addText(`${plan.title.slice(0, 70)}  •  ${today}`, { x: 0.6, y: 7.08, w: 9.5, h: 0.3, fontSize: 9, color: MUTED });
-    slide.addText(String(n), { x: 12.35, y: 7.08, w: 0.5, h: 0.3, fontSize: 9, color: MUTED, align: "right" });
+    slide.addText(`${plan.title.slice(0, 70)} • ${today}`, { x: 0.6, y: 7.08, w: 9.0, h: 0.3, fontSize: 9, color: MUTED, fontFace: FONT_BODY });
+    slide.addText(`${n} / ${totalContentSlides}`, { x: 11.7, y: 7.08, w: 1.0, h: 0.3, fontSize: 9, color: MUTED, align: "right", fontFace: FONT_BODY });
   };
 
   // ---- image embedding: fetch http(s) slide images once, embed as data ----
@@ -1013,10 +1759,6 @@ export async function renderPptx(
         const ext = /png/i.test(url) ? "png" : /gif/i.test(url) ? "gif" : "jpg";
         result = { ext, b64: url.replace(/^data:image\/[a-z]+;base64,/i, "") };
       } else if (/^https?:\/\//i.test(url)) {
-        // SSRF guard: slide content comes from untrusted source documents —
-        // image URLs must never probe loopback/link-local/metadata targets.
-        // safePublicFetch validates at URL-accept time, on every redirect
-        // hop, AND at socket connect (DNS-rebinding safe).
         const { safePublicFetch } = await import("./net-guard.js");
         const res = await safePublicFetch(url, { timeoutMs: 9_000, headers: { "user-agent": "nexus/0.5.0" } });
         const type = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
@@ -1026,29 +1768,22 @@ export async function renderPptx(
           if (buf.length > 50 && buf.length < 8_000_000) result = { ext, b64: buf.toString("base64") };
         }
       }
-    } catch { /* image is decorative — a failed fetch must never fail the deck */ }
+    } catch { /* decorative */ }
     imageCache.set(url, result);
     return result;
   };
 
-  /**
-   * "Lead — explanation" bullets render the lead bold for scannability.
-   * Returns a FLAT array of pptxgenjs-compatible run objects. The caller
-   * flattens all bullet groups into ONE addText call; `breakLine` sits on
-   * the LAST run of each bullet and `bullet` on the FIRST run.
-   */
   const bulletRuns = (text: string, isLast: boolean): Array<{ text: string; options: Record<string, unknown> }> => {
     const split = text.match(/^(.{4,80}?)\s+(?:—|–|-|:)\s+(.{8,})$/);
     if (split) {
       return [
-        { text: `${split[1]} — `, options: { bold: true, color: INK, bullet: { code: "2022" } } },
-        { text: split[2], options: { color: BODY, breakLine: isLast } },
+        { text: `${split[1]} — `, options: { bold: true, color: INK, bullet: { code: "2022" }, fontFace: FONT_BODY } },
+        { text: split[2], options: { color: BODY, breakLine: isLast, fontFace: FONT_BODY } },
       ];
     }
-    return [{ text, options: { color: BODY, bullet: { code: "2022" }, breakLine: isLast } }];
+    return [{ text, options: { color: BODY, bullet: { code: "2022" }, breakLine: isLast, fontFace: FONT_BODY } }];
   };
 
-  /** Flattens bullet strings into a single run array for one addText call. */
   const bulletTextRuns = (bullets: string[]): Array<{ text: string; options: Record<string, unknown> }> => {
     const all: Array<{ text: string; options: Record<string, unknown> }> = [];
     bullets.forEach((b, i) => {
@@ -1060,89 +1795,179 @@ export async function renderPptx(
   const addContentSlide = async (s: SlidePlan, index: number) => {
     const title = cleanSlideTitle(s.title);
     const bullets = cleanBullets(s.bullets).slice(0, 8);
-    const code = s.code && !/mermaid|graph\s+(LR|TD|TB|BT)/i.test(s.code) ? s.code.slice(0, 600) : undefined;
+    const code = s.code && !/mermaid|graph\s+(LR|TD|TB|BT)/i.test(s.code) ? s.code.slice(0, 1500) : undefined;
     const callouts = (s.callouts || []).filter((c) => c.title || c.text).slice(0, 2);
     const image = s.image ? await fetchSlideImage(s.image) : null;
-    if ((!title || title === "Slide") && !bullets.length && !code && !callouts.length && !image) return;
-    slideNo++;
+    const hasTable = Boolean(s.table && s.table.headers.length);
+    const hasParas = Boolean(s.paragraphs?.length);
+    if ((!title || title === "Slide") && !bullets.length && !code && !callouts.length && !image && !hasTable && !hasParas) return;
+
     const slide = pres.addSlide();
-    // Kicker + title + accent underline.
-    slide.addText(String(index).padStart(2, "0"), { x: 0.6, y: 0.34, w: 1.2, h: 0.4, fontSize: 12, bold: true, color: ACCENT, charSpacing: 2 });
-    slide.addText(title || "Slide", { x: 0.6, y: 0.62, w: 12.1, h: 0.85, fontSize: 26, bold: true, color: INK });
-    slide.addShape("rect", { x: 0.62, y: 1.5, w: 1.5, h: 0.055, fill: { color: ACCENT } });
-    let bodyY = 1.78;
+    slide.addShape("rect", { x: 0, y: 0, w: 13.33, h: 7.5, fill: { color: BG_LIGHT } });
+
+    // Kicker + Title
+    slide.addText(String(index).padStart(2, "0"), { x: 0.6, y: 0.45, w: 1.5, h: 0.35, fontSize: 11, bold: true, color: ACCENT, charSpacing: 2, fontFace: FONT_BODY });
+    slide.addText(title || "Slide", { x: 0.6, y: 0.72, w: 12.13, h: 0.75, fontSize: 24, bold: true, color: INK, fontFace: FONT_TITLE });
+
+    let bodyY = 1.65;
     if (s.subtitle) {
-      slide.addText(cleanSlideText(s.subtitle), { x: 0.6, y: bodyY, w: 12.1, h: 0.45, fontSize: 14, color: MUTED });
-      bodyY += 0.55;
+      slide.addText(cleanSlideText(s.subtitle), { x: 0.6, y: bodyY, w: 12.13, h: 0.45, fontSize: 13.5, color: MUTED, fontFace: FONT_BODY });
+      bodyY += 0.52;
     }
+
     const withImage = Boolean(image);
-    if (bullets.length) {
-      const twoColumn = bullets.length > 4 && !withImage;
-      const paraOpts = { fontSize: 14, valign: "top" as const };
-      if (twoColumn) {
-        const half = Math.ceil(bullets.length / 2);
-        slide.addText(bulletTextRuns(bullets.slice(0, half)), { ...paraOpts, x: 0.6, y: bodyY, w: 5.95, h: 4.9 });
-        slide.addText(bulletTextRuns(bullets.slice(half)), { ...paraOpts, x: 6.85, y: bodyY, w: 5.9, h: 4.9 });
-      } else {
-        const bw = withImage ? 6.7 : 12.1;
-        slide.addText(bulletTextRuns(bullets), { ...paraOpts, x: 0.6, y: bodyY, w: bw, h: withImage ? 4.9 : 4.6 });
+    const contentW = withImage ? 6.1 : 12.13;
+
+    if (s.paragraphs?.length) {
+      for (const p of s.paragraphs) {
+        if (bodyY > 5.5) break;
+        slide.addText(cleanSlideText(p), { x: 0.6, y: bodyY, w: contentW, h: 0.45, fontSize: 13, color: BODY, italic: true, fontFace: FONT_BODY });
+        bodyY += 0.48;
       }
     }
-    if (image) {
-      slide.addImage({ data: `image/${image.ext};base64,${image.b64}`, x: 7.55, y: 1.85, w: 5.2, h: 4.7, sizing: { type: "contain", w: 5.2, h: 4.7 } });
+
+    if (hasTable && s.table) {
+      const rowCount = s.table.rows.length + 1;
+      const fontSize = rowCount > 9 ? 9.5 : rowCount > 7 ? 10.5 : 11.5;
+      const thRows = [
+        s.table.headers.map((h) => ({
+          text: h,
+          options: { bold: true, color: "FFFFFF", fill: { color: INK }, fontFace: FONT_TITLE, fontSize: fontSize + 0.5 }
+        })),
+        ...s.table.rows.map((row, rIdx) => row.map((cell) => ({
+          text: cell,
+          options: { fill: rIdx % 2 === 0 ? { color: CARD } : { color: BG_LIGHT }, color: BODY, fontFace: FONT_BODY, fontSize }
+        })))
+      ];
+      const availableH = Math.max(2.5, 6.85 - bodyY);
+      const rowH = rowCount <= 5 ? 0.46 : Math.max(0.32, Math.min(0.42, (availableH - 0.1) / rowCount));
+      const tableH = Math.min(rowH * rowCount, availableH);
+
+      slide.addTable(thRows, {
+        x: 0.6,
+        y: bodyY,
+        w: contentW,
+        h: tableH,
+        rowH,
+        fontSize,
+        border: { pt: 1, color: LIGHT },
+        valign: "middle",
+        margin: [3, 6, 3, 6],
+        autoPage: false
+      });
+      bodyY += tableH + 0.25;
     }
-    let calloutY = 5.6;
+
+    // Bullets rendering: If 2-4 bullets and no image/table, use Card Block layout
+    if (bullets.length >= 2 && bullets.length <= 4 && !withImage && !hasTable) {
+      const availableH = Math.max(2.6, 6.7 - bodyY);
+      const gap = 0.16;
+      const cardH = Math.min((availableH - gap * (bullets.length - 1)) / bullets.length, 1.25);
+      let cardY = bodyY;
+      for (const b of bullets) {
+        slide.addShape("roundRect", {
+          x: 0.6, y: cardY, w: contentW, h: cardH,
+          fill: { color: CARD },
+          line: { color: LIGHT, width: 1 },
+          rectRadius: 0.05
+        });
+        const split = b.match(/^(.{3,80}?)\s+(?:—|–|-|:)\s+(.{6,})$/);
+        if (split) {
+          slide.addText([
+            { text: split[1] + "  ", options: { bold: true, color: INK, fontSize: 13, fontFace: FONT_TITLE } },
+            { text: "— " + split[2], options: { color: BODY, fontSize: 12.5, fontFace: FONT_BODY } }
+          ], { x: 0.85, y: cardY + 0.06, w: contentW - 0.45, h: cardH - 0.12, valign: "middle" });
+        } else {
+          slide.addText(b, {
+            x: 0.85, y: cardY + 0.06, w: contentW - 0.45, h: cardH - 0.12,
+            fontSize: 12.5, color: BODY, valign: "middle", fontFace: FONT_BODY
+          });
+        }
+        cardY += cardH + gap;
+      }
+      bodyY = cardY;
+    } else if (bullets.length) {
+      const twoColumn = bullets.length > 4 && !withImage && !hasTable;
+      const paraOpts = { fontSize: 13.5, valign: "top" as const, fontFace: FONT_BODY };
+      const bulletH = Math.min(bullets.length * 0.48 + 0.2, 4.2);
+      if (twoColumn) {
+        const half = Math.ceil(bullets.length / 2);
+        slide.addText(bulletTextRuns(bullets.slice(0, half)), { ...paraOpts, x: 0.6, y: bodyY, w: 5.85, h: 4.6 });
+        slide.addText(bulletTextRuns(bullets.slice(half)), { ...paraOpts, x: 6.85, y: bodyY, w: 5.85, h: 4.6 });
+      } else {
+        slide.addText(bulletTextRuns(bullets), { ...paraOpts, x: 0.6, y: bodyY, w: contentW, h: Math.min(4.8, 6.6 - bodyY) });
+      }
+      bodyY += bulletH;
+    }
+
+    if (image) {
+      slide.addShape("roundRect", {
+        x: 6.95, y: 1.55, w: 5.75, h: 5.1,
+        fill: { color: CARD },
+        line: { color: LIGHT, width: 1 },
+        rectRadius: 0.05
+      });
+      slide.addImage({
+        data: `image/${image.ext};base64,${image.b64}`,
+        x: 7.1, y: 1.7, w: 5.45, h: 4.8,
+        sizing: { type: "contain", w: 5.45, h: 4.8 }
+      });
+    }
+
+    let calloutY = bodyY;
     for (const c of callouts) {
+      if (calloutY > 6.0) break;
       const label = (c.title || "Note").slice(0, 60);
       const body = cleanSlideText(c.text).slice(0, 340);
-      slide.addShape("roundRect", { x: 0.6, y: calloutY, w: withImage ? 6.7 : 12.1, h: 0.95, fill: { color: CARD }, line: { color: ACCENT_SOFT, width: 1 }, rectRadius: 0.06 });
+      slide.addShape("roundRect", { x: 0.6, y: calloutY, w: contentW, h: 0.85, fill: { color: ACCENT_SOFT }, line: { color: ACCENT, width: 1 }, rectRadius: 0.05 });
       slide.addText(
-        [{ text: `${label}: `, options: { bold: true, color: ACCENT } }, { text: body, options: { color: BODY } }],
-        { x: 0.85, y: calloutY + 0.08, w: (withImage ? 6.7 : 12.1) - 0.5, h: 0.8, fontSize: 12.5, valign: "middle" }
+        [{ text: `${label}: `, options: { bold: true, color: ACCENT, fontFace: FONT_TITLE } }, { text: body, options: { color: BODY, fontFace: FONT_BODY } }],
+        { x: 0.85, y: calloutY + 0.05, w: contentW - 0.45, h: 0.75, fontSize: 11.5, valign: "middle" }
       );
-      calloutY += 1.05;
-      if (calloutY > 6.4) break;
+      calloutY += 0.95;
     }
-    if (code) {
-      slide.addShape("roundRect", { x: 0.6, y: 5.45, w: withImage ? 6.7 : 12.1, h: 1.5, fill: { color: INK }, rectRadius: 0.06 });
-      slide.addText(code, { x: 0.85, y: 5.55, w: (withImage ? 6.7 : 12.1) - 0.5, h: 1.3, fontSize: 10.5, fontFace: "Consolas", color: LIGHT, valign: "top" });
+
+    if (code && calloutY <= 5.8) {
+      const codeH = Math.min(6.8 - calloutY, 1.4);
+      slide.addShape("roundRect", { x: 0.6, y: calloutY, w: contentW, h: codeH, fill: { color: INK }, rectRadius: 0.05 });
+      slide.addText(code, { x: 0.85, y: calloutY + 0.08, w: contentW - 0.45, h: codeH - 0.16, fontSize: 10.5, fontFace: "Consolas", color: LIGHT, valign: "top" });
     }
-    footer(slide, slideNo);
+
+    footer(slide, index);
   };
 
-  // ---- cover ----
-  slideNo++;
+  // ---- Cover Slide ----
   const cover = pres.addSlide();
   cover.addShape("rect", { x: 0, y: 0, w: 13.33, h: 7.5, fill: { color: INK } });
-  cover.addShape("rect", { x: 0, y: 0, w: 13.33, h: 0.14, fill: { color: ACCENT } });
-  // A cover image (first slide with one) becomes a full-height right panel.
-  const coverPlan = plan.slides.find((s) => s.image);
-  const coverImage = coverPlan ? await fetchSlideImage(coverPlan.image!) : null;
+
+  const coverImageUrl = plan.coverImage;
+  const coverImage = coverImageUrl ? await fetchSlideImage(coverImageUrl) : null;
   if (coverImage) {
-    cover.addImage({ data: `image/${coverImage.ext};base64,${coverImage.b64}`, x: 7.9, y: 0.14, w: 5.43, h: 7.36, sizing: { type: "cover", w: 5.43, h: 7.36 } });
-  }
-  const coverBadge = opts.coverBadge;
-  if (coverBadge) cover.addText(coverBadge, { x: 0.7, y: 0.85, w: 9, h: 0.4, fontSize: 13, bold: true, color: LIGHT, charSpacing: 3 });
-  cover.addText(plan.title, { x: 0.7, y: 2.35, w: coverImage ? 6.9 : 11.9, h: 1.9, fontSize: 40, bold: true, color: "FFFFFF" });
-  if (plan.subtitle) cover.addText(plan.subtitle, { x: 0.7, y: 4.3, w: coverImage ? 6.9 : 11.9, h: 0.7, fontSize: 17, color: LIGHT });
-  cover.addText(today, { x: 0.7, y: 6.6, w: 6, h: 0.4, fontSize: 11, color: "94A3B8" });
-  if (citations.length) {
-    cover.addText(`Grounded in ${citations.length} cited passage${citations.length === 1 ? "" : "s"}`, { x: 7, y: 6.6, w: 6.1, h: 0.4, fontSize: 11, italic: true, color: "94A3B8", align: "right" });
+    cover.addShape("roundRect", { x: 7.4, y: 1.0, w: 5.2, h: 5.5, fill: { color: INK }, line: { color: ACCENT, width: 1 }, rectRadius: 0.08 });
+    cover.addImage({ data: `image/${coverImage.ext};base64,${coverImage.b64}`, x: 7.5, y: 1.1, w: 5.0, h: 5.3, sizing: { type: "contain", w: 5.0, h: 5.3 } });
   }
 
-  // ---- content slides ----
+  const coverBadge = opts.coverBadge;
+  if (coverBadge) cover.addText(coverBadge, { x: 0.8, y: 1.0, w: 9, h: 0.4, fontSize: 13, bold: true, color: ACCENT, charSpacing: 3, fontFace: FONT_BODY });
+  cover.addText(plan.title, { x: 0.8, y: 2.2, w: coverImage ? 6.4 : 11.7, h: 2.2, fontSize: 38, bold: true, color: "FFFFFF", fontFace: FONT_TITLE });
+  if (plan.subtitle) cover.addText(plan.subtitle, { x: 0.8, y: 4.5, w: coverImage ? 6.4 : 11.7, h: 1.0, fontSize: 18, color: ACCENT_SOFT, fontFace: FONT_BODY });
+  cover.addText(today, { x: 0.8, y: 6.6, w: 6, h: 0.4, fontSize: 11, color: "94A3B8", fontFace: FONT_BODY });
+  if (citations.length) {
+    cover.addText(`Grounded in ${citations.length} cited passage${citations.length === 1 ? "" : "s"}`, { x: 7, y: 6.6, w: 5.5, h: 0.4, fontSize: 11, italic: true, color: "94A3B8", align: "right", fontFace: FONT_BODY });
+  }
+
+  // ---- Content Slides ----
   let contentIndex = 0;
   for (const s of plan.slides) {
     contentIndex++;
     await addContentSlide(s, contentIndex);
   }
 
-  // ---- sources (cited runs only) ----
+  // ---- Sources ----
   if (citations.length) {
-    slideNo++;
     const sources = pres.addSlide();
-    sources.addText("Sources", { x: 0.6, y: 0.62, w: 12.1, h: 0.85, fontSize: 26, bold: true, color: INK });
-    sources.addShape("rect", { x: 0.62, y: 1.5, w: 1.5, h: 0.055, fill: { color: ACCENT } });
+    sources.addShape("rect", { x: 0, y: 0, w: 13.33, h: 7.5, fill: { color: BG_LIGHT } });
+    sources.addText("Sources", { x: 0.8, y: 0.72, w: 11.7, h: 0.75, fontSize: 24, bold: true, color: INK, fontFace: FONT_TITLE });
     const byFile = new Map<string, NotebookSourceCitation[]>();
     for (const c of citations) {
       const list = byFile.get(c.sourceName) || [];
@@ -1154,9 +1979,10 @@ export async function renderPptx(
       sourceLines.push(`${shortName(file, 60)} (${list.length})`);
       for (const c of list.slice(0, 12)) sourceLines.push(`  [S${c.index}] ${c.heading.slice(0, 90)}`);
     }
-    sources.addText(sourceLines.join("\n").slice(0, 3000), { x: 0.6, y: 1.9, w: 12.1, h: 4.8, fontSize: 11, color: BODY, valign: "top" });
-    footer(sources, slideNo);
+    sources.addText(sourceLines.join("\n").slice(0, 3000), { x: 0.8, y: 1.8, w: 11.7, h: 4.8, fontSize: 11, color: BODY, valign: "top", fontFace: FONT_BODY });
+    footer(sources, contentIndex + 1);
   }
+
   const out = await pres.write({ outputType: "nodebuffer" });
   return Buffer.isBuffer(out) ? out : Buffer.from(out as unknown as Uint8Array);
 }
