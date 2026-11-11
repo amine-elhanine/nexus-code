@@ -20,6 +20,7 @@
 .app-root .nb-topbar,
 .app-root .code-workbench-header {
   padding-right: 150px !important;
+  overflow: visible !important;
 }
 
 .app-root .home-topbar-left,
@@ -32,11 +33,21 @@
   flex-shrink: 0;
 }
 
-/* ── 2+3. Transcript spacing: real top padding, no 100px void ────────── */
+/* ── 2+3. Transcript spacing: real top padding, full width for right-edge scrollbar ────────── */
 .app-root .agent-transcript {
-  padding: 24px 28px 32px !important;
-  padding-bottom: 32px !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  margin: 0 !important;
+  padding: 36px 28px 56px !important;
+  padding-bottom: 56px !important;
   min-height: 0;
+}
+
+.app-root .agent-transcript > * {
+  max-width: 924px !important;
+  width: 100% !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
 }
 
 /* Empty state vertically centered between header and composer */
@@ -1202,6 +1213,9 @@
   cursor: pointer !important;
   transition: all 0.14s ease !important;
   max-width: 180px !important;
+  flex-shrink: 0 !important;
+  white-space: nowrap !important;
+  user-select: none !important;
 }
 
 .sidebar-tab:hover {
@@ -2396,6 +2410,168 @@ body.sidebar-resizing-active webview {
   align-items: center !important;
   gap: 6px !important;
   flex-wrap: wrap !important;
+  flex: 1 !important;
+  min-width: 0 !important;
+}
+
+/* ZCode layout: mode controls left, "Choose model" right next to send. */
+.code-composer-tools-group .model-select-wrapper {
+  margin-left: auto !important;
+}
+
+/* Quiet text links under the composer (Review Diff / Run Tests). */
+.code-quick-links {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 0;
+}
+
+.code-quick-links .composer-tool-btn {
+  border: 0;
+  background: transparent;
+  padding: 4px 8px;
+  color: var(--text-tertiary);
+  font-size: 0.78rem;
+}
+
+.code-quick-links .composer-tool-btn:hover {
+  background: transparent;
+  color: var(--text-primary);
+}
+
+.code-quick-links .composer-tool-btn.active {
+  background: var(--bg-surface-active);
+  border: 0;
+  color: var(--text-primary);
+}
+
+/* ── Restored agent-step rows (previous chat steps design) ──────────────
+   The baseline flat step list: one row per raw event, expandable via
+   <details> when the step carries detail/artifact/subagent/plan. */
+.activity-step {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.activity-step:last-of-type {
+  border-bottom: 0;
+}
+
+.activity-step summary,
+.activity-step .activity-step-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  list-style: none;
+}
+
+.activity-step summary {
+  cursor: pointer;
+  padding-right: 4px;
+}
+
+.activity-step .activity-step-row {
+  cursor: default;
+  padding-right: 4px;
+}
+
+.activity-step summary::-webkit-details-marker {
+  display: none;
+}
+
+.activity-step summary > svg {
+  margin-left: 0;
+  color: var(--text-tertiary);
+  transition: transform 0.15s;
+}
+
+.activity-step[open] summary > svg {
+  transform: rotate(90deg);
+}
+
+.activity-step summary span:nth-child(2),
+.activity-step .activity-step-row span:nth-child(2) {
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.activity-step summary time,
+.activity-step .activity-step-row time {
+  color: var(--text-tertiary);
+  font: 9px "DM Mono", monospace;
+}
+
+.activity-step-dot {
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  border-radius: 5px;
+  background: var(--bg-surface-active);
+  color: var(--text-secondary);
+  flex: none;
+}
+
+.activity-step-dot.tool {
+  color: #8ea5ff;
+  background: #25244b;
+}
+
+.activity-step-dot.plan {
+  color: #d7b36e;
+  background: #3d3020;
+}
+
+.activity-step-dot.error {
+  color: #ff7e88;
+  background: #48272d;
+}
+
+.activity-step-dot.subagent {
+  color: #bd9bff;
+  background: #30234c;
+}
+
+.activity-step-detail {
+  margin: 0 0 7px 27px;
+  padding: 7px 9px;
+  border-left: 1px solid var(--border-default);
+  background: var(--bg-surface);
+}
+
+.activity-step-detail .chat-event-row,
+.activity-step-detail .plan-card,
+.activity-step-detail .subagent-card {
+  margin: 0;
+  border: 0;
+  background: transparent;
+}
+
+.activity-step-detail .chat-event-row {
+  padding: 1px 0;
+}
+
+.activity-step-detail .plan-card {
+  padding: 0;
+}
+
+.activity-step-detail .subagent-card-head {
+  padding: 3px 0;
+}
+
+.activity-current {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  color: #8f83e7;
+  font-size: 11px;
 }
 
 .code-composer-tools-group .mode-select {
@@ -2615,33 +2791,111 @@ body.sidebar-resizing-active webview {
   border-color: rgba(99, 102, 241, 0.4) !important;
 }
 
-/* ── Antigravity Code Mode: Floating Overview Card & Inspector Sidebar ── */
+/* ── Antigravity Code Mode: Workspace Top-Right Git Tools Changes Pill & Popover Card ── */
 
-.code-overview-card {
-  position: absolute;
-  top: 16px;
-  right: 24px;
-  width: 220px;
-  box-sizing: border-box;
-  background: rgba(18, 21, 28, 0.94);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.3);
-  padding: 10px 12px;
-  user-select: none;
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  animation: fadeInOverview 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+.code-overview-floating-container {
+  position: absolute !important;
+  top: 10px !important;
+  right: 20px !important;
+  z-index: 30 !important;
+  display: flex !important;
+  align-items: center !important;
+  -webkit-app-region: no-drag !important;
+  pointer-events: auto !important;
+}
+
+.code-overview-wrapper {
+  position: relative !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  -webkit-app-region: no-drag !important;
+}
+
+/* Image 4: before hovered like that */
+.code-overview-pill {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  height: 28px !important;
+  padding: 0 12px !important;
+  border-radius: 9999px !important;
+  background: #20242b !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25) !important;
+  color: #d1d5db !important;
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+  user-select: none !important;
+  white-space: nowrap !important;
+}
+
+/* Image 3: after hovered like that */
+.code-overview-pill:hover,
+.code-overview-pill.active {
+  background: #2a313c !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: #ffffff !important;
+}
+
+.code-overview-icon {
+  color: #9ca3af !important;
+  flex-shrink: 0 !important;
+  transition: color 0.15s ease !important;
+}
+
+.code-overview-pill:hover .code-overview-icon {
+  color: #ffffff !important;
+}
+
+.code-overview-pill-label {
+  font-weight: 500 !important;
+  letter-spacing: -0.01em !important;
+}
+
+.code-overview-pill-stats {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  font-family: var(--font-mono, monospace) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+}
+
+.code-overview-pill-stats .diff-add,
+.git-tools-row-right .diff-add {
+  color: #4ade80 !important;
+}
+
+.code-overview-pill-stats .diff-del,
+.git-tools-row-right .diff-del {
+  color: #f87171 !important;
+}
+
+/* Image 2: then expanded like that (Git tools card popover) */
+.git-tools-card {
+  position: absolute !important;
+  top: calc(100% + 8px) !important;
+  right: 0 !important;
+  width: 300px !important;
+  background: #1e2227 !important;
+  border: 1px solid #2d333b !important;
+  border-radius: 12px !important;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.04) !important;
+  padding: 12px 14px !important;
+  z-index: 1000 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 6px !important;
+  animation: fadeInOverview 0.15s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  user-select: none !important;
 }
 
 @keyframes fadeInOverview {
   from {
     opacity: 0;
-    transform: translateY(-6px) scale(0.98);
+    transform: translateY(-4px) scale(0.98);
   }
   to {
     opacity: 1;
@@ -2649,114 +2903,173 @@ body.sidebar-resizing-active webview {
   }
 }
 
-.code-overview-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 4px;
-  padding: 0 4px;
+.git-tools-header {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding-bottom: 2px !important;
 }
 
-.code-overview-title {
-  font-size: 12px;
-  font-weight: 500;
-  color: #9ca3af;
-  letter-spacing: -0.01em;
+.git-tools-title {
+  font-size: 13.5px !important;
+  font-weight: 500 !important;
+  color: #c9d1d9 !important;
+  letter-spacing: -0.01em !important;
 }
 
-.code-overview-menu-btn {
-  background: transparent;
-  border: none;
-  color: #9ca3af;
-  cursor: pointer;
-  padding: 2px 4px;
-  border-radius: 4px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.15s ease;
+.git-tools-actions {
+  display: flex !important;
+  align-items: center !important;
+  gap: 4px !important;
 }
 
-.code-overview-menu-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #ffffff;
+.git-tools-action-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 22px !important;
+  height: 22px !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  border: none !important;
+  color: #8b949e !important;
+  cursor: pointer !important;
+  transition: all 0.12s ease !important;
 }
 
-.code-overview-section {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.git-tools-action-btn:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #ffffff !important;
 }
 
-.code-overview-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  background: transparent;
-  border: none;
-  padding: 6px 8px;
-  border-radius: 6px;
-  color: #d1d5db;
-  font-size: 12.5px;
-  cursor: pointer;
-  text-align: left;
-  transition: background 0.15s ease, color 0.15s ease;
+/* Rows in Git tools card */
+.git-tools-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 7px 10px !important;
+  border-radius: 7px !important;
+  cursor: pointer !important;
+  transition: background 0.12s ease, color 0.12s ease !important;
 }
 
-.code-overview-row:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: #ffffff;
+.git-tools-changes-row {
+  background: rgba(255, 255, 255, 0.05) !important;
 }
 
-.code-overview-row-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.git-tools-changes-row:hover {
+  background: rgba(255, 255, 255, 0.09) !important;
 }
 
-.code-overview-icon {
-  color: #9ca3af;
-  flex-shrink: 0;
+.git-tools-branch-row:hover,
+.git-tools-commit-row:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
 }
 
-.code-overview-diff-badge {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11.5px;
-  font-family: var(--font-mono, monospace);
-  font-weight: 500;
+.git-tools-row-left {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  color: #c9d1d9 !important;
+  font-size: 12.5px !important;
 }
 
-.code-overview-diff-badge .diff-add {
-  color: #22c55e;
+.git-tools-row-text {
+  font-weight: 500 !important;
+  color: #e6edf3 !important;
 }
 
-.code-overview-diff-badge .diff-del {
-  color: #ef4444;
+.git-tools-branch-name {
+  font-family: var(--font-mono, monospace) !important;
+  font-size: 12px !important;
+  color: #c9d1d9 !important;
+  max-width: 200px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
 }
 
-.code-overview-chevron {
-  color: #6b7280;
-  margin-left: auto;
+.git-tools-chevron {
+  color: #8b949e !important;
 }
 
-.code-overview-divider {
-  height: 1px;
-  background: rgba(255, 255, 255, 0.07);
-  margin: 6px 0;
+.git-tools-row-right {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  font-family: var(--font-mono, monospace) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
 }
 
-.code-overview-summary-row {
-  font-weight: 400;
+.git-tools-divider {
+  height: 1px !important;
+  background: rgba(255, 255, 255, 0.07) !important;
+  margin: 4px 0 6px 0 !important;
 }
 
-.code-overview-count {
-  font-size: 11.5px;
-  font-family: var(--font-mono, monospace);
-  color: #9ca3af;
+/* Progress Section */
+.git-tools-progress-header {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 0 2px 4px 2px !important;
 }
+
+.git-tools-progress-label {
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  color: #8b949e !important;
+}
+
+.git-tools-progress-stat {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: #4ade80 !important;
+}
+
+.git-tools-progress-list {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+}
+
+.git-tools-progress-item {
+  display: flex !important;
+  align-items: flex-start !important;
+  gap: 8px !important;
+  line-height: 1.4 !important;
+}
+
+.git-tools-check-icon.completed {
+  color: #4ade80 !important;
+  flex-shrink: 0 !important;
+  margin-top: 2px !important;
+}
+
+.git-tools-check-icon.in-progress {
+  color: #60a5fa !important;
+  flex-shrink: 0 !important;
+  margin-top: 2px !important;
+}
+
+.git-tools-check-icon.pending {
+  color: #6e7681 !important;
+  flex-shrink: 0 !important;
+  margin-top: 2px !important;
+}
+
+.git-tools-item-text {
+  font-size: 12px !important;
+  color: #c9d1d9 !important;
+  word-break: break-word !important;
+}
+
+.git-tools-item-text.completed {
+  text-decoration: line-through !important;
+  color: #6e7681 !important;
+}
+
 
 /* ── Expanded Right Sidebar: CodeInspectorSidebar ── */
 
@@ -3016,3 +3329,954 @@ body.sidebar-resizing-active webview {
   color: #818cf8 !important;
 }
 
+/* ── Sidebar Tools Tab Strip & Viewport Adjustments ── */
+
+.sidebar-tab-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 24px !important;
+  height: 24px !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  border: none !important;
+  color: var(--text-secondary, #8899a6) !important;
+  cursor: pointer !important;
+  transition: all 0.14s ease !important;
+}
+
+.sidebar-tab-btn:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: var(--text, #f0f4fc) !important;
+}
+
+.sidebar-tab-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 10px !important;
+  font-family: var(--font-mono, monospace) !important;
+  background: rgba(99, 102, 241, 0.25) !important;
+  color: #a5b4fc !important;
+  padding: 1px 5px !important;
+  border-radius: 9999px !important;
+  margin-left: 3px !important;
+}
+
+.workbench-right-sidebar .diff-artifact-view {
+  background-color: var(--bg-surface) !important;
+}
+
+.workbench-right-sidebar .diff-artifact-view .artifact-head {
+  padding: 10px 14px !important;
+  gap: 8px !important;
+  background-color: var(--bg-sidebar) !important;
+}
+
+.workbench-right-sidebar .diff-artifact-view .artifact-head h2 {
+  font-size: 0.95rem !important;
+}
+
+.workbench-right-sidebar .diff-artifact-view .artifact-head p {
+  font-size: 0.75rem !important;
+}
+
+.workbench-right-sidebar .diff-head-actions {
+  gap: 6px !important;
+}
+
+.workbench-right-sidebar .diff-head-actions button,
+.workbench-right-sidebar .diff-head-actions select {
+  padding: 4px 8px !important;
+  font-size: 11px !important;
+}
+
+.workbench-right-sidebar .monaco-tab-bar {
+  height: 32px !important;
+  padding: 0 8px !important;
+}
+
+.workbench-right-sidebar .monaco-tab {
+  height: 26px !important;
+  font-size: 11.5px !important;
+}
+
+/* ── ZCode-Style Git Diff Review View (1:1 with Images 1 & 2) ── */
+
+.app-root .git-diff-view,
+.git-diff-view {
+  display: flex !important;
+  flex-direction: column !important;
+  width: 100% !important;
+  height: 100% !important;
+  background: #0e1117 !important;
+  overflow: hidden !important;
+}
+
+.app-root .git-diff-toolbar,
+.git-diff-toolbar {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 6px 14px !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+  background: #13161c !important;
+  flex-shrink: 0 !important;
+  height: 38px !important;
+  box-sizing: border-box !important;
+}
+
+.app-root .git-diff-scope-dropdown,
+.git-diff-scope-dropdown {
+  position: relative !important;
+  display: inline-flex !important;
+  align-items: center !important;
+}
+
+.app-root .git-diff-scope-select,
+.git-diff-scope-select {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 6px !important;
+  color: #e5e7eb !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  padding: 4px 10px !important;
+  cursor: pointer !important;
+  outline: none !important;
+  transition: all 0.12s ease !important;
+}
+
+.app-root .git-diff-scope-select:hover,
+.git-diff-scope-select:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+}
+
+.app-root .git-diff-toolbar-actions,
+.git-diff-toolbar-actions {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.app-root .git-diff-action-btn,
+.git-diff-action-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  background: transparent !important;
+  border: none !important;
+  color: #9ca3af !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  cursor: pointer !important;
+  padding: 4px 8px !important;
+  border-radius: 4px !important;
+  transition: all 0.12s ease !important;
+  user-select: none !important;
+}
+
+.app-root .git-diff-action-btn:hover,
+.git-diff-action-btn:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #ffffff !important;
+}
+
+.app-root .git-diff-file-list,
+.git-diff-file-list {
+  flex: 1 !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+  background: #0e1117 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  scrollbar-width: thin !important;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent !important;
+}
+
+.app-root .git-diff-file-list::-webkit-scrollbar,
+.git-diff-file-list::-webkit-scrollbar {
+  width: 6px !important;
+}
+
+.app-root .git-diff-file-list::-webkit-scrollbar-thumb,
+.git-diff-file-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2) !important;
+  border-radius: 3px !important;
+}
+
+/* File item in the list */
+.app-root .git-diff-file-item,
+.git-diff-file-item {
+  display: flex !important;
+  flex-direction: column !important;
+  flex-shrink: 0 !important;
+  min-height: 36px !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+  background: transparent !important;
+  width: 100% !important;
+}
+
+/* Header row for a file */
+.app-root .git-diff-file-row,
+.git-diff-file-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  height: 36px !important;
+  min-height: 36px !important;
+  padding: 0 14px !important;
+  background: transparent !important;
+  cursor: pointer !important;
+  user-select: none !important;
+  transition: background 0.12s ease !important;
+  flex-shrink: 0 !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.app-root .git-diff-file-row:hover,
+.git-diff-file-row:hover {
+  background: rgba(255, 255, 255, 0.04) !important;
+}
+
+.app-root .git-diff-file-item.expanded .git-diff-file-row,
+.git-diff-file-item.expanded .git-diff-file-row {
+  background: rgba(255, 255, 255, 0.03) !important;
+}
+
+.app-root .git-diff-file-left,
+.git-diff-file-left {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-width: 0 !important;
+  flex: 1 !important;
+}
+
+.app-root .git-diff-file-icon,
+.git-diff-file-icon {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex-shrink: 0 !important;
+  width: 16px !important;
+  height: 16px !important;
+}
+
+.app-root .git-diff-file-name,
+.git-diff-file-name {
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  color: #ffffff !important;
+  white-space: nowrap !important;
+  letter-spacing: -0.01em !important;
+}
+
+.app-root .git-diff-file-dir,
+.git-diff-file-dir {
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  color: #6b7280 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  margin-left: 2px !important;
+}
+
+.app-root .git-diff-file-right,
+.git-diff-file-right {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  flex-shrink: 0 !important;
+  font-family: var(--font-mono, monospace) !important;
+  font-size: 11.5px !important;
+  font-weight: 500 !important;
+}
+
+.app-root .git-diff-stat-add,
+.git-diff-stat-add {
+  color: #4ade80 !important;
+}
+
+.app-root .git-diff-stat-del,
+.git-diff-stat-del {
+  color: #f87171 !important;
+}
+
+.app-root .git-diff-chevron,
+.git-diff-chevron {
+  color: #6b7280 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  margin-left: 2px !important;
+  transition: color 0.15s ease !important;
+}
+
+.app-root .git-diff-file-row:hover .git-diff-chevron,
+.git-diff-file-row:hover .git-diff-chevron {
+  color: #d1d5db !important;
+}
+
+/* Inline unified diff panel (matching Image 2) */
+.app-root .git-diff-code-panel,
+.git-diff-code-panel {
+  display: flex !important;
+  flex-direction: column !important;
+  background: #090b10 !important;
+  overflow-x: auto !important;
+  border-top: 1px solid rgba(255, 255, 255, 0.05) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace !important;
+  font-size: 11.5px !important;
+  line-height: 1.6 !important;
+  padding: 4px 0 !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.app-root .git-diff-code-line,
+.git-diff-code-line {
+  display: flex !important;
+  align-items: stretch !important;
+  min-height: 20px !important;
+  width: max-content !important;
+  min-width: 100% !important;
+}
+
+.app-root .git-diff-line-num,
+.git-diff-line-num {
+  width: 44px !important;
+  min-width: 44px !important;
+  padding: 0 10px 0 4px !important;
+  text-align: right !important;
+  user-select: none !important;
+  flex-shrink: 0 !important;
+  font-size: 11px !important;
+  color: #4b5563 !important;
+  box-sizing: border-box !important;
+}
+
+.app-root .git-diff-line-text,
+.git-diff-line-text {
+  flex: 1 !important;
+  padding: 0 16px 0 8px !important;
+  white-space: pre !important;
+  tab-size: 2 !important;
+  font-family: inherit !important;
+  font-size: inherit !important;
+  color: #d1d5db !important;
+}
+
+/* Added lines */
+.app-root .git-diff-code-line.added,
+.git-diff-code-line.added {
+  background: rgba(34, 197, 94, 0.14) !important;
+}
+
+.app-root .git-diff-code-line.added .git-diff-line-num,
+.git-diff-code-line.added .git-diff-line-num {
+  background: rgba(34, 197, 94, 0.22) !important;
+  color: #4ade80 !important;
+  font-weight: 500 !important;
+}
+
+.app-root .git-diff-code-line.added .git-diff-line-text,
+.git-diff-code-line.added .git-diff-line-text {
+  color: #bbf7d0 !important;
+}
+
+/* Deleted lines */
+.app-root .git-diff-code-line.deleted,
+.git-diff-code-line.deleted {
+  background: rgba(239, 68, 68, 0.16) !important;
+}
+
+.app-root .git-diff-code-line.deleted .git-diff-line-num,
+.git-diff-code-line.deleted .git-diff-line-num {
+  background: rgba(239, 68, 68, 0.25) !important;
+  color: #f87171 !important;
+  font-weight: 500 !important;
+}
+
+.app-root .git-diff-code-line.deleted .git-diff-line-text,
+.git-diff-code-line.deleted .git-diff-line-text {
+  color: #fecaca !important;
+}
+
+/* Context lines */
+.app-root .git-diff-code-line.context .git-diff-line-num,
+.git-diff-code-line.context .git-diff-line-num {
+  color: #4b5563 !important;
+}
+
+.app-root .git-diff-code-line.context .git-diff-line-text,
+.git-diff-code-line.context .git-diff-line-text {
+  color: #d1d5db !important;
+}
+
+/* Hunk separator */
+.app-root .git-diff-code-line.hunk,
+.git-diff-code-line.hunk {
+  background: rgba(255, 255, 255, 0.03) !important;
+  color: #6b7280 !important;
+  font-size: 11px !important;
+  padding: 2px 0 !important;
+  border-top: 1px dashed rgba(255, 255, 255, 0.08) !important;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.08) !important;
+}
+
+.app-root .git-diff-code-line.hunk .git-diff-line-num,
+.git-diff-code-line.hunk .git-diff-line-num {
+  color: #4b5563 !important;
+}
+
+.app-root .git-diff-code-line.hunk .git-diff-line-text,
+.git-diff-code-line.hunk .git-diff-line-text {
+  color: #6b7280 !important;
+  font-style: italic !important;
+}
+
+.app-root .git-diff-empty,
+.git-diff-empty,
+.app-root .git-diff-no-patch,
+.git-diff-no-patch {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  padding: 32px 16px !important;
+  color: #6b7280 !important;
+  font-size: 12.5px !important;
+}
+
+/* ── Tab Strip individual close buttons ── */
+
+.sidebar-tab-close-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 16px !important;
+  height: 16px !important;
+  border-radius: 3px !important;
+  background: transparent !important;
+  border: none !important;
+  color: #9ca3af !important;
+  cursor: pointer !important;
+  margin-left: 4px !important;
+  padding: 0 !important;
+  transition: all 0.12s ease !important;
+}
+
+.sidebar-tab-close-btn:hover {
+  background: rgba(255, 255, 255, 0.18) !important;
+  color: #ffffff !important;
+}
+
+.sidebar-tab-add-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 24px !important;
+  height: 24px !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  border: none !important;
+  color: #9ca3af !important;
+  cursor: pointer !important;
+  transition: all 0.14s ease !important;
+  margin-left: 2px !important;
+}
+
+.sidebar-tab-add-btn:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #ffffff !important;
+}
+
+.sidebar-tabs-scroll-container {
+  display: flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  flex: 0 1 auto !important;
+  max-width: calc(100% - 64px) !important;
+  min-width: 0 !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scrollbar-width: thin !important;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent !important;
+}
+
+.sidebar-tabs-scroll-container::-webkit-scrollbar {
+  height: 3px !important;
+}
+
+.sidebar-tabs-scroll-container::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+
+.sidebar-tabs-scroll-container::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2) !important;
+  border-radius: 3px !important;
+}
+
+.sidebar-tabs-scroll-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.38) !important;
+}
+
+.sidebar-tab-actions {
+  display: flex !important;
+  align-items: center !important;
+  gap: 2px !important;
+  flex-shrink: 0 !important;
+}
+
+.sidebar-tab-add-wrapper {
+  position: relative !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  flex-shrink: 0 !important;
+}
+
+.sidebar-tab-add-menu {
+  position: fixed !important;
+  background: #141a23 !important;
+  border: 1px solid #232d3d !important;
+  border-radius: 8px !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
+  padding: 5px !important;
+  z-index: 999999 !important;
+  min-width: 160px !important;
+  max-height: 280px !important;
+  overflow-y: auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 2px !important;
+}
+
+.sidebar-tab-add-menu::-webkit-scrollbar {
+  width: 3px !important;
+}
+
+.sidebar-tab-add-menu::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2) !important;
+  border-radius: 3px !important;
+}
+
+.sidebar-tab-add-item {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 6px 10px !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  border: none !important;
+  color: #c9d1d9 !important;
+  font-size: 12px !important;
+  text-align: left !important;
+  cursor: pointer !important;
+  width: 100% !important;
+  transition: all 0.12s ease !important;
+}
+
+.sidebar-tab-add-item:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #ffffff !important;
+}
+
+/* ── Agent Activity Group & Steps Redesign (High Contrast & Visible) ── */
+
+.app-root .activity-group {
+  margin: 10px 0 !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  background: rgba(18, 24, 34, 0.6) !important;
+  border-radius: 8px !important;
+  overflow: hidden !important;
+  transition: all 0.15s ease !important;
+}
+
+.app-root .activity-group.completed {
+  border-color: rgba(255, 255, 255, 0.07) !important;
+  background: rgba(18, 24, 34, 0.45) !important;
+}
+
+.app-root .activity-group.running {
+  border-color: rgba(99, 102, 241, 0.35) !important;
+  background: rgba(20, 26, 40, 0.8) !important;
+  box-shadow: 0 0 16px -2px rgba(99, 102, 241, 0.15) !important;
+}
+
+.app-root .activity-group.error {
+  border-color: rgba(244, 63, 94, 0.35) !important;
+  background: rgba(35, 18, 24, 0.6) !important;
+}
+
+.app-root .activity-group-summary {
+  width: 100% !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 8px 12px !important;
+  background: transparent !important;
+  border: 0 !important;
+  cursor: pointer !important;
+  user-select: none !important;
+  text-align: left !important;
+}
+
+.app-root .activity-group-summary:hover {
+  background: rgba(255, 255, 255, 0.04) !important;
+}
+
+.app-root .activity-group-icon {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 18px !important;
+  height: 18px !important;
+  border-radius: 4px !important;
+  flex-shrink: 0 !important;
+  color: #10b981 !important;
+}
+
+.app-root .activity-group.running .activity-group-icon {
+  color: #818cf8 !important;
+}
+
+.app-root .activity-group.error .activity-group-icon {
+  color: #fb7185 !important;
+}
+
+.app-root .activity-group-title {
+  flex: 1 !important;
+  min-width: 0 !important;
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  color: #d1d5db !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.app-root .activity-group-title .running-label {
+  color: #a5b4fc !important;
+  font-weight: 600 !important;
+}
+
+.app-root .activity-group-count {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  padding: 2px 8px !important;
+  border-radius: 9999px !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #9ca3af !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  flex-shrink: 0 !important;
+}
+
+.app-root .activity-group-count.quiet {
+  background: rgba(255, 255, 255, 0.04) !important;
+  color: #9ca3af !important;
+}
+
+.app-root .activity-group.running .activity-group-count {
+  background: rgba(99, 102, 241, 0.15) !important;
+  color: #a5b4fc !important;
+}
+
+.app-root .activity-group-chevron {
+  transform: none !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  transition: transform 0.18s ease !important;
+  color: #9ca3af !important;
+}
+
+.app-root .activity-group-chevron.open {
+  transform: rotate(90deg) !important;
+}
+
+.app-root .activity-group-body {
+  border-top: 1px solid rgba(255, 255, 255, 0.06) !important;
+  padding: 8px 12px 10px !important;
+  background: rgba(0, 0, 0, 0.22) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 4px !important;
+}
+
+/* Step timeline and cards */
+.app-root .agent-stepper-timeline {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 4px !important;
+  padding: 2px 0 !important;
+}
+
+.app-root .agent-timeline-step {
+  display: flex !important;
+  align-items: flex-start !important;
+  gap: 8px !important;
+  width: 100% !important;
+}
+
+.app-root .step-card {
+  flex: 1 !important;
+  min-width: 0 !important;
+  border-radius: 6px !important;
+  background: rgba(255, 255, 255, 0.02) !important;
+  border: 1px solid rgba(255, 255, 255, 0.05) !important;
+  transition: background 0.12s ease !important;
+}
+
+.app-root .step-card:hover {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+.app-root .step-card-header {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 5px 10px !important;
+  min-height: 28px !important;
+  cursor: pointer !important;
+}
+
+.app-root .step-card-header.static {
+  cursor: default !important;
+}
+
+.app-root .step-badge-and-title {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-width: 0 !important;
+  flex: 1 !important;
+}
+
+.app-root .step-category-pill {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  padding: 2px 6px !important;
+  border-radius: 4px !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  font-family: var(--font-mono) !important;
+  letter-spacing: 0.03em !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #c9d1d9 !important;
+  flex-shrink: 0 !important;
+}
+
+.app-root .step-category-pill span {
+  display: inline !important;
+}
+
+.app-root .step-category-pill.run {
+  background: rgba(234, 179, 8, 0.15) !important;
+  color: #facc15 !important;
+}
+
+.app-root .step-category-pill.read {
+  background: rgba(59, 130, 246, 0.15) !important;
+  color: #60a5fa !important;
+}
+
+.app-root .step-category-pill.write {
+  background: rgba(16, 185, 129, 0.15) !important;
+  color: #34d399 !important;
+}
+
+.app-root .step-category-pill.search {
+  background: rgba(168, 85, 247, 0.15) !important;
+  color: #c084fc !important;
+}
+
+.app-root .step-category-pill.thinking {
+  background: rgba(99, 102, 241, 0.15) !important;
+  color: #a5b4fc !important;
+}
+
+.app-root .step-category-pill.error {
+  background: rgba(239, 68, 68, 0.15) !important;
+  color: #f87171 !important;
+}
+
+.app-root .step-title-text {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  min-width: 0 !important;
+  flex: 1 !important;
+  font-size: 11.5px !important;
+  color: #e5e7eb !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.app-root .step-verb {
+  font-weight: 500 !important;
+  color: #ffffff !important;
+}
+
+.app-root .step-code-target,
+.app-root .step-command-target {
+  font-family: var(--font-mono) !important;
+  font-size: 11px !important;
+  color: #93c5fd !important;
+  background: rgba(0, 0, 0, 0.25) !important;
+  padding: 1px 5px !important;
+  border-radius: 4px !important;
+}
+
+.app-root .step-card-details {
+  padding: 6px 10px 8px !important;
+  border-top: 1px solid rgba(255, 255, 255, 0.05) !important;
+  font-size: 11px !important;
+}
+
+.app-root .step-detail-pre,
+.app-root .thinking-detail-pre {
+  background: rgba(0, 0, 0, 0.35) !important;
+  border-radius: 4px !important;
+  padding: 8px !important;
+  font-family: var(--font-mono) !important;
+  font-size: 11px !important;
+  color: #d1d5db !important;
+  max-height: 220px !important;
+  overflow: auto !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+  margin: 0 !important;
+}
+
+
+
+
+/* ── Code mode live step feed (while the agent is working) ───────────────
+   Quiet, always-visible rows — dedicated class names so no other stylesheet
+   layer can collapse or hide them (the old live group could). */
+.app-root .code-live-steps {
+  border: 1px solid rgba(99, 102, 241, 0.35) !important;
+  background: rgba(20, 26, 40, 0.85) !important;
+  border-radius: 10px !important;
+  padding: 8px 12px 10px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 2px !important;
+}
+
+.app-root .code-live-steps-head {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 2px 0 6px !important;
+}
+
+.app-root .code-live-beacon {
+  position: relative !important;
+  width: 10px !important;
+  height: 10px !important;
+  flex-shrink: 0 !important;
+  display: inline-flex !important;
+}
+
+.app-root .code-live-beacon-core {
+  position: absolute !important;
+  inset: 2px !important;
+  border-radius: 50% !important;
+  background: #818cf8 !important;
+}
+
+.app-root .code-live-beacon-ring {
+  position: absolute !important;
+  inset: 0 !important;
+  border-radius: 50% !important;
+  border: 1.5px solid #818cf8 !important;
+  animation: pulseRing 1.4s infinite ease-out !important;
+}
+
+.app-root .code-live-steps-title {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: #a5b4fc !important;
+}
+
+.app-root .code-live-step-row {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-height: 26px !important;
+  padding: 1px 2px !important;
+  font-size: 11.5px !important;
+  color: #e5e7eb !important;
+}
+
+.app-root .code-live-step-dot {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 19px !important;
+  height: 19px !important;
+  border-radius: 5px !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #9ca3af !important;
+  flex-shrink: 0 !important;
+}
+
+.app-root .code-live-step-dot.tool {
+  color: #8ea5ff !important;
+  background: #25244b !important;
+}
+
+.app-root .code-live-step-dot.thinking {
+  color: #bd9bff !important;
+  background: #30234c !important;
+}
+
+.app-root .code-live-step-dot.error {
+  color: #fb7185 !important;
+  background: #48272d !important;
+}
+
+.app-root .code-live-step-text {
+  flex: 0 1 auto !important;
+  min-width: 0 !important;
+  max-width: 70% !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  color: #e5e7eb !important;
+}
+
+.app-root .code-live-step-detail {
+  flex: 1 !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  color: #6b7280 !important;
+  font-size: 11px !important;
+}
+
+/* ── CRITICAL flex-shrink fix ────────────────────────────────────────────
+   .agent-transcript / .home-messages-viewport are flex columns. The activity
+   group has overflow: hidden, which zeroes its automatic flex minimum size —
+   so whenever the transcript overflowed (any real conversation), flex-shrink
+   compressed the group to its 1px borders (2px total) and the agent steps
+   vanished. Pin every transcript child to its content height. */
+.app-root .agent-transcript > *,
+.app-root .home-messages-viewport > * {
+  flex-shrink: 0 !important;
+}

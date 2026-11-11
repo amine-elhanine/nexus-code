@@ -271,6 +271,21 @@ export function registerAgentRoutes(ctx: MainIpcContext): void {
         .reverse()
         .find((m) => m.context?.usedTokens && m.context.usedTokens > 0)
         ?.context?.usedTokens ?? null;
+      let accumulatedThinking = "";
+      let thinkingStartTimestamp = "";
+      const flushThinking = () => {
+        if (accumulatedThinking.trim()) {
+          transcript.items.push({
+            role: "event",
+            text: accumulatedThinking.trim(),
+            kind: "thinking",
+            createdAt: thinkingStartTimestamp || new Date().toISOString(),
+            detail: accumulatedThinking.trim(),
+          });
+          accumulatedThinking = "";
+          thinkingStartTimestamp = "";
+        }
+      };
       let result: Awaited<ReturnType<typeof runProjectAgent>>;
       try {
         result = await runProjectAgent({
@@ -297,10 +312,15 @@ export function registerAgentRoutes(ctx: MainIpcContext): void {
           onProjectMemoryUpdate: (mutate) => updateProjectFacts(projectId, mutate),
           onUserQuestion: (questions) => ctx.askUserBlocking(sessionId, questions),
           onEvent: (event) => {
+            if (event.type === "thinking") {
+              if (!thinkingStartTimestamp) thinkingStartTimestamp = event.timestamp || new Date().toISOString();
+              accumulatedThinking += event.text || "";
+            } else if (event.type === "tool" || event.type === "plan" || event.type === "status") {
+              flushThinking();
+            }
             // Token chunks and thinking deltas stay ephemeral (streaming
-            // display only); everything else is captured for the persisted
-            // transcript.
-            if (event.type !== "token" && event.type !== "thinking") {
+            // display only); assistant message is appended explicitly at the end.
+            if (event.type !== "token" && event.type !== "thinking" && event.type !== "assistant") {
               transcript.items.push({
                 role: "event",
                 text: event.text,
@@ -314,11 +334,15 @@ export function registerAgentRoutes(ctx: MainIpcContext): void {
                 detail: event.detail,
               });
             }
-            ctx.emit(event);
+            // Tag with the session id: the renderer buckets live events by
+            // event.sessionId — bare events all landed in an "unknown" bucket
+            // and Code mode never showed the agent's steps while running.
+            ctx.emitFor(sessionId, event);
           },
           isCancelled: () => isCommandRunCancelled(sessionId),
         });
       } catch (error) {
+        flushThinking();
         const isCancel = error instanceof RunCancelledError || isCommandRunCancelled(sessionId) || (error as any)?.name === "AbortError";
         // Tokens burned before a cancel/failure still count: the run helper
         // stashes finalized usage on the thrown error (see agent-service).
@@ -349,6 +373,7 @@ export function registerAgentRoutes(ctx: MainIpcContext): void {
         throw error;
       }
 
+      flushThinking();
       await appendSessionMessages(projectId, sessionId, [
         ...transcript.items,
         { role: "assistant", text: result.response, createdAt: new Date().toISOString(), usage: result.usage, context: result.context },

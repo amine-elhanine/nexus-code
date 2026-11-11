@@ -7,9 +7,10 @@ interface XTermViewProps {
   projectRoot?: string;
   /** Workspace file entries (`path` with `/` separators); root-level names drive stack detection. */
   files?: Array<{ path: string; kind: "file" | "folder" }>;
+  isVisible?: boolean;
 }
 
-export const XTermView: React.FC<XTermViewProps> = ({ projectRoot, files = [] }) => {
+export const XTermView: React.FC<XTermViewProps> = ({ projectRoot, files = [], isVisible = true }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -89,6 +90,9 @@ export const XTermView: React.FC<XTermViewProps> = ({ projectRoot, files = [] })
 
     const fitAndResize = () => {
       try {
+        if (!containerRef.current || containerRef.current.clientWidth === 0 || containerRef.current.clientHeight === 0) {
+          return;
+        }
         fitAddon.fit();
         api?.resizeTerminal?.(terminalId, term.cols, term.rows);
       } catch { /* ignore */ }
@@ -109,6 +113,15 @@ export const XTermView: React.FC<XTermViewProps> = ({ projectRoot, files = [] })
       fitAddonRef.current = null;
     };
   }, [projectRoot, terminalId]);
+
+  useEffect(() => {
+    if (isVisible && termRef.current && containerRef.current && containerRef.current.clientWidth > 0) {
+      try {
+        fitAddonRef.current?.fit();
+        termRef.current.focus();
+      } catch { /* ignore */ }
+    }
+  }, [isVisible]);
 
   return (
     <div className="xterm-view-wrapper">

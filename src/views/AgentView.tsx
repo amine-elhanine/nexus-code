@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import {
   Sparkles, GitBranch, RotateCcw, Check, FileCode2,
   Paperclip, FileText, Plus, Square, ArrowUp, ShieldCheck, ChevronDown, X,
-  Bug, Code2, CheckCircle2, Compass, MessageSquare, Zap, Flame, Terminal, Cpu,
+  Bug, Code2, CheckCircle2, Compass, MessageSquare, Zap, Flame, Terminal, Cpu, Brain,
   Search, Settings
 } from "lucide-react";
 import { WorktreeBar } from "../components/worktree/WorktreeBar.js";
@@ -15,7 +15,6 @@ import { insertAtCursor } from "../utils/textarea.js";
 import { formatCost } from "../types.js";
 import type { ChatItem, FileEntry, ProviderConfig, ProviderDefinition, AgentUsage, AgentContextUsageSnapshot, ArtifactItem, ChatAttachment, SkillInfo, WorkspaceDiffFile } from "../types.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
-import { CodeOverviewCard } from "../components/code/CodeOverviewCard.js";
 import { resolveModelEfforts, formatEffortLabel, resolveModelContextWindow, resolveModelMaxOutput, formatContextWindow, formatTokenCount, computeCompactionThreshold } from "../utils/modelEfforts.js";
 
 const AGENT_STARTERS = [
@@ -987,10 +986,21 @@ export function AgentView({
 }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   // Stick to the bottom only while the user is already there; reading history
   // mid-run must not be yanked around by every streamed token.
   const stickToBottomRef = useRef(true);
+
+  const scrollToBottom = useCallback((smooth = false) => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    if (smooth) {
+      bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    } else {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, []);
 
   const api = window.nexus;
   const [showComposerMenu, setShowComposerMenu] = useState(false);
@@ -1019,10 +1029,13 @@ export function AgentView({
 
   useEffect(() => {
     const el = transcriptRef.current;
+    // Respect the stick flag even while a run is active — the previous
+    // `|| running` bypass yanked the transcript back down on every re-render,
+    // making it impossible to scroll up and read history mid-task.
     if (el && stickToBottomRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messages, liveEvents, streamingText]);
+  }, [messages, liveEvents, streamingText, running]);
 
   // Keep pinned to bottom when lazy visual content (e.g. images, charts, diagrams) loads or resizes
   useEffect(() => {
@@ -1030,9 +1043,11 @@ export function AgentView({
     if (!el) return;
 
     const handleImageLoaded = () => {
-      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      if (stickToBottomRef.current || distFromBottom < 400) {
-        stickToBottomRef.current = true;
+      // Only follow when the user is still pinned — the old `distFromBottom`
+      // allowance re-pinned short Code-mode transcripts (where any scroll is
+      // within a few hundred px of the bottom) and yanked the view down
+      // mid-run.
+      if (stickToBottomRef.current) {
         el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
       }
     };
@@ -1042,8 +1057,9 @@ export function AgentView({
     let observer: ResizeObserver | null = null;
     if (typeof ResizeObserver !== "undefined") {
       observer = new ResizeObserver(() => {
-        const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-        if ((stickToBottomRef.current || distFromBottom < 300) && el.scrollHeight !== prevHeight) {
+        // Same rule as the streaming effect: the stick flag is the only
+        // authority. Resizing content must never override a deliberate scroll.
+        if (stickToBottomRef.current && el.scrollHeight !== prevHeight) {
           el.scrollTop = el.scrollHeight;
         }
         prevHeight = el.scrollHeight;
@@ -1233,20 +1249,28 @@ export function AgentView({
     }
     if (text === "/help") {
       setDraft("");
+      stickToBottomRef.current = true;
       submit("What tools, commands, and skills are available in this project?");
+      setTimeout(() => scrollToBottom(true), 60);
       return;
     }
     if (text === "/checkpoint") {
       setDraft("");
+      stickToBottomRef.current = true;
       submit("Create checkpoint and review workspace state");
+      setTimeout(() => scrollToBottom(true), 60);
       return;
     }
     if (text === "/test") {
       setDraft("");
+      stickToBottomRef.current = true;
       submit("Run project verification and tests");
+      setTimeout(() => scrollToBottom(true), 60);
       return;
     }
+    stickToBottomRef.current = true;
     submit(overrideText);
+    setTimeout(() => scrollToBottom(true), 60);
   }
 
   function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
@@ -1392,20 +1416,6 @@ export function AgentView({
 
   return (
     <div className="agent-view" style={{ position: "relative" }}>
-      {/* Floating Compact Overview Card pinned to top right when sidebar is collapsed */}
-      {!codeRightSidebarOpen && (
-        <CodeOverviewCard
-          diffTotals={diffTotals}
-          tasksCount={tasksCount ?? 31}
-          goalsCount={goalsCount ?? (latestPlan?.plan?.steps?.length || 2)}
-          onOpenDiff={() => onOpenDiff?.()}
-          onOpenEditor={() => onOpenEditor?.()}
-          onOpenTerminal={() => onOpenTerminal?.()}
-          onOpenExtensions={() => onOpenExtensions?.()}
-          onOpenInspector={(sec) => onOpenInspector?.(sec)}
-        />
-      )}
-
       {activeSessionId && worktreeStatus?.isGit && worktreeStatus.worktree && (
         <WorktreeBar
           sessionId={activeSessionId}
@@ -1477,29 +1487,20 @@ export function AgentView({
           </div>
         )}
         {transcriptNodes}
-        {running && liveEvents.length > 0 && (
+        {running && (
           <ActivityGroupView
             events={liveEvents}
-            running
+            running={true}
             currentText={streamingText ? "Writing response…" : undefined}
             onOpenArtifact={onOpenArtifact}
             onOpenImage={onOpenImage}
-            onOpenAttachment={onOpenAttachment}
-          />
-        )}
-        {running && !liveEvents.length && !streamingText && (
-          <ActivityGroupView
-            events={[]}
-            running
-            currentText="Starting the agent… the first step can take a while."
-            onOpenArtifact={onOpenArtifact}
-            onOpenImage={onOpenImage}
-            onOpenAttachment={onOpenAttachment}
+            onOpenAttachment={openAttachment}
           />
         )}
         {running && streamingText && (
           <StreamingAssistantMessage text={streamingText} onOpenArtifact={onOpenArtifact} />
         )}
+        <div ref={bottomAnchorRef} className="transcript-bottom-anchor" style={{ height: 1, minHeight: 1, flexShrink: 0 }} />
       </div>
       {checkpointId && !running && (diffCount > 0 || (undoLevels || 0) > 0) && (
         <div className="rollback-anchor">
@@ -1667,7 +1668,7 @@ export function AgentView({
             onPaste={handlePaste}
             placeholder={
               CODE_ACTION_PILLS.find((p) => p.id === activeCodePill)?.placeholder ||
-              "Ask Nexus to inspect, edit, test, or review your project… (Ctrl+V images, @ files/skills, / commands)"
+              (messages.length ? "Ask for follow-up changes…" : "Ask Nexus to inspect, edit, test, or review your project… (Ctrl+V images, @ files, / commands)")
             }
           />
           <div className="code-composer-toolbar home-composer-toolbar">
@@ -1734,25 +1735,6 @@ export function AgentView({
                 contextUsage={contextUsage}
                 activeSessionId={activeSessionId}
               />
-              {CODE_ACTION_PILLS.map((pill) => (
-                <button
-                  key={pill.id}
-                  type="button"
-                  className={`composer-tool-btn ${activeCodePill === pill.id ? "active" : ""}`}
-                  onClick={() => {
-                    if (activeCodePill === pill.id) {
-                      setActiveCodePill(null);
-                    } else {
-                      setActiveCodePill(pill.id);
-                    }
-                    textareaRef.current?.focus();
-                  }}
-                  title={pill.placeholder}
-                >
-                  {pill.icon}
-                  <span>{pill.label}</span>
-                </button>
-              ))}
             </div>
             <button
               type="button"
@@ -1771,6 +1753,27 @@ export function AgentView({
             >
               {running ? <Square size={13} fill="currentColor" /> : <ArrowUp size={16} />}
             </button>
+          </div>
+          <div className="code-quick-links">
+            {CODE_ACTION_PILLS.map((pill) => (
+              <button
+                key={pill.id}
+                type="button"
+                className={`composer-tool-btn ${activeCodePill === pill.id ? "active" : ""}`}
+                onClick={() => {
+                  if (activeCodePill === pill.id) {
+                    setActiveCodePill(null);
+                  } else {
+                    setActiveCodePill(pill.id);
+                  }
+                  textareaRef.current?.focus();
+                }}
+                title={pill.placeholder}
+              >
+                {pill.icon}
+                <span>{pill.label}</span>
+              </button>
+            ))}
           </div>
         </div>
         <div className="input-note">

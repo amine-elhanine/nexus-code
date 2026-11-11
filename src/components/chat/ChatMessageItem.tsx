@@ -434,6 +434,14 @@ export function parseEventText(text: string, kind?: string): ParsedStepMeta {
     };
   }
 
+  if (kind === "thinking") {
+    return {
+      category: "thinking",
+      badgeLabel: "THINK",
+      title: "Thinking",
+    };
+  }
+
   if (kind === "error") {
     return {
       category: "error",
@@ -611,7 +619,7 @@ function normalizeActivityEvents(
     // Telemetry-only events never render as steps: context snapshots and
     // usage rows have no user-facing action (context snapshots even carry
     // empty text, which used to surface as junk "Agent step" rows).
-    if (event.kind === "context" || event.kind === "usage" || event.kind === "stream-reset") {
+    if (event.kind === "context" || event.kind === "usage" || event.kind === "stream-reset" || event.kind === "assistant") {
       continue;
     }
     const isError = event.kind === "error";
@@ -621,18 +629,33 @@ function normalizeActivityEvents(
 
     // Merge matching completion markers (e.g. "execute ✓", "read_file ✓") into previous tool step
     if (isDoneMarker && steps.length > 0) {
-      const prev = steps[steps.length - 1];
       const doneTool = (event.text || "").replace(/✓$/, "").trim();
-      const prevDesc = events[i - 1]?.text || "";
-      const matches =
-        (Boolean(doneTool) && prevDesc.startsWith(doneTool)) ||
-        (doneTool.startsWith("Skill loaded:") && prev.category === "skill") ||
-        (prev.status === "running" && prev.category !== "thinking");
-
-      if (matches) {
-        prev.status = "completed";
-        if (!prev.detail && (event.detail || event.text)) {
-          prev.detail = event.detail || event.text;
+      let targetStep: NormalizedStep | null = null;
+      for (let s = steps.length - 1; s >= 0; s--) {
+        const candidate = steps[s];
+        if (candidate.category === "thinking") continue;
+        const matches =
+          (Boolean(doneTool) && (
+            candidate.title.toLowerCase().includes(doneTool.toLowerCase()) ||
+            candidate.badgeLabel.toLowerCase() === doneTool.toLowerCase() ||
+            (candidate.command && doneTool === "execute")
+          )) ||
+          (doneTool.startsWith("Skill loaded:") && candidate.category === "skill") ||
+          (candidate.status === "running");
+        if (matches) {
+          targetStep = candidate;
+          break;
+        }
+      }
+      if (!targetStep) {
+        targetStep = steps[steps.length - 1];
+      }
+      if (targetStep) {
+        targetStep.status = "completed";
+        if (event.detail) {
+          targetStep.detail = event.detail;
+        } else if (!targetStep.detail && event.text) {
+          targetStep.detail = event.text;
         }
         continue;
       }
@@ -677,22 +700,25 @@ function normalizeActivityEvents(
       status = "running";
     }
 
-    // Expandable detail rules: only attach detail that ADDS information.
-    //   - structured detail (tool result excerpts, subagent reports) wins
-    //     unless it just repeats the row's own text;
-    //   - thinking/artifact/subagent/error rows fall back to the event text
-    //     (that text IS their content);
-    //   - plain status/tool rows get NO fallback detail — expanding to read
-    //     the exact same line again is noise, and without a fake detail the
-    //     ✓ merge can still fill the real result excerpt in afterwards.
+    // Expandable detail rules:
+    // - structured detail (tool result excerpts, args details) wins
+    // - thinking/artifact/subagent/error rows fall back to event text
+    // - tool rows fall back to command / target / query if detail not yet received
     const cleanText = (event.text || "").trim();
     const rawDetail = (event.detail || "").trim();
     const structuredDetail = rawDetail && rawDetail !== cleanText ? event.detail : undefined;
-    const keepTextFallback =
-      category === "thinking" || isError || isArtifact;
+    const fallbackDetail = parsed.command
+      ? `$ ${parsed.command}`
+      : parsed.target
+        ? `Path: ${parsed.target}`
+        : parsed.query
+          ? `Query: ${parsed.query}`
+          : cleanText || undefined;
+    const initialDetail = structuredDetail ?? (category === "thinking" || isError || isArtifact ? cleanText : fallbackDetail);
 
+    const eventTimestamp = event.createdAt || new Date().toISOString();
     steps.push({
-      id: `${event.createdAt}-${i}`,
+      id: `${eventTimestamp}-${i}`,
       category,
       badgeLabel,
       title: parsed.title,
@@ -700,9 +726,9 @@ function normalizeActivityEvents(
       command: parsed.command,
       query: parsed.query,
       skill: parsed.skill,
-      detail: structuredDetail ?? (keepTextFallback ? cleanText || undefined : undefined),
+      detail: initialDetail,
       status,
-      timestamp: event.createdAt,
+      timestamp: eventTimestamp,
       plan: event.plan,
       subagent: event.subagent,
       artifact: event.artifact,
@@ -740,12 +766,26 @@ function StepItemView({
   const isError = step.status === "error";
   const displayTitle = getActionVerb(step.title, isRunning);
 
-  const hasDetail = Boolean(
-    (step.detail && step.detail.trim().length > 0) ||
-    step.artifact ||
-    step.subagent ||
-    (step.plan && step.plan.length > 0)
-  );
+  const detailText = useMemo(() => {
+    if (step.detail && step.detail.trim().length > 0) {
+      return step.detail.trim();
+    }
+    const lines: string[] = [];
+    if (step.command) lines.push(`$ ${step.command}`);
+    if (step.target) lines.push(`Path: ${step.target}`);
+    if (step.query) lines.push(`Query: ${step.query}`);
+    if (step.skill) lines.push(`Skill: ${step.skill}`);
+    if (isRunning) {
+      lines.push(lines.length > 0 ? "\n[Running... in progress]" : "Executing in progress…");
+    } else if (lines.length > 0) {
+      lines.push("\n[Output]: Completed successfully with no output");
+    } else {
+      lines.push(step.title || "Step completed");
+    }
+    return lines.join("\n");
+  }, [step.detail, step.command, step.target, step.query, step.skill, step.title, isRunning]);
+
+  const hasDetail = true;
 
   return (
     <div className={`agent-timeline-step ${step.status}`}>
@@ -761,9 +801,9 @@ function StepItemView({
 
       <div className={`step-card ${step.status} ${isExpanded ? "expanded" : ""}`}>
         <div
-          className={`step-card-header ${hasDetail ? "" : "static"}`}
-          onClick={hasDetail ? onToggle : undefined}
-          title={hasDetail ? (isExpanded ? "Click to collapse" : "Click to view output") : undefined}
+          className="step-card-header"
+          onClick={onToggle}
+          title={isExpanded ? "Click to collapse" : "Click to view output"}
         >
           <div className="step-badge-and-title">
             <span className={`step-category-pill ${step.category}`}>
@@ -810,15 +850,13 @@ function StepItemView({
 
             <time className="step-time">{timeLabel(step.timestamp)}</time>
 
-            {hasDetail && (
-              <span className={`step-expand-icon ${isExpanded ? "open" : ""}`}>
-                <ChevronRight size={12} />
-              </span>
-            )}
+            <span className={`step-expand-icon ${isExpanded ? "open" : ""}`}>
+              <ChevronRight size={12} />
+            </span>
           </div>
         </div>
 
-        {isExpanded && hasDetail && (
+        {isExpanded && (
           <div className="step-card-details">
             {step.artifact && (
               <div className="step-embed-card">
@@ -841,7 +879,7 @@ function StepItemView({
               </div>
             )}
 
-            {step.detail && step.detail.trim().length > 0 && (
+            {detailText && (
               <div className={`step-detail-container ${isError ? "error-detail" : ""} ${step.category === "thinking" ? "thinking-detail" : ""}`}>
                 <div className="step-detail-header">
                   <span className="step-detail-label">
@@ -854,11 +892,11 @@ function StepItemView({
                     ) : (
                       <FileText size={10} />
                     )}
-                    {isError ? "Error trace" : step.category === "thinking" ? "Reasoning" : "Output"}
+                    {isError ? "Error trace" : step.category === "thinking" ? "Reasoning" : "Command & Output"}
                   </span>
-                  <CopyTextButton text={step.detail} />
+                  <CopyTextButton text={detailText} />
                 </div>
-                <pre className={`step-detail-pre ${step.category === "thinking" ? "thinking-detail-pre" : ""}`}>{step.detail}</pre>
+                <pre className={`step-detail-pre ${step.category === "thinking" ? "thinking-detail-pre" : ""}`}>{detailText}</pre>
               </div>
             )}
           </div>
@@ -944,6 +982,12 @@ export function ActivityGroupView({
     }`;
   }
 
+  // NOTE: no "return null when steps are empty" — parsed-zero groups (which
+  // happened in Code mode) must still render their raw-event fallback below.
+  if (events.length === 0 && !running) {
+    return null;
+  }
+
   const isWritingResponse = running && Boolean(currentText?.startsWith("Writing response"));
 
   return (
@@ -953,6 +997,7 @@ export function ActivityGroupView({
       }`}
     >
       <button
+        type="button"
         className="activity-group-summary"
         onClick={() => setUserExpanded(!isGroupExpanded)}
         title={
@@ -971,9 +1016,9 @@ export function ActivityGroupView({
               <span className="step-beacon-ring" />
             </div>
           ) : hasError ? (
-            <AlertCircle size={12} />
+            <AlertCircle size={13} />
           ) : (
-            <Check size={12} />
+            <Check size={13} />
           )}
         </span>
 
@@ -981,39 +1026,72 @@ export function ActivityGroupView({
           <span className={running ? "running-label" : ""}>{headerTitle}</span>
         </span>
 
-        {running && (
+        {running ? (
           <span className="activity-group-count">
             <span className="beacon-live-dot" />
             {steps.length ? `${steps.length} step${steps.length === 1 ? "" : "s"}` : "Working"}
           </span>
-        )}
+        ) : steps.length > 0 ? (
+          <span className="activity-group-count quiet">
+            {steps.length} step{steps.length === 1 ? "" : "s"}
+          </span>
+        ) : null}
 
         <span className={`activity-group-chevron ${isGroupExpanded ? "open" : ""}`}>
-          <ChevronDown size={14} />
+          <ChevronRight size={13} />
         </span>
       </button>
 
       {isGroupExpanded && (
         <div className="activity-group-body">
           <div className="agent-stepper-timeline">
-            {steps.map((step, index) => {
-              // All steps start COLLAPSED — the user opens exactly what they
-              // want to inspect (Claude-Code-style). The explicit boolean
-              // fallback below also makes the first click reliably toggle:
-              // previously auto-opened steps needed two clicks to close
-              // because the toggle flipped an undefined default.
-              const isStepExpanded = Boolean(expandedStepIds[step.id]);
+            {steps.length > 0 ? (
+              steps.map((step) => {
+                // All steps start COLLAPSED — the user opens exactly what they
+                // want to inspect (Claude-Code-style). The explicit boolean
+                // fallback below also makes the first click reliably toggle:
+                // previously auto-opened steps needed two clicks to close
+                // because the toggle flipped an undefined default.
+                const isStepExpanded = Boolean(expandedStepIds[step.id]);
 
-              return (
-                <StepItemView
-                  key={step.id}
-                  step={step}
-                  isExpanded={isStepExpanded}
-                  onToggle={() => toggleStep(step.id)}
-                  onOpenArtifact={onOpenArtifact}
-                />
-              );
-            })}
+                return (
+                  <StepItemView
+                    key={step.id}
+                    step={step}
+                    isExpanded={isStepExpanded}
+                    onToggle={() => toggleStep(step.id)}
+                    onOpenArtifact={onOpenArtifact}
+                  />
+                );
+              })
+            ) : (
+              /* Raw-event fallback: if the parser yields no steps (e.g. Code
+                 mode event shapes it doesn't recognize) the group still shows
+                 every event as a plain row instead of disappearing. */
+              events.map((event, index) => (
+                <div className="activity-step static" key={`${event.createdAt}-${index}`}>
+                  <div className="activity-step-row">
+                    <span className={`activity-step-dot ${event.kind || "status"}`}>
+                      {event.kind === "tool" ? (
+                        <Terminal size={11} />
+                      ) : event.kind === "error" ? (
+                        <X size={11} />
+                      ) : event.kind === "plan" ? (
+                        <Brain size={11} />
+                      ) : event.kind === "subagent" ? (
+                        <Bot size={11} />
+                      ) : (
+                        <Activity size={11} />
+                      )}
+                    </span>
+                    <span title={event.text || event.kind || "Agent action"}>
+                      {event.text || event.kind || "Agent action"}
+                    </span>
+                    <time>{timeLabel(event.createdAt)}</time>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
 
           {isWritingResponse && (

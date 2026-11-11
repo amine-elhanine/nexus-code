@@ -6,6 +6,7 @@ import {
   FileCode2,
   Terminal,
   Globe,
+  Brain,
   Loader2,
   XCircle,
   Clock,
@@ -34,6 +35,7 @@ export interface CodeInspectorSidebarProps {
   onOpenEditor: () => void;
   onOpenTerminal: () => void;
   onOpenBrowser: () => void;
+  onOpenMemory?: () => void;
   onNavigateUrl: (url: string) => void;
   onOpenAllDaemons: () => void;
 }
@@ -45,6 +47,7 @@ export const CodeInspectorSidebar: React.FC<CodeInspectorSidebarProps> = ({
   onOpenEditor,
   onOpenTerminal,
   onOpenBrowser,
+  onOpenMemory,
   onNavigateUrl,
   onOpenAllDaemons,
 }) => {
@@ -144,6 +147,18 @@ export const CodeInspectorSidebar: React.FC<CodeInspectorSidebarProps> = ({
           <Globe size={14} className="inspector-action-icon" />
           <span>Browser</span>
         </button>
+
+        {onOpenMemory && (
+          <button
+            type="button"
+            className="inspector-action-item"
+            onClick={onOpenMemory}
+            title="Project memory & facts"
+          >
+            <Brain size={14} className="inspector-action-icon" />
+            <span>Memory</span>
+          </button>
+        )}
       </div>
 
       {/* Background Tasks Section */}

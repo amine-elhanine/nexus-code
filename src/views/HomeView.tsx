@@ -257,12 +257,23 @@ export function HomeView({
     return blocks;
   }, [messages]);
 
-  // Auto-scroll when new messages arrive or streaming updates
-  useEffect(() => {
-    if (messagesViewportRef.current) {
+  const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
+  const scrollToBottom = useCallback((smooth = false) => {
+    if (bottomAnchorRef.current) {
+      bottomAnchorRef.current.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "end" });
+    } else if (messagesViewportRef.current) {
       messagesViewportRef.current.scrollTop = messagesViewportRef.current.scrollHeight;
     }
-  }, [messages, streamingText, liveEvents]);
+  }, []);
+
+  // Auto-scroll when new messages arrive or streaming updates — but only if
+  // the user is still near the bottom.
+  const stickToBottomRef = useRef(true);
+  useEffect(() => {
+    if (stickToBottomRef.current) {
+      scrollToBottom(false);
+    }
+  }, [messages, streamingText, liveEvents, running, scrollToBottom]);
 
   // Clean auto-resize textarea from min 26px up to 160px
   useEffect(() => {
@@ -318,6 +329,8 @@ export function HomeView({
         if (pillObj && draft.trim() && !draft.startsWith(pillObj.prefix)) {
           submitOverride = `${pillObj.prefix}${draft.trim()}`;
         }
+        stickToBottomRef.current = true;
+        scrollToBottom(true);
         submit(submitOverride);
         setActivePill(null);
         setSlashQuery(null);
@@ -385,7 +398,16 @@ export function HomeView({
         <div className="home-chat-pane">
 
         {/* Messages Scroll Area */}
-        <div className="home-messages-viewport" ref={messagesViewportRef}>
+        <div
+          className="home-messages-viewport"
+          ref={messagesViewportRef}
+          onScroll={() => {
+            const el = messagesViewportRef.current;
+            if (el) {
+              stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 240;
+            }
+          }}
+        >
           {isEmpty ? (
             <div className="home-empty-state">
               <div className="home-empty-icon">
@@ -473,11 +495,11 @@ export function HomeView({
               )}
 
               {/* Live Tool Activity during execution */}
-              {running && liveEvents.length > 0 && (
+              {running && (
                 <ActivityGroupView
                   events={liveEvents}
                   running={true}
-                  currentText={streamingText}
+                  currentText={streamingText ? "Writing response…" : undefined}
                   onOpenArtifact={(art) => {
                     setSelectedCanvasFile(art.path || art.filename || art.name);
                     setRightSidebarTab("artifact");
@@ -487,7 +509,7 @@ export function HomeView({
               )}
 
               {/* Live Streaming Assistant Message */}
-              {(streamingText || (running && liveEvents.length === 0)) && (
+              {running && Boolean(streamingText) && (
                 <StreamingAssistantMessage
                   text={streamingText}
                   onOpenArtifact={(art) => {
@@ -496,6 +518,7 @@ export function HomeView({
                   }}
                 />
               )}
+              <div ref={bottomAnchorRef} style={{ height: 1, minHeight: 1, flexShrink: 0 }} />
             </div>
           )}
         </div>

@@ -18,6 +18,11 @@ import type {
   SkillInfo,
 } from "../types.js";
 
+// Shared frozen-empty arrays so optional message/event props keep a stable
+// identity across renders (see currentMessages / liveEventsForSession below).
+const EMPTY_MESSAGES: ChatItem[] = [];
+const EMPTY_EVENTS: ChatItem[] = [];
+
 export const FALLBACK_PROVIDERS: ProviderDefinition[] = [
   {
     id: "openai",
@@ -194,9 +199,12 @@ export function useAppController() {
   const dirty = fileContent !== savedContent;
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId);
   const definition = providerDefinitions.find((provider) => provider.id === selectedProvider?.provider) || providerDefinitions[0];
-  const currentMessages = (activeSession?.messages || []) as ChatItem[];
+  // Stable empty identities: fresh `[]` literals here would change identity on
+  // every render, re-firing every effect keyed on messages/liveEvents (which
+  // re-pinned the chat transcript to the bottom every re-render).
+  const currentMessages = (activeSession?.messages || EMPTY_MESSAGES) as ChatItem[];
   const running = Boolean(activeSession && runningSessionIds.has(activeSession.id));
-  const liveEventsForSession = activeSession ? liveEvents[activeSession.id] || [] : [];
+  const liveEventsForSession = activeSession ? liveEvents[activeSession.id] || EMPTY_EVENTS : EMPTY_EVENTS;
   // Nexus telemetry storage (.nexus/.deepagents) is machinery,
   // not project content — the explorer never shows it, matching how IDEs
   // hide their own metadata folders.
@@ -486,7 +494,7 @@ export function useAppController() {
     });
   }
 
-  function deleteProjectById(projectId: string) {
+  function deleteProjectById(projectId: string, onDeleted?: (id: string) => void) {
     const proj = projects.find((p) => p.id === projectId);
     setConfirmDialog({
       title: `Delete project "${proj?.name || "project"}"?`,
@@ -504,6 +512,54 @@ export function useAppController() {
             setActiveSession(null);
             setSessions([]);
           }
+          onDeleted?.(projectId);
+        } catch (error) {
+          console.error(error);
+        }
+      },
+    });
+  }
+
+  function deleteProjectSession(projectId: string, sessionId: string, onDeleted?: (projectId: string, sessionId: string) => void) {
+    const proj = projects.find((p) => p.id === projectId);
+    const projSessList = (projectId === activeProject?.id ? sessions : []) as SessionRecord[];
+    const sess = projSessList.find((s) => s.id === sessionId);
+    setConfirmDialog({
+      title: `Delete session "${sess?.title || "session"}"?`,
+      message: "This will permanently delete this coding session and its memory.",
+      confirmLabel: "Delete session",
+      danger: true,
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        try {
+          const updatedProject = await api.deleteSession(projectId, sessionId);
+          setProjects((current) => current.map((p) => (p.id === updatedProject.id ? updatedProject : p)));
+          const sorted = sortSessionsByUpdatedAt(updatedProject.sessions);
+          if (projectId === activeProject?.id) {
+            setSessions(sorted);
+            if (activeSession?.id === sessionId) {
+              const nextSession = sorted[0] || null;
+              setActiveSession(nextSession);
+              if (nextSession) {
+                const m = nextSession.model;
+                const p = m ? providers.find((x) => x.id === m.providerId) : undefined;
+                if (p && m && p.models.includes(m.model)) {
+                  setSelectedProviderId(m.providerId);
+                  setSelectedModel(m.model);
+                  setSelectedEffort(m.effort || "");
+                } else if (providers.length > 0) {
+                  setSelectedProviderId(providers[0].id);
+                  setSelectedModel(providers[0].models[0] || "");
+                  setSelectedEffort("");
+                } else {
+                  setSelectedProviderId("");
+                  setSelectedModel("");
+                  setSelectedEffort("");
+                }
+              }
+            }
+          }
+          onDeleted?.(projectId, sessionId);
         } catch (error) {
           console.error(error);
         }
@@ -513,42 +569,7 @@ export function useAppController() {
 
   function deleteActiveSession(sessionId: string) {
     if (!activeProject) return;
-    const sess = sessions.find((s) => s.id === sessionId);
-    setConfirmDialog({
-      title: `Delete session "${sess?.title || "session"}"?`,
-      message: "This will permanently delete this coding session and its memory.",
-      confirmLabel: "Delete session",
-      danger: true,
-      onConfirm: async () => {
-        setConfirmDialog(null);
-        try {
-          const updatedProject = await api.deleteSession(activeProject.id, sessionId);
-          setProjects((current) => current.map((p) => (p.id === updatedProject.id ? updatedProject : p)));
-          setSessions(sortSessionsByUpdatedAt(updatedProject.sessions));
-          const nextSession = updatedProject.sessions[0] || null;
-          setActiveSession(nextSession);
-          if (nextSession) {
-            const m = nextSession.model;
-            const p = m ? providers.find((x) => x.id === m.providerId) : undefined;
-            if (p && m && p.models.includes(m.model)) {
-              setSelectedProviderId(m.providerId);
-              setSelectedModel(m.model);
-              setSelectedEffort(m.effort || "");
-            } else if (providers.length > 0) {
-              setSelectedProviderId(providers[0].id);
-              setSelectedModel(providers[0].models[0] || "");
-              setSelectedEffort("");
-            } else {
-              setSelectedProviderId("");
-              setSelectedModel("");
-              setSelectedEffort("");
-            }
-          }
-        } catch (error) {
-          console.error(error);
-        }
-      },
-    });
+    deleteProjectSession(activeProject.id, sessionId);
   }
 
   async function renameSession(sessionId: string, title: string) {
@@ -824,6 +845,13 @@ export function useAppController() {
           }
         }
       } catch { /* keep local reconciliation */ }
+    } finally {
+      setRunningSessionIds((current) => {
+        const next = new Set(current);
+        next.delete(session.id);
+        return next;
+      });
+      setStreamingText("");
     }
   }
 
@@ -1135,6 +1163,7 @@ export function useAppController() {
     // Actions
     activateProject,
     deleteProjectById,
+    deleteProjectSession,
     openProjectFromDialog,
     createSession,
     activateSession,
