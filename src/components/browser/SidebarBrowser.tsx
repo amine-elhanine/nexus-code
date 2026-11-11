@@ -96,7 +96,23 @@ export const SidebarBrowser: React.FC<{
   onSendToAgent?: (prompt: string) => void;
   onAgentNavigate?: () => void;
   initialUrl?: string;
-}> = ({ sessionId, browserScope, projectRoot, files = [], onSendToAgent, onAgentNavigate, initialUrl }) => {
+  hideTabBar?: boolean;
+  isAgentOnly?: boolean;
+  tabId?: string;
+  onTitleChange?: (title: string, url: string) => void;
+}> = ({
+  sessionId,
+  browserScope,
+  projectRoot,
+  files = [],
+  onSendToAgent,
+  onAgentNavigate,
+  initialUrl,
+  hideTabBar = false,
+  isAgentOnly = false,
+  tabId,
+  onTitleChange,
+}) => {
   const makeTab = (id: string, url: string, isAgent: boolean): SideTab => ({
     id,
     title: titleFor(url, isAgent),
@@ -106,10 +122,16 @@ export const SidebarBrowser: React.FC<{
     isAgent,
   });
 
-  const firstUserTabId = useRef(`tab-${Date.now()}`).current;
+  const firstUserTabId = useRef(tabId || `tab-${Date.now()}`).current;
   const sessionKey = sessionId || "none";
   const initialAgentUrl = initialUrl || lastAgentUrlBySession[sessionKey] || lastAgentUrlByScope[browserScope];
   const [tabs, setTabs] = useState<SideTab[]>(() => {
+    if (hideTabBar) {
+      if (isAgentOnly) {
+        return [makeTab(AGENT_TAB_ID, initialAgentUrl || "about:blank", true)];
+      }
+      return [makeTab(firstUserTabId, initialUrl || NEW_TAB_URL, false)];
+    }
     const saved = browsersByScope[browserScope];
     if (saved) {
       if (initialAgentUrl) {
@@ -125,6 +147,9 @@ export const SidebarBrowser: React.FC<{
     ];
   });
   const [activeTabId, setActiveTabId] = useState<string>(() => {
+    if (hideTabBar) {
+      return isAgentOnly ? AGENT_TAB_ID : firstUserTabId;
+    }
     if (initialAgentUrl) return AGENT_TAB_ID;
     const saved = browsersByScope[browserScope];
     if (saved && saved.tabs.some((t) => t.id === saved.activeTabId)) return saved.activeTabId;
@@ -151,27 +176,40 @@ export const SidebarBrowser: React.FC<{
   // Persist this browser's tabs so a trip to the other mode (which unmounts
   // this instance) restores them on return — per scope, never shared.
   useEffect(() => {
-    browsersByScope[browserScope] = { tabs, activeTabId };
-  }, [browserScope, tabs, activeTabId]);
+    if (!hideTabBar) {
+      browsersByScope[browserScope] = { tabs, activeTabId };
+    }
+  }, [hideTabBar, browserScope, tabs, activeTabId]);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
 
-  function patchTab(tabId: string, patch: Partial<SideTab>) {
-    setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, ...patch } : t)));
+  function patchTab(tId: string, patch: Partial<SideTab>) {
+    setTabs((prev) => {
+      const updated = prev.map((t) => (t.id === tId ? { ...t, ...patch } : t));
+      if (onTitleChange) {
+        const found = updated.find((t) => t.id === tId);
+        if (found && (patch.title || patch.url)) {
+          onTitleChange(found.title, found.url);
+        }
+      }
+      return updated;
+    });
   }
 
-  function bumpEpoch(tabId: string) {
-    setNavEpoch((prev) => ({ ...prev, [tabId]: (prev[tabId] || 0) + 1 }));
+  function bumpEpoch(tId: string) {
+    setNavEpoch((prev) => ({ ...prev, [tId]: (prev[tId] || 0) + 1 }));
   }
 
-  function navigateTab(tabId: string, raw: string) {
+  function navigateTab(tId: string, raw: string) {
     const finalUrl = resolveMiniUrl(raw);
-    bumpEpoch(tabId);
-    if (tabId === AGENT_TAB_ID) {
+    bumpEpoch(tId);
+    if (tId === AGENT_TAB_ID) {
       // User took the wheel on the agent tab — next agent load re-syncs it.
       mirroredByScope[browserScope] = null;
     }
-    patchTab(tabId, { url: finalUrl, inputUrl: finalUrl, title: titleFor(finalUrl, tabId === AGENT_TAB_ID), loading: true });
+    const nextTitle = titleFor(finalUrl, tId === AGENT_TAB_ID);
+    patchTab(tId, { url: finalUrl, inputUrl: finalUrl, title: nextTitle, loading: true });
+    onTitleChange?.(nextTitle, finalUrl);
   }
 
   function newTab() {
@@ -284,6 +322,8 @@ export const SidebarBrowser: React.FC<{
         // here (its own sidebar mirrors it when mounted).
         if (payload.sessionId && sessionIdRef.current && payload.sessionId !== sessionIdRef.current) return;
         lastAgentUrlBySession[sessionIdRef.current || "none"] = payload.url;
+        // Dedicated user tabs are never touched by agent browsing
+        if (hideTabBar && !isAgentOnly) return;
         // Only page loads mirror into the agent tab — clicks/fills/etc. show
         // in the chat transcript; remounting on those would just flash.
         if (!payload.autoFollow) return;
@@ -295,6 +335,7 @@ export const SidebarBrowser: React.FC<{
               t.isAgent ? { ...t, url: payload.url, inputUrl: payload.url, title: titleFor(payload.url, true), loading: true } : t
             )
           );
+          onTitleChange?.(shortHost(payload.url), payload.url);
         }
         if (payload.forceFollow || payload.autoFollow || !headlessRef.current) {
           // Watching mode follows all agent browsing. Explicit preview requests
@@ -331,6 +372,7 @@ export const SidebarBrowser: React.FC<{
   // When initialUrl is provided from agent activity, synchronize and flip to the agent tab immediately
   useEffect(() => {
     if (!initialUrl) return;
+    if (hideTabBar && !isAgentOnly) return;
     mirroredByScope[browserScope] = initialUrl;
     lastAgentUrlBySession[sessionKey] = initialUrl;
     lastAgentUrlByScope[browserScope] = initialUrl;
@@ -341,53 +383,56 @@ export const SidebarBrowser: React.FC<{
       )
     );
     setActiveTabId(AGENT_TAB_ID);
+    onTitleChange?.(shortHost(initialUrl), initialUrl);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialUrl]);
 
   return (
     <div className="side-browser">
-      <div className="side-browser-tabs" role="tablist" aria-label="Browser tabs">
-        {tabs.map((tab) => (
+      {!hideTabBar && (
+        <div className="side-browser-tabs" role="tablist" aria-label="Browser tabs">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={tab.id === activeTabId}
+              className={`side-tab${tab.id === activeTabId ? " active" : ""}${tab.isAgent ? " agent" : ""}`}
+              onClick={() => {
+                setActiveTabId(tab.id);
+                if (tab.isAgent) setAgentBanner(null);
+              }}
+              title={tab.isAgent ? `Agent tab — ${tab.url}` : tab.url}
+            >
+              {tab.isAgent ? <Bot size={11} /> : <Globe size={11} />}
+              <span>{tab.title}</span>
+              {!tab.isAgent && tabs.length > 1 && (
+                <i
+                  className="side-tab-close"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeTab(tab.id);
+                  }}
+                  title="Close tab"
+                >
+                  <X size={10} />
+                </i>
+              )}
+            </button>
+          ))}
           <button
-            key={tab.id}
             type="button"
-            role="tab"
-            aria-selected={tab.id === activeTabId}
-            className={`side-tab${tab.id === activeTabId ? " active" : ""}${tab.isAgent ? " agent" : ""}`}
-            onClick={() => {
-              setActiveTabId(tab.id);
-              if (tab.isAgent) setAgentBanner(null);
-            }}
-            title={tab.isAgent ? `Agent tab — ${tab.url}` : tab.url}
+            className="side-tab-new"
+            onClick={newTab}
+            disabled={tabs.filter((t) => !t.isAgent).length >= MAX_USER_TABS}
+            title="New tab"
           >
-            {tab.isAgent ? <Bot size={11} /> : <Globe size={11} />}
-            <span>{tab.title}</span>
-            {!tab.isAgent && tabs.length > 1 && (
-              <i
-                className="side-tab-close"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeTab(tab.id);
-                }}
-                title="Close tab"
-              >
-                <X size={10} />
-              </i>
-            )}
+            <Plus size={12} />
           </button>
-        ))}
-        <button
-          type="button"
-          className="side-tab-new"
-          onClick={newTab}
-          disabled={tabs.filter((t) => !t.isAgent).length >= MAX_USER_TABS}
-          title="New tab"
-        >
-          <Plus size={12} />
-        </button>
-      </div>
+        </div>
+      )}
 
-      {agentBanner && activeTabId !== AGENT_TAB_ID && (
+      {!hideTabBar && agentBanner && activeTabId !== AGENT_TAB_ID && (
         <div className="browser-agent-banner">
           <span className="status-dot running" style={{ width: 6, height: 6 }} />
           <span>Agent: {shortHost(agentBanner)}</span>
@@ -413,65 +458,134 @@ export const SidebarBrowser: React.FC<{
         className="side-browser-bar"
         onSubmit={(e) => {
           e.preventDefault();
+          if (isAgentOnly) return;
           navigateTab(activeTab.id, activeTab.inputUrl);
         }}
       >
-        <button type="button" className="browser-btn icon-only" onClick={() => goActive(-1)} title="Back">
+        <button
+          type="button"
+          className="browser-btn icon-only"
+          onClick={() => goActive(-1)}
+          title="Back"
+          disabled={isAgentOnly}
+        >
           <ArrowLeft size={13} />
         </button>
-        <button type="button" className="browser-btn icon-only" onClick={() => goActive(1)} title="Forward">
+        <button
+          type="button"
+          className="browser-btn icon-only"
+          onClick={() => goActive(1)}
+          title="Forward"
+          disabled={isAgentOnly}
+        >
           <ArrowRight size={13} />
         </button>
-        <button type="button" className="browser-btn icon-only" onClick={reloadActive} title="Reload">
+        <button
+          type="button"
+          className="browser-btn icon-only"
+          onClick={reloadActive}
+          title="Reload"
+        >
           <RefreshCw size={13} className={activeTab.loading ? "spin" : ""} />
         </button>
-        {onSendToAgent && (
-          <button
-            type="button"
-            className="browser-btn icon-only"
-            onClick={() =>
-              onSendToAgent(
-                `Inspect and test the running web page at ${activeTab.url} (${activeTab.title}). Verify layout, check console errors or unexpected visual bugs, and validate features.`
-              )
-            }
-            title="Ask the agent about this page"
+
+        {isAgentOnly ? (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              flex: 1,
+              padding: "4px 10px",
+              fontSize: "0.78rem",
+              color: "var(--text-secondary)",
+              background: "var(--bg-app)",
+              borderRadius: "var(--radius-full, 9999px)",
+              border: "1px solid var(--border-default)",
+              minWidth: 0,
+            }}
           >
-            <MessageSquare size={13} />
-          </button>
+            <Bot size={13} style={{ color: "var(--accent-code, #38bdf8)", flexShrink: 0 }} />
+            <span
+              style={{
+                flex: 1,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                fontFamily: "var(--font-mono, monospace)",
+                fontSize: "0.75rem",
+              }}
+              title={activeTab.url}
+            >
+              {activeTab.url || "about:blank"}
+            </span>
+            <span
+              className="badge"
+              style={{
+                fontSize: "0.65rem",
+                padding: "1px 6px",
+                flexShrink: 0,
+                background: "rgba(56, 189, 248, 0.12)",
+                color: "var(--accent-code, #38bdf8)",
+                border: "1px solid rgba(56, 189, 248, 0.25)",
+              }}
+            >
+              Agent Controlled
+            </span>
+          </div>
+        ) : (
+          <>
+            {onSendToAgent && (
+              <button
+                type="button"
+                className="browser-btn icon-only"
+                onClick={() =>
+                  onSendToAgent(
+                    `Inspect and test the running web page at ${activeTab.url} (${activeTab.title}). Verify layout, check console errors or unexpected visual bugs, and validate features.`
+                  )
+                }
+                title="Ask the agent about this page"
+              >
+                <MessageSquare size={13} />
+              </button>
+            )}
+            <input
+              type="text"
+              value={activeTab.inputUrl}
+              onChange={(e) => patchTab(activeTab.id, { inputUrl: e.target.value })}
+              placeholder="Search or enter address"
+              spellCheck={false}
+            />
+          </>
         )}
-        <input
-          type="text"
-          value={activeTab.inputUrl}
-          onChange={(e) => patchTab(activeTab.id, { inputUrl: e.target.value })}
-          placeholder="Search or enter address"
-          spellCheck={false}
-        />
       </form>
 
-      {servers.length > 0 ? (
-        <div className="side-browser-servers">
-          {servers.map((srv) => (
-            <button key={srv.id} type="button" className="bookmark-chip server-chip" onClick={() => navigateTab(activeTab.id, srv.url)} title={srv.command}>
-              <span className="status-dot running" style={{ width: 6, height: 6 }} />
-              <span>:{srv.port}</span>
-            </button>
-          ))}
-        </div>
-      ) : (
-        projectRoot && (
+      {!isAgentOnly && (
+        servers.length > 0 ? (
           <div className="side-browser-servers">
-            <button
-              type="button"
-              className="bookmark-chip server-chip"
-              onClick={() => void startDevServer()}
-              disabled={startingServer}
-              title="Start npm run dev as a background service"
-            >
-              <Play size={11} />
-              <span>{startingServer ? "Starting…" : "Run project"}</span>
-            </button>
-            {startError && <span className="browser-start-error">{startError}</span>}
+            {servers.map((srv) => (
+              <button key={srv.id} type="button" className="bookmark-chip server-chip" onClick={() => navigateTab(activeTab.id, srv.url)} title={srv.command}>
+                <span className="status-dot running" style={{ width: 6, height: 6 }} />
+                <span>:{srv.port}</span>
+              </button>
+            ))}
           </div>
+        ) : (
+          projectRoot && (
+            <div className="side-browser-servers">
+              <button
+                type="button"
+                className="bookmark-chip server-chip"
+                onClick={() => void startDevServer()}
+                disabled={startingServer}
+                title="Start npm run dev as a background service"
+              >
+                <Play size={11} />
+                <span>{startingServer ? "Starting…" : "Run project"}</span>
+              </button>
+              {startError && <span className="browser-start-error">{startError}</span>}
+            </div>
+          )
         )
       )}
 

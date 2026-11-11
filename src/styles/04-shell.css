@@ -331,15 +331,6 @@
   font-weight: 600;
 }
 
-.project-session-count {
-  flex-shrink: 0;
-  font-size: 0.68rem;
-  color: var(--text-tertiary);
-  background-color: var(--bg-surface-active);
-  border-radius: var(--radius-full);
-  padding: 1px 7px;
-}
-
 .project-sessions {
   display: flex;
   flex-direction: column;
@@ -361,6 +352,58 @@
   padding: 4px 10px;
   font-size: 0.75rem;
   color: var(--text-tertiary);
+}
+
+/* "Task list" section header (search toggle on the right) + filter input. */
+.tasklist-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 6px 2px 10px;
+}
+
+.tasklist-head span {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.tasklist-search {
+  margin: 2px 4px 6px;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+}
+
+/* Relative timestamp ("8m", "2d") on session rows — Codex-style.
+   Hidden on hover/active so the row actions can take the space. */
+.session-time {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  color: var(--text-tertiary);
+  margin-left: 6px;
+}
+
+.history-item:hover .session-time,
+.history-item.active .session-time {
+  display: none;
+}
+
+.show-more-row {
+  background: transparent;
+  border: 0;
+  color: var(--text-tertiary);
+  font-size: 0.78rem;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.show-more-row:hover {
+  color: var(--text-primary);
+  background-color: var(--bg-surface-hover);
 }
 
 .history-item:hover .history-actions,

@@ -1308,6 +1308,41 @@ export async function runProjectAgent(options: {
     return finalAnswer;
   };
 
+function formatCallArgsDetail(name: string, args: unknown): string {
+  if (!args || typeof args !== "object") return "";
+  const a = args as Record<string, any>;
+  if (name === "execute" || name === "run_command" || name === "run_background") {
+    const cmd = a.command || a.cmd || a.CommandLine || "";
+    return cmd ? `$ ${cmd}` : "";
+  }
+  if (name === "read_file" || name === "read_file_range") {
+    const p = a.file_path || a.filePath || a.file || a.path || "";
+    const range = a.start_line != null ? ` (lines ${a.start_line}-${a.end_line || ""})` : "";
+    return p ? `Path: ${p}${range}` : "";
+  }
+  if (name === "write_file") {
+    const p = a.file_path || a.filePath || a.file || a.path || "";
+    const content = typeof a.content === "string" ? a.content : "";
+    return p ? (content ? `Path: ${p}\n\n[Content]:\n${content.slice(0, 3000)}` : `Path: ${p}`) : "";
+  }
+  if (name === "edit_file") {
+    const p = a.file_path || a.filePath || a.file || a.path || "";
+    let str = p ? `Path: ${p}` : "";
+    if (a.target) str += `\n\n[Target to replace]:\n${a.target}`;
+    if (a.replacement) str += `\n\n[Replacement]:\n${a.replacement}`;
+    return str;
+  }
+  if (name.includes("browser") || name.includes("search")) {
+    const q = a.query || a.url || a.action || "";
+    return q ? `Target: ${q}` : "";
+  }
+  try {
+    return JSON.stringify(a, null, 2).slice(0, 3000);
+  } catch {
+    return "";
+  }
+}
+
   // Per-event handling for tool calls/results (single emission now — the old
   // seenToolCallIds/seenToolResultIds dedup sets existed for LangGraph
   // superstep replays, which the self-built loop does not emit).
@@ -1371,19 +1406,27 @@ export async function runProjectAgent(options: {
         emit("status", "Supervisor · the same action is repeating; change approach or produce an intermediate result");
       }
     }
-    emit("tool", desc);
+    const callArgsDetail = formatCallArgsDetail(name, call.args);
+    emit("tool", desc, undefined, undefined, undefined, undefined, callArgsDetail || undefined);
     if (trajectory) {
       void trajectory.log({ source: "TOOL", type: "TOOL_CALL", content: desc, tool_calls: [{ name, args: call.args }] });
     }
   };
 
   const handleToolResultEvent = (call: ToolCall, result: string, isError: boolean) => {
-    void call;
-    const excerpt = isError ? "" : toolResultExcerpt(result);
+    const name = call?.name || lastActiveToolName || "tool";
+    const rawResult = typeof result === "string" ? result : (result ? JSON.stringify(result, null, 2) : "");
+    const excerpt = isError
+      ? (rawResult || "Tool returned an error")
+      : (rawResult ? toolResultExcerpt(rawResult, 8000) : "Completed with no output");
+    const callSummary = formatCallArgsDetail(name, call?.args);
+    const detailCombined = callSummary
+      ? `${callSummary}\n\n${isError ? "[Error Output]:" : "[Output]:"}\n${excerpt}`
+      : excerpt;
     const doneLabel = lastActiveToolSkill
       ? `Skill loaded: ${lastActiveToolSkill} ✓`
-      : `${lastActiveToolName || "tool"} ✓`;
-    emit("tool", doneLabel, undefined, undefined, undefined, undefined, excerpt || undefined);
+      : `${name} ✓`;
+    emit("tool", doneLabel, undefined, undefined, undefined, undefined, detailCombined);
     if (isGeneral && homeJournal) {
       const toolName = String(lastActiveToolName || "tool");
       const phase: HomeTaskPhase = /search|browser|fetch|inspect|read|skill/i.test(toolName)

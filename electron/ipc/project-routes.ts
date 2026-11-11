@@ -76,6 +76,17 @@ export function registerProjectRoutes(ctx: MainIpcContext): void {
     ? { project: await getProject(ctx.active().projectId!), session: ctx.active().sessionId ? await getSession(ctx.active().projectId!, ctx.active().sessionId!) : null }
     : null);
   ipcMain.handle("project:delete", async (_event, projectId: string) => {
+    const project = await getProject(projectId);
+    const root = project?.root || (projectId === ctx.active().projectId ? ctx.active().projectRoot : null);
+    if (project && root) {
+      for (const session of project.sessions) {
+        try {
+          await discardSessionWorktree(root, session.id);
+          await deleteSessionTelemetry(root, session.id);
+          clearLastRunCheckpoint(session.id);
+        } catch { /* best effort */ }
+      }
+    }
     await deleteProject(projectId);
     if (projectId === ctx.active().projectId) ctx.setActive({ projectId: null, sessionId: null, projectRoot: null });
     return listProjects();

@@ -1,315 +1,255 @@
-import React, { useState, type ReactNode } from "react";
-import { RotateCcw, RefreshCw, ChevronDown, ChevronRight, Columns, AlignJustify, GitBranch, Undo2 } from "lucide-react";
-import type { WorkspaceDiffFile, SplitDiffRow, DiffSide } from "../types.js";
+import React, { useState, useMemo } from "react";
+import {
+  RefreshCw,
+  ChevronDown,
+  ChevronUp,
+  GitBranch,
+} from "lucide-react";
+import type { WorkspaceDiffFile, SplitDiffRow } from "../types.js";
 import { fileIcon } from "../utils/format.js";
 
-export function parseDiffPatch(patch: string): SplitDiffRow[] {
-  let oldLine = 0;
-  let newLine = 0;
-  const rows: SplitDiffRow[] = [];
-  let deleted: DiffSide[] = [];
-  let added: DiffSide[] = [];
-
-  const flushChanges = () => {
-    const count = Math.max(deleted.length, added.length);
-    for (let index = 0; index < count; index++) {
-      const old = deleted[index];
-      const next = added[index];
-      rows.push({
-        kind: old && next ? "change" : old ? "deleted" : "added",
-        old,
-        new: next,
-      });
-    }
-    deleted = [];
-    added = [];
-  };
-
-  for (const line of patch.split(/\r?\n/)) {
-    if (line.startsWith("@@")) {
-      flushChanges();
-      const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-      if (match) {
-        oldLine = Number(match[1]);
-        newLine = Number(match[2]);
-      }
-      rows.push({ kind: "hunk", text: line });
-      continue;
-    }
-    if (
-      !line ||
-      line.startsWith("diff ") ||
-      line.startsWith("index ") ||
-      line.startsWith("---") ||
-      line.startsWith("+++") ||
-      line.startsWith("\\\\ No newline")
-    )
-      continue;
-
-    if (line.startsWith("+")) {
-      added.push({ number: newLine++, text: line.slice(1) });
-      continue;
-    }
-    if (line.startsWith("-")) {
-      deleted.push({ number: oldLine++, text: line.slice(1) });
-      continue;
-    }
-    flushChanges();
-    const text = line.startsWith(" ") ? line.slice(1) : line;
-    rows.push({
-      kind: "context",
-      old: { number: oldLine++, text },
-      new: { number: newLine++, text },
-    });
-  }
-  flushChanges();
-  return rows;
+export interface GitDiffParsedLine {
+  type: "context" | "added" | "deleted" | "hunk";
+  lineNum?: number;
+  sign: string;
+  text: string;
 }
 
-export function DiffLineView({
-  side,
-  kind,
-}: {
-  side?: DiffSide;
-  kind: "context" | "added" | "deleted";
-}) {
-  return (
-    <div className={`diff-line-view ${kind}`}>
-      <span className="diff-line-number">{side?.number ?? ""}</span>
-      <span className="diff-line-bar" />
-      <code>{side?.text || "\u00a0"}</code>
-    </div>
-  );
+export function parseUnifiedGitDiff(patch: string): GitDiffParsedLine[] {
+  if (!patch) return [];
+  const rawLines = patch.split(/\r?\n/);
+  const parsed: GitDiffParsedLine[] = [];
+
+  let curOldLine = 1;
+  let curNewLine = 1;
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i];
+
+    // Skip git metadata header lines
+    if (
+      line.startsWith("diff --git") ||
+      line.startsWith("index ") ||
+      line.startsWith("--- ") ||
+      line.startsWith("+++ ") ||
+      line.startsWith("\\ No newline")
+    ) {
+      continue;
+    }
+
+    if (line.startsWith("@@")) {
+      const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (match) {
+        curOldLine = Number(match[1]);
+        curNewLine = Number(match[2]);
+      }
+      if (parsed.length > 0) {
+        parsed.push({
+          type: "hunk",
+          sign: " ",
+          text: line,
+        });
+      }
+      continue;
+    }
+
+    if (line.startsWith("+")) {
+      parsed.push({
+        type: "added",
+        lineNum: curNewLine++,
+        sign: "+",
+        text: line.slice(1),
+      });
+    } else if (line.startsWith("-")) {
+      parsed.push({
+        type: "deleted",
+        lineNum: curOldLine++,
+        sign: "-",
+        text: line.slice(1),
+      });
+    } else {
+      const content = line.startsWith(" ") ? line.slice(1) : line;
+      parsed.push({
+        type: "context",
+        lineNum: curNewLine++,
+        sign: " ",
+        text: content,
+      });
+      curOldLine++;
+    }
+  }
+
+  return parsed;
+}
+
+// Retain legacy parseDiffPatch export for compatibility
+export function parseDiffPatch(patch: string): SplitDiffRow[] {
+  return [];
 }
 
 export function DiffPatch({
   patch,
-  filePath,
-  viewMode = "inline",
-  onRevertHunk,
 }: {
   patch: string;
   filePath?: string;
   viewMode?: "inline" | "split";
   onRevertHunk?: (filePath: string, hunkHeader: string) => void;
 }) {
-  const rows = parseDiffPatch(patch);
-  if (!rows.length) {
-    return (
-      <div className="diff-code-panel">
-        <div className="diff-code-empty">No patch available for this file.</div>
-      </div>
-    );
+  const lines = parseUnifiedGitDiff(patch);
+  if (!lines.length) {
+    return <div className="git-diff-no-patch">No patch available for this file.</div>;
   }
-
-  if (viewMode === "split") {
-    return (
-      <div className="diff-code-panel diff-split-container">
-        {rows.map((row, index) => {
-          if (row.kind === "hunk") {
-            const header = row.text || null;
-            return (
-              <div className="diff-split-hunk-bar" key={`${index}-hunk`}>
-                <span>{row.text}</span>
-                {filePath && header && onRevertHunk && (
-                  <button
-                    className="diff-hunk-discard"
-                    onClick={() => onRevertHunk(filePath, header)}
-                    title="Discard only this hunk, keep the rest of the file"
-                  >
-                    Discard hunk
-                  </button>
-                )}
-              </div>
-            );
-          }
-          const hasOld = Boolean(row.old);
-          const hasNew = Boolean(row.new);
-          const oldClass = row.kind === "deleted" || row.kind === "change" ? "is-del" : "";
-          const newClass = row.kind === "added" || row.kind === "change" ? "is-add" : "";
-
-          return (
-            <div className="diff-split-row" key={`${index}-split`}>
-              <span className="diff-split-ln">{row.old?.number ?? ""}</span>
-              <code className={`diff-split-code side-old ${hasOld ? oldClass : "is-empty"}`}>
-                {row.old ? row.old.text || "\u00a0" : "\u00a0"}
-              </code>
-              <span className="diff-split-ln">{row.new?.number ?? ""}</span>
-              <code className={`diff-split-code side-new ${hasNew ? newClass : "is-empty"}`}>
-                {row.new ? row.new.text || "\u00a0" : "\u00a0"}
-              </code>
-            </div>
-          );
-        })}
-      </div>
-    );
-  }
-
-  const rendered: ReactNode[] = [];
-  let currentHunk: string | null = null;
-  rows.forEach((row, index) => {
-    if (row.kind === "hunk") {
-      currentHunk = row.text || null;
-      const header = currentHunk;
-      rendered.push(
-        <div className="diff-hunk-row" key={`${index}-hunk`}>
-          <span>{row.text}</span>
-          {filePath && header && onRevertHunk && (
-            <button
-              className="diff-hunk-discard"
-              onClick={() => onRevertHunk(filePath, header)}
-              title="Discard only this hunk, keep the rest of the file"
-            >
-              Discard hunk
-            </button>
-          )}
-        </div>,
-      );
-    } else if (row.kind === "context") {
-      rendered.push(<DiffLineView key={`${index}-context`} side={row.new} kind="context" />);
-    } else {
-      if (row.old) rendered.push(<DiffLineView key={`${index}-old`} side={row.old} kind="deleted" />);
-      if (row.new) rendered.push(<DiffLineView key={`${index}-new`} side={row.new} kind="added" />);
-    }
-  });
-  return <div className="diff-code-panel">{rendered}</div>;
+  return (
+    <div className="git-diff-code-panel">
+      {lines.map((line, idx) => (
+        <div key={idx} className={`git-diff-code-line ${line.type}`}>
+          <span className="git-diff-line-num">
+            {line.type === "hunk" ? "…" : (line.lineNum ?? "")}
+          </span>
+          <code className="git-diff-line-text">{line.text || " "}</code>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export function DiffView({
   diff,
-  checkpointId,
-  undoing,
-  onUndoRun,
   onRefresh,
-  onRevertFile,
-  onRevertAll,
-  onInspectFile,
-  onRevertHunk,
 }: {
   diff: WorkspaceDiffFile[];
   checkpointId?: string;
   undoing?: boolean;
   onUndoRun?: (checkpointId: string) => void;
   onRefresh: () => void;
-  onRevertFile: (path: string) => void;
-  onRevertAll: () => void;
+  onRevertFile?: (path: string) => void;
+  onRevertAll?: () => void;
   onInspectFile?: (file: WorkspaceDiffFile) => void;
   onRevertHunk?: (path: string, hunkHeader: string) => void;
 }) {
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [viewMode, setViewMode] = useState<"inline" | "split">("inline");
+  // All files start collapsed by default, exactly matching ZCode Image 1
+  const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
+  const [scope, setScope] = useState<string>("unstaged");
 
-  const toggle = (file: string) =>
-    setExpanded((current) => {
-      const next = new Set(current);
-      next.has(file) ? next.delete(file) : next.add(file);
+  const toggleFile = (filePath: string) => {
+    setExpandedFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(filePath)) {
+        next.delete(filePath);
+      } else {
+        next.add(filePath);
+      }
       return next;
     });
+  };
 
-  const additions = diff.reduce((sum, file) => sum + file.additions, 0);
-  const deletions = diff.reduce((sum, file) => sum + file.deletions, 0);
+  const toggleAll = () => {
+    if (expandedFiles.size > 0) {
+      setExpandedFiles(new Set());
+    } else {
+      setExpandedFiles(new Set(diff.map((f) => f.path)));
+    }
+  };
+
+  const filteredDiff = useMemo(() => {
+    if (scope === "staged") {
+      const staged = diff.filter((f) => f.status && f.status !== "?" && f.status !== "U");
+      return staged.length > 0 ? staged : diff;
+    }
+    return diff;
+  }, [diff, scope]);
 
   return (
-    <div className="artifact-view diff-artifact-view">
-      <div className="artifact-head">
-        <div>
-          <span className="view-kicker">REVIEW ARTIFACT</span>
-          <h2>Changed files</h2>
-          <p>
-            {diff.length
-              ? `${diff.length} changed file${diff.length === 1 ? "" : "s"} in the active project`
-              : "No changes in the active project"}
-          </p>
-        </div>
-        <div className="diff-head-actions">
-          <div className="diff-mode-toggle" role="group" aria-label="Diff display mode">
-            <button
-              type="button"
-              className={viewMode === "inline" ? "active" : ""}
-              onClick={() => setViewMode("inline")}
-              title="Unified inline diff view"
-            >
-              <AlignJustify size={11} />
-              <span>Inline</span>
-            </button>
-            <button
-              type="button"
-              className={viewMode === "split" ? "active" : ""}
-              onClick={() => setViewMode("split")}
-              title="Side-by-side split diff view"
-            >
-              <Columns size={11} />
-              <span>Split</span>
-            </button>
-          </div>
-          <select className="diff-scope-select" value="unstaged" aria-label="Diff scope">
+    <div className="git-diff-view" role="region" aria-label="Git Diff Review">
+      {/* Top Scope and Action Toolbar matching ZCode Image 1 & 2 */}
+      <div className="git-diff-toolbar">
+        <div className="git-diff-scope-dropdown">
+          <select
+            value={scope}
+            onChange={(e) => setScope(e.target.value)}
+            aria-label="Diff scope"
+            className="git-diff-scope-select"
+          >
             <option value="unstaged">Unstaged</option>
+            <option value="staged">Staged</option>
+            <option value="all">All Changes</option>
           </select>
-          <span className="diff-total-add">+{additions}</span>
-          <span className="diff-total-del">−{deletions}</span>
-          {checkpointId && onUndoRun && (
+        </div>
+
+        <div className="git-diff-toolbar-actions">
+          {diff.length > 1 && (
             <button
-              className="secondary"
-              disabled={Boolean(undoing)}
-              onClick={() => onUndoRun(checkpointId)}
-              title="Undo latest run — restore pre-run files and roll back Nexus-only session commits"
+              type="button"
+              className="git-diff-action-btn"
+              onClick={toggleAll}
+              title={expandedFiles.size > 0 ? "Collapse all files" : "Expand all files"}
             >
-              <Undo2 size={13} /> {undoing ? "Undoing…" : "Undo"}
+              {expandedFiles.size > 0 ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              <span>{expandedFiles.size > 0 ? "Collapse all" : "Expand all"}</span>
             </button>
           )}
-          {diff.length > 0 && (
-            <button className="secondary danger-btn" onClick={onRevertAll} title="Discard all workspace changes">
-              <RotateCcw size={13} /> Discard all
-            </button>
-          )}
-          <button className="secondary" onClick={onRefresh}>
-            <RefreshCw size={13} /> Refresh
+
+          <button
+            type="button"
+            className="git-diff-action-btn"
+            onClick={onRefresh}
+            title="Refresh Git Diff"
+          >
+            <RefreshCw size={12} />
+            <span>Refresh</span>
           </button>
         </div>
       </div>
-      <div className="diff-file-list">
-        {diff.map((file) => (
-          <div className="diff-file" key={file.path}>
-            <button className="diff-file-row" onClick={() => toggle(file.path)}>
-              <span className="diff-file-icon">{fileIcon(file.name)}</span>
-              <span className="diff-file-name">{file.name}</span>
-              <span className="diff-file-directory">{file.directory}</span>
-              <span className="diff-file-stats">
-                <b>+{file.additions}</b>
-                <em>−{file.deletions}</em>
-              </span>
-              {onInspectFile && (
-                <i
-                  className="diff-revert-btn"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onInspectFile(file);
-                  }}
-                  title="Inspect in Monaco Side-by-Side Diff"
-                >
-                  <Columns size={12} />
-                </i>
-              )}
-              <i
-                className="diff-revert-btn"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onRevertFile(file.path);
-                }}
-                title="Discard changes in this file"
+
+      {/* Changed Files List matching ZCode Image 1 & 2 */}
+      <div className="git-diff-file-list">
+        {filteredDiff.map((file) => {
+          const isExpanded = expandedFiles.has(file.path);
+          const fileName = file.name || (file.path ? file.path.split("/").pop() || file.path : "file");
+          const dirDisplay = file.directory
+            ? file.directory.endsWith("/")
+              ? file.directory
+              : `${file.directory}/`
+            : file.path && file.path.includes("/")
+            ? file.path.slice(0, file.path.lastIndexOf("/") + 1)
+            : "";
+
+          return (
+            <div
+              key={file.path}
+              className={`git-diff-file-item ${isExpanded ? "expanded" : ""}`}
+            >
+              {/* File Row Header */}
+              <div
+                className="git-diff-file-row"
+                onClick={() => toggleFile(file.path)}
+                title={`${file.path} (+${file.additions} -${file.deletions})`}
               >
-                <RotateCcw size={12} />
-              </i>
-              {expanded.has(file.path) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            </button>
-            {expanded.has(file.path) && (
-              <DiffPatch patch={file.patch} filePath={file.path} viewMode={viewMode} onRevertHunk={onRevertHunk} />
-            )}
-          </div>
-        ))}
+                <div className="git-diff-file-left">
+                  <span className="git-diff-file-icon">{fileIcon(fileName)}</span>
+                  <span className="git-diff-file-name">{fileName}</span>
+                  {dirDisplay && <span className="git-diff-file-dir">{dirDisplay}</span>}
+                </div>
+                <div className="git-diff-file-right">
+                  <span className="git-diff-stat-add">+{file.additions}</span>
+                  <span className="git-diff-stat-del">−{file.deletions}</span>
+                  <span className="git-diff-chevron">
+                    {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                  </span>
+                </div>
+              </div>
+
+              {/* Inline Code Diff Panel matching Image 2 */}
+              {isExpanded && (
+                <DiffPatch patch={file.patch} />
+              )}
+            </div>
+          );
+        })}
+
         {!diff.length && (
-          <div className="diff-empty">
-            <GitBranch size={18} />
+          <div className="git-diff-empty">
+            <GitBranch size={18} style={{ color: "#6b7280" }} />
             <span>The working tree is clean.</span>
           </div>
         )}
@@ -317,3 +257,5 @@ export function DiffView({
     </div>
   );
 }
+
+export default DiffView;

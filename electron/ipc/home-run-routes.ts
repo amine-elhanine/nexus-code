@@ -187,6 +187,21 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
         .reverse()
         .find((m) => m.context?.usedTokens && m.context.usedTokens > 0)
         ?.context?.usedTokens ?? null;
+      let accumulatedThinking = "";
+      let thinkingStartTimestamp = "";
+      const flushThinking = () => {
+        if (accumulatedThinking.trim()) {
+          transcript.items.push({
+            role: "event",
+            text: accumulatedThinking.trim(),
+            kind: "thinking",
+            createdAt: thinkingStartTimestamp || new Date().toISOString(),
+            detail: accumulatedThinking.trim(),
+          });
+          accumulatedThinking = "";
+          thinkingStartTimestamp = "";
+        }
+      };
       let result: Awaited<ReturnType<typeof runProjectAgent>>;
 
       try {
@@ -219,6 +234,12 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
           resumeNote,
           previousContextTokens,
           onEvent: (event) => {
+            if (event.type === "thinking") {
+              if (!thinkingStartTimestamp) thinkingStartTimestamp = event.timestamp || new Date().toISOString();
+              accumulatedThinking += event.text || "";
+            } else if (event.type === "tool" || event.type === "plan" || event.type === "status") {
+              flushThinking();
+            }
             // Token and thinking chunks stay ephemeral; assistant/usage are
             // persisted once as the final message below (with usage attached)
             // — pushing them here too would store every answer twice and
@@ -277,6 +298,7 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
           isCancelled: () => isCommandRunCancelled(sessionId),
         });
       } catch (error) {
+        flushThinking();
         const isCancel = error instanceof RunCancelledError || isCommandRunCancelled(sessionId) || (error as any)?.name === "AbortError";
         const failedUsage = (error as { usage?: AgentUsage })?.usage;
         const usageText = failedUsage
@@ -307,6 +329,7 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
         throw error;
       }
 
+      flushThinking();
       await appendHomeSessionMessages(sessionId, [
         ...transcript.items,
         { role: "assistant", text: result.response, createdAt: new Date().toISOString(), usage: result.usage, context: result.context },

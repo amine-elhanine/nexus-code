@@ -289,10 +289,8 @@ async function writeMessageFile(projectId: string | null, sessionId: string, mes
 }
 
 async function hydrateSession(projectId: string | null, session: SessionRecord): Promise<SessionRecord> {
-  if (!session.messages.length) {
-    session.messages = await readMessageFile(projectId, session.id);
-    session.usage = calculateSessionUsage(session.messages);
-  }
+  session.messages = await readMessageFile(projectId, session.id);
+  session.usage = calculateSessionUsage(session.messages);
   return session;
 }
 
@@ -1052,6 +1050,22 @@ export async function deleteSession(projectId: string, sessionId: string) {
 }
 export async function deleteProject(projectId: string) {
   const state = await ensureLoaded();
+  const proj = state.projects.find((p) => p.id === projectId);
+  if (proj) {
+    for (const session of proj.sessions) {
+      try {
+        await deleteMessageFile(projectId, session.id);
+      } catch (err) {
+        console.warn(`[store] failed to delete session file ${session.id}:`, err);
+      }
+    }
+  }
+  const userData = path.dirname(statePath());
+  try {
+    await fs.rm(path.join(userData, "sessions", projectId), { recursive: true, force: true });
+  } catch {
+    /* best effort */
+  }
   state.projects = state.projects.filter((project) => project.id !== projectId);
   await persist();
   return state.projects;
