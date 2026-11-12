@@ -9,9 +9,10 @@
     "node": ">=24"
   },
   "author": "L7A9 <aminet312003@gmail.com>",
+  "license": "UNLICENSED",
   "repository": {
     "type": "git",
-    "url": "https://github.com/amine-elhanine/nexus-code.git"
+    "url": "https://github.com/amine-elhanine/nexus.git"
   },
   "scripts": {
     "dev": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron . --dev\"",
