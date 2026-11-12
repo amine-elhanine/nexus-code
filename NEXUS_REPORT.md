@@ -24,7 +24,7 @@ The codebase shows considerable breadth and a serious effort to build operationa
 
 - **Renderer:** React 19 + TypeScript + Vite in `src/`; mode views, controllers, Monaco/xterm components, settings, and shared chat UI.
 - **Desktop host:** Electron TypeScript in `electron/`; app lifecycle, IPC, persistence, model/provider setup, file/shell operations, agent execution, plugins, browser, and notebook processing.
-- **Agent execution:** LangChain models and tools, DeepAgents for tool-using workflows, and LangGraph orchestration/supervision. `agent-service.ts` composes routing, project context, tools, hooks, memory, checkpoints, context management, and verification/repair.
+- **Agent execution:** the self-built `agentcore` runtime (framework-free agent loop, protocol adapters per wire format, middleware, virtual filesystem backend) — langchain/langgraph/deepagents were fully removed in the v0.6 migration (see AGENTIC_MIGRATION_PLAN.md). `agent-service.ts` composes routing, project context, tools, hooks, memory, checkpoints, context management, and verification/repair.
 - **Notebook:** asynchronous ingestion stages documents through parse, chunk, index, and ready/failure states; retrieval combines semantic and lexical signals with citation/evidence handling.
 - **Extensibility:** declarative plugin bundles and executable plugin tools, plus skills, commands, rules, hooks, MCP servers, and specialist agents.
 - **Delivery:** Electron Builder packages Windows NSIS/portable, macOS DMG, and Linux AppImage targets. The README foregrounds Windows support.

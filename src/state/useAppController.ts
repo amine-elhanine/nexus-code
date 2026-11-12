@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type SetStateAction } from "react";
 import type { SlashCommand } from "../components/chat/SlashCommandPopup.js";
-import { nowIso, pushLiveEvent } from "../utils/format.js";
+import { nowIso } from "../utils/format.js";
+import { createAgentEventSink } from "./agentEventPipeline.js";
 import { isKnownBinaryFile } from "../utils/binaryFiles.js";
 import { resolveModelEfforts } from "../utils/modelEfforts.js";
 import type {
@@ -247,95 +248,35 @@ export function useAppController() {
       }
     });
 
-    const unsubAgent = api.onAgentEvent((event) => {
-      const bucket = event.sessionId || "unknown";
-      // Events from a session other than the currently viewed one still
-      // accumulate (so switching later shows them) but don't stream into view.
-      if (event.type === "thinking") {
-        // Reasoning deltas fold into ONE live thinking step per session —
-        // the block grows in place instead of flooding the feed with a row
-        // per token. Capped to a tail so marathon reasoning stays renderable.
-        const THINKING_DISPLAY_CAP = 8000;
-        const combined = (thinkingAccRef.current[bucket] || "") + event.text;
-        thinkingAccRef.current[bucket] = combined.length > THINKING_DISPLAY_CAP
-          ? combined.slice(combined.length - THINKING_DISPLAY_CAP)
-          : combined;
-        const text = thinkingAccRef.current[bucket];
-        const log = liveEventsRef.current[bucket] || [];
-        const last = log[log.length - 1];
-        const nextLog = last?.kind === "thinking"
-          ? [...log.slice(0, -1), { ...last, text, detail: text }]
-          : [...log, { role: "event", kind: "thinking", text, detail: text, createdAt: event.timestamp } as ChatItem];
-        liveEventsRef.current = { ...liveEventsRef.current, [bucket]: nextLog };
-        setLiveEvents(liveEventsRef.current);
-        return;
-      }
-      if (event.type === "token") {
-        // This subscription intentionally runs once. Read the ref so tokens
-        // follow the session selected after the initial render as well.
-        if (activeSessionRef.current?.id && event.sessionId === activeSessionRef.current.id) {
-          setStreamingText((current) => current + event.text);
-        }
-        return;
-      }
-
-      // While tool actions or steps are running, clear any speculative pre-tool text
-      if (event.type === "tool" || event.type === "status" || event.type === "plan") {
-        if (activeSessionRef.current?.id && event.sessionId === activeSessionRef.current.id) {
-          setStreamingText("");
-        }
-        // A tool call closes the current thinking burst — the next reasoning
-        // delta starts a fresh thinking step instead of appending to the old one.
-        delete thinkingAccRef.current[bucket];
-      }
-      const item: ChatItem = {
-        role: event.type === "assistant" ? "assistant" : "event",
-        text: event.text,
-        kind: event.type,
-        createdAt: event.timestamp,
-        usage: event.usage,
-        context: event.context,
-        subagent: event.subagent,
-        plan: event.items,
-        artifact: event.artifact,
-        detail: event.detail,
-      };
-      if (event.type === "context") {
-        const targetSessionId = bucket;
-        setActiveSession((current) => current?.id === targetSessionId
-          ? { ...current, messages: [...current.messages, item] }
-          : current);
-        const existing = liveEventsRef.current[bucket] || [];
-        const nextLog = [...existing, item];
-        liveEventsRef.current = { ...liveEventsRef.current, [bucket]: nextLog };
-        setLiveEvents(liveEventsRef.current);
-        return;
-      }
-      if (event.type === "artifact" && event.artifact) {
-        if (event.artifact.filename === "implementation_plan.md" && event.artifact.status === "pending_approval") {
+    // Shared streaming skeleton (agentEventPipeline.ts) — this controller
+    // supplies Code-specific final-fold + reconcile behavior.
+    const handleAgentEvent = createAgentEventSink({
+      liveEventsRef,
+      thinkingAccRef,
+      activeSessionRef,
+      setLiveEvents,
+      appendStreamingToken: (delta) => setStreamingText((current) => current + delta),
+      clearStreamingText: () => setStreamingText(""),
+      onContextItem: (bucket, item) => setActiveSession((current) => current?.id === bucket
+        ? { ...current, messages: [...current.messages, item] }
+        : current),
+      onCustomEvent: (event) => {
+        if (event.type === "artifact" && event.artifact
+          && event.artifact.filename === "implementation_plan.md"
+          && event.artifact.status === "pending_approval") {
           setActiveArtifact(event.artifact);
         }
-      }
-      if (event.type === "assistant" || event.type === "error") {
-        const log = liveEventsRef.current[bucket] || [];
-        const { [bucket]: _dropped, ...rest } = liveEventsRef.current;
-        liveEventsRef.current = rest;
-        delete thinkingAccRef.current[bucket];
-        setLiveEvents(rest);
-        if (event.type === "assistant" && event.usage) {
-          setStreamingText("");
-        } else {
-          setStreamingText("");
-        }
-        setRunningSessionIds((current) => {
-          const next = new Set(current);
-          next.delete(bucket);
-          return next;
-        });
+        return false; // artifact events still flow into the live log
+      },
+      onRunEnded: (bucket) => setRunningSessionIds((current) => {
+        const next = new Set(current);
+        next.delete(bucket);
+        return next;
+      }),
+      onFinal: (bucket, event, log) => {
         // Reflect the completed response and folded activity log into the active session immediately.
-        const targetSessionId = bucket;
         setActiveSession((current) => {
-          if (!current || current.id !== targetSessionId) return current;
+          if (!current || current.id !== bucket) return current;
           const base = current.messages;
           const logItems = log.filter((entry) => entry.kind !== "usage" && entry.kind !== "context");
           const finalItem: ChatItem = event.type === "assistant"
@@ -343,13 +284,15 @@ export function useAppController() {
             : { role: "event", kind: "error", text: event.text, createdAt: event.timestamp || nowIso() };
           return { ...current, messages: [...base, ...logItems, finalItem] };
         });
+      },
+      reconcile: (bucket) => {
         void api.listSessions(activeProjectRef.current?.id || "").then((fresh) => {
           if (!fresh) return;
           setSessions(sortSessionsByUpdatedAt(fresh as unknown as SessionRecord[]));
-          const freshCurrent = (fresh as unknown as SessionRecord[]).find((s) => s.id === targetSessionId);
+          const freshCurrent = (fresh as unknown as SessionRecord[]).find((s) => s.id === bucket);
           if (freshCurrent) {
             setActiveSession((prev) => {
-              if (!prev || prev.id !== targetSessionId) return prev;
+              if (!prev || prev.id !== bucket) return prev;
               // The main process persists the final assistant message only
               // after the run promise settles — this refetch can round-trip
               // BEFORE that persist lands, and blindly adopting the shorter
@@ -361,11 +304,9 @@ export function useAppController() {
             });
           }
         }).catch(() => { /* sidebar keeps its current list */ });
-        return;
-      }
-      liveEventsRef.current = pushLiveEvent(liveEventsRef.current, bucket, item);
-      setLiveEvents(liveEventsRef.current);
+      },
     });
+    const unsubAgent = api.onAgentEvent(handleAgentEvent);
 
     const unsubSkills = api.onSkillsChanged ? api.onSkillsChanged(() => { void refreshSkills(); }) : undefined;
     const onCustomSkillsUpdated = () => { void refreshSkills(); };

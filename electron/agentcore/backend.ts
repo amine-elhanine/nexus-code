@@ -16,8 +16,7 @@
 //   delete(file) -> { error?, path? }
 //   execute(command) -> { output, exitCode, truncated }
 
-import { promises as fsPromises, existsSync, statSync, readdirSync } from "node:fs";
-import fsSync from "node:fs";
+import { promises as fsPromises, existsSync } from "node:fs";
 import path from "node:path";
 import { normalizeVirtualPath } from "../path-utils.js";
 import { isLegacyStatePath, LEGACY_STATE_REJECTION } from "../state-guard.js";
@@ -116,18 +115,33 @@ export class WorkspaceBackend implements AgentBackend {
     return op(this, key);
   }
 
+  /**
+   * Route a MUTATING operation to the mounted backend's own method. Mutations
+   * must never be executed directly against a mount's resolved path: doing so
+   * bypasses the mount's instance-method gates (read-only skill stubs), which
+   * is exactly what those stubs exist to enforce. Reads have no gates and may
+   * keep using routed().
+   */
+  private routeMutation(key: string): { backend: AgentBackend; key: string } | null {
+    const hit = this.routeFor(normalizeKey(String(key ?? "")));
+    return hit && hit.backend !== (this as unknown as AgentBackend) ? hit : null;
+  }
+
   async ls(pathKey = "/"): Promise<{ files: FileInfo[]; error?: string }> {
     return this.routed(pathKey, async (backend, key) => {
       try {
         const abs = backend.resolvePath(key);
-        const entries = readdirSync(abs, { withFileTypes: true });
+        // Async fs throughout: these tools run in the Electron main process,
+        // and synchronous I/O here freezes every window and IPC handler while
+        // a large directory is scanned.
+        const entries = await fsPromises.readdir(abs, { withFileTypes: true });
         const files: FileInfo[] = [];
         for (const entry of entries) {
           const full = path.join(abs, entry.name);
           if (entry.isDirectory()) files.push({ path: `${backend.virtualOf!(key).replace(/\/$/, "")}/${entry.name}`, is_dir: true });
           else {
             let size: number | undefined;
-            try { size = statSync(full).size; } catch { /* stat race */ }
+            try { size = (await fsPromises.stat(full)).size; } catch { /* stat race */ }
             files.push({ path: `${backend.virtualOf!(key).replace(/\/$/, "")}/${entry.name}`, is_dir: false, size });
           }
         }
@@ -143,25 +157,30 @@ export class WorkspaceBackend implements AgentBackend {
     return this.routed(pathKey, async (backend, key) => {
       try {
         const found: FileInfo[] = [];
-        const walk = (dir: string, virtual: string, depth: number) => {
-          if (found.length >= MAX_LIST_ENTRIES || depth > 12) return;
+        // Async BFS walk (explicit stack, bounded): same traversal as before,
+        // without stalling the main-process event loop on large trees.
+        const stack: Array<{ dir: string; virtual: string; depth: number }> = [{ dir: backend.resolvePath("/"), virtual: "/", depth: 0 }];
+        while (stack.length && found.length < MAX_LIST_ENTRIES) {
+          const { dir, virtual, depth } = stack.shift()!;
+          if (depth > 12) continue;
           let entries;
-          try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+          try { entries = await fsPromises.readdir(dir, { withFileTypes: true }); } catch { continue; }
+          const pendingDirs: Array<{ dir: string; virtual: string; depth: number }> = [];
           for (const entry of entries) {
             const full = path.join(dir, entry.name);
             const vpath = `${virtual}/${entry.name}`;
             if (entry.isDirectory()) {
               if (entry.name === "node_modules" || entry.name === ".git") continue;
-              walk(full, vpath, depth + 1);
+              pendingDirs.push({ dir: full, virtual: vpath, depth: depth + 1 });
             } else if (miniGlobMatch(pattern, vpath) || miniGlobMatch(pattern, entry.name)) {
               let size: number | undefined;
-              try { size = statSync(full).size; } catch { /* ignore */ }
+              try { size = (await fsPromises.stat(full)).size; } catch { /* ignore */ }
               found.push({ path: vpath, is_dir: false, size });
-              if (found.length >= MAX_LIST_ENTRIES) return;
+              if (found.length >= MAX_LIST_ENTRIES) break;
             }
           }
-        };
-        walk(backend.resolvePath("/"), "/", 0);
+          stack.unshift(...pendingDirs);
+        }
         return { files: found };
       } catch (error: any) {
         return { files: [], error: error instanceof Error ? error.message : String(error) };
@@ -175,26 +194,28 @@ export class WorkspaceBackend implements AgentBackend {
         const abs = backend.resolvePath(key);
         const matches: GrepMatch[] = [];
         let truncated = false;
-        const walk = (dir: string, virtual: string, depth: number) => {
-          if (truncated) return;
+        // Async DFS walk: synchronous readdir/readFile here used to block the
+        // Electron main process for the whole scan (frozen windows + IPC).
+        const walk = async (dir: string, virtual: string, depth: number): Promise<void> => {
+          if (truncated || depth > 24) return;
           let entries;
-          try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+          try { entries = await fsPromises.readdir(dir, { withFileTypes: true }); } catch { return; }
           for (const entry of entries) {
             if (truncated) return;
             const full = path.join(dir, entry.name);
             const vpath = `${virtual}/${entry.name}`;
             if (entry.isDirectory()) {
               if (entry.name === "node_modules" || entry.name === ".git" || entry.name === "dist") continue;
-              walk(full, vpath, depth + 1);
+              await walk(full, vpath, depth + 1);
               continue;
             }
             if (globFilter && !miniGlobMatch(globFilter, entry.name)) continue;
             if (/\.(bin|exe|dll|so|dylib|zip|tar|gz|7z|rar|png|jpe?g|gif|webp|ico|pdf|woff2?|ttf)$/i.test(entry.name)) continue;
             let stat;
-            try { stat = statSync(full); } catch { continue; }
+            try { stat = await fsPromises.stat(full); } catch { continue; }
             if (!stat.isFile() || stat.size > 2_000_000) continue;
             let text: string;
-            try { text = fsSync.readFileSync(full, "utf8"); } catch { continue; }
+            try { text = await fsPromises.readFile(full, "utf8"); } catch { continue; }
             const lines = text.split(/\r?\n/);
             for (let i = 0; i < lines.length; i++) {
               if (lines[i].includes(pattern)) {
@@ -204,7 +225,7 @@ export class WorkspaceBackend implements AgentBackend {
             }
           }
         };
-        walk(abs, backend.virtualOf!(key).replace(/\/$/, ""), 0);
+        await walk(abs, backend.virtualOf!(key).replace(/\/$/, ""), 0);
         return { matches, truncated };
       } catch (error: any) {
         return { matches: [], error: error instanceof Error ? error.message : String(error) };
@@ -216,9 +237,9 @@ export class WorkspaceBackend implements AgentBackend {
     return this.routed(file, async (backend, key) => {
       try {
         const abs = backend.resolvePath(key);
-        const stat = statSync(abs);
+        const stat = await fsPromises.stat(abs);
         if (stat.size > 10 * 1024 * 1024) return { content: "", error: `File too large to read (${Math.round(stat.size / 1024 / 1024)}MB exceeds 10MB limit)` };
-        const text = fsSync.readFileSync(abs, "utf8");
+        const text = await fsPromises.readFile(abs, "utf8");
         const lines = text.split("\n");
         if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
         const startLine = Math.max(0, offset);
@@ -237,6 +258,8 @@ export class WorkspaceBackend implements AgentBackend {
   }
 
   async write(file: string, content: string): Promise<{ error?: string }> {
+    const hit = this.routeMutation(file);
+    if (hit) return hit.backend.write(hit.key, content);
     return this.routed(file, async (backend, key) => {
       if (isLegacyStatePath(key, backend.rootDir)) return { error: LEGACY_STATE_REJECTION };
       try {
@@ -251,11 +274,13 @@ export class WorkspaceBackend implements AgentBackend {
   }
 
   async edit(file: string, oldString: string, newString: string, replaceAll = false): Promise<{ error?: string; occurrences?: number }> {
+    const hit = this.routeMutation(file);
+    if (hit) return hit.backend.edit(hit.key, oldString, newString, replaceAll);
     return this.routed(file, async (backend, key) => {
       if (isLegacyStatePath(key, backend.rootDir)) return { error: LEGACY_STATE_REJECTION };
       try {
         const abs = backend.resolvePath(key);
-        const current = fsSync.readFileSync(abs, "utf8");
+        const current = await fsPromises.readFile(abs, "utf8");
         if (!current.includes(oldString)) return { error: `String to replace not found in file: '${key}'. The file has not been modified — check the exact text (including whitespace) with read_file first.` };
         const occurrences = current.split(oldString).length - 1;
         if (occurrences > 1 && !replaceAll) {
@@ -271,6 +296,8 @@ export class WorkspaceBackend implements AgentBackend {
   }
 
   async delete(file: string): Promise<{ error?: string; path?: string }> {
+    const hit = this.routeMutation(file);
+    if (hit) return hit.backend.delete(hit.key);
     return this.routed(file, async (backend, key) => {
       try {
         const abs = backend.resolvePath(key);

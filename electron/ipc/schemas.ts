@@ -315,3 +315,19 @@ export const AttachmentReadSchema = z.tuple([z.string().min(1).max(2_048)]);
 
 // Cancel may be called without a session id (cancels all pending approvals).
 export const AgentCancelSchema = z.tuple([IdString.optional()]);
+
+// ------------------------------------------------------------ session update
+
+// session:update patch — what the renderer may legitimately write on a session
+// record. Deliberately STRICT: messages/usage/checkpointIds are main-owned
+// state (compaction, run bookkeeping) and a compromised renderer must not be
+// able to overwrite them through this channel. Title/model are the only
+// renderer-driven fields today.
+export const SessionUpdateSchema = z.object({
+  title: z.string().max(300).optional(),
+  model: z.object({
+    providerId: OptionalId,
+    model: OptionalModel,
+    effort: OptionalEffort,
+  }).optional(),
+}).strict();

@@ -9,11 +9,11 @@ import {
 import { cleanupHomeGeneratorScripts, ensureHomeDir, recordHomeRunFiles } from "../home-service.js";
 import {
   runProjectAgent, RunCancelledError, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint,
-  summarizeCompletedSteps, appendEntryLog, SESSION_MEMORY_ENTRY_CAP, SESSION_MEMORY_CHAR_CAP,
+  appendEntryLog, SESSION_MEMORY_ENTRY_CAP, SESSION_MEMORY_CHAR_CAP,
   type AgentEvent, type AgentUsage, type HistoryInput, type PlanItem,
 } from "../agent-service.js";
 import { getAgentBackend, beginCommandRun, cancelCommandRun, endCommandRun, isCommandRunCancelled } from "../command-service.js";
-import { getWorkspaceDiffFiles } from "../diff-service.js";
+import { buildResumeNote, collectResumeContext } from "../resume-note.js";
 import { cancelCommandApprovals } from "../approval-service.js";
 import { recordDeliverable, isSubstantiveHomeTask, parseHomeMemory, addMemoryFact } from "../home-memory-service.js";
 import { resolveImageForModel, resolveAttachmentBytes } from "../attachment-utils.js";
@@ -152,25 +152,9 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
       let resumeNote: string | null = null;
       let lastPlan: PlanItem[] | null = null;
       if (wantResume) {
-        const planEvents = session.messages.filter((m) => m.role === "event" && m.kind === "plan" && m.plan?.length);
-        lastPlan = planEvents.length ? planEvents[planEvents.length - 1].plan! : null;
-        const errorEvents = session.messages.filter((m) => m.role === "event" && m.kind === "error");
-        const lastError = errorEvents.length ? errorEvents[errorEvents.length - 1].text : null;
-        const assistants = session.messages.filter((m) => m.role === "assistant");
-        const lastAssistant = assistants.length ? assistants[assistants.length - 1].text.slice(-1500) : null;
-        let diffSummary = "";
-        try {
-          const diffs = await getWorkspaceDiffFiles(homeRoot);
-          if (diffs.length) diffSummary = `\nFiles already changed:\n${diffs.slice(0, 20).map((d) => `- ${d.path} (+${d.additions}/-${d.deletions})`).join("\n")}`;
-        } catch { /* diff is best-effort */ }
-        const planSummary = (stored?.planItems ?? lastPlan)?.length
-          ? `\nWorking plan status:\n${(stored?.planItems ?? lastPlan)!.map((p) => `- [${p.status === "completed" ? "x" : " "}] ${p.content} (${p.status})`).join("\n")}`
-          : "";
-        const ledger = stored?.messages?.length ? summarizeCompletedSteps(stored.messages) : [];
-        const ledgerSummary = ledger.length
-          ? `\nSteps already DONE (never repeat — results are in history):\n${ledger.map((s) => `- ${s}`).join("\n")}`
-          : "";
-        resumeNote = `[System Note: The user asked to continue the previous interrupted run. All preceding tool executions and results ${stored ? `(${stored.messages.length} checkpointed messages) ` : ""}are already complete.${planSummary}${ledgerSummary}${lastError ? `\nLast stop reason: ${lastError.slice(0, 500)}` : ""}${lastAssistant ? `\nLast assistant summary: ${lastAssistant}` : ""}${diffSummary}\n\nIMPORTANT: Do NOT restart from the beginning, do NOT re-create the todo list from scratch, and do NOT repeat completed tool actions or file reads. Proceed directly with the next unfinished step.]`;
+        const context = await collectResumeContext(session.messages, homeRoot);
+        lastPlan = context.lastPlan;
+        resumeNote = buildResumeNote(session.messages, context, stored, "IMPORTANT: Do NOT restart from the beginning, do NOT re-create the todo list from scratch, and do NOT repeat completed tool actions or file reads. Proceed directly with the next unfinished step.");
       }
 
       const backendRecord = { id: "home", name: "Home", root: homeRoot, createdAt: "", updatedAt: "", memory: "", sessions: [] };

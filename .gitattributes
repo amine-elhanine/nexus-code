@@ -1,0 +1,15 @@
+# Normalize line endings for source files: the repo is authored with LF;
+# without this, Windows checkouts rewrite files to CRLF on save and git warns
+# "LF will be replaced by CRLF" on every touch (seen on the fixing-the-code-23
+# working tree). Binaries are excluded via text=auto detection.
+*.ts text eol=lf
+*.tsx text eol=lf
+*.cts text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.css text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.html text eol=lf
+*.sh text eol=lf

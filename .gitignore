@@ -17,3 +17,4 @@ reports/
 .codex-test-tmp/
 test-output.log
 .tmp-*
+test/.renderer-build/

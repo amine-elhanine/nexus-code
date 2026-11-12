@@ -25,6 +25,7 @@ import { resolveImageForModel, resolveAttachmentBytes } from "../attachment-util
 import { pushCheckpoint } from "../checkpoint-stack.js";
 import { isLikelyDevServerCommand, extractLocalDevServerUrl, waitForLocalServer } from "../project-preview.js";
 import { assertPayload, AgentRunSchema, AgentCancelSchema } from "./schemas.js";
+import { buildResumeNote, collectResumeContext } from "../resume-note.js";
 import { acquireRunSlot, releaseRunSlot } from "./run-guard.js";
 import type { MainIpcContext } from "./context.js";
 
@@ -135,27 +136,9 @@ export function registerAgentRoutes(ctx: MainIpcContext): void {
       let resumeNote: string | null = null;
       let lastPlan: PlanItem[] | null = null;
       if (wantResume) {
-        const planEvents = session.messages.filter((m) => m.role === "event" && m.kind === "plan" && m.plan?.length);
-        lastPlan = planEvents.length ? planEvents[planEvents.length - 1].plan! : null;
-        const errorEvents = session.messages.filter((m) => m.role === "event" && m.kind === "error");
-        const lastError = errorEvents.length ? errorEvents[errorEvents.length - 1].text : null;
-        const assistants = session.messages.filter((m) => m.role === "assistant");
-        const lastAssistant = assistants.length ? assistants[assistants.length - 1].text.slice(-1500) : null;
-        let diffSummary = "";
-        try {
-          const diffs = await getWorkspaceDiffFiles(executionRoot);
-          if (diffs.length) diffSummary = `\nFiles already changed:\n${diffs.slice(0, 20).map((d) => `- ${d.path} (+${d.additions}/-${d.deletions})`).join("\n")}`;
-        } catch { /* diff is best-effort */ }
-        const planSummary = (stored?.planItems ?? lastPlan)?.length
-          ? `\nWorking plan status:\n${(stored?.planItems ?? lastPlan)!.map((p) => `- [${p.status === "completed" ? "x" : " "}] ${p.content} (${p.status})`).join("\n")}`
-          : "";
-        // Explicit done-list: weak models re-do finished steps from prose
-        // instructions alone; a concrete ledger survives where they don't.
-        const ledger = stored?.messages?.length ? summarizeCompletedSteps(stored.messages) : [];
-        const ledgerSummary = ledger.length
-          ? `\nSteps already DONE (never repeat — results are in history):\n${ledger.map((s) => `- ${s}`).join("\n")}`
-          : "";
-        resumeNote = `[System Note: The user asked to continue the previous interrupted run. All preceding tool executions and results ${stored ? `(${stored.messages.length} checkpointed messages) ` : ""}are already complete.${planSummary}${ledgerSummary}${lastError ? `\nLast stop reason: ${lastError.slice(0, 500)}` : ""}${lastAssistant ? `\nLast assistant summary: ${lastAssistant}` : ""}${diffSummary}\n\nIMPORTANT INSTRUCTIONS FOR RESUME:\n1. Do NOT restart from the beginning or re-create todos from scratch.\n2. Do NOT re-read or inspect files already in history.\n3. If code changes and build/tests were already completed, do NOT run more checks or tools. Update your todo list to completed using write_todos immediately and provide your final response to the user.\n4. If unfinished work remains, proceed directly with that next step.]`;
+        const context = await collectResumeContext(session.messages, executionRoot);
+        lastPlan = context.lastPlan;
+        resumeNote = buildResumeNote(session.messages, context, stored, "IMPORTANT INSTRUCTIONS FOR RESUME:\n1. Do NOT restart from the beginning or re-create todos from scratch.\n2. Do NOT re-read or inspect files already in history.\n3. If code changes and build/tests were already completed, do NOT run more checks or tools. Update your todo list to completed using write_todos immediately and provide your final response to the user.\n4. If unfinished work remains, proceed directly with that next step.");
       }
 
       const backendRecord = { ...project, root: executionRoot };

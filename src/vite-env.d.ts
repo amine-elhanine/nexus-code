@@ -47,7 +47,9 @@ export interface NexusApi {
   updateSession: (
     projectId: string,
     sessionId: string,
-    patch: Partial<Pick<SessionRecord, "title" | "memory" | "model" | "messages" | "usage" | "checkpointId" | "checkpointIds">>,
+    // Mirrors SessionUpdateSchema: title/model only — messages/usage are
+    // main-owned state, not writable from the renderer.
+    patch: { title?: string; model?: { providerId?: string; model?: string; effort?: string } | undefined },
   ) => Promise<SessionRecord>;
   updateProjectMemory: (projectId: string, memory: string) => Promise<ProjectRecord>;
   updateProjectFacts: (projectId: string, facts: string) => Promise<ProjectRecord>;

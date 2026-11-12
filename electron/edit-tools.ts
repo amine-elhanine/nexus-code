@@ -4,39 +4,12 @@ import path from "node:path";
 import { tool } from "./agentcore/tools.js";
 import { z } from "zod";
 import { stripProjectRoot } from "./path-utils.js";
-import { LEGACY_STATE_REJECTION } from "./state-guard.js";
+import { safePath as sharedSafePath } from "./path-guard.js";
 import { collectPostEditDiagnostics } from "./lsp-service.js";
 
-async function safePath(projectRoot: string, requested: string) {
-  const root = await fs.realpath(path.resolve(projectRoot));
-  const stripped = stripProjectRoot(requested, projectRoot);
-  const candidate = path.resolve(root, stripped || ".");
-  if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
-    throw new Error("Path escapes the selected project root.");
-  }
-  // Nexus state lives only in .nexus/ — the agent must never write .deepagents.
-  const relToRoot = path.relative(root, candidate).replace(/\\/g, "/").toLowerCase();
-  if (relToRoot === ".deepagents" || relToRoot.startsWith(".deepagents/")) {
-    throw new Error(LEGACY_STATE_REJECTION);
-  }
-  // Resolve the existing target, or the nearest existing parent for a new
-  // file. This prevents a lexical-safe path from traversing an in-repo
-  // symlink that points outside the selected project.
-  let probe = candidate;
-  while (probe !== root) {
-    try {
-      const realProbe = await fs.realpath(probe);
-      if (realProbe !== root && !realProbe.startsWith(`${root}${path.sep}`)) {
-        throw new Error("Path follows a symlink outside the selected project root.");
-      }
-      break;
-    } catch (error: any) {
-      if (error?.code !== "ENOENT") throw error;
-      probe = path.dirname(probe);
-    }
-  }
-  return candidate;
-}
+// Containment/symlink guard shared with code-tools (path-guard.ts); the
+// write-capable tools here additionally refuse the legacy .deepagents dir.
+const safePath = (projectRoot: string, requested: string) => sharedSafePath(projectRoot, requested, { forWrite: true });
 
 type PatchOp =
   | { kind: "add"; file: string; body: string }

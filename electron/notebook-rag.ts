@@ -216,12 +216,18 @@ function reciprocalRankFusion(ranks: number[][], k = 60): number[] {
 // re-parse) once per notebook; lexical retrieval still serves this query.
 const driftReindexed = new Set<string>();
 async function handleEmbeddingDrift(notebookId: string, indexModel: string): Promise<void> {
+  // The entry only spans one in-flight rebuild: after success it is removed so
+  // a SECOND embedding-model change is detected instead of being silently
+  // ignored until process restart. A loop is impossible because a successful
+  // rebuild leaves the partition matching the current model — drift is only
+  // detected on a genuine mismatch.
   if (driftReindexed.has(notebookId)) return;
   driftReindexed.add(notebookId);
   console.warn(`[notebook] embedding model changed since indexing (index: ${indexModel}) — rebuilding vectors from library.`);
   try {
     const { reindexSessionFromLibrary } = await import("./notebook-jobs.js");
     await reindexSessionFromLibrary(notebookId);
+    driftReindexed.delete(notebookId);
   } catch (error) {
     console.warn("[notebook] drift reindex failed:", error instanceof Error ? error.message : error);
     driftReindexed.delete(notebookId);

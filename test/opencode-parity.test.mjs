@@ -3,17 +3,19 @@ import {
   applySearchReplaceBlocks,
   applyUnifiedDiffHunks,
   applyUpdatedFileContent,
-} from "../electron/edit-tools.ts";
-import { cleanTerminalOutput, capModelOutput } from "../electron/command-service.ts";
-import { extractDiagnosticFeedback, MAX_REPAIRS } from "../electron/agent-service.ts";
+} from "../dist-electron/edit-tools.js";
+import { cleanTerminalOutput, capModelOutput } from "../dist-electron/command-service.js";
+import { extractDiagnosticFeedback, MAX_REPAIRS } from "../dist-electron/agent-service.js";
 
 console.log("=== OpenCode Parity & Self-Healing Tests ===");
 
 // 1. Repair limit configuration
-assert.equal(MAX_REPAIRS.ask, 3, "ask mode must allow 3 repair iterations");
-assert.equal(MAX_REPAIRS.auto, 5, "auto mode must allow 5 repair iterations");
+// Budgets were deliberately lowered from ask:3/auto:5 (see agent/loop-limits.ts) —
+// tighter repair loops bounded runaway self-healing cycles.
+assert.equal(MAX_REPAIRS.ask, 2, "ask mode must allow 2 repair iterations");
+assert.equal(MAX_REPAIRS.auto, 2, "auto mode must allow 2 repair iterations");
 assert.equal(MAX_REPAIRS.plan, 0, "plan mode must allow 0 repairs (read-only)");
-console.log("✓ Repair iteration budgets configured (ask: 3, auto: 5)");
+console.log("✓ Repair iteration budgets configured (ask: 2, auto: 2)");
 
 // 2. Terminal output cleaning & carriage-return spinner collapse
 const noisyTerminalOutput =

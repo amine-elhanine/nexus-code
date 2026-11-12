@@ -30,6 +30,9 @@ jobs:
       - name: Unit tests
         run: npm run test:unit
 
+      - name: Renderer unit tests
+        run: npm run test:renderer
+
       - name: Notebook tests
         run: npm run test:notebook
 

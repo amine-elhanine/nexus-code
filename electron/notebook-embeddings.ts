@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { NOTEBOOK_STOPWORDS } from "./notebook-text.js";
+import { NOTEBOOK_STOPWORDS, foldToken } from "./notebook-text.js";
 import { listEmbeddingProviders, listProviders, type EmbeddingEndpointKind, type EmbeddingProviderConfig, type ProviderConfig } from "./store.js";
 
 // Lazy Electron access (see notebook-store.ts): plain-node safe.
@@ -79,15 +79,12 @@ function hashToken(token: string): number {
  * Light morphological folding (English plural/verb suffixes) so "models" and
  * "model", "indexed" and "indexing" share buckets — the pure hash bag treated
  * every inflection as an unrelated token.
+ *
+ * Thin wrapper over the shared foldToken (notebook-text.js) so the rules can't
+ * drift from the skills scorer's variant again.
  */
 export function singularToken(token: string): string {
-  let t = token.toLowerCase();
-  if (t.length > 4 && t.endsWith("ies")) return `${t.slice(0, -3)}y`;
-  if (t.length > 4 && (t.endsWith("sses") || t.endsWith("shes") || t.endsWith("ches") || t.endsWith("xes"))) return t.slice(0, -2);
-  if (t.length > 3 && t.endsWith("s") && !t.endsWith("ss") && !t.endsWith("us")) return t.slice(0, -1);
-  if (t.length > 5 && t.endsWith("ing")) return t.slice(0, -3);
-  if (t.length > 4 && t.endsWith("ed")) return t.slice(0, -2);
-  return t;
+  return foldToken(token, { lowercase: true, stemVerbs: true, usGuard: true });
 }
 
 export function localEmbed(text: string, dims = LOCAL_DIMS): number[] {

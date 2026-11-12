@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { uid } from "./uid.js";
 
 // Lazy Electron access (plain-node safe for unit tests): under node,
 // require("electron") resolves to the binary path string, so all property
@@ -119,8 +120,6 @@ function candidateStatePaths(): string[] {
     path.join(parent, "nexus", "nexus-state.json"),
   ];
 }
-
-function uid(prefix: string) { return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`; }
 
 // API keys are encrypted at rest with the OS credential store (DPAPI on Windows,
 // Keychain on macOS, libsecret/kwallet on Linux) and only ever decrypted in memory.
@@ -262,16 +261,37 @@ async function readMessageFile(projectId: string | null, sessionId: string): Pro
   const key = messageFileKey(projectId, sessionId);
   const cached = messageCache.get(key);
   if (cached) return cached;
+  const target = messageFilePath(projectId, sessionId);
+  let raw: string;
   try {
-    const parsed = JSON.parse(await fs.readFile(messageFilePath(projectId, sessionId), "utf8")) as { messages?: SessionRecord["messages"] };
-    const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
-    messageCache.set(key, messages);
-    return messages;
-  } catch {
-    const empty: SessionRecord["messages"] = [];
-    messageCache.set(key, empty);
-    return empty;
+    raw = await fs.readFile(target, "utf8");
+  } catch (error: any) {
+    if (error?.code === "ENOENT") {
+      // Genuinely missing file (new session): an empty transcript is correct.
+      const empty: SessionRecord["messages"] = [];
+      messageCache.set(key, empty);
+      return empty;
+    }
+    // Unreadable for any other reason (EBUSY from an AV lock, EACCES, ...):
+    // propagate instead of returning an empty array. The next
+    // appendSessionMessages would write that empty array back to disk and
+    // destroy the transcript on what is usually a transient error.
+    throw error;
   }
+  let parsed: { messages?: SessionRecord["messages"] };
+  try {
+    parsed = JSON.parse(raw) as { messages?: SessionRecord["messages"] };
+  } catch {
+    // Corrupt transcript: preserve the bytes for recovery and fail loudly.
+    // Silently starting empty would let the next append clobber the file.
+    try {
+      await fs.rename(target, `${target}.corrupt-${Date.now().toString(36)}`);
+    } catch { /* best effort — the corrupt file stays in place */ }
+    throw new Error(`Session transcript for ${sessionId} is corrupt (failed to parse). The file was preserved with a .corrupt- suffix for recovery.`);
+  }
+  const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
+  messageCache.set(key, messages);
+  return messages;
 }
 
 async function writeMessageFile(projectId: string | null, sessionId: string, messages: SessionRecord["messages"]): Promise<void> {
@@ -289,8 +309,25 @@ async function writeMessageFile(projectId: string | null, sessionId: string, mes
 }
 
 async function hydrateSession(projectId: string | null, session: SessionRecord): Promise<SessionRecord> {
-  session.messages = await readMessageFile(projectId, session.id);
-  session.usage = calculateSessionUsage(session.messages);
+  try {
+    const fromFile = await readMessageFile(projectId, session.id);
+    // Always consult the per-session transcript file (the state-file index
+    // row keeps a stale/empty `messages` array — that was the stale-session
+    // bug), but never clobber a LONGER in-memory transcript with a shorter
+    // file copy: direct record mutations keep the in-memory copy
+    // authoritative until the next append persists it.
+    const inMemory = session.messages;
+    session.messages = (inMemory?.length || 0) > (fromFile?.length || 0) ? inMemory : fromFile;
+    session.usage = calculateSessionUsage(session.messages);
+  } catch (error) {
+    // Corrupt/unreadable transcript: keep the session list usable instead of
+    // failing every project listing. No data is lost — readMessageFile renames
+    // corrupt files aside before throwing, and nothing writes an empty
+    // transcript back over an unreadable one (appends re-read first).
+    console.warn(`[nexus] transcript for session ${session.id} unavailable:`, error instanceof Error ? error.message : error);
+    session.messages = session.messages?.length ? session.messages : [];
+    session.usage = calculateSessionUsage(session.messages);
+  }
   return session;
 }
 

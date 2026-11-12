@@ -19,6 +19,7 @@ import { discoverProjectRules } from "../rules-service.js";
 import { discardSessionWorktree } from "../worktree-service.js";
 import { removeMemoryFactWithCount } from "../home-memory-service.js";
 import { clearLastRunCheckpoint } from "../agent-service.js";
+import { assertPayload, SessionUpdateSchema } from "./schemas.js";
 import type { MainIpcContext } from "./context.js";
 import { invokeChatText } from "../agentcore/llm/invoke.js";
 
@@ -117,7 +118,13 @@ export function registerProjectRoutes(ctx: MainIpcContext): void {
     ctx.setActive({ projectId, sessionId, projectRoot: project?.root || null });
     return session;
   });
-  ipcMain.handle("session:update", (_event, projectId: string, sessionId: string, patch: Parameters<typeof updateSession>[2]) => updateSession(projectId, sessionId, patch));
+  ipcMain.handle("session:update", (_event, projectId: string, sessionId: string, patch: Parameters<typeof updateSession>[2]) => {
+    // Renderer is untrusted: strict field allowlist so a compromised renderer
+    // cannot overwrite main-owned state (messages/usage/checkpointIds) through
+    // this channel. See SessionUpdateSchema in schemas.ts.
+    assertPayload(SessionUpdateSchema, patch ?? {}, "session update");
+    return updateSession(projectId, sessionId, patch);
+  });
   ipcMain.handle("session:delete", async (_event, projectId: string, sessionId: string) => {
     const project = await getProject(projectId);
     const root = project?.root || ctx.active().projectRoot;

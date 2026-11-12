@@ -214,10 +214,45 @@ export class DaemonService {
     }
   }
 
+  // When a PID's process started; null when it cannot be determined.
+  private static async processStartTime(pid: string): Promise<Date | null> {
+    try {
+      if (process.platform === "win32") {
+        const out = await DaemonService.execFileAsync(
+          "powershell.exe",
+          ["-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${pid}).StartTime.ToString('o')`],
+          6000,
+        );
+        const parsed = new Date(String(out || "").trim());
+        return isNaN(parsed.getTime()) ? null : parsed;
+      }
+      const out = await DaemonService.execFileAsync("ps", ["-p", pid, "-o", "lstart="], 4000);
+      const parsed = new Date(String(out || "").trim());
+      return isNaN(parsed.getTime()) ? null : parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  // Only kill a port holder that could actually be this daemon's orphaned
+  // descendant: its process must have started after the daemon run began. A
+  // log line merely MENTIONING "localhost:3000" for an app that was already
+  // running (or started independently during the run) must never get that
+  // process killed. When ownership cannot be verified, skip — the caller
+  // reports the port as still held instead of shooting blindly.
+  private static async ownedByDaemonRun(pid: string, notBefore: Date): Promise<boolean> {
+    const started = await DaemonService.processStartTime(pid);
+    if (!started) return false;
+    // 5s slack for clock/precision differences between process creation
+    // timestamps and our ISO start time.
+    return started.getTime() >= notBefore.getTime() - 5_000;
+  }
+
   // Last resort for orphaned grandchildren (e.g. npm spawns vite after the
   // parent cmd.exe dies, escaping the tree kill): kill whatever still holds
-  // the port. Only ever targets the daemon's own detected port.
-  private static async killProcessOnPort(port: number): Promise<void> {
+  // the port — but only PIDs verifiably started during this daemon's run.
+  private static async killProcessOnPort(port: number, notBefore?: Date): Promise<void> {
+    if (!notBefore) return;
     try {
       if (process.platform === "win32") {
         const out = await DaemonService.execFileAsync("netstat", ["-ano"]);
@@ -230,15 +265,21 @@ export class DaemonService {
           if (pid && /^\d+$/.test(pid) && Number(pid) !== process.pid) pids.add(pid);
         }
         for (const pid of pids) {
+          if (!(await DaemonService.ownedByDaemonRun(pid, notBefore))) continue;
           await DaemonService.execFileAsync("taskkill", ["/PID", pid, "/F"]);
         }
       } else {
-        const lsof = await DaemonService.execFileAsync("lsof", ["-ti", `tcp:${port}`]);
-        const pids = lsof.split(/[\s,]+/).map((s) => s.trim()).filter((s) => /^\d+$/.test(s));
-        if (pids.length) {
-          await DaemonService.execFileAsync("kill", ["-9", ...pids]);
-        } else {
-          await DaemonService.execFileAsync("fuser", ["-k", `${port}/tcp`]);
+        let pids = (await DaemonService.execFileAsync("lsof", ["-ti", `tcp:${port}`]))
+          .split(/[\s,]+/).map((s) => s.trim()).filter((s) => /^\d+$/.test(s));
+        if (!pids.length) {
+          // fuser prints PIDs to stdout (port info goes to stderr) — list, then
+          // verify ownership per PID, instead of the unchecked `fuser -k`.
+          pids = (await DaemonService.execFileAsync("fuser", [`${port}/tcp`]))
+            .split(/[\s,]+/).map((s) => s.trim()).filter((s) => /^\d+$/.test(s));
+        }
+        for (const pid of pids) {
+          if (!(await DaemonService.ownedByDaemonRun(pid, notBefore))) continue;
+          await DaemonService.execFileAsync("kill", ["-9", pid]);
         }
       }
     } catch { /* best effort — the caller re-checks the port */ }
@@ -297,7 +338,7 @@ export class DaemonService {
           active.info.status = "stopped";
           return true;
         }
-        await DaemonService.killProcessOnPort(active.info.port);
+        await DaemonService.killProcessOnPort(active.info.port, new Date(active.info.startTime));
         if (await DaemonService.waitForPortFree(active.info.port, 4000)) {
           active.info.status = "stopped";
           return true;
@@ -345,7 +386,7 @@ export class DaemonService {
       if (port) {
         portFree = await DaemonService.waitForPortFree(port, 5000);
         if (!portFree) {
-          await DaemonService.killProcessOnPort(port);
+          await DaemonService.killProcessOnPort(port, new Date(active.info.startTime));
           portFree = await DaemonService.waitForPortFree(port, 4000);
         }
       }

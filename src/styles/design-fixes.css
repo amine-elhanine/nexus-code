@@ -13,6 +13,30 @@
       lives in 03-components.css; this file re-asserts the inner bubble
       against layer 81's competing inner-bubble rule.
    6. Thin, quiet scrollbars on every chat/panel scroller.
+
+   ── CSS DEBT MAP (how to collapse this file safely) ──────────────────────
+   Load order (main.tsx): styles.css (legacy base) → styles-additions.css
+   (83 numbered patch layers) → themes.css → index.css (01-tokens.css tokens)
+   → THIS FILE (last). This file currently carries ~2,100 !important
+   declarations; it exists to beat layers 79/81/65, which themselves used
+   !important against each other — an LLM-patch accretion loop, not a design
+   system.
+
+   Collapse procedure for the next redesign (do NOT skip steps):
+   1. Build a visual snapshot harness FIRST (render the three areas home/
+      code/notebook + settings + a chat transcript to PNG per theme, and
+      diff) — there is no renderer test coverage today, so any CSS change is
+      unverifiable without it.
+   2. Move each numbered additions layer's surviving rules INTO the token/
+      component files (03-components.css etc.) at equal specificity, keeping
+      selectors but dropping !important where nothing later in the cascade
+      competes.
+   3. Rules here that re-assert values against inline styles in TSX
+      (~255 style={{}} occurrences keep competing hex fallbacks like
+      var(--nexus-green, #34d399)) MUST keep !important until those inline
+      fallback literals are deleted from the TSX.
+   4. Delete this file once every rule has landed in a named layer with the
+      harness green.
    ========================================================================== */
 
 /* ── 1. Topbars must clear the window-controls strip ─────────────────── */

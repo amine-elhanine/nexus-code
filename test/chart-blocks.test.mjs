@@ -38,7 +38,7 @@ await test("parseBarChart reads bars and auto-scales the y axis", () => {
   assert.equal(spec.title, "Quarterly revenue");
   assert.equal(spec.yLabel, "USD (millions)");
   assert.equal(spec.entries.length, 3);
-  assert.deepEqual(spec.entries[1], { label: "Q2", value: 410 });
+  assert.deepEqual(spec.entries[1], { label: "Q2", value: 410, values: [410] });
   assert.equal(spec.yMin, 0);
   assert.equal(spec.yMax, 500, "auto max rounds 480 up to a nice 500");
 });

@@ -324,7 +324,7 @@ npm run check
 Nexus maintains a comprehensive testing harness:
 
 ```bash
-# Run unit test suite (35 suites covering rate-limits, checkpoints, LSP, hooks, plugins, memory, charts, paths)
+# Run unit test suite (86 suites covering rate-limits, checkpoints, LSP, hooks, plugins, memory, charts, paths)
 npm run test:unit
 
 # Run notebook test suite (11 suites covering ingestion, RAG, SQLite vectors, net-guard, studio artifacts)
@@ -413,7 +413,7 @@ nexus/
 │   └── types.ts                # Shared TypeScript type definitions
 ├── scripts/                    # Headless CLI and evaluation benchmarks
 ├── evals/                      # Standardized evaluation datasets
-├── test/                       # 56+ test files and integration test suites
+├── test/                       # 99 test files and integration test suites
 └── landing_page/               # Static marketing site
 ```
 

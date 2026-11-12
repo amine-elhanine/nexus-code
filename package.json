@@ -20,6 +20,8 @@
     "start": "electron .",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
     "test": "npm run build:electron && electron test/sandbox-and-agent.test.mjs",
+    "test:renderer": "node scripts/run-renderer-tests.mjs",
+    "test:snapshot": "electron test/renderer-snapshot.test.mjs",
     "test:renderer-security": "electron test/renderer-security.test.mjs",
     "test:permissions": "npm run build:electron && node test/permissions.test.mjs",
     "test:unit": "npm run build:electron && node scripts/run-unit-tests.mjs",

@@ -63,6 +63,46 @@ export function notebookTokens(text: string): string[] {
   return (text.toLocaleLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_\-]{2,}/gu) || []).filter((t) => !NOTEBOOK_STOPWORDS.has(t));
 }
 
+// ---- Light suffix folding (single source of truth) ----
+//
+// Previously two near-identical stemmers drifted apart (notebook-embeddings
+// singularToken vs skills-service singularToken — different length guards,
+// verb folding, casing). foldToken expresses both via explicit options so the
+// rules can never silently diverge again.
+
+export type FoldTokenOptions = {
+  /** Lowercase before folding (notebook tokenizer folds case-insensitively; the skills scorer did not). */
+  lowercase?: boolean;
+  /** Minimum token length to fold at all (skills returned tokens < 5 untouched). */
+  minStemLength?: number;
+  /** Also fold -ing/-ed verb forms (notebook embedding tokenizer only). */
+  stemVerbs?: boolean;
+  /** Leave Latin "-us" words alone ("virus", "status") — notebook behavior. */
+  usGuard?: boolean;
+  /** "-es" suffix groups folded by dropping 2 chars. Notebook folds double-s/x/ch/sh;
+   *  the skills scorer additionally folds single-s ("buses"→"bus") and "zes". */
+  esRe?: RegExp;
+};
+
+// Notebook embedding tokenizer: ss/sh/ch/x + es.
+const DEFAULT_ES_RE = /(?:ss|sh|ch|x)es$/;
+// Skills scorer: s/x/z/ch/sh + es.
+export const SKILLS_ES_RE = /(?:s|x|z|ch|sh)es$/;
+
+export function foldToken(token: string, opts: FoldTokenOptions = {}): string {
+  let t = opts.lowercase ? token.toLowerCase() : token;
+  if (t.length < (opts.minStemLength ?? 0)) return t;
+  const esRe = opts.esRe ?? DEFAULT_ES_RE;
+  if (t.length > 4 && t.endsWith("ies")) return `${t.slice(0, -3)}y`;
+  if (t.length > 4 && esRe.test(t)) return t.slice(0, -2);
+  if (t.length > 3 && t.endsWith("s") && !t.endsWith("ss") && !(opts.usGuard && t.endsWith("us"))) return t.slice(0, -1);
+  if (opts.stemVerbs) {
+    if (t.length > 5 && t.endsWith("ing")) return t.slice(0, -3);
+    if (t.length > 4 && t.endsWith("ed")) return t.slice(0, -2);
+  }
+  return t;
+}
+
 export function meaningfulQueryTerms(query: string): string[] {
   const terms = new Set(notebookTokens(query));
   return [...terms].filter((t) => t.length >= 4);
@@ -547,9 +587,7 @@ export function toCitations(results: Array<{ sourceId: string; sourceName: strin
 /** Short unique ID for generated artifacts (quiz ids, card ids, notes…).
  *  Time+random is enough here: IDs are only correlated within one session,
  *  and stable content-addressed IDs (uuid5 above) cover everything else. */
-export function uid(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
+export { uid } from "./uid.js";
 
 /** [Sn] markers the model echoed back, deduped and capped like the UI shows them. */
 export function parseCitationRefs(text: string): number[] {
