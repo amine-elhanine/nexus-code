@@ -41,6 +41,7 @@ Shell-level hard denies (never run, independent of policy): disk/root wipes, `rm
 ## 5. Command/permission machinery (tested)
 
 - Ranking: hard denies → user project policy (deny/allow/ask patterns) → network/mutation classes → everything else allowed.
+- **Full Mode**: In Full Access mode, shell commands, installs, and git operations execute without user approval prompts. Hard guardrails remain strictly enforced: root/system wipes, machine shutdown, registry deletions, fork bombs, privilege escalation, and access to legacy state paths are permanently blocked.
 - Agent destructive mistakes have a worktree/checkpoint + revert safety net (`diff-service`, `worktree-service`); `.nexus/` state and the legacy `.deepagents/` path are guarded at shell, backend, edit, and skill layers (`state-guard.ts`, `permissions.ts`, `edit-tools.ts`, `skills-service.ts`).
 
 ## 6. Current gaps (not fixed yet)
