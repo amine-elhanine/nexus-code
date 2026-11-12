@@ -40,8 +40,8 @@ export async function safePath(
         throw new Error("Path follows a symlink outside the selected project root.");
       }
       break;
-    } catch (error: any) {
-      if (error?.code !== "ENOENT") throw error;
+    } catch (error: unknown) {
+      if ((error as { code?: string })?.code !== "ENOENT") throw error;
       probe = path.dirname(probe);
     }
   }

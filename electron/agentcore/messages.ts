@@ -75,7 +75,14 @@ export function msgKind(message: ChatMessage | undefined | null): MessageKind | 
 }
 
 export function isImageBlock(content: unknown): content is ContentBlock[] {
-  return Array.isArray(content) && content.some((part: any) => part?.type === "image" || part?.image_url?.url || part?.type === "image_url");
+  return (
+    Array.isArray(content) &&
+    content.some((part: unknown) => {
+      if (!part || typeof part !== "object") return false;
+      const p = part as Record<string, unknown>;
+      return p.type === "image" || (p.image_url as Record<string, unknown>)?.url != null || p.type === "image_url";
+    })
+  );
 }
 
 /** Plain-text of any message (content blocks collapse to their text). */
@@ -84,7 +91,9 @@ export function textOf(message: ChatMessage | undefined | null): string {
   const content = message.content;
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
-    return content.map((part: any) => (typeof part === "string" ? part : String(part?.text ?? ""))).join("\n");
+    return content
+      .map((part: unknown) => (typeof part === "string" ? part : String((part as Record<string, unknown>)?.text ?? "")))
+      .join("\n");
   }
   return "";
 }
@@ -95,7 +104,9 @@ export function textJoined(message: ChatMessage | undefined | null): string {
   const content = message.content;
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
-    return content.map((part: any) => (typeof part === "string" ? part : String(part?.text ?? ""))).join("");
+    return content
+      .map((part: unknown) => (typeof part === "string" ? part : String((part as Record<string, unknown>)?.text ?? "")))
+      .join("");
   }
   return "";
 }

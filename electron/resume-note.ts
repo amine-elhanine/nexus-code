@@ -5,6 +5,7 @@
 
 import { summarizeCompletedSteps } from "./agent-service.js";
 import { getWorkspaceDiffFiles } from "./diff-service.js";
+import type { ChatMessage } from "./agentcore/messages.js";
 
 export type ResumePlanItem = { content: string; status: "pending" | "in_progress" | "completed" };
 
@@ -38,7 +39,7 @@ export async function collectResumeContext(sessionMessages: ResumeSourceMessage[
 export function buildResumeNote(
   sessionMessages: ResumeSourceMessage[],
   context: ResumeContext,
-  stored: { planItems?: ResumePlanItem[] | null; messages?: any[] } | null | undefined,
+  stored: { planItems?: ResumePlanItem[] | null; messages?: ChatMessage[] } | null | undefined,
   finalInstructions: string,
 ): string {
   const planSummary = (stored?.planItems ?? context.lastPlan)?.length
