@@ -177,7 +177,7 @@ class AgentBrowserService {
     "for(var i=0;i<els.length;i++){var el=els[i];",
     "var r=el.getBoundingClientRect();var tag=el.tagName;",
     "if(tag!=='INPUT'&&tag!=='SELECT'&&tag!=='TEXTAREA'&&(r.width===0||r.height===0)) continue;",
-    "var vis='visible';try{vis=getComputedStyle(el).visibility;}catch(e){}",
+    "var vis='visible';try{vis=getComputedStyle(el).visibility;}catch(e){/* element detached or invalid styling; treat as default visible */}",
     "if(vis==='hidden') continue;",
     "n++;var ref='e'+n;el.setAttribute('data-nexus-ref',ref);",
     "var text=((el.innerText||'')+' '+(el.getAttribute('aria-label')||'')+' '+(el.getAttribute('placeholder')||'')+' '+(el.getAttribute('value')||'')+' '+(el.getAttribute('alt')||'')).replace(/\\s+/g,' ').trim().slice(0,80);",
@@ -331,7 +331,7 @@ class AgentBrowserService {
       case "click": {
         const res = AgentBrowserService.unwrap(
           await this.evalJs<{ ok: boolean; error?: string; tag: string; text: string }>(
-            `${AgentBrowserService.RESOLVE_FN}\n${AgentBrowserService.pageTry(`var el=__resolve(${JSON.stringify(input.target)});try{el.scrollIntoView({block:'center'});}catch(e){}el.click();return{ok:true,tag:el.tagName.toLowerCase(),text:(el.innerText||'').trim().slice(0,80)};`)}`
+            `${AgentBrowserService.RESOLVE_FN}\n${AgentBrowserService.pageTry(`var el=__resolve(${JSON.stringify(input.target)});try{el.scrollIntoView({block:'center'});}catch(e){/* scrollIntoView unsupported or blocked */ }el.click();return{ok:true,tag:el.tagName.toLowerCase(),text:(el.innerText||'').trim().slice(0,80)};`)}`
             ,
             scope
           ),
@@ -397,7 +397,7 @@ class AgentBrowserService {
         if (input.target) {
           AgentBrowserService.unwrap(
             await this.evalJs<{ ok: boolean; error?: string }>(
-              `${AgentBrowserService.RESOLVE_FN}\n${AgentBrowserService.pageTry(`var el=__resolve(${JSON.stringify(input.target)});try{el.scrollIntoView({block:'center'});}catch(e){}return{ok:true};`)}`,
+              `${AgentBrowserService.RESOLVE_FN}\n${AgentBrowserService.pageTry(`var el=__resolve(${JSON.stringify(input.target)});try{el.scrollIntoView({block:'center'});}catch(e){/* scrollIntoView unsupported or blocked */ }return{ok:true};`)}`,
               scope
             ),
             "scroll"

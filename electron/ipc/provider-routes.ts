@@ -39,7 +39,9 @@ export function registerProviderRoutes(_ctx: MainIpcContext): void {
                 contextWindow: ctx?.contextWindow,
                 maxOutput: ctx?.maxOutput,
               });
-            } catch {}
+            } catch (err) {
+              // Best-effort metadata discovery failure during background fill; ignore so provider listing stays fast
+            }
           }
         }, 100);
       }
