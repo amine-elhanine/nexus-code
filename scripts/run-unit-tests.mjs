@@ -100,6 +100,7 @@ const UNIT_TESTS = [
   "test/session-sorting.test.mjs",
   "test/websearch-freshness.test.mjs",
   "test/agent-backend-policy.test.mjs",
+  "test/version-match.test.mjs",
 ];
 
 console.log(`Running ${UNIT_TESTS.length} unit tests...\n`);
