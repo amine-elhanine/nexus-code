@@ -34,15 +34,35 @@ test("search parsers: tavily/brave/exa/searxng JSON shapes normalize", () => {
 });
 
 test("webSearchWithFallback: explicit backend selection + graceful DDG fallback", async () => {
-  // No keys configured → DDG path (network-dependent; failure is tolerated
-  // since the assertion is about routing, not scrape success).
-  const routed = await webSearchWithFallback("test query routing", 3, null, { backend: "auto" });
-  assert.equal(routed.backend, "ddg");
-  // Explicit backend with a key that will fail → falls back to DDG, never throws.
-  const fallback = await webSearchWithFallback("test query routing", 3, null, {
-    backend: "tavily", tavilyKey: "invalid-key-for-fallback-test",
+  // HERMETIC: stub outbound fetch so the routing assertions never depend on a
+  // live DDG scrape. The parallel unit suite saw intermittent pipe-read
+  // failures on this real-network test (it passed standalone every time —
+  // the flake was environmental, not logical). A 200-with-no-results body
+  // still exercises: backend routing → ddg, and the failing-tavily → ddg
+  // fallback, without a socket.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url, opts) => {
+    const target = String(url || "");
+    if (/duckduckgo\.com/i.test(target)) {
+      return new Response("<html><body>stub — no results</body></html>", { status: 200 });
+    }
+    if (/api\.tavily\.com/i.test(target)) {
+      return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
+    }
+    return realFetch(url, opts);
   });
-  assert.equal(fallback.backend, "ddg");
+  try {
+    // No keys configured → DDG path (assertion is about routing, not results).
+    const routed = await webSearchWithFallback("test query routing", 3, null, { backend: "auto" });
+    assert.equal(routed.backend, "ddg");
+    // Explicit backend with a key that will fail → falls back to DDG, never throws.
+    const fallback = await webSearchWithFallback("test query routing", 3, null, {
+      backend: "tavily", tavilyKey: "invalid-key-for-fallback-test",
+    });
+    assert.equal(fallback.backend, "ddg");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 }, { timeout: 30_000 });
 
 // ---- 3.2: generate_image ----------------------------------------------------

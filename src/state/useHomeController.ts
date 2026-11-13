@@ -8,6 +8,13 @@ import type {
   SessionRecord,
 } from "../types.js";
 import { getSessionUsage } from "../utils/format.js";
+import { createAgentEventSink } from "./agentEventPipeline.js";
+import { useInflightGuard } from "./useComposer.js";
+
+// Stable empty identities (same pattern as useAppController): a fresh `[]`
+// allocated per render broke effects keyed on message/event arrays.
+const EMPTY_MESSAGES: ChatItem[] = [];
+const EMPTY_EVENTS: ChatItem[] = [];
 
 export type HomeFile = { path: string; name: string; size: number; modified: string };
 export type HomeMemoryStructureView = {
@@ -27,7 +34,13 @@ export function sortHomeSessions(list: SessionRecord[]): SessionRecord[] {
   });
 }
 
-export function useHomeController(enabled = true) {
+export function useHomeController() {
+  // NOTE: this controller is mounted unconditionally (like useAppController):
+  // Home runs keep streaming events even while the user is in Code/Notebook,
+  // and the sinks filter by session ids. The old `enabled` parameter was
+  // never read — dead API that suggested gating that didn't exist. It was
+  // removed rather than implemented: real gating needs a refetch-on-reenter
+  // path (useNotebookController's pattern) to be safe.
   const api = window.nexus;
 
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
@@ -56,7 +69,7 @@ export function useHomeController(enabled = true) {
   liveEventsRef.current = liveEvents;
   // Guards re-submits within the same tick (before runningSessionIds state
   // propagates) — see submit below.
-  const submitInflightRef = useRef<Set<string>>(new Set());
+  const submitInflight = useInflightGuard();
   const activeSessionRef = useRef<SessionRecord | null>(null);
   activeSessionRef.current = activeSession;
   const sessionsRef = useRef<SessionRecord[]>([]);
@@ -150,95 +163,34 @@ export function useHomeController(enabled = true) {
     };
   }, [api, refreshSessionFiles]);
 
-  // Subscribe to agent streaming and events for Home sessions
+  // Subscribe to agent streaming and events for Home sessions.
+  // Shared streaming skeleton (agentEventPipeline.ts) — this controller adds
+  // the Home-session guard, a final-fold with duplicate-tail protection, and
+  // its own reconcile strategy.
   useEffect(() => {
-    return api.onAgentEvent((event) => {
-      const bucket = event.sessionId || "unknown";
-      // Verify whether this event belongs to a Home session
-      const isHomeSession = sessionsRef.current.some((s) => s.id === bucket) || (activeSessionRef.current?.id === bucket);
-      if (!isHomeSession && event.sessionId) return;
-
-      if (event.type === "thinking") {
-        // Reasoning deltas fold into ONE live thinking step per session
-        // (Claude-Code-style), capped to a tail so long reasoning stays sane.
-        const THINKING_DISPLAY_CAP = 8000;
-        const combined = (thinkingAccRef.current[bucket] || "") + event.text;
-        thinkingAccRef.current[bucket] = combined.length > THINKING_DISPLAY_CAP
-          ? combined.slice(combined.length - THINKING_DISPLAY_CAP)
-          : combined;
-        const text = thinkingAccRef.current[bucket];
-        const log = liveEventsRef.current[bucket] || [];
-        const last = log[log.length - 1];
-        const nextLog = last?.kind === "thinking"
-          ? [...log.slice(0, -1), { ...last, text, detail: text }]
-          : [...log, { role: "event", kind: "thinking", text, detail: text, createdAt: event.timestamp } as ChatItem];
-        liveEventsRef.current = { ...liveEventsRef.current, [bucket]: nextLog };
-        setLiveEvents(liveEventsRef.current);
-        return;
-      }
-
-      if (event.type === "token") {
-        if (activeSessionRef.current?.id && event.sessionId === activeSessionRef.current.id) {
-          setStreamingText((curr) => curr + event.text);
-        }
-        return;
-      }
-
-      // While tool actions or steps are running, clear any speculative pre-tool text
-      if (event.type === "tool" || event.type === "status" || event.type === "plan") {
-        if (activeSessionRef.current?.id && event.sessionId === activeSessionRef.current.id) {
-          setStreamingText("");
-        }
-        // A tool call closes the current thinking burst — the next reasoning
-        // delta starts a fresh thinking step instead of appending to the old one.
-        delete thinkingAccRef.current[bucket];
-      }
-
-      const item: ChatItem = {
-        role: event.type === "assistant" ? "assistant" : "event",
-        text: event.text,
-        kind: event.type,
-        createdAt: event.timestamp,
-        usage: event.usage,
-        context: event.context,
-        subagent: event.subagent,
-        plan: event.items,
-        artifact: event.artifact,
-        detail: event.detail,
-      };
-      if (event.type === "context") {
-        const targetSessionId = bucket;
-        setActiveSession((current) => current?.id === targetSessionId
-          ? { ...current, messages: [...current.messages, item] }
-          : current);
-        const nextLog = [...(liveEventsRef.current[bucket] || []), item];
-        const next = { ...liveEventsRef.current, [bucket]: nextLog };
-        liveEventsRef.current = next;
-        setLiveEvents(next);
-        return;
-      }
-
-      if (event.type === "assistant" || event.type === "error") {
-        const log = liveEventsRef.current[bucket] || [];
-        const { [bucket]: _dropped, ...rest } = liveEventsRef.current;
-        liveEventsRef.current = rest;
-        delete thinkingAccRef.current[bucket];
-        setLiveEvents(rest);
-        setStreamingText("");
-        setRunningSessionIds((curr) => {
-          const next = new Set(curr);
-          next.delete(bucket);
-          return next;
-        });
-
+    const handleAgentEvent = createAgentEventSink({
+      liveEventsRef,
+      thinkingAccRef,
+      activeSessionRef,
+      setLiveEvents,
+      appendStreamingToken: (delta) => setStreamingText((curr) => curr + delta),
+      clearStreamingText: () => setStreamingText(""),
+      onContextItem: (bucket, item) => setActiveSession((current) => current?.id === bucket
+        ? { ...current, messages: [...current.messages, item] }
+        : current),
+      onRunEnded: (bucket) => setRunningSessionIds((curr) => {
+        const next = new Set(curr);
+        next.delete(bucket);
+        return next;
+      }),
+      onFinal: (bucket, event, log) => {
         // Deterministic display (Code parity): fold the final item into the
         // local transcript NOW from the event itself. The backend refetch
         // below only reconciles — previously display depended entirely on a
         // refetch that fires before the backend has persisted the answer,
         // so the streamed text vanished with nothing replacing it.
-        const targetSessionId = bucket;
         setActiveSession((current) => {
-          if (!current || current.id !== targetSessionId) return current;
+          if (!current || current.id !== bucket) return current;
           const logItems = log.filter((entry) => entry.kind !== "usage" && entry.kind !== "context");
           const finalItem: ChatItem = event.type === "assistant"
             ? { role: "assistant", text: event.text, createdAt: event.timestamp || new Date().toISOString(), usage: event.usage }
@@ -247,13 +199,15 @@ export function useHomeController(enabled = true) {
           if (tail && tail.role === finalItem.role && tail.text === finalItem.text && (tail.kind || null) === (finalItem.kind || null)) return current;
           return { ...current, messages: [...current.messages, ...logItems, finalItem] };
         });
+      },
+      reconcile: (bucket) => {
         // Background reconcile with server truth (usage totals, memory, files).
         // Never clobber: if the server copy is shorter than local, its persist
         // simply hasn't landed yet — keep local until the next refresh.
         void api.activateHomeSession(bucket).then((fresh) => {
-          if (!fresh || fresh.id !== targetSessionId) return;
+          if (!fresh || fresh.id !== bucket) return;
           setActiveSession((prev) => {
-            if (!prev || prev.id !== targetSessionId) return prev;
+            if (!prev || prev.id !== bucket) return prev;
             const serverMessages = (fresh.messages || []) as ChatItem[];
             if (serverMessages.length < prev.messages.length) return prev;
             void refreshSessionFiles(fresh.id);
@@ -262,12 +216,14 @@ export function useHomeController(enabled = true) {
         });
         void refreshFiles();
         void refreshSessions();
-      } else {
-        const nextLog = [...(liveEventsRef.current[bucket] || []), item];
-        const next = { ...liveEventsRef.current, [bucket]: nextLog };
-        liveEventsRef.current = next;
-        setLiveEvents(next);
-      }
+      },
+    });
+    return api.onAgentEvent((event) => {
+      const bucket = event.sessionId || "unknown";
+      // Verify whether this event belongs to a Home session
+      const isHomeSession = sessionsRef.current.some((s) => s.id === bucket) || (activeSessionRef.current?.id === bucket);
+      if (!isHomeSession && event.sessionId) return;
+      handleAgentEvent(event);
     });
   }, [api, refreshFiles, refreshSessionFiles, refreshSessions]);
 
@@ -398,8 +354,8 @@ export function useHomeController(enabled = true) {
       // Drop re-submits while this chat's run is still active (e.g. double
       // Enter during silent setup) — the backend rejects twins, but the
       // optimistic user message below would already corrupt the transcript.
-      if (submitInflightRef.current.has(sessionId)) return;
-      submitInflightRef.current.add(sessionId);
+      if (submitInflight.has(sessionId)) return;
+      submitInflight.start(sessionId);
       const imagesToSend = [...attachedImages];
       const attachmentsToSend = [...attachments];
 
@@ -447,8 +403,21 @@ export function useHomeController(enabled = true) {
         });
       } catch (error) {
         console.error("Home agent run failed", error);
+        const msg = error instanceof Error ? error.message : String(error || "Home agent run failed");
+        setActiveSession((curr) => {
+          if (!curr || curr.id !== sessionId) return curr;
+          const tail = curr.messages[curr.messages.length - 1] as ChatItem | undefined;
+          if (tail?.role === "event" && tail?.kind === "error" && tail?.text === msg) return curr;
+          return {
+            ...curr,
+            messages: [
+              ...curr.messages,
+              { role: "event", kind: "error", text: msg, createdAt: new Date().toISOString() },
+            ],
+          };
+        });
       } finally {
-        submitInflightRef.current.delete(sessionId);
+        submitInflight.end(sessionId);
         setRunningSessionIds((curr) => {
           const next = new Set(curr);
           next.delete(sessionId);
@@ -483,8 +452,11 @@ export function useHomeController(enabled = true) {
   }, [api]);
 
   const running = Boolean(activeSession && runningSessionIds.has(activeSession.id));
-  const currentMessages = (activeSession?.messages || []) as ChatItem[];
-  const liveEventsForActive = activeSession ? liveEvents[activeSession.id] || [] : [];
+  // Stable empty identities (same pattern as useAppController's
+  // EMPTY_MESSAGES/EMPTY_EVENTS): a fresh `[]` per render broke effects keyed
+  // on these, re-firing them spuriously while nothing changed.
+  const currentMessages = (activeSession?.messages || EMPTY_MESSAGES) as ChatItem[];
+  const liveEventsForActive = activeSession ? liveEvents[activeSession.id] || EMPTY_EVENTS : EMPTY_EVENTS;
   const currentSessionUsage = useMemo(
     () => (activeSession ? getSessionUsage(activeSession) : null),
     [activeSession]

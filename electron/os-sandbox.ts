@@ -39,6 +39,13 @@ function sandboxProfile(projectRoot: string, tempDir: string): string {
   // credential homes explicitly (defense against (allow file-write*) patterns
   // regressing). network is left ALLOWED: package installs and API calls are
   // core agent work; the network-write approval gate covers the risky flows.
+  //
+  // The /usr/lib and /private/var/db/dslocal WRITE allowances are redundant
+  // today — SIP protects both on any current macOS, so they grant nothing an
+  // attacker could use. Kept only to avoid breaking exotic local setups
+  // (custom frameworks under /usr/lib); documented here so audits can skip
+  // re-flagging them. (SBPL profiles can't carry comments, so the note lives
+  // in code.)
   return `(version 1)
 (deny default)
 (allow file-read*)

@@ -3,8 +3,10 @@ import type { IpcRendererEvent } from "electron";
 
 type PlanItem = { content: string; status: "pending" | "in_progress" | "completed" };
 type AgentEvent = { type: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "subagent" | "artifact" | "thinking" | "context" | "stream-reset"; text: string; timestamp: string; items?: PlanItem[]; artifact?: any };
-// Mirrors the server-side session:update patch contract (store.ts updateSession).
-type SessionPatch = { title?: string; memory?: string; model?: unknown; messages?: unknown; usage?: unknown; checkpointId?: string; checkpointIds?: string[] };
+// Mirrors the server-side session:update patch contract (schemas.ts
+// SessionUpdateSchema): title/model only — messages/usage/checkpoints are
+// main-owned state and cannot be written from the renderer.
+type SessionPatch = { title?: string; model?: { providerId?: string; model?: string; effort?: string } | undefined };
 const invoke = (channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
 
 const nexusApi = {
@@ -271,6 +273,7 @@ const nexusApi = {
   notebookGenerateSummary: (payload: { notebookId: string; topic?: string; length?: "brief" | "standard" | "detailed"; fileIds?: string[]; providerId?: string; model?: string }) => invoke("notebook:summaries:generate", payload),
   notebookDeleteSummary: (notebookId: string, summaryId: string) => invoke("notebook:summaries:delete", notebookId, summaryId),
   notebookChats: (notebookId: string) => invoke("notebook:chats", notebookId),
+  notebookGenerationJobs: (notebookId?: string) => invoke("notebook:generation-jobs:list", notebookId),
   notebookCreateChat: (notebookId: string, title?: string) => invoke("notebook:createChat", notebookId, title),
   notebookDeleteChat: (notebookId: string, chatId: string) => invoke("notebook:deleteChat", notebookId, chatId),
   notebookRetrieve: (notebookId: string, query: string, topK?: number) => invoke("notebook:retrieve", notebookId, query, topK),

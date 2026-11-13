@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { createPortal } from "react-dom";
 import { Copy, Download, Check, Maximize2, X, Image as ImageIcon, ZoomIn, ZoomOut, AlertCircle, RefreshCw, ExternalLink, BarChart2, Layers } from "lucide-react";
 import { renderMarkdown } from "../../markdown.js";
@@ -19,6 +19,9 @@ import { WidgetBlock } from "../chat/WidgetBlock.js";
 
 let mermaidSequence = 0;
 let mermaidConfigured = false;
+// Track which theme mermaid was last initialized with: diagrams were
+// hardcoded to "dark" and ignored the app's light theme.
+let mermaidTheme = "";
 
 const truncate = (label: string, maxLen = 12) =>
   label.length > maxLen ? `${label.slice(0, maxLen - 1)}…` : label;
@@ -328,9 +331,13 @@ function MermaidBlock({ source }: { source: string }) {
       try {
         const { default: mermaid } = await import("mermaid");
         if (!alive) return;
-        if (!mermaidConfigured) {
-          mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "dark" });
+        // (Re)initialize when the app theme flips: light theme gets mermaid's
+        // "default" (light) palette instead of the previous hardcoded "dark".
+        const theme = document.documentElement.classList.contains("theme-light") ? "default" as const : "dark" as const;
+        if (!mermaidConfigured || mermaidTheme !== theme) {
+          mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme });
           mermaidConfigured = true;
+          mermaidTheme = theme;
         }
         const rendered = await mermaid.render(id, source.trim());
         if (alive) setSvg(rendered.svg);
@@ -1702,9 +1709,14 @@ function chartPiece(kind: string, blockSource: string, key: string): React.React
   }
 }
 
-export function RichMarkdown({ source, className = "" }: { source: string; className?: string }) {
+// Pure derivation from `source`: block parsing, image/video extraction and
+// the markdown pipeline. Memoized per source string in RichMarkdown so an
+// unchanged message re-rendered by a streaming parent skips this whole body
+// (it re-ran per streamed token before — every sibling transcript row paid
+// the regex cost on every token).
+function buildRichPieces(source: string): { pieces: React.ReactNode[]; citationLinks: Array<{ url: string; label: string }> } {
   const pieces: React.ReactNode[] = [];
-  let renderSource = source || "";
+  let renderSource = source;
   const imagePattern = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g;
   // Video embeds (![Video: Title | Channel | Duration](youtube-url)) render
   // as inline player cards; 2+ become a gallery like the search image set.
@@ -1826,6 +1838,11 @@ export function RichMarkdown({ source, className = "" }: { source: string; class
       if (citationLinks.length >= 12) break;
     }
   }
+  return { pieces, citationLinks };
+}
+
+export function RichMarkdown({ source, className = "" }: { source: string; className?: string }) {
+  const { pieces, citationLinks } = useMemo(() => buildRichPieces(source || ""), [source]);
   return (
     <div className={`rich-markdown md ${className}`}>
       {pieces}

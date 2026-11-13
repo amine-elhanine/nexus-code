@@ -3,7 +3,7 @@ import path from "node:path";
 import { boundedExecFile } from "./shell-subprocess.js";
 import { tool } from "./agentcore/tools.js";
 import { z } from "zod";
-import { stripProjectRoot } from "./path-utils.js";
+import { safePath as sharedSafePath } from "./path-guard.js";
 import { ensureSymbolParsersReady, parseSymbolsWithTreeSitterSync, startSymbolParserWarmup, type SymbolEntry } from "./symbol-parser.js";
 import { lspDefinition, lspDiagnostics, lspDocumentSymbols, lspReferences, lspRename } from "./lsp-service.js";
 
@@ -38,28 +38,9 @@ const CODE_EXTENSIONS = new Set([
   ".toml", ".css", ".scss", ".html", ".sql", ".sh", ".bash",
 ]);
 
-async function safePath(projectRoot: string, requested: string) {
-  const root = await fs.realpath(path.resolve(projectRoot));
-  const stripped = stripProjectRoot(requested, projectRoot);
-  const candidate = path.resolve(root, stripped || ".");
-  if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
-    throw new Error("Path escapes the selected project root.");
-  }
-  let probe = candidate;
-  while (probe !== root) {
-    try {
-      const realProbe = await fs.realpath(probe);
-      if (realProbe !== root && !realProbe.startsWith(`${root}${path.sep}`)) {
-        throw new Error("Path follows a symlink outside the selected project root.");
-      }
-      break;
-    } catch (error: any) {
-      if (error?.code !== "ENOENT") throw error;
-      probe = path.dirname(probe);
-    }
-  }
-  return candidate;
-}
+// Containment/symlink guard shared with edit-tools (path-guard.ts); the
+// code-intelligence tools here are read-only, so no .deepagents write guard.
+const safePath = (projectRoot: string, requested: string) => sharedSafePath(projectRoot, requested);
 
 function isCodeFile(name: string) {
   return CODE_EXTENSIONS.has(path.extname(name).toLowerCase());

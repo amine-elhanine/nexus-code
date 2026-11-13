@@ -30,6 +30,7 @@ import { isImageAttachment, formatAttachmentSize } from "../../utils/attachments
 import { PlanCard } from "./PlanCard.js";
 import { SubagentCardView } from "./SubagentCard.js";
 import { ArtifactCard } from "./ArtifactCard.js";
+import { ErrorBoundary } from "../common/ErrorBoundary.js";
 import type { ChatAttachment, ChatItem, ArtifactItem, PlanItem, SubagentItem } from "../../types.js";
 
 export async function copyTextToClipboard(text: string): Promise<boolean> {
@@ -802,7 +803,16 @@ function StepItemView({
       <div className={`step-card ${step.status} ${isExpanded ? "expanded" : ""}`}>
         <div
           className="step-card-header"
+          role="button"
+          tabIndex={0}
+          aria-expanded={isExpanded}
           onClick={onToggle}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onToggle();
+            }
+          }}
           title={isExpanded ? "Click to collapse" : "Click to view output"}
         >
           <div className="step-badge-and-title">
@@ -1106,7 +1116,20 @@ export function ActivityGroupView({
   );
 }
 
-export function ChatItemView({
+// Per-message error boundary: one malformed message (bad chart spec, hostile
+// markdown, plugin widget crash) previously killed the ENTIRE transcript view
+// — there was a single boundary around the whole view stage. The wrapper
+// degrades just that one message to a compact error row; ChatItemViewInner
+// stays untouched below.
+export function ChatItemView(props: Parameters<typeof ChatItemViewInner>[0]) {
+  return (
+    <ErrorBoundary variant="inline" label={`message #${props.index ?? "?"}`}>
+      <ChatItemViewInner {...props} />
+    </ErrorBoundary>
+  );
+}
+
+function ChatItemViewInner({
   message,
   index,
   artifacts,

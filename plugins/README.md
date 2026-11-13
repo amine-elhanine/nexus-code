@@ -38,7 +38,7 @@ Example registry entry (auto-generated, shown for reference):
   "description": "Generate release notes from Git history.",
   "capabilities": ["skills", "agents", "commands", "rules", "hooks"],
   "modes": ["code"],
-  "source": "https://github.com/amine-elhanine/nexus-code/releases/download/plugins-latest/release-notes.zip"
+  "source": "https://github.com/amine-elhanine/nexus/releases/download/plugins-latest/release-notes.zip"
 }
 ```
 

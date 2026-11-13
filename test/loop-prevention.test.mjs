@@ -12,6 +12,8 @@ class ToolMessage {
 // Agentcore middleware results are strings or { content } objects.
 const textOf = (r) => (typeof r === "string" ? r : String(r && r.content));
 import { loopPreventionMiddleware, resolveResearchBudget, RESEARCH_BUDGET_BASE, RESEARCH_BUDGET_WITH_RESEARCH, loadedSkillNamesFromMessages, shouldSkipMcpForTask, isWebTask, isProjectRunRequest } from "../dist-electron/agent-service.js";
+import { isRecursionLimitError } from "../dist-electron/agent/loop-limits.js";
+import { StepBudgetExceededError } from "../dist-electron/agentcore/loop.js";
 
 let passed = 0;
 let failed = 0;
@@ -334,6 +336,24 @@ await test("modify-churn detector steers the agent forward when target repeats 5
   );
   assert.equal(executedCount, 4, "handler must not be executed once churn cap is reached");
   assert.ok(textOf(fifth).includes("[EDIT/EXECUTION CHURN DETECTED]"));
+});
+
+console.log("\n=== Step Budget Classification Tests ===");
+
+// Regression: the agentcore loop throws StepBudgetExceededError, and the
+// budget-extension machinery in runProjectAgent only fires when
+// isRecursionLimitError recognizes it. An earlier classifier matched only
+// legacy LangGraph strings (recursion limit / GRAPH_RECURSION_LIMIT), so
+// budget exhaustion fell into the generic error-recovery path and the
+// resumable partial-result branch was unreachable.
+await test("isRecursionLimitError recognizes agentcore StepBudgetExceededError", () => {
+  const error = new StepBudgetExceededError(25);
+  assert.equal(isRecursionLimitError(error), true, "StepBudgetExceededError must classify as a budget limit");
+  assert.equal(isRecursionLimitError(new Error("Step budget exhausted after 25 model steps")), true);
+  assert.equal(isRecursionLimitError(new Error("GraphRecursionError: Recursion limit of 25 reached")), true, "legacy LangGraph string still recognized");
+  assert.equal(isRecursionLimitError(new Error("recursion limit reached")), true);
+  assert.equal(isRecursionLimitError(new Error("ECONNRESET")), false);
+  assert.equal(isRecursionLimitError(new Error("401 Unauthorized")), false);
 });
 
 console.log(`\nSummary: ${passed} passed, ${failed} failed.`);

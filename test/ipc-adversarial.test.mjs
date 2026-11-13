@@ -149,3 +149,44 @@ test("adversarial IPC: terminal output redaction keeps secrets out of model cont
   const capped = commandService.capModelOutput("x".repeat(1_000_000));
   assert.ok(capped.output.length < 20_000, "capped output stays bounded");
 });
+
+test("adversarial IPC: notebook ids refuse path traversal (notebook-store containment)", async () => {
+  // nbDir() is the single choke point every notebook path flows through
+  // (sources/chats/library/vectors/audio/documents + notebook:delete's
+  // recursive rm). Ids arrive from the renderer unsanitized, so a traversal
+  // id must throw before any fs call — never resolve outside the notebooks
+  // root.
+  const store = await import("../dist-electron/notebook-store.js");
+  const escapees = [
+    "../../..",
+    "..\..\..",
+    "notebooks/../../evil",
+    "nb_x/../../../../../../etc",
+    "C:\Users",
+    "/etc/passwd",
+    "",
+    "   ",
+    "nb_1/nb_2",
+    "nb_1\nb_2",
+    ".",
+    "..",
+    "nb_\0null",
+  ];
+  for (const bad of escapees) {
+    // notebookSessionDir is the raw path builder — must throw, not resolve.
+    let dir;
+    try {
+      dir = store.notebookSessionDir(bad);
+    } catch {
+      continue; // refused — expected
+    }
+    throw new Error(`notebookSessionDir accepted a traversal id (${JSON.stringify(bad)}) -> ${dir}`);
+  }
+  // A well-formed uid() id resolves inside the root (plain-node fallback:
+  // cwd/.nexus-data/notebooks).
+  const ok = store.notebookSessionDir("nb_mcx1abc_def123");
+  assert.ok(path.isAbsolute(ok), "valid id resolves to an absolute path");
+  assert.ok(!ok.includes(".."), "valid id contains no traversal segments");
+  // Read paths via a store call: traversal ids throw before touching disk.
+  await assert.rejects(() => store.listNotebookSources("../victim"), /Invalid notebook id/);
+});

@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { composeContextBlock, toCitations, uid } from "./notebook-text.js";
-import { listNotebookSources, notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
+import { ensureNotebookAlive, listNotebookSources, notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
 import { hybridRetrieve } from "./notebook-rag.js";
 import { loadLibrary, sessionOutline } from "./notebook-library.js";
 import { notebookGenerationInvokeOptions } from "./notebook-generation.js";
@@ -1991,6 +1991,8 @@ export async function generateNotebookDocument(
   notebookId: string,
   input: GenerateDocumentInput
 ): Promise<{ doc: NotebookDocument; fallbackReason: string | null }> {
+  // Deleted mid-run → bail instead of resurrecting the directory tree.
+  ensureNotebookAlive(notebookId);
   if (input.kind === "report" && input.format !== "docx" && input.format !== "pdf") {
     throw new Error("Reports support DOCX or PDF — pick one.");
   }

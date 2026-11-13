@@ -29,7 +29,7 @@ export type SplitDiffRow = { kind: "context" | "change" | "added" | "deleted" | 
 export type NotebookMeta = { id: string; name: string; description?: string; createdAt: string; updatedAt: string };
 export type NotebookSourceStatus = "uploaded" | "parsing" | "chunking" | "indexing" | "ready" | "failed";
 export type NotebookSource = { id: string; notebookId: string; filename: string; size: number; chars: number; chunks: number; status: NotebookSourceStatus; parser?: string; fingerprint?: string; pageCount?: number; error?: string; createdAt: string; updatedAt: string };
-export type NotebookCitation = { index: number; sourceId: string; sourceName: string; chunkId: string; heading: string; excerpt: string; snippet: string; score: number; verified?: boolean };
+export type NotebookCitation = { index: number; sourceId: string; sourceName: string; chunkId: string; heading: string; excerpt: string; snippet: string; score: number; verified?: boolean; page?: number };
 /** New shape: structural citation coverage. Legacy shape: the old 1-10 score.
  *  Old messages persist in chats.json, so both must render. */
 export type NotebookEvaluation =
@@ -46,7 +46,7 @@ export type NotebookEmbeddingConfig = { providerId: string; model: string };
 export type EmbeddingEndpointKind = "openai" | "ollama" | "gemini" | "cohere";
 export type EmbeddingProviderConfig = { id: string; name: string; kind: EmbeddingEndpointKind; baseUrl?: string; apiKey: string; models: string[] };
 export type NotebookRagAnswer = { answer: string; sources: NotebookCitation[]; retrieval: Array<{ chunkId: string; sourceName: string; score: number; methods: string[] }>; metadata: NotebookMessageMetadata; embeddingModel: string; dims: number };
-export type NotebookPassage = { chunkId: string; sourceId: string; sourceName: string; headingPath: string[]; text: string; prevText: string | null; nextText: string | null; sectionSummary: string | null };
+export type NotebookPassage = { chunkId: string; sourceId: string; sourceName: string; headingPath: string[]; text: string; prevText: string | null; nextText: string | null; sectionSummary: string | null; page?: number };
 export type NotebookDocumentKind = "report" | "slides";
 export type NotebookDocumentFormat = "docx" | "pdf" | "pptx" | "md" | "xlsx";
 export type NotebookDocument = { id: string; notebookId: string; kind: NotebookDocumentKind; format: NotebookDocumentFormat; title: string; filename: string; size: number; prompt: string; preview: string; citations: NotebookCitation[]; sectionCount: number; slideCount: number; engine?: "skill-agent" | "builtin"; createdAt: string; updatedAt: string };

@@ -3,7 +3,7 @@ import path from "node:path";
 import { uid, composeContextBlock } from "./notebook-text.js";
 import { collectDocumentEvidence, extractDocumentJson, fallbackTitle } from "./notebook-documents.js";
 import { assertNotebookGenerationActive, planNotebookWithLlm } from "./notebook-generation.js";
-import { notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
+import { ensureNotebookAlive, notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
 import { writeFileAtomic } from "./atomic-write.js";
 
 // ── Audio Overview (NotebookLM Parity) ───────────────────────────────────────
@@ -128,6 +128,8 @@ export async function generateNotebookAudioOverview(
   notebookId: string,
   input: GenerateAudioOverviewInput = {}
 ): Promise<AudioOverview> {
+  // Deleted mid-run → bail instead of resurrecting the directory tree.
+  ensureNotebookAlive(notebookId);
   assertNotebookGenerationActive(input);
   input.onStatus?.("Retrieving source documents for podcast script…");
 
@@ -414,8 +416,22 @@ export async function saveNotebookAudioEpisode(notebookId: string, audioId: stri
 }
 
 export async function deleteNotebookAudioOverview(notebookId: string, audioId: string): Promise<AudioOverview[]> {
+  // Read the record first so the synthesized MP3 is unlinked alongside the
+  // JSON — the old delete removed only <id>.json and orphaned the (large)
+  // audio file in audio/ forever.
+  let overview: AudioOverview | null = null;
+  try {
+    overview = JSON.parse(await fs.readFile(audioOverviewPath(notebookId, audioId), "utf8")) as AudioOverview;
+  } catch { /* record already gone — nothing to unlink */ }
   try {
     await fs.rm(audioOverviewPath(notebookId, audioId), { force: true });
   } catch { /* ignore */ }
+  if (overview?.audioFilename) {
+    // Same basename+allowlist sanitization as readNotebookAudioEpisode.
+    const safe = path.basename(overview.audioFilename).replace(/[^a-zA-Z0-9_.-]/g, "");
+    if (safe) {
+      try { await fs.rm(path.join(audioDirPath(notebookId), safe), { force: true }); } catch { /* ignore */ }
+    }
+  }
   return listNotebookAudioOverviews(notebookId);
 }

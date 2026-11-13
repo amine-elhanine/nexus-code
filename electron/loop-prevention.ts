@@ -25,7 +25,14 @@ export class DoomLoopError extends Error {
  * hallucinated POSIX project root prefixes before tools receive them.
  * Applied by the agent loop before every tool execution.
  */
-export function normalizeToolCallArgs(call: { name: string; args: any }, projectRoot?: string): void {
+/**
+ * Alias-only normalization: the camelCase↔snake_case argument aliases weak
+ * models emit (filePath/path → file_path). THE single implementation — the
+ * agent loop's pre-event pass and the doom-loop signature builder both call
+ * this; the three private copies here, in loop.ts, and in agent-service.ts
+ * had begun to drift.
+ */
+export function normalizeArgAliases(call: { name: string; args: any }): void {
   if (!call.args || typeof call.args !== "object") return;
   if ("filePath" in call.args && !("file_path" in call.args)) {
     call.args.file_path = call.args.filePath;
@@ -33,6 +40,11 @@ export function normalizeToolCallArgs(call: { name: string; args: any }, project
   if ("path" in call.args && !("file_path" in call.args)) {
     call.args.file_path = call.args.path;
   }
+}
+
+export function normalizeToolCallArgs(call: { name: string; args: any }, projectRoot?: string): void {
+  if (!call.args || typeof call.args !== "object") return;
+  normalizeArgAliases(call);
   if (projectRoot) {
     const pathKeys = [
       "file_path",

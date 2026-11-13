@@ -9,9 +9,10 @@
     "node": ">=24"
   },
   "author": "L7A9 <aminet312003@gmail.com>",
+  "license": "UNLICENSED",
   "repository": {
     "type": "git",
-    "url": "https://github.com/amine-elhanine/nexus-code.git"
+    "url": "https://github.com/amine-elhanine/nexus.git"
   },
   "scripts": {
     "dev": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron . --dev\"",
@@ -20,6 +21,8 @@
     "start": "electron .",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
     "test": "npm run build:electron && electron test/sandbox-and-agent.test.mjs",
+    "test:renderer": "node scripts/run-renderer-tests.mjs",
+    "test:snapshot": "electron test/renderer-snapshot.test.mjs",
     "test:renderer-security": "electron test/renderer-security.test.mjs",
     "test:permissions": "npm run build:electron && node test/permissions.test.mjs",
     "test:unit": "npm run build:electron && node scripts/run-unit-tests.mjs",
@@ -28,7 +31,8 @@
     "dist:dir": "npm run build && electron-builder --dir",
     "cli": "node scripts/agent-cli.mjs",
     "eval:agent": "npm run build:electron && node scripts/eval-agent.mjs",
-    "eval:notebook": "npm run build:electron && node scripts/eval-notebook.mjs"
+    "eval:notebook": "npm run build:electron && node scripts/eval-notebook.mjs",
+    "test:terminal-ipc": "npm run build:electron && node test/verify-terminal-ipc.mjs"
   },
   "build": {
     "appId": "com.nexus.app",

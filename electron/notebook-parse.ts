@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import LlamaCloud from "@llamaindex/llama-cloud";
 import { assertPublicHttpUrl } from "./net-guard.js";
 import { decodeHtmlEntities } from "./html-text.js";
+import { pageMark } from "./notebook-text.js";
 
 // Format parsers: raw bytes -> canonical markdown (the single intermediate
 // format for ingestion). Pure functions of (buffer, filename); no fs, no
@@ -367,6 +368,9 @@ async function parsePptx(buffer: Buffer, describeImage?: ImageDescriber, onStatu
       if (t) texts.push(t);
     }
     const title = texts[0] || `Slide ${slideNo}`;
+    // Slide = page: marker each boundary (slide 1 = implicit start) so deck
+    // citations deep-link to the slide number.
+    if (slideNo > 1) parts.push(pageMark(slideNo));
     parts.push(`## Slide ${slideNo}: ${title}`);
     for (const t of texts.slice(1)) parts.push(t);
     for (const t of slideTables) parts.push(t);
@@ -439,7 +443,10 @@ async function parsePdf(buffer: Buffer, describeImage?: ImageDescriber, onStatus
   try {
     const result = await parser.getText();
     const pages = result.pages?.length ? result.pages.map((p) => p.text) : [result.text];
-    const joined = pages.map((t) => (t || "").trim()).filter(Boolean).join("\n\n");
+    // Page markers at every boundary (page 1 = implicit start) so ingestion
+    // can anchor chunks/citations to source pages (notebook-text pageMark).
+    const pageParts = pages.map((t) => (t || "").trim()).filter(Boolean);
+    const joined = pageParts.map((t, i) => (i === 0 ? t : `${pageMark(i + 1)}\n\n${t}`)).join("\n\n");
     const { markdown, truncated } = cap(joined);
     if (markdown) {
       const visuals: string[] = [];
@@ -532,10 +539,14 @@ export async function parseWithLlamaParse(buffer: Buffer, filename: string, conf
     upload_file: new File([new Uint8Array(buffer)], filename),
     expand: ["markdown", "metadata"],
   });
-  const pageMarkdown = result.markdown?.pages
-    ?.map((page) => "markdown" in page ? page.markdown : "")
-    .filter(Boolean)
-    .join("\n\n") || result.markdown_full || "";
+  // Page-aware join: LlamaParse preserves page boundaries, so anchor them
+  // with page markers (page 1 = implicit start) for page-anchored citations.
+  const llamaParts = (result.markdown?.pages || [])
+    .map((page) => ("markdown" in page ? page.markdown : ""))
+    .filter(Boolean) as string[];
+  const pageMarkdown = (llamaParts.length
+    ? llamaParts.map((t, i) => (i === 0 ? t : `${pageMark(i + 1)}\n\n${t}`)).join("\n\n")
+    : result.markdown_full) || "";
   const { markdown, truncated } = cap(pageMarkdown);
   if (!markdown) throw new Error("LlamaParse returned no Markdown content.");
   const pageCount = result.markdown?.pages?.length || undefined;

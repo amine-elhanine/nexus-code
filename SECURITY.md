@@ -33,7 +33,7 @@ Default policy: **network reads run freely; network writes and code-from-network
 | Notebook network guard | Bounded by the notebook-specific guard (tested in `notebook-net-guard.test.mjs`) | refused |
 | `browser_fetch_api` tool | **GET/HEAD only** (tested read-only) | **Refused at runtime** — HTTP mutations must go through the shell path with approval |
 | `browser_inspect` / `browser_act` | Read-only page inspection and interaction in the built-in session | Form submissions through rendered pages behave like the user's own browser session (visible in the Browser tab) |
-| Plugin runner | No direct network API (no `fetch`/`require`); plugins communicate via structured host IPC | — |
+| Plugin runner | Runs out-of-process via structured host IPC; **host-mediated tool calls are permission-gated**. The child itself runs with the user's OS privileges — its `node:vm` context is not a hard sandbox (see `plugin-runner.cjs`), so direct network/file access from plugin code is NOT blocked by the host; the install trust prompt + permission model are the controls (see `docs/plugins/permissions-security.md`) | Host-mediated mutations are permission-gated |
 | Marketplace installs | HTTPS-only sources (installed entry must be fetched over https during development flows) | — |
 
 Shell-level hard denies (never run, independent of policy): disk/root wipes, `rm -rf ~`, fork bomb, disk format/boot config edits, shadow-copy deletion, account seizure commands, and any attempt to create the legacy `.deepagents/` folder.
@@ -41,6 +41,7 @@ Shell-level hard denies (never run, independent of policy): disk/root wipes, `rm
 ## 5. Command/permission machinery (tested)
 
 - Ranking: hard denies → user project policy (deny/allow/ask patterns) → network/mutation classes → everything else allowed.
+- **Full Mode**: In Full Access mode, shell commands, installs, and git operations execute without user approval prompts. Hard guardrails remain strictly enforced: root/system wipes, machine shutdown, registry deletions, fork bombs, privilege escalation, and access to legacy state paths are permanently blocked.
 - Agent destructive mistakes have a worktree/checkpoint + revert safety net (`diff-service`, `worktree-service`); `.nexus/` state and the legacy `.deepagents/` path are guarded at shell, backend, edit, and skill layers (`state-guard.ts`, `permissions.ts`, `edit-tools.ts`, `skills-service.ts`).
 
 ## 6. Current gaps (not fixed yet)

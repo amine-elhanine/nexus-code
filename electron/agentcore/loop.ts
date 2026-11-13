@@ -18,6 +18,7 @@ import type { ChatMessage, ToolCall } from "./messages.js";
 import { assistantMsg, toolMsg } from "./messages.js";
 import type { AgentTool } from "./tools.js";
 import { runToolMiddleware, type AgentMiddleware, type ToolCallRequest } from "./middleware.js";
+import { normalizeArgAliases } from "../loop-prevention.js";
 
 /** The run consumed its step budget without a final answer — resumable, not fatal. */
 export class StepBudgetExceededError extends Error {
@@ -132,12 +133,9 @@ export function createTodoTool(): AgentTool {
 /** Normalizes assistant text from streamed deltas. */
 function normalizeToolArgs(call: ToolCall, normalizeArgs?: (call: ToolCall) => void): void {
   if (!call.args || typeof call.args !== "object") call.args = {};
-  if (typeof (call.args as any).filePath === "string" && !("file_path" in (call.args as any))) {
-    (call.args as any).file_path = (call.args as any).filePath;
-  }
-  if (typeof (call.args as any).path === "string" && !("file_path" in (call.args as any))) {
-    (call.args as any).file_path = (call.args as any).path;
-  }
+  // Alias mapping delegated to the shared implementation (loop-prevention) —
+  // the private copy here had drifted from the middleware's version.
+  normalizeArgAliases(call);
   normalizeArgs?.(call);
 }
 

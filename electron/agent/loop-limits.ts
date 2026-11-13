@@ -37,5 +37,8 @@ export const MAX_REPAIRS: Record<AgentMode, number> = { plan: 0, ask: 2, auto: 2
 
 export function isRecursionLimitError(error: unknown): boolean {
   const text = [error instanceof Error ? error.message : String(error), String((error as any)?.name ?? "")].join(" ");
-  return /recursion\s*limit|GRAPH_RECURSION_LIMIT/i.test(text);
+  // "step budget" matches agentcore's StepBudgetExceededError (both its name
+  // and its "Step budget exhausted after N model steps" message). The LangGraph
+  // strings stay for legacy checkpoints/resumes that still reference them.
+  return /recursion\s*limit|GRAPH_RECURSION_LIMIT|step\s*budget/i.test(text);
 }

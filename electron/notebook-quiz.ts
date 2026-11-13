@@ -3,7 +3,7 @@ import path from "node:path";
 import { attachCitations, composeContextBlock, uid } from "./notebook-text.js";
 import { collectDocumentEvidence, extractDocumentJson, fallbackTitle } from "./notebook-documents.js";
 import { assertNotebookGenerationActive, planNotebookWithLlm } from "./notebook-generation.js";
-import { notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
+import { ensureNotebookAlive, notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
 import { writeFileAtomic } from "./atomic-write.js";
 
 // Grounded quiz generation for Notebook Mode: MCQ (4 options), True/False,
@@ -176,6 +176,8 @@ export async function generateNotebookQuiz(
   notebookId: string,
   input: GenerateQuizInput
 ): Promise<NotebookQuiz> {
+  // Deleted mid-run → bail instead of resurrecting the directory tree.
+  ensureNotebookAlive(notebookId);
   const status = input.onStatus || (() => {});
   const topic = (input.topic || "").trim() || "overview of the uploaded sources";
   const count = clampQuizCount(input.count);

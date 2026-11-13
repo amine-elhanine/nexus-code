@@ -12,7 +12,7 @@ Windows 10 / 11 (NSIS + Portable) · macOS & Linux configurable
 
 ![Electron](https://img.shields.io/badge/Electron-44-47848F?logo=electron&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-7.x-3178C6?logo=typescript&logoColor=white)
 ![agentcore](https://img.shields.io/badge/runtime-self--built%20agentcore-34d399)
 ![Version](https://img.shields.io/badge/version-v0.5.0-blue)
 ![License](https://img.shields.io/badge/license-All_Rights_Reserved-lightgrey)
@@ -306,8 +306,8 @@ Nexus operates with direct filesystem and shell access on your machine by design
 
 ```bash
 # Clone the repository
-git clone https://github.com/amine-elhanine/nexus-code.git
-cd nexus-code
+git clone https://github.com/amine-elhanine/nexus.git
+cd nexus
 
 # Install dependencies (use npm.cmd if PowerShell script execution is restricted)
 npm install
@@ -324,7 +324,7 @@ npm run check
 Nexus maintains a comprehensive testing harness:
 
 ```bash
-# Run unit test suite (35 suites covering rate-limits, checkpoints, LSP, hooks, plugins, memory, charts, paths)
+# Run unit test suite (86 suites covering rate-limits, checkpoints, LSP, hooks, plugins, memory, charts, paths)
 npm run test:unit
 
 # Run notebook test suite (11 suites covering ingestion, RAG, SQLite vectors, net-guard, studio artifacts)
@@ -413,7 +413,7 @@ nexus/
 │   └── types.ts                # Shared TypeScript type definitions
 ├── scripts/                    # Headless CLI and evaluation benchmarks
 ├── evals/                      # Standardized evaluation datasets
-├── test/                       # 56+ test files and integration test suites
+├── test/                       # 99 test files and integration test suites
 └── landing_page/               # Static marketing site
 ```
 

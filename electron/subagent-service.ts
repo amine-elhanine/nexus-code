@@ -596,6 +596,14 @@ export async function executeSubagentTask(options: {
 
     const runLoopOnce = async () => {
       retryCount++;
+      // A failed attempt may leave trailing unanswered tool calls behind —
+      // prune at the START of every attempt. Retries happen INSIDE
+      // withRateLimitRetry (it re-invokes runLoopOnce), so pruning only
+      // after the retry loop meant the first retry replayed a transcript
+      // ending in dangling assistant toolCalls — a shape providers reject
+      // with a 400, turning a recoverable stream failure into a dead
+      // subagent.
+      runMessages = sanitizeResumeCheckpoint(runMessages) as ChatMessage[];
       progress.beginAttempt(runMessages.length);
       if (retryCount > 1 && runMessages.length > 1) {
         runMessages.push(userMsg("[System Note: Stream resumed after temporary provider interruption. All preceding tool actions are complete. Continue directly with the subagent task without repeating completed steps.]"));
@@ -671,9 +679,8 @@ export async function executeSubagentTask(options: {
         onEvent?.({ type: "subagent_step", subagent: { ...subagentItem } });
       },
     });
-    // A failed attempt may leave trailing unanswered tool calls behind —
-    // prune before the next attempt replays the transcript.
-    runMessages = sanitizeResumeCheckpoint(runMessages) as ChatMessage[];
+    // (Trailing tool-call pruning happens at the top of runLoopOnce — see
+    // the comment there for why it must precede each retry attempt.)
 
     answer = capSubagentOutput(answer || `Subagent [${config.title}] completed task without text output.`);
     let totalInputTokens = usage.inputTokens;

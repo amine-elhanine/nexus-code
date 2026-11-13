@@ -91,6 +91,17 @@ const UNIT_TESTS = [
   "test/command-sticky-cwd.test.mjs",
   "test/session-fork-truncate.test.mjs",
   "test/notebook-audio.test.mjs",
+  "test/notebook-generation-jobs.test.mjs",
+  // Previously orphaned (not wired into any runner) — revived:
+  "test/chart-blocks.test.mjs",
+  "test/chat-deliverables-dedup.test.mjs",
+  "test/home-contract.test.mjs",
+  "test/markdown-math.test.mjs",
+  "test/opencode-parity.test.mjs",
+  "test/session-sorting.test.mjs",
+  "test/websearch-freshness.test.mjs",
+  "test/agent-backend-policy.test.mjs",
+  "test/version-match.test.mjs",
 ];
 
 console.log(`Running ${UNIT_TESTS.length} unit tests...\n`);

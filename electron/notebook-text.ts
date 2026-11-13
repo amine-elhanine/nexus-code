@@ -63,6 +63,46 @@ export function notebookTokens(text: string): string[] {
   return (text.toLocaleLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_\-]{2,}/gu) || []).filter((t) => !NOTEBOOK_STOPWORDS.has(t));
 }
 
+// ---- Light suffix folding (single source of truth) ----
+//
+// Previously two near-identical stemmers drifted apart (notebook-embeddings
+// singularToken vs skills-service singularToken — different length guards,
+// verb folding, casing). foldToken expresses both via explicit options so the
+// rules can never silently diverge again.
+
+export type FoldTokenOptions = {
+  /** Lowercase before folding (notebook tokenizer folds case-insensitively; the skills scorer did not). */
+  lowercase?: boolean;
+  /** Minimum token length to fold at all (skills returned tokens < 5 untouched). */
+  minStemLength?: number;
+  /** Also fold -ing/-ed verb forms (notebook embedding tokenizer only). */
+  stemVerbs?: boolean;
+  /** Leave Latin "-us" words alone ("virus", "status") — notebook behavior. */
+  usGuard?: boolean;
+  /** "-es" suffix groups folded by dropping 2 chars. Notebook folds double-s/x/ch/sh;
+   *  the skills scorer additionally folds single-s ("buses"→"bus") and "zes". */
+  esRe?: RegExp;
+};
+
+// Notebook embedding tokenizer: ss/sh/ch/x + es.
+const DEFAULT_ES_RE = /(?:ss|sh|ch|x)es$/;
+// Skills scorer: s/x/z/ch/sh + es.
+export const SKILLS_ES_RE = /(?:s|x|z|ch|sh)es$/;
+
+export function foldToken(token: string, opts: FoldTokenOptions = {}): string {
+  let t = opts.lowercase ? token.toLowerCase() : token;
+  if (t.length < (opts.minStemLength ?? 0)) return t;
+  const esRe = opts.esRe ?? DEFAULT_ES_RE;
+  if (t.length > 4 && t.endsWith("ies")) return `${t.slice(0, -3)}y`;
+  if (t.length > 4 && esRe.test(t)) return t.slice(0, -2);
+  if (t.length > 3 && t.endsWith("s") && !t.endsWith("ss") && !(opts.usGuard && t.endsWith("us"))) return t.slice(0, -1);
+  if (opts.stemVerbs) {
+    if (t.length > 5 && t.endsWith("ing")) return t.slice(0, -3);
+    if (t.length > 4 && t.endsWith("ed")) return t.slice(0, -2);
+  }
+  return t;
+}
+
 export function meaningfulQueryTerms(query: string): string[] {
   const terms = new Set(notebookTokens(query));
   return [...terms].filter((t) => t.length >= 4);
@@ -514,6 +554,59 @@ export function evaluateCitationCoverage(answer: string, registeredCount: number
   return { citationCoverage: Math.round(coverage * 100) / 100, verdict, issues };
 }
 
+// ---- Page anchoring (Phase 4: page-anchored citations) ----
+// Parsers that know page boundaries (PDF text pages, LlamaParse pages, PPTX
+// slides) embed a zero-width marker token at each boundary. Ingestion splits
+// the marker-free text out for chunking (so chunk IDs stay identical to
+// pre-anchor behavior) and records a page map; each chunk stores the page its
+// text starts on, and citations carry it so "page 7" survives all the way to
+// the UI chip. NUL-delimited tokens never surface in user-visible text.
+
+export const PAGE_MARK_RE = /\u0000P(\d+)\u0000/g;
+
+export function pageMark(page: number): string {
+  return `\u0000P${page}\u0000`;
+}
+
+export function stripPageMarks(text: string): string {
+  return (text || "").replace(PAGE_MARK_RE, "");
+}
+
+export type PageMap = Array<{ start: number; page: number }>;
+
+/**
+ * Split markdown containing page marks into the mark-free text (identical to
+ * the input when no marks exist — chunk content hashes therefore stay
+ * stable) plus a page map of start offsets INTO THAT TEXT.
+ */
+export function extractPageMap(markdWithMarks: string): { text: string; pageMap: PageMap } {
+  const pageMap: PageMap = [{ start: 0, page: 1 }];
+  let out = "";
+  let last = 0;
+  PAGE_MARK_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = PAGE_MARK_RE.exec(markdWithMarks))) {
+    out += markdWithMarks.slice(last, m.index);
+    pageMap.push({ start: out.length, page: Number(m[1]) });
+    last = m.index + m[0].length;
+  }
+  out += markdWithMarks.slice(last);
+  return { text: out, pageMap };
+}
+
+/** Page whose segment contains `index` (binary search over the page map). */
+export function pageAt(pageMap: PageMap, index: number): number | undefined {
+  if (!pageMap.length || index < 0) return undefined;
+  let lo = 0;
+  let hi = pageMap.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (pageMap[mid].start <= index) lo = mid;
+    else hi = mid - 1;
+  }
+  return pageMap[lo].page;
+}
+
 // ---- Citations (shared by the chat pipeline and the generators) ----
 
 export type NotebookCitationLike = {
@@ -526,11 +619,13 @@ export type NotebookCitationLike = {
   snippet: string;
   score: number;
   verified?: boolean;
+  /** 1-based source page/slide when the parser knows page boundaries. */
+  page?: number;
 };
 
 /** Ranked passages → numbered citation list. Retrieval citations are always
  *  `verified: true` (they came from the index, not a positional fallback). */
-export function toCitations(results: Array<{ sourceId: string; sourceName: string; chunkId: string; headingPath: string[]; text: string; final: number }>): NotebookCitationLike[] {
+export function toCitations(results: Array<{ sourceId: string; sourceName: string; chunkId: string; headingPath: string[]; text: string; final: number; page?: number }>): NotebookCitationLike[] {
   return results.map((r, i) => ({
     index: i + 1,
     sourceId: r.sourceId,
@@ -541,15 +636,14 @@ export function toCitations(results: Array<{ sourceId: string; sourceName: strin
     snippet: r.text.replace(/\s+/g, " ").trim().slice(0, 200),
     score: Number(r.final.toFixed(4)),
     verified: true,
+    ...(typeof r.page === "number" ? { page: r.page } : {}),
   }));
 }
 
 /** Short unique ID for generated artifacts (quiz ids, card ids, notes…).
  *  Time+random is enough here: IDs are only correlated within one session,
  *  and stable content-addressed IDs (uuid5 above) cover everything else. */
-export function uid(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
+export { uid } from "./uid.js";
 
 /** [Sn] markers the model echoed back, deduped and capped like the UI shows them. */
 export function parseCitationRefs(text: string): number[] {

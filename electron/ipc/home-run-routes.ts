@@ -3,22 +3,22 @@
 
 import { ipcMain } from "electron";
 import {
-  appendHomeSessionMessages, getHomeMemory, getHomeSession, listProviders, mutateHomeMemory, updateHomeSession,
-  type ChatAttachment,
+  appendHomeSessionMessages, getAppSettings, getHomeMemory, getHomeSession, listProviders, mutateHomeMemory, updateHomeSession,
+  type AppSettings, type ChatAttachment,
 } from "../store.js";
 import { cleanupHomeGeneratorScripts, ensureHomeDir, recordHomeRunFiles } from "../home-service.js";
 import {
   runProjectAgent, RunCancelledError, isContinueRequest, getLastRunCheckpoint, loadLastRunCheckpoint,
-  summarizeCompletedSteps, appendEntryLog, SESSION_MEMORY_ENTRY_CAP, SESSION_MEMORY_CHAR_CAP,
+  appendEntryLog, SESSION_MEMORY_ENTRY_CAP, SESSION_MEMORY_CHAR_CAP,
   type AgentEvent, type AgentUsage, type HistoryInput, type PlanItem,
 } from "../agent-service.js";
 import { getAgentBackend, beginCommandRun, cancelCommandRun, endCommandRun, isCommandRunCancelled } from "../command-service.js";
-import { getWorkspaceDiffFiles } from "../diff-service.js";
+import { buildResumeNote, collectResumeContext } from "../resume-note.js";
 import { cancelCommandApprovals } from "../approval-service.js";
 import { recordDeliverable, isSubstantiveHomeTask, parseHomeMemory, addMemoryFact } from "../home-memory-service.js";
-import { resolveImageForModel, resolveAttachmentBytes } from "../attachment-utils.js";
 import { assertPayload, HomeRunSchema, AgentCancelSchema } from "./schemas.js";
 import { acquireRunSlot, releaseRunSlot } from "./run-guard.js";
+import { messagesToHistory, resolveModelImages, processRunAttachments, seedPreviousContextTokens, createRunTranscript, withRunSlot, collectRunResume, handleRunInterruption, persistRunSuccess, type RunLaneIo } from "./run-lane.js";
 import type { MainIpcContext } from "./context.js";
 
 export function registerHomeRunRoutes(ctx: MainIpcContext): void {
@@ -40,8 +40,18 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
     const { sessionId } = payload;    const session = await getHomeSession(sessionId);
     if (!session) throw new Error("Home session not found.");
     const homeRoot = await ensureHomeDir();
+    // Snapshot before the run closure (the closure can't see the null-narrowing).
+    const sessionMemoryAtStart = session.memory;
 
-    // Persist the user request FIRST — before provider/model resolution,
+    // Run-slot guard FIRST (same guard as agent:run, shared acquireRunSlot) —
+    // a second submit (e.g. Enter pressed while the first run is still in
+    // silent setup) must not start a twin agent that interleaves transcripts
+    // and clobbers checkpoints/memory. Acquiring before the persist below
+    // matters: a rejected duplicate submit must not leave an orphaned user
+    // message in the transcript for the next run to re-ingest as history.
+    // (Slot lifecycle handled by withRunSlot below — shared by both lanes.)
+
+    // Persist the user request next — before provider/model resolution,
     // backend construction or anything else fallible. If the chosen model
     // fails (auth error, rate limit, "No provider/model selected"), the
     // request still reaches the transcript, so switching models and
@@ -54,19 +64,11 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
       { role: "user", text: payload.request, images: payload.images, attachments: payload.attachments, createdAt: new Date().toISOString() }
     ]);
 
-    // Same guard as agent:run (shared acquireRunSlot) — a second submit
-    // (e.g. Enter pressed while the first run is still in silent setup) must
-    // not start a twin agent that interleaves transcripts and clobbers
-    // checkpoints/memory.
-    await acquireRunSlot(ctx.activeRunSessions, sessionId);
-    beginCommandRun(sessionId);
-    const transcript: { items: any[] } = { items: [] };
-
     const emit = (event: AgentEvent) => {
       ctx.emitFor(sessionId, event);
     };
 
-    try {
+    return await withRunSlot({ ctx, sessionId }, async () => {
       const providers = await listProviders();
       const providerId = payload.providerId || session.model?.providerId;
       const provider = providers.find((p) => p.id === providerId) || providers[0];
@@ -85,122 +87,58 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
         await updateHomeSession(sessionId, { title: payload.request.trim().slice(0, 60) });
       }
 
-      const history: HistoryInput[] = priorMessages.map((message) => {
-        if (message.role === "event") {
-          // Preserve event role (same as agent-routes): flattening status/tool
-          // events into assistant turns floods the conversation with fake
-          // answers and teaches the model to repeat its previous output
-          // (e.g. the canned "I'm Nexus Home..." intro) instead of answering
-          // the current user message.
-          return {
-            role: "event" as const,
-            text: message.text,
-            kind: message.kind,
-            detail: message.detail,
-            plan: message.plan,
-            subagent: message.subagent
-              ? { role: message.subagent.role, task: message.subagent.task, status: message.subagent.status }
-              : undefined,
-          };
-        }
-        return { role: message.role as "user" | "assistant", text: message.text };
-      });
+      // Shared lane helpers (run-lane.ts) — the history mapping and
+      // attachment processing are owned by BOTH lanes now; the private
+      // copies here drifted before (missing image skip, inverted persist
+      // order) and are gone.
+      const history: HistoryInput[] = messagesToHistory(priorMessages);
 
-      const modelImages = payload.images?.length
-        ? await Promise.all(payload.images.map((img) => resolveImageForModel(img).catch(() => img)))
-        : undefined;
-
-      const ATTACH_DOC_CHAR_CAP = 20_000;
-      const attachmentDocs: Array<{ name: string; mimeType: string; text: string; truncated: boolean }> = [];
-      if (payload.attachments?.length) {
-        const { parseToMarkdown } = await import("../notebook-parse.js");
-        for (const attachment of payload.attachments) {
-          try {
-            const { buffer, mimeType } = await resolveAttachmentBytes(attachment.url);
-            const mime = attachment.mimeType || mimeType;
-            const name = attachment.name || "attachment";
-            try {
-              const parsed = await parseToMarkdown(buffer, name);
-              if (!parsed.markdown.trim()) continue;
-              const truncated = parsed.markdown.length > ATTACH_DOC_CHAR_CAP || parsed.truncated;
-              attachmentDocs.push({ name, mimeType: mime, text: parsed.markdown.slice(0, ATTACH_DOC_CHAR_CAP), truncated });
-            } catch {
-              attachmentDocs.push({ name, mimeType: mime, text: `[Binary file ${name} could not be text-extracted.]`, truncated: false });
-            }
-          } catch { /* best effort */ }
-        }
-      }
-
-      const importableAttachments: string[] = [];
-      if (payload.attachments?.length) {
-        for (const attachment of payload.attachments) {
-          try {
-            const { buffer, mimeType } = await resolveAttachmentBytes(attachment.url);
-            const mime = attachment.mimeType || mimeType;
-            importableAttachments.push(`data:${mime};base64,${buffer.toString("base64")}#${encodeURIComponent(attachment.name || "attachment")}`);
-          } catch { /* skip unreadable */ }
-        }
-      } else if (modelImages?.length) {
-        importableAttachments.push(...modelImages);
-      }
+      const modelImages = await resolveModelImages(payload.images);
+      const { attachmentDocs, importableAttachments } = await processRunAttachments(
+        payload.attachments,
+        modelImages
+      );
 
       // Continue-resume: a bare "continue" / affirmation after an interrupt/stop must pick
       // up the prior run's tool checkpoint, plan and diff — otherwise the
       // model restarts from scratch.
-      const wantResume = isContinueRequest(payload.request || "");
-      const stored = wantResume ? getLastRunCheckpoint(sessionId) ?? await loadLastRunCheckpoint(homeRoot, sessionId) : null;
-      let resumeNote: string | null = null;
-      let lastPlan: PlanItem[] | null = null;
-      if (wantResume) {
-        const planEvents = session.messages.filter((m) => m.role === "event" && m.kind === "plan" && m.plan?.length);
-        lastPlan = planEvents.length ? planEvents[planEvents.length - 1].plan! : null;
-        const errorEvents = session.messages.filter((m) => m.role === "event" && m.kind === "error");
-        const lastError = errorEvents.length ? errorEvents[errorEvents.length - 1].text : null;
-        const assistants = session.messages.filter((m) => m.role === "assistant");
-        const lastAssistant = assistants.length ? assistants[assistants.length - 1].text.slice(-1500) : null;
-        let diffSummary = "";
-        try {
-          const diffs = await getWorkspaceDiffFiles(homeRoot);
-          if (diffs.length) diffSummary = `\nFiles already changed:\n${diffs.slice(0, 20).map((d) => `- ${d.path} (+${d.additions}/-${d.deletions})`).join("\n")}`;
-        } catch { /* diff is best-effort */ }
-        const planSummary = (stored?.planItems ?? lastPlan)?.length
-          ? `\nWorking plan status:\n${(stored?.planItems ?? lastPlan)!.map((p) => `- [${p.status === "completed" ? "x" : " "}] ${p.content} (${p.status})`).join("\n")}`
-          : "";
-        const ledger = stored?.messages?.length ? summarizeCompletedSteps(stored.messages) : [];
-        const ledgerSummary = ledger.length
-          ? `\nSteps already DONE (never repeat — results are in history):\n${ledger.map((s) => `- ${s}`).join("\n")}`
-          : "";
-        resumeNote = `[System Note: The user asked to continue the previous interrupted run. All preceding tool executions and results ${stored ? `(${stored.messages.length} checkpointed messages) ` : ""}are already complete.${planSummary}${ledgerSummary}${lastError ? `\nLast stop reason: ${lastError.slice(0, 500)}` : ""}${lastAssistant ? `\nLast assistant summary: ${lastAssistant}` : ""}${diffSummary}\n\nIMPORTANT: Do NOT restart from the beginning, do NOT re-create the todo list from scratch, and do NOT repeat completed tool actions or file reads. Proceed directly with the next unfinished step.]`;
-      }
+      const { stored, resumeNote, lastPlan } = await collectRunResume({
+        sessionId,
+        root: homeRoot,
+        request: payload.request || "",
+        sessionMessages: session.messages,
+        resumeNoteSuffix: "IMPORTANT: Do NOT restart from the beginning, do NOT re-create the todo list from scratch, and do NOT repeat completed tool actions or file reads. Proceed directly with the next unfinished step.",
+      });
 
       const backendRecord = { id: "home", name: "Home", root: homeRoot, createdAt: "", updatedAt: "", memory: "", sessions: [] };
       ctx.emitFor(sessionId, { type: "status", text: "Starting Home Assistant…" });
-      const { backend } = await getAgentBackend(backendRecord, { readOnly: false, runId: sessionId });
+      // Code parity (agent-routes): honor Settings → edit policy "ask" so Home
+      // file mutations wait for approval too. Previously the Home lane never
+      // passed editPolicy, so the setting was silently ignored for Home runs.
+      const editPolicy = (await getAppSettings().catch(() => ({}) as AppSettings)).editPolicy === "ask" ? "ask" : "auto";
+      const { backend } = await getAgentBackend(backendRecord, { readOnly: false, runId: sessionId, editPolicy });
       // Shared cross-chat memory (ChatGPT-style). Loaded fresh per run so
       // concurrent chats never clobber each other on save (re-read below).
       const homeMemoryAtStart = await getHomeMemory().catch(() => "");
 
       const runStartMs = Date.now();
-      // Seed the meter with the session's last reported context so a new
-      // request doesn't drop the bar back to the text-only estimate.
-      const previousContextTokens = [...(session.messages || [])]
-        .reverse()
-        .find((m) => m.context?.usedTokens && m.context.usedTokens > 0)
-        ?.context?.usedTokens ?? null;
-      let accumulatedThinking = "";
-      let thinkingStartTimestamp = "";
-      const flushThinking = () => {
-        if (accumulatedThinking.trim()) {
-          transcript.items.push({
-            role: "event",
-            text: accumulatedThinking.trim(),
-            kind: "thinking",
-            createdAt: thinkingStartTimestamp || new Date().toISOString(),
-            detail: accumulatedThinking.trim(),
-          });
-          accumulatedThinking = "";
-          thinkingStartTimestamp = "";
-        }
+      const previousContextTokens = seedPreviousContextTokens(session.messages);
+      // Shared lane transcript + thinking buffer (run-lane.ts): owned by both
+      // lanes; the private copy here drifted before.
+      const lane = createRunTranscript();
+      const transcript = { items: lane.items };
+      const laneIo: RunLaneIo = {
+        ctx,
+        sessionId,
+        lane,
+        appendMessages: (items) => appendHomeSessionMessages(sessionId, items as never),
+        laneLabel: "Home run",
+        buildErrorText: async (errorText) => {
+          const checkpoint = getLastRunCheckpoint(sessionId) ?? await loadLastRunCheckpoint(homeRoot, sessionId);
+          return checkpoint?.messages?.length
+            ? `Home run paused after an error (${errorText}). Progress was checkpointed; say "continue" to resume without restarting completed work.`
+            : errorText;
+        },
       };
       let result: Awaited<ReturnType<typeof runProjectAgent>>;
 
@@ -228,36 +166,14 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
           memory: { projectMemory: homeMemoryAtStart, sessionMemory: session.memory },
           history,
           mode: "auto",
+          editPolicy,
           agentBackend: backend,
           resumeMessages: stored?.messages ?? null,
           resumePlanItems: stored?.planItems ?? lastPlan ?? null,
           resumeNote,
           previousContextTokens,
           onEvent: (event) => {
-            if (event.type === "thinking") {
-              if (!thinkingStartTimestamp) thinkingStartTimestamp = event.timestamp || new Date().toISOString();
-              accumulatedThinking += event.text || "";
-            } else if (event.type === "tool" || event.type === "plan" || event.type === "status") {
-              flushThinking();
-            }
-            // Token and thinking chunks stay ephemeral; assistant/usage are
-            // persisted once as the final message below (with usage attached)
-            // — pushing them here too would store every answer twice and
-            // double history size.
-            if (event.type !== "token" && event.type !== "thinking" && event.type !== "assistant" && event.type !== "usage") {
-              transcript.items.push({
-                role: "event",
-                text: event.text,
-                kind: event.type,
-                createdAt: event.timestamp,
-                plan: event.items,
-                subagent: event.subagent,
-                artifact: event.artifact,
-                usage: event.usage,
-                context: event.context,
-                detail: event.detail,
-              });
-            }
+            lane.handleEvent(event);
             emit(event);
           },
           onHomeMemoryUpdate: (mutate) => mutateHomeMemory((current) => mutate(current)),
@@ -298,42 +214,13 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
           isCancelled: () => isCommandRunCancelled(sessionId),
         });
       } catch (error) {
-        flushThinking();
-        const isCancel = error instanceof RunCancelledError || isCommandRunCancelled(sessionId) || (error as any)?.name === "AbortError";
-        const failedUsage = (error as { usage?: AgentUsage })?.usage;
-        const usageText = failedUsage
-          ? `Token usage · ${failedUsage.totalTokens} tokens${failedUsage.estimatedCost == null ? "" : ` (~$${failedUsage.estimatedCost})`}`
-          : null;
-        if (isCancel) {
-          const stopText = "⏹️ Run stopped by user. Progress has been saved.\n\nSay **continue** to pick up from where I stopped.";
-          await appendHomeSessionMessages(sessionId, [
-            ...transcript.items,
-            { role: "assistant", text: stopText, createdAt: new Date().toISOString(), ...(failedUsage ? { usage: failedUsage } : {}) },
-          ]);
-          ctx.emitFor(sessionId, { type: "assistant", text: stopText, ...(failedUsage ? { usage: failedUsage } : {}) });
-          if (failedUsage && usageText) ctx.emitFor(sessionId, { type: "usage", text: usageText, usage: failedUsage });
-          ctx.emitFor(sessionId, { type: "status", text: "Stopped by user. Ready to continue." });
-          return stopText;
-        }
-        const errorText = error instanceof Error ? error.message : String(error);
-        const checkpoint = getLastRunCheckpoint(sessionId) ?? await loadLastRunCheckpoint(homeRoot, sessionId);
-        const userError = checkpoint?.messages?.length
-          ? `Home run paused after an error (${errorText}). Progress was checkpointed; say "continue" to resume without restarting completed work.`
-          : errorText;
-        await appendHomeSessionMessages(sessionId, [
-          ...transcript.items,
-          { role: "event", kind: "error", text: `Home run failed: ${userError}`, createdAt: new Date().toISOString(), ...(failedUsage ? { usage: failedUsage } : {}) },
-        ]);
-        ctx.emitFor(sessionId, { type: "error", text: `Home run failed: ${userError}` });
-        if (failedUsage && usageText) ctx.emitFor(sessionId, { type: "usage", text: usageText, usage: failedUsage });
-        throw error;
+        // Shared interruption tail (run-lane.ts): one implementation for both
+        // lanes — the private copies had already drifted once.
+        return await handleRunInterruption(laneIo, error);
       }
 
-      flushThinking();
-      await appendHomeSessionMessages(sessionId, [
-        ...transcript.items,
-        { role: "assistant", text: result.response, createdAt: new Date().toISOString(), usage: result.usage, context: result.context },
-      ]);
+      // Shared success tail: flush thinking + persist transcript + final row.
+      return await persistRunSuccess(laneIo, result);
 
       let deletedScripts: string[] = [];
       try {
@@ -346,7 +233,7 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
         await recordHomeRunFiles(sessionId, runStartMs, result.response);
       } catch { /* best effort */ }
 
-      const nextSessionMemory = appendEntryLog(session.memory, result.memoryEntry, {
+      const nextSessionMemory = appendEntryLog(sessionMemoryAtStart, result.memoryEntry, {
         maxEntries: SESSION_MEMORY_ENTRY_CAP,
         maxChars: SESSION_MEMORY_CHAR_CAP,
         separator: "\n\n",
@@ -366,10 +253,7 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
       } catch { /* memory is best-effort */ }
 
       return result.response;
-    } finally {
-      releaseRunSlot(ctx.activeRunSessions, sessionId);
-      endCommandRun(sessionId);
-    }
+    });
   });
 
   ipcMain.handle("home:cancel", (_event, sessionId?: string) => {

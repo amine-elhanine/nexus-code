@@ -12,6 +12,8 @@ import { ChatItemView, ActivityGroupView, StreamingAssistantMessage } from "../c
 import { fileIcon } from "../utils/format.js";
 import { ATTACHMENT_ACCEPT, formatAttachmentSize, isImageAttachment, openChatAttachment } from "../utils/attachments.js";
 import { insertAtCursor } from "../utils/textarea.js";
+import { useAutosizeTextarea } from "../state/useComposer.js";
+import { ChatShell } from "../components/chat/ChatShell.js";
 import { formatCost } from "../types.js";
 import type { ChatItem, FileEntry, ProviderConfig, ProviderDefinition, AgentUsage, AgentContextUsageSnapshot, ArtifactItem, ChatAttachment, SkillInfo, WorkspaceDiffFile } from "../types.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
@@ -1006,14 +1008,8 @@ export function AgentView({
   const [showComposerMenu, setShowComposerMenu] = useState(false);
   const [activeCodePill, setActiveCodePill] = useState<string | null>(null);
 
-  // Auto-resize textarea seamlessly (matching Home mode)
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    const nextHeight = Math.min(Math.max(el.scrollHeight, 28), 180);
-    el.style.height = `${nextHeight}px`;
-  }, [draft]);
+  // Auto-resize textarea (shared composer hook, Code-tuned 28-180px)
+  useAutosizeTextarea(textareaRef, draft, { min: 28, max: 180 });
 
   // ZCode-style change summary: collapsed "N files changed +a −d" row whose
   // file list expands underneath.
@@ -1027,52 +1023,6 @@ export function AgentView({
     [diffFiles]
   );
 
-  useEffect(() => {
-    const el = transcriptRef.current;
-    // Respect the stick flag even while a run is active — the previous
-    // `|| running` bypass yanked the transcript back down on every re-render,
-    // making it impossible to scroll up and read history mid-task.
-    if (el && stickToBottomRef.current) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [messages, liveEvents, streamingText, running]);
-
-  // Keep pinned to bottom when lazy visual content (e.g. images, charts, diagrams) loads or resizes
-  useEffect(() => {
-    const el = transcriptRef.current;
-    if (!el) return;
-
-    const handleImageLoaded = () => {
-      // Only follow when the user is still pinned — the old `distFromBottom`
-      // allowance re-pinned short Code-mode transcripts (where any scroll is
-      // within a few hundred px of the bottom) and yanked the view down
-      // mid-run.
-      if (stickToBottomRef.current) {
-        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-      }
-    };
-    window.addEventListener("nexus:chat-image-loaded", handleImageLoaded);
-
-    let prevHeight = el.scrollHeight;
-    let observer: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== "undefined") {
-      observer = new ResizeObserver(() => {
-        // Same rule as the streaming effect: the stick flag is the only
-        // authority. Resizing content must never override a deliberate scroll.
-        if (stickToBottomRef.current && el.scrollHeight !== prevHeight) {
-          el.scrollTop = el.scrollHeight;
-        }
-        prevHeight = el.scrollHeight;
-      });
-      observer.observe(el);
-      Array.from(el.children).forEach((child) => observer?.observe(child));
-    }
-
-    return () => {
-      window.removeEventListener("nexus:chat-image-loaded", handleImageLoaded);
-      observer?.disconnect();
-    };
-  }, [messages.length, liveEvents.length, streamingText]);
 
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
@@ -1446,14 +1396,11 @@ export function AgentView({
           </div>
         </div>
       )}
-      <div
+      <ChatShell
         className="agent-transcript"
-        ref={transcriptRef}
-        onScroll={() => {
-          const el = transcriptRef.current;
-          if (!el) return;
-          stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 240;
-        }}
+        transcriptRef={transcriptRef}
+        stickRef={stickToBottomRef}
+        scrollKey={`${messages.length}:${liveEvents.length}:${streamingText}:${running}`}
       >
         {!messages.length && (
           <div className="empty-agent codex-hero">
@@ -1501,7 +1448,7 @@ export function AgentView({
           <StreamingAssistantMessage text={streamingText} onOpenArtifact={onOpenArtifact} />
         )}
         <div ref={bottomAnchorRef} className="transcript-bottom-anchor" style={{ height: 1, minHeight: 1, flexShrink: 0 }} />
-      </div>
+      </ChatShell>
       {checkpointId && !running && (diffCount > 0 || (undoLevels || 0) > 0) && (
         <div className="rollback-anchor">
           <div className="rollback-card">

@@ -8,13 +8,16 @@
 import { app, BrowserWindow, ipcMain, shell, session, protocol, net } from "electron";
 import path from "node:path";
 import { existsSync, promises as fs } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { setApprovalNotifier } from "./approval-service.js";
 import { onNotebookJobProgress, recoverInterruptedJobs } from "./notebook-jobs.js";
+import { recoverInterruptedGenerationJobs } from "./notebook-generation-jobs.js";
 import { terminalService } from "./terminal-service.js";
 import { daemonService } from "./daemon-service.js";
 import { agentBrowserService } from "./browser-service.js";
 import { updaterService } from "./updater-service.js";
+import { stopAllPluginProcesses } from "./plugin-process-host.js";
+import { shutdownMcp } from "./agentcore/mcp.js";
 import { ensureHomeDir } from "./home-service.js";
 import { attachmentFileName } from "./attachment-utils.js";
 import { ensureBuiltinToolCatalog } from "./agent/builtin-tool-catalog.js";
@@ -129,11 +132,15 @@ function createWindow() {
     return { action: "deny" };
   });
   // A top-level navigation away from the app shell is never legitimate —
-  // renderer XSS must not be able to pivot the window to a attacker page.
+  // renderer XSS must not be able to pivot the window to an attacker page.
   // The initial loadURL/loadFile does not fire this; user/link navigations do.
+  // file:// is restricted to the app's own shell document: any other local
+  // HTML file would otherwise load with this window's plugins: capability.
+  const appShellUrl = pathToFileURL(path.join(__dirname, "../dist/index.html")).href;
   mainWindow.webContents.on("will-navigate", (event, url) => {
     const allowed =
-      url.startsWith("file://") ||
+      url === appShellUrl ||
+      url.startsWith(appShellUrl + "#") ||
       url.startsWith("devtools://") ||
       url.startsWith("nexus-attachment://") ||
       /^https?:\/\/127\.0\.0\.1:5173/.test(url);
@@ -159,7 +166,39 @@ function createWindow() {
 function emit(event: AgentEvent) {
   mainWindow?.webContents.send("agent:event", event);
 }
+// Token/thinking deltas used to cross the process boundary one IPC message
+// per chunk — tens of thousands of tiny sends (each cloning its payload) on
+// a long fast answer, with no way for the renderer to apply backpressure.
+// Buffer them per session and flush every ~40ms; any non-stream event is
+// sent immediately AFTER a flush so the renderer's ordering contract (tool /
+// status events close the speculative text burst) is preserved. The run-tail
+// events (assistant/usage/error) flush the buffer, so nothing is ever lost.
+const STREAM_FLUSH_MS = 40;
+type StreamBuffer = { tokens: string[]; thinking: string[]; timer: ReturnType<typeof setTimeout> | undefined };
+const streamBuffers = new Map<string, StreamBuffer>();
+function flushStreamBuffer(sessionId: string, buf: StreamBuffer) {
+  if (buf.timer) { clearTimeout(buf.timer); buf.timer = undefined; }
+  streamBuffers.delete(sessionId);
+  const now = new Date().toISOString();
+  if (buf.tokens.length) emit({ type: "token", text: buf.tokens.join(""), sessionId, timestamp: now });
+  if (buf.thinking.length) emit({ type: "thinking", text: buf.thinking.join(""), sessionId, timestamp: now });
+}
 function emitFor(sessionId: string, event: Omit<AgentEvent, "sessionId" | "timestamp">) {
+  if (event.type === "token" || event.type === "thinking") {
+    let buf = streamBuffers.get(sessionId);
+    if (!buf) {
+      buf = { tokens: [], thinking: [], timer: undefined };
+      streamBuffers.set(sessionId, buf);
+    }
+    if (event.type === "token") buf.tokens.push(event.text ?? "");
+    else buf.thinking.push(event.text ?? "");
+    if (!buf.timer) {
+      buf.timer = setTimeout(() => flushStreamBuffer(sessionId, buf as StreamBuffer), STREAM_FLUSH_MS);
+    }
+    return;
+  }
+  const buf = streamBuffers.get(sessionId);
+  if (buf && (buf.tokens.length || buf.thinking.length)) flushStreamBuffer(sessionId, buf);
   emit({ ...event, sessionId, timestamp: new Date().toISOString() });
 }
 function requireRoot() { if (!activeProjectRoot) throw new Error("Select or create a project first."); return activeProjectRoot; }
@@ -243,6 +282,13 @@ app.whenReady().then(async () => {
       if (requeued) console.log(`[notebook] recovered ${requeued} interrupted ingestion job(s).`);
     })
     .catch(() => { /* best effort */ });
+  // Generation job table: "running" records can only mean the app died or
+  // restarted mid-job — mark them failed so the history stays honest.
+  void recoverInterruptedGenerationJobs()
+    .then((recovered) => {
+      if (recovered) console.log(`[notebook] marked ${recovered} interrupted generation job(s) as failed.`);
+    })
+    .catch(() => { /* best effort */ });
 
   // Domain IPC routes (channel names / payloads identical to before).
   registerHomeRoutes(ipcContext);
@@ -269,9 +315,28 @@ app.whenReady().then(async () => {
   }
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
-app.on("before-quit", () => {
-  void daemonService.stopAllDaemons().catch(() => {});
-  terminalService.killAll();
-  agentBrowserService.destroy();
+// Async child-process shutdown. before-quit cannot await (the process exits
+// once the handler returns), which previously let the app quit before daemon
+// kills landed on Windows and never stopped plugin runners or MCP stdio
+// servers at all. will-quit supports preventDefault: hold quit, stop every
+// child-process owner, then re-enter quit. The shutdownDone guard makes the
+// second pass fall through.
+let shutdownChildrenDone = false;
+app.on("will-quit", (event) => {
+  if (shutdownChildrenDone) return;
+  event.preventDefault();
+  void (async () => {
+    try {
+      await Promise.allSettled([
+        daemonService.stopAllDaemons(),
+        stopAllPluginProcesses(),
+        shutdownMcp(),
+      ]);
+    } catch { /* allSettled never rejects; belt for listener errors */ }
+    terminalService.killAll();
+    agentBrowserService.destroy();
+    shutdownChildrenDone = true;
+    app.quit();
+  })();
 });
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });

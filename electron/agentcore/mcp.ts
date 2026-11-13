@@ -23,6 +23,12 @@ async function closeCache() {
   cache = null;
 }
 
+/** Close every cached MCP client (stdio transports spawn child processes —
+ *  call at app shutdown so they don't outlive the app). */
+export async function shutdownMcp(): Promise<void> {
+  await closeCache();
+}
+
 export function onMcpConfigChanged(listener: () => void) { void listener; }
 
 function fingerprint(servers: McpServerConfig[]) {
@@ -51,10 +57,24 @@ async function connectClient(server: McpServerConfig): Promise<Client | null> {
   if (!transport) return null;
   const client = new Client({ name: "nexus", version: "0.5.0" });
   const timeoutMs = 20_000;
-  await Promise.race([
-    client.connect(transport),
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${server.name || server.id} connection timed out after ${timeoutMs / 1000}s`)), timeoutMs)),
-  ]);
+  let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      client.connect(transport),
+      new Promise<never>((_, reject) => {
+        timeoutTimer = setTimeout(() => reject(new Error(`${server.name || server.id} connection timed out after ${timeoutMs / 1000}s`)), timeoutMs);
+      }),
+    ]);
+  } catch (error) {
+    // The losing side of the race must not leak: on timeout the connect
+    // attempt keeps running with its spawned transport (stdio servers are
+    // child processes) unless the client is closed. Without this, every
+    // timed-out stdio server left one orphan process behind.
+    try { await client.close(); } catch { /* never connected or already closed */ }
+    if (timeoutTimer) clearTimeout(timeoutTimer);
+    throw error;
+  }
+  if (timeoutTimer) clearTimeout(timeoutTimer);
   return client;
 }
 

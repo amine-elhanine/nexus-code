@@ -8,7 +8,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { createNotebookAgentBackend } from "./notebook-agent-backend.js";
-import { getSkillsConfig, listProviders } from "./store.js";
+import { getAppSettings, getSkillsConfig, listProviders } from "./store.js";
 import { cosine, embedQuery } from "./notebook-embeddings.js";
 import { notebookFlags } from "./notebook-flags.js";
 import type { AgentPromptAsset } from "./prompt-assets.js";
@@ -22,7 +22,8 @@ import {
   type SessionLibrary,
   type VectorPartition,
 } from "./notebook-library.js";
-import { notebookSessionDir, saveNotebookNote, type NotebookSourceCitation, type NotebookAgentStep } from "./notebook-store.js";
+import { ensureNotebookAlive, getNotebookMemory, notebookSessionDir, saveNotebookMemory, saveNotebookNote, type NotebookSourceCitation, type NotebookAgentStep } from "./notebook-store.js";
+import { addMemoryFact, createHomeMemoryTool, removeMemoryFactWithCount, selectRelevantHomeMemory } from "./home-memory-service.js";
 import {
   composeContextBlock,
   composeContextBlockIndexed,
@@ -69,6 +70,8 @@ export type RetrievedChunk = {
   headingPath: string[];
   text: string;
   summary?: string;
+  /** 1-based source page/slide when the parser knows page boundaries. */
+  page?: number;
   semantic: number;
   lexical: number;
   graphBoost: number;
@@ -216,12 +219,18 @@ function reciprocalRankFusion(ranks: number[][], k = 60): number[] {
 // re-parse) once per notebook; lexical retrieval still serves this query.
 const driftReindexed = new Set<string>();
 async function handleEmbeddingDrift(notebookId: string, indexModel: string): Promise<void> {
+  // The entry only spans one in-flight rebuild: after success it is removed so
+  // a SECOND embedding-model change is detected instead of being silently
+  // ignored until process restart. A loop is impossible because a successful
+  // rebuild leaves the partition matching the current model — drift is only
+  // detected on a genuine mismatch.
   if (driftReindexed.has(notebookId)) return;
   driftReindexed.add(notebookId);
   console.warn(`[notebook] embedding model changed since indexing (index: ${indexModel}) — rebuilding vectors from library.`);
   try {
     const { reindexSessionFromLibrary } = await import("./notebook-jobs.js");
     await reindexSessionFromLibrary(notebookId);
+    driftReindexed.delete(notebookId);
   } catch (error) {
     console.warn("[notebook] drift reindex failed:", error instanceof Error ? error.message : error);
     driftReindexed.delete(notebookId);
@@ -262,7 +271,7 @@ export async function hybridRetrieve(
     return vec && vec.length === queryVec.length ? cosine(queryVec, vec) : 0;
   });
   const queryTokens = notebookTokens(query);
-  const docTokens = corpus.map((c) => notebookTokens(`${c.text} ${c.headingPath.join(" ")}`));
+  const docTokens = corpus.map((c) => memoChunkTokens(c));
   const lexical = bm25Scores(queryTokens, docTokens);
   const maxLex = Math.max(1, ...lexical);
 
@@ -333,6 +342,7 @@ export async function hybridRetrieve(
       headingPath: c.headingPath,
       text: c.text,
       summary: section?.summary,
+      ...(typeof c.page === "number" ? { page: c.page } : {}),
       semantic: semantic[i],
       lexical: lexical[i],
       graphBoost: graphBoost[i],
@@ -682,6 +692,26 @@ async function runNotebookAgent(
     options.onStatus?.("Reading source passage with surrounding context…");
     const passage = await getChunkPassage(notebookId, chunkId);
     if (!passage) return "Passage not found. Search again with search_notebook_sources.";
+    // Register the deep-read passage as a first-class citation slot, exactly
+    // like search results. Without this, a claim grounded via a passage READ
+    // had no [Sn] to cite — the model either reused a number from an earlier
+    // search (pointing at a DIFFERENT passage, the mis-citation class the
+    // run-stable registry exists to kill) or invented one, which
+    // evaluateCitationCoverage then flags as unresolved. Scores are 0: a
+    // verification read is not a retrieval ranking.
+    const citationIndex = registerCitation({
+      chunkId: passage.chunkId,
+      sourceId: passage.sourceId,
+      sourceName: passage.sourceName,
+      headingPath: passage.headingPath,
+      text: passage.text,
+      semantic: 0,
+      lexical: 0,
+      graphBoost: 0,
+      fused: 0,
+      final: 0,
+      methods: ["read"],
+    });
     const stepTitle = `Read passage: ${passage.headingPath.join(" › ") || passage.sourceName}`;
     const detail = `${passage.sourceName} (${passage.text.length} chars)`;
     const step: NotebookAgentStep = {
@@ -694,7 +724,11 @@ async function runNotebookAgent(
     executedSteps.push(step);
     options.onStep?.(step);
     options.onTool?.("read_notebook_passage", stepTitle, detail);
-    return JSON.stringify({ untrustedNotebookEvidence: true, passage });
+    return JSON.stringify({
+      untrustedNotebookEvidence: true,
+      citation: citationIndex != null ? `[S${citationIndex}]` : "[unregistered]",
+      passage,
+    });
   }, {
     name: "read_notebook_passage",
     description: "Read a specific retrieved passage with its neighboring context and section summary. Use when a retrieved chunk needs deeper examination.",
@@ -771,7 +805,10 @@ async function runNotebookAgent(
   await fs.mkdir(workspace, { recursive: true });
   const runStartMs = Date.now();
 
-  const fileBackend = await createNotebookAgentBackend(workspace, `notebook-${notebookId}`, runId);
+  // Gate parity (Phase 1): honor Settings → edit policy "ask" for notebook
+  // file mutations too, exactly like the Code and Home lanes.
+  const notebookEditPolicy = (await getAppSettings().catch(() => ({}) as { editPolicy?: "auto" | "ask" })).editPolicy === "ask" ? "ask" : "auto";
+  const fileBackend = await createNotebookAgentBackend(workspace, `notebook-${notebookId}`, runId, { editPolicy: notebookEditPolicy });
 
   // Shared skills — the same global library Home and Code use (the user's own
   // uploaded skills) plus bundled system skills, scoped to skills enabled for
@@ -826,7 +863,35 @@ async function runNotebookAgent(
   try {
     options.onStatus?.("Preparing a grounded answer…");
     const llm = await createChatModel(provider, modelName, options.chatEffort ? { reasoningEffort: options.chatEffort } : undefined);
+    // Scoped memory (Phase 3): loaded once per ask; relevant items go into
+    // the prompt, the manage tool below writes it back.
+    const notebookMemoryRaw = await getNotebookMemory(notebookId).catch(() => "");
+    const notebookMemoryForPrompt = notebookMemoryRaw
+      ? selectRelevantHomeMemory(notebookMemoryRaw, question, 1500)
+      : "";
     const agentTools: AgentTool[] = [searchTool, outlineTool, passageTool, evaluateEvidenceTool, saveNoteTool, ...(skillFilesTool ? [skillFilesTool] : []), ...createFilesystemTools(backend)];
+    // Notebook-scoped long-term memory (Phase 3 unification): the SAME shared
+    // primitive Home uses (createHomeMemoryTool), with notebook-scoped
+    // storage — what the assistant learns INSIDE this notebook's research
+    // context stays with the notebook instead of living nowhere.
+    try {
+      const memoryTool = createHomeMemoryTool({
+        name: "manage_notebook_memory",
+        description:
+          "Manage this notebook's long-term memory (scoped to this notebook, separate from Home's global memory). Call when the user asks you to remember something, states an enduring preference about how to study/summarize/answer for THIS notebook (tone, language, depth, focus areas), or asks to forget a past preference. For action='forget', pass the item's EXACT current wording.",
+        onRemember: async (category, fact) => {
+          const latest = await getNotebookMemory(notebookId).catch(() => "");
+          await saveNotebookMemory(notebookId, addMemoryFact(latest, category, fact));
+        },
+        onForget: async (query) => {
+          const latest = await getNotebookMemory(notebookId).catch(() => "");
+          const { memory: next, removed } = removeMemoryFactWithCount(latest, query);
+          if (removed > 0) await saveNotebookMemory(notebookId, next);
+          return removed;
+        },
+      });
+      agentTools.push(memoryTool);
+    } catch { /* memory tool is advisory — never fail a run */ }
     const systemPromptText = `You are an advanced Agentic RAG research assistant for an educational NotebookLM-style workspace.
 Your primary directive is grounded, faithful synthesis over uploaded course materials.
 
@@ -855,7 +920,7 @@ Agentic RAG Guidelines:
 ${skillNote ? `\n${skillNote}` : ""}
 Notebook files: ${summary.files.join(", ") || "(none)"}
 Notebook headings: ${summary.headings.slice(0, 30).join(" | ") || "(none)"}
-Notebook terms: ${summary.terms.slice(0, 40).join(", ") || "(none)"}${options.instructions ? `\nNotebook-specific instructions:\n${options.instructions}` : ""}`;
+Notebook terms: ${summary.terms.slice(0, 40).join(", ") || "(none)"}${options.instructions ? `\nNotebook-specific instructions:\n${options.instructions}` : ""}${notebookMemoryForPrompt ? `\nUser memory for this notebook (durable preferences and facts — respect them; manage with manage_notebook_memory):\n${notebookMemoryForPrompt}` : ""}`;
     const systemPrompt = systemPromptText + buildSkillsSection(skillListings, skillDirs);
     let lastToolSig: string | null = null;
     let toolRepeatCount = 0;
@@ -975,6 +1040,18 @@ async function registerAgentDeliverables(
       }
     }
     if (!fresh.length) return;
+    // A deliverable generated shortly BEFORE the question (e.g. via the
+    // Studio generate flow) also satisfies the mtime grace window and was
+    // registered a SECOND time as a chat deliverable. Exclude anything the
+    // documents store already knows by filename.
+    try {
+      const { listNotebookDocuments } = await import("./notebook-documents.js");
+      const known = new Set((await listNotebookDocuments(notebookId)).map((d) => d.filename));
+      for (let i = fresh.length - 1; i >= 0; i--) {
+        if (known.has(fresh[i].name)) fresh.splice(i, 1);
+      }
+    } catch { /* listing is best-effort — fall back to mtime-only behavior */ }
+    if (!fresh.length) return;
     // Throwaway generator scripts served their purpose — only deliverables remain.
     for (const name of entries) {
       if (!/^generate_.*\.(py|js|mjs|cjs|ts|sh|ps1)$/i.test(name) && !/^generate_doc\.py$/i.test(name)) continue;
@@ -1007,12 +1084,39 @@ async function registerAgentDeliverables(
 
 // ---- Main pipeline ----
 
+// Tokenization memo: every hybridRetrieve call re-tokenized the ENTIRE corpus
+// (BM25 docs + graph postings) — one ask issues up to 4 variant queries plus
+// every agent search call, each re-running the same regex tokenizer over the
+// same chunk texts, O(queries × corpus) on the main process. Chunk ids embed
+// the text content hash, and the memo also verifies the text matches before
+// reusing, so an edit produces a new id and can never serve stale tokens.
+// Small LRU keeps the map bounded across notebooks.
+const TOKEN_MEMO_CAP = 8_000;
+const chunkTokenMemo = new Map<string, { text: string; heading: string; tokens: string[] }>();
+function memoChunkTokens(chunk: { id: string; text: string; headingPath: string[] }): string[] {
+  const heading = chunk.headingPath.join(" ");
+  const memo = chunkTokenMemo.get(chunk.id);
+  if (memo && memo.text === chunk.text && memo.heading === heading) {
+    return memo.tokens;
+  }
+  const tokens = notebookTokens(`${chunk.text} ${heading}`);
+  if (chunkTokenMemo.size >= TOKEN_MEMO_CAP) {
+    const oldest = chunkTokenMemo.keys().next().value;
+    if (oldest !== undefined) chunkTokenMemo.delete(oldest);
+  }
+  chunkTokenMemo.set(chunk.id, { text: chunk.text, heading, tokens });
+  return tokens;
+}
+
 export async function answerNotebookQuestion(
   notebookId: string,
   question: string,
   history: Array<{ role: string; text: string }>,
   options: NotebookRagOptions = {}
 ): Promise<ChatResult> {
+  // Deleting the notebook mid-ask must not resurrect its directory through
+  // the writers' defensive mkdirs — bail before any store access.
+  ensureNotebookAlive(notebookId);
   const root = notebookSessionDir(notebookId);
   const topK = options.topK || 8;
   const summary = await sessionSummary(root, notebookId);
@@ -1026,7 +1130,15 @@ export async function answerNotebookQuestion(
   // providers without tool-call support, and transient agent failures.
   const heuristicForAgent = routeMessageHeuristic(question, termSet);
   const agentResult = await runNotebookAgent(notebookId, question, history, options, summary, snapshot);
-  if (agentResult && (agentResult.sources.length > 0 || heuristicForAgent.action !== "retrieve" || isSessionWideAsk(question))) {
+  // Accept the agent's answer whenever it is substantive, even if it
+  // registered no citations: the old gate (sources required for
+  // heuristic-"retrieve" questions) re-ran the ENTIRE deterministic pipeline
+  // after the user had already watched the agent's answer stream in — double
+  // token cost, a stream-reset flicker, and a second answer — every time the
+  // model replied conversationally. The ungrounded case is still surfaced:
+  // evaluateCitationCoverage runs on the registered citations below.
+  const agentAnswerSubstantive = Boolean(agentResult?.answer && agentResult.answer.trim().length >= 24);
+  if (agentResult && (agentAnswerSubstantive || agentResult.sources.length > 0 || heuristicForAgent.action !== "retrieve" || isSessionWideAsk(question))) {
     return {
       answer: agentResult.answer,
       sources: agentResult.sources,
@@ -1250,6 +1362,7 @@ export async function getChunkPassage(notebookId: string, chunkId: string): Prom
   prevText: string | null;
   nextText: string | null;
   sectionSummary: string | null;
+  page?: number;
 } | null> {
   const root = notebookSessionDir(notebookId);
   const { chunk, prev, next } = await chunkNeighbors(root, notebookId, chunkId);
@@ -1265,5 +1378,6 @@ export async function getChunkPassage(notebookId: string, chunkId: string): Prom
     prevText: prev?.text || null,
     nextText: next?.text || null,
     sectionSummary: section?.summary || null,
+    ...(typeof chunk.page === "number" ? { page: chunk.page } : {}),
   };
 }

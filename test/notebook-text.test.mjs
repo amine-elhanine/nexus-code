@@ -18,6 +18,10 @@ import {
   gateDecision,
   composeContextBlock,
   evaluateCitationCoverage,
+  pageMark,
+  stripPageMarks,
+  extractPageMap,
+  pageAt,
 } from "../dist-electron/notebook-text.js";
 
 let passed = 0;

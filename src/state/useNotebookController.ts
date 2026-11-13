@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { appendThinkingDelta, appendStepLine } from "./agentEventPipeline.js";
+import { useInflightGuard } from "./useComposer.js";
 import type { NotebookAudioOverview, NotebookChat, NotebookDocument, NotebookEmbeddingConfig, NotebookFlashcardSet, NotebookMeta, NotebookMindmap, NotebookNote, NotebookPassage, NotebookQuiz, NotebookQuizType, NotebookRagAnswer, NotebookSettings, NotebookSource, NotebookStats, NotebookSummary, NotebookSummaryLength } from "../types.js";
 
 const INTERMEDIATE_STATUSES = new Set(["uploaded", "parsing", "chunking", "indexing"]);
@@ -17,6 +19,8 @@ export function useNotebookController(enabled: boolean) {
   const [stats, setStats] = useState<NotebookStats | null>(null);
   const [draft, setDraft] = useState("");
   const [asking, setAsking] = useState(false);
+  // Same-tick double-submit guard for ask() (see the comment at its use).
+  const askInflight = useInflightGuard();
   const [notice, setNotice] = useState("");
   const [embedding, setEmbedding] = useState<NotebookEmbeddingConfig>({ providerId: "", model: "text-embedding-3-small" });
   // File scope: excluded source ids. Empty = all files (default).
@@ -243,21 +247,14 @@ export function useNotebookController(enabled: boolean) {
       if (!event.sessionId) return;
       const id = event.sessionId;
       if (event.type === "thinking") {
-        // Reasoning deltas accumulate into one live thinking block per chat,
-        // capped to a tail so marathon reasoning stays renderable.
-        const THINKING_DISPLAY_CAP = 8000;
-        setThinkingByChat((prev) => {
-          const combined = (prev[id] || "") + event.text;
-          return { ...prev, [id]: combined.length > THINKING_DISPLAY_CAP ? combined.slice(combined.length - THINKING_DISPLAY_CAP) : combined };
-        });
+        // Reasoning deltas accumulate into one live thinking block per chat —
+        // shared fold rule (tail cap) from the agentEventPipeline, same as
+        // the Code/Home transcript sink.
+        setThinkingByChat((prev) => ({ ...prev, [id]: appendThinkingDelta(prev[id] || "", event.text) }));
         return;
       }
       if (event.type === "status" || event.type === "tool") {
-        setStepsByChat((prev) => {
-          const current = prev[id] || [];
-          if (!event.text || current[current.length - 1] === event.text) return prev;
-          return { ...prev, [id]: [...current, event.text].slice(-16) };
-        });
+        setStepsByChat((prev) => ({ ...prev, [id]: appendStepLine(prev[id] || [], event.text) }));
         // A tool call closes the current thinking burst — the next reasoning
         // delta starts a fresh thinking block instead of appending to the old one.
         setThinkingByChat((prev) => (prev[id] ? { ...prev, [id]: "" } : prev));
@@ -837,6 +834,15 @@ export function useNotebookController(enabled: boolean) {
     const finalOverride = typeof effortOrTopK === "number" && typeof topKOrOverride === "string" ? topKOrOverride : questionOverride;
 
     if (!activeNotebook || !(finalOverride || draft).trim() || asking) return null;
+    // Same-tick double-submit guard (Home solved the identical race with
+    // submitInflightRef): the `asking` state above is set asynchronously, so
+    // a double Enter inside one event tick passes it twice — the backend
+    // rejects the twin run, but the optimistic user message below would
+    // already duplicate in the transcript. In-flight flag keyed by chat id;
+    // "__new__" covers the not-yet-created chat path.
+    const chatIdForGuard = activeChat?.id || "__new__";
+    if (askInflight.has(chatIdForGuard)) return null;
+    askInflight.start(chatIdForGuard);
     let chat = activeChat;
     if (!chat) {
       const typed = api as unknown as { notebookCreateChat: (id: string) => Promise<NotebookChat> };
@@ -912,6 +918,7 @@ export function useNotebookController(enabled: boolean) {
       return null;
     } finally {
       setAsking(false);
+      askInflight.end(chatIdForGuard);
     }
   }
 

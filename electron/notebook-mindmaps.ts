@@ -3,7 +3,7 @@ import path from "node:path";
 import { attachCitations, composeContextBlock, uid } from "./notebook-text.js";
 import { collectDocumentEvidence, extractDocumentJson, fallbackTitle } from "./notebook-documents.js";
 import { assertNotebookGenerationActive, planNotebookWithLlm } from "./notebook-generation.js";
-import { notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
+import { ensureNotebookAlive, notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
 import { writeFileAtomic } from "./atomic-write.js";
 
 // Grounded mindmap generation for Notebook Mode: a topic tree (roots with
@@ -146,6 +146,8 @@ export async function generateNotebookMindmap(
   notebookId: string,
   input: GenerateMindmapInput
 ): Promise<NotebookMindmap> {
+  // Deleted mid-run → bail instead of resurrecting the directory tree.
+  ensureNotebookAlive(notebookId);
   const status = input.onStatus || (() => {});
   const topic = (input.topic || "").trim() || "overview of the uploaded sources";
   // No user-facing count: the agent sizes the map from the content; the cap

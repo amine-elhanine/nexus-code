@@ -53,6 +53,9 @@ export type LibraryChunk = {
   prevId: string | null;
   nextId: string | null;
   synthQuestions?: string[];
+  /** 1-based source page/slide when the parser knows page boundaries
+   *  (PDF text pages, LlamaParse pages, PPTX slides). Absent otherwise. */
+  page?: number;
 };
 
 export type SessionLibrary = {
@@ -140,19 +143,46 @@ async function withMutationLock<T>(key: string, work: () => Promise<T>): Promise
 const libraryCache = new Map<string, { mtimeMs: number; lib: SessionLibrary }>();
 const vectorCache = new Map<string, VectorPartition>();
 
+// Both caches are process-lifetime and were never evicted: every chunk text
+// and every Float64 vector of every browsed notebook stayed resident until
+// that notebook's own files were written/deleted, so main-process heap grew
+// monotonically with notebook count. Cap them as a small LRU (touch on hit,
+// evict oldest on insert) — a hot notebook reloads from disk on re-entry,
+// which is exactly what the mtime/invalidation design already handles.
+const NOTEBOOK_CACHE_CAP = 4;
+function lruTouch<T>(map: Map<string, T>, key: string): void {
+  const hit = map.get(key);
+  if (hit !== undefined) {
+    map.delete(key);
+    map.set(key, hit);
+  }
+}
+function lruInsert<T>(map: Map<string, T>, key: string, value: T): void {
+  map.delete(key);
+  while (map.size >= NOTEBOOK_CACHE_CAP) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+  map.set(key, value);
+}
+
 export async function loadLibrary(root: string, sessionId: string): Promise<SessionLibrary> {
   const file = libraryPath(root);
   try {
     const stat = await fs.stat(file);
     const cached = libraryCache.get(file);
-    if (cached && cached.mtimeMs === stat.mtimeMs) return cached.lib;
+    if (cached && cached.mtimeMs === stat.mtimeMs) {
+      lruTouch(libraryCache, file);
+      return cached.lib;
+    }
     const lib = await readJson<SessionLibrary | null>(file, null);
     if (!lib || lib.sessionId !== sessionId) return emptyLibrary(sessionId);
     lib.documents = lib.documents || {};
     lib.sections = lib.sections || {};
     lib.chunks = lib.chunks || {};
     lib.order = lib.order || [];
-    libraryCache.set(file, { mtimeMs: stat.mtimeMs, lib });
+    lruInsert(libraryCache, file, { mtimeMs: stat.mtimeMs, lib });
     return lib;
   } catch {
     libraryCache.delete(file);
@@ -166,7 +196,7 @@ export async function saveLibrary(root: string, lib: SessionLibrary): Promise<vo
   await writeJson(file, lib);
   try {
     const stat = await fs.stat(file);
-    libraryCache.set(file, { mtimeMs: stat.mtimeMs, lib });
+    lruInsert(libraryCache, file, { mtimeMs: stat.mtimeMs, lib });
   } catch { /* next load re-reads from disk */ }
 }
 
@@ -310,7 +340,10 @@ async function useSqliteVectors(root: string, sessionId: string): Promise<boolea
 export async function loadVectors(root: string, sessionId: string): Promise<VectorPartition> {
   const file = vectorsPath(root);
   const cached = vectorCache.get(file);
-  if (cached) return cached;
+  if (cached) {
+    lruTouch(vectorCache, file);
+    return cached;
+  }
   let partition: VectorPartition;
   if (await useSqliteVectors(root, sessionId)) {
     partition = await sqliteStore.loadVectorsSqlite(root, sessionId);
@@ -323,7 +356,7 @@ export async function loadVectors(root: string, sessionId: string): Promise<Vect
       partition = stored;
     }
   }
-  vectorCache.set(file, partition);
+  lruInsert(vectorCache, file, partition);
   return partition;
 }
 
@@ -335,7 +368,7 @@ export async function saveVectors(root: string, partition: VectorPartition): Pro
     partition.updatedAt = new Date().toISOString();
     await writeJson(file, partition);
   }
-  vectorCache.set(file, partition);
+  lruInsert(vectorCache, file, partition);
 }
 
 /** Delete-then-upsert for one file's points (never append-only). */

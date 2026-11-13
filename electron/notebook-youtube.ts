@@ -213,6 +213,10 @@ function pickTrack(tracks: CaptionTrack[], preferred = "en"): CaptionTrack | nul
 async function fetchText(url: string): Promise<string> {
   await assertPublicHttpUrl(url);
   const res = await fetch(url, {
+    // A hung connection previously blocked the notebook:importYouTube IPC
+    // forever (the renderer's spinner never cleared). 20s bounds every
+    // YouTube fetch like the rest of the app's net-guarded calls.
+    signal: AbortSignal.timeout(20_000),
     headers: {
       "User-Agent": WATCH_UA,
       "Accept-Language": "en-US,en;q=0.9",
@@ -320,7 +324,7 @@ export async function fetchYouTubeTranscript(rawUrl: string, language = "en"): P
   const vttUrl = track.baseUrl + (track.baseUrl.includes("?") ? "&" : "?") + "fmt=vtt";
   let body: string;
   try {
-    const res = await fetch(vttUrl, { headers: { "User-Agent": WATCH_UA, "Accept-Language": "en-US,en;q=0.9" } });
+    const res = await fetch(vttUrl, { signal: AbortSignal.timeout(20_000), headers: { "User-Agent": WATCH_UA, "Accept-Language": "en-US,en;q=0.9" } });
     if (!res.ok) throw new Error(`caption download failed (HTTP ${res.status})`);
     body = await res.text();
   } catch (error) {

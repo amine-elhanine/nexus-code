@@ -1,12 +1,15 @@
 import React, { useRef, useState, useEffect, useMemo, useCallback, KeyboardEvent, type ReactNode } from "react";
 import {
   Sparkles, Paperclip, ArrowUp, Square, Search, BarChart3, FileText,
-  X, Presentation, Table2, Globe
+  X, Presentation, Table2, Globe, Code2
 } from "lucide-react";
+import { suggestsCodeMode } from "../utils/modeSuggestion.js";
 import { ChatItemView, StreamingAssistantMessage, ActivityGroupView } from "../components/chat/ChatMessageItem.js";
 import { SlashCommandPopup, filterSlashCommands, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
 import { ATTACHMENT_ACCEPT } from "../utils/attachments.js";
 import { insertAtCursor } from "../utils/textarea.js";
+import { useAutosizeTextarea } from "../state/useComposer.js";
+import { ChatShell } from "../components/chat/ChatShell.js";
 import type { ChatItem, ProviderConfig, ProviderDefinition, ChatAttachment, SkillInfo, AgentUsage, AgentContextUsageSnapshot, ArtifactItem } from "../types.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
 import { HomeCanvasDrawer } from "../components/home/HomeCanvasDrawer.js";
@@ -55,6 +58,9 @@ export interface HomeViewProps {
   onRefreshSkills?: () => void;
   onTruncateSession?: (fromIndex: number) => Promise<any>;
   onForkSession?: (fromIndex: number) => Promise<any>;
+  /** Phase 5 mode routing: hands the current draft to Code mode (App switches
+   *  the area and seeds the Code composer). */
+  onHandoffToCode?: (draft: string) => void;
 }
 
 const TOOL_PILLS = [
@@ -125,6 +131,7 @@ export function HomeView({
   customCommands = [],
   onTruncateSession,
   onForkSession,
+  onHandoffToCode,
 }: HomeViewProps) {
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -266,23 +273,13 @@ export function HomeView({
     }
   }, []);
 
-  // Auto-scroll when new messages arrive or streaming updates — but only if
-  // the user is still near the bottom.
+  // Scroll contract (stick flag, autoscroll, lazy-visual re-pin) is owned by
+  // ChatShell; the stick ref stays here because slash-command submits
+  // force-pin before sending.
   const stickToBottomRef = useRef(true);
-  useEffect(() => {
-    if (stickToBottomRef.current) {
-      scrollToBottom(false);
-    }
-  }, [messages, streamingText, liveEvents, running, scrollToBottom]);
 
-  // Clean auto-resize textarea from min 26px up to 160px
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    const nextHeight = Math.min(Math.max(el.scrollHeight, 26), 160);
-    el.style.height = `${nextHeight}px`;
-  }, [draft]);
+  // Clean auto-resize textarea (shared composer hook, Home-tuned 26-160px)
+  useAutosizeTextarea(textareaRef, draft, { min: 26, max: 160 });
 
   const isEmpty = messages.length === 0 && !streamingText && liveEvents.length === 0;
   const matchingCommands = slashQuery !== null ? filterSlashCommands(slashQuery, customCommands) : [];
@@ -353,25 +350,53 @@ export function HomeView({
     textareaRef.current?.focus();
   };
 
+  const saveAndAttachFile = (file: File, fallbackName?: string) => {
+    const fileName = file.name || fallbackName || "attachment";
+    const mimeType = file.type || "application/octet-stream";
+    const isImage = mimeType.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(fileName);
+    const api = typeof window !== "undefined" ? window.nexus : undefined;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const rawUrl = reader.result as string;
+      if (!rawUrl) return;
+      let url = rawUrl;
+      if (api?.saveAttachment) {
+        try {
+          const saved = await api.saveAttachment(rawUrl, fileName);
+          url = saved.url;
+        } catch { /* fallback to rawUrl if saveAttachment fails */ }
+      }
+      setAttachments((prev) => [
+        ...prev,
+        { name: fileName, size: file.size, mimeType, url },
+      ]);
+      if (isImage) {
+        setAttachedImages((prev) => [...prev, url]);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
     for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const reader = new FileReader();
-      reader.onload = () => {
-        const url = reader.result as string;
-        setAttachments((prev) => [
-          ...prev,
-          { name: file.name, size: file.size, mimeType: file.type || "application/octet-stream", url },
-        ]);
-        if (file.type.startsWith("image/")) {
-          setAttachedImages((prev) => [...prev, url]);
-        }
-      };
-      reader.readAsDataURL(file);
+      saveAndAttachFile(files[i]);
     }
     e.target.value = "";
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.startsWith("image/")) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) saveAndAttachFile(file, "pasted-image.png");
+      }
+    }
   };
 
   const latestPlan = extractLatestPlan(liveEvents);
@@ -397,16 +422,12 @@ export function HomeView({
         {/* Main Chat Pane */}
         <div className="home-chat-pane">
 
-        {/* Messages Scroll Area */}
-        <div
+        {/* Messages Scroll Area — scroll contract owned by ChatShell */}
+        <ChatShell
           className="home-messages-viewport"
-          ref={messagesViewportRef}
-          onScroll={() => {
-            const el = messagesViewportRef.current;
-            if (el) {
-              stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 240;
-            }
-          }}
+          transcriptRef={messagesViewportRef}
+          stickRef={stickToBottomRef}
+          scrollKey={`${messages.length}:${liveEvents.length}:${streamingText}:${running}`}
         >
           {isEmpty ? (
             <div className="home-empty-state">
@@ -521,7 +542,7 @@ export function HomeView({
               <div ref={bottomAnchorRef} style={{ height: 1, minHeight: 1, flexShrink: 0 }} />
             </div>
           )}
-        </div>
+        </ChatShell>
 
         {/* Sliding Plan Drawer if an agent task is active */}
         {latestPlan && (
@@ -531,6 +552,35 @@ export function HomeView({
             isInterrupted={latestPlan.isInterrupted}
             onContinue={() => submit("continue")}
           />
+        )}
+
+        {/* Phase 5 mode routing: repo-work drafts get a one-click handoff to
+            Code mode (workspace + LSP + verification tools) instead of Home
+            answering without the project context. Conservative heuristic;
+            the chip is a suggestion, never an auto-route. */}
+        {onHandoffToCode && !running && suggestsCodeMode(draft) && (
+          <button
+            type="button"
+            className="mode-suggestion-chip"
+            onClick={() => onHandoffToCode(draft)}
+            title="Hand this request to Code mode: it runs with your project workspace, language tools, and build verification."
+            style={{
+              alignSelf: "center",
+              marginBottom: 6,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "5px 12px",
+              borderRadius: 999,
+              border: "1px solid var(--border, rgba(255,255,255,0.14))",
+              background: "var(--surface-2, rgba(255,255,255,0.04))",
+              color: "var(--text-secondary, inherit)",
+              fontSize: 12,
+              cursor: "pointer",
+            }}
+          >
+            <Code2 size={12} /> This looks like repo work — open in Code mode
+          </button>
         )}
 
         {/* Sleek Floating Composer (Directly fixes the textarea UI bug) */}
@@ -566,7 +616,10 @@ export function HomeView({
                     </span>
                     <button
                       className="btn-icon-sm"
-                      onClick={() => setAttachments((p) => p.filter((_, i) => i !== idx))}
+                      onClick={() => {
+                        setAttachments((p) => p.filter((_, i) => i !== idx));
+                        setAttachedImages((imgs) => imgs.filter((u) => u !== att.url));
+                      }}
                     >
                       <X size={12} />
                     </button>
@@ -592,6 +645,7 @@ export function HomeView({
                 }
               }}
               onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
               rows={1}
             />
 

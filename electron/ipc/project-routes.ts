@@ -7,8 +7,8 @@ import { existsSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  createSession, deleteProject, deleteSession, getProject, getSession,
-  listProjects, listProviders, listSessions, updateProjectMemory, updateProjectFacts,
+  createSession, deleteProject, deleteSession, getHomeSession, getProject, getSession,
+  listProjects, listProviders, listSessions, updateHomeSession, updateProjectMemory, updateProjectFacts,
   updateSession, upsertProject,
 } from "../store.js";
 import { compactHistory, compactHistoryWithModel, estimateTokens } from "../context-service.js";
@@ -19,6 +19,7 @@ import { discoverProjectRules } from "../rules-service.js";
 import { discardSessionWorktree } from "../worktree-service.js";
 import { removeMemoryFactWithCount } from "../home-memory-service.js";
 import { clearLastRunCheckpoint } from "../agent-service.js";
+import { assertPayload, SessionUpdateSchema } from "./schemas.js";
 import type { MainIpcContext } from "./context.js";
 import { invokeChatText } from "../agentcore/llm/invoke.js";
 
@@ -117,7 +118,13 @@ export function registerProjectRoutes(ctx: MainIpcContext): void {
     ctx.setActive({ projectId, sessionId, projectRoot: project?.root || null });
     return session;
   });
-  ipcMain.handle("session:update", (_event, projectId: string, sessionId: string, patch: Parameters<typeof updateSession>[2]) => updateSession(projectId, sessionId, patch));
+  ipcMain.handle("session:update", (_event, projectId: string, sessionId: string, patch: Parameters<typeof updateSession>[2]) => {
+    // Renderer is untrusted: strict field allowlist so a compromised renderer
+    // cannot overwrite main-owned state (messages/usage/checkpointIds) through
+    // this channel. See SessionUpdateSchema in schemas.ts.
+    assertPayload(SessionUpdateSchema, patch ?? {}, "session update");
+    return updateSession(projectId, sessionId, patch);
+  });
   ipcMain.handle("session:delete", async (_event, projectId: string, sessionId: string) => {
     const project = await getProject(projectId);
     const root = project?.root || ctx.active().projectRoot;
@@ -140,14 +147,39 @@ export function registerProjectRoutes(ctx: MainIpcContext): void {
   ipcMain.handle("memory:session:update", (_event, projectId: string, sessionId: string, memory: string) => updateSession(projectId, sessionId, { memory }));
 
   ipcMain.handle("session:compact", async (_event, payload?: { sessionId?: string; projectId?: string }) => {
-    const root = ctx.requireRoot();
     const sessionId = payload?.sessionId || ctx.active().sessionId;
-    const projectId = payload?.projectId || ctx.active().projectId;
-    if (!projectId || !sessionId) throw new Error("No active session.");
+    const requestedProjectId = payload?.projectId || ctx.active().projectId;
+    if (!sessionId) throw new Error("No active session.");
+    if (ctx.activeRunSessions.has(sessionId)) {
+      throw new Error("Wait for the active run to finish before compacting context.");
+    }
 
-    const project = await getProject(projectId);
-    if (!project) throw new Error("Project not found.");
-    const session = project.sessions.find((s) => s.id === sessionId);
+    let isHomeSession = false;
+    let resolvedProjectId = requestedProjectId;
+    let session = resolvedProjectId
+      ? (await getProject(resolvedProjectId))?.sessions.find((s) => s.id === sessionId)
+      : undefined;
+
+    if (!session) {
+      const homeSession = await getHomeSession(sessionId);
+      if (homeSession) {
+        session = homeSession;
+        isHomeSession = true;
+      }
+    }
+
+    if (!session && payload?.sessionId) {
+      const allProjects = await listProjects();
+      for (const proj of allProjects) {
+        const found = proj.sessions.find((s) => s.id === sessionId);
+        if (found) {
+          session = found;
+          resolvedProjectId = proj.id;
+          break;
+        }
+      }
+    }
+
     if (!session) throw new Error("Session not found.");
 
     const rawProviders = await listProviders();
@@ -196,15 +228,20 @@ export function registerProjectRoutes(ctx: MainIpcContext): void {
       createdAt: new Date().toISOString(),
     }));
 
-    await updateSession(projectId, sessionId, {
-        messages: newMessages,
+    const compactedPatch = {
+      messages: newMessages,
       usage: {
         inputTokens: compactedTokens,
         outputTokens: session.usage?.outputTokens || 0,
         totalTokens: compactedTokens + (session.usage?.outputTokens || 0),
         estimatedCost: session.usage?.estimatedCost ?? null,
       },
-    });
+    };
+    if (isHomeSession) {
+      await updateHomeSession(sessionId, compactedPatch);
+    } else {
+      await updateSession(resolvedProjectId!, sessionId, compactedPatch);
+    }
 
     return { originalTokens, compactedTokens, freedTokens, contextWindow, threshold };
   });

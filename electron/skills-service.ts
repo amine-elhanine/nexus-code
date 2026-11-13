@@ -7,6 +7,7 @@ const app = (electronPkg as any)?.app || (electronPkg as any)?.default?.app;
 const shell = (electronPkg as any)?.shell || (electronPkg as any)?.default?.shell;
 import { z } from "zod";
 import { globalPluginsDir, pluginsDir, pluginSkillDirsWithModes } from "./plugins-service.js";
+import { foldToken, SKILLS_ES_RE } from "./notebook-text.js";
 
 // Skills are plain folders containing a SKILL.md (name + description frontmatter,
 // instructions below). Per-project skills live inside the repository; the global
@@ -716,11 +717,9 @@ function skillTokens(text: string): string[] {
  * collide with unrelated words.
  */
 function singularToken(token: string): string {
-  if (token.length < 5) return token;
-  if (token.endsWith("ies")) return `${token.slice(0, -3)}y`;
-  if (/(?:s|x|z|ch|sh)es$/.test(token)) return token.slice(0, -2);
-  if (token.endsWith("s") && !token.endsWith("ss")) return token.slice(0, -1);
-  return token;
+  // Shared foldToken (notebook-text.js) with this scorer's historical behavior
+  // preserved exactly: case-sensitive, tokens < 5 untouched, wider -es folding.
+  return foldToken(token, { lowercase: false, minStemLength: 5, esRe: SKILLS_ES_RE });
 }
 
 function foldedTokenSet(tokens: string[]): Set<string> {

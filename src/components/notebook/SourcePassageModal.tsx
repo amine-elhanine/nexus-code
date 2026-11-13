@@ -10,7 +10,10 @@ export function SourcePassageModal({ passage, onClose, onAction }: { passage: No
   return (
     <Modal
       title={passage.sourceName}
-      subtitle={passage.headingPath.length ? passage.headingPath.join(" › ") : "Source passage"}
+      subtitle={
+        (passage.headingPath.length ? passage.headingPath.join(" › ") : "Source passage") +
+        (typeof passage.page === "number" ? `  ·  page ${passage.page}` : "")
+      }
       onClose={onClose}
     >
       <div className="passage-body">
