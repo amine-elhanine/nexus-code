@@ -181,7 +181,14 @@ async function remoteEmbedOpenAiCompatible(endpoint: { baseUrl?: string; apiKey?
     const batch = texts.slice(offset, offset + batchSize);
     let batchRows: number[][] | null = null;
     let lastError: Error | null = null;
-    for (const candidate of tries) {
+    // Two attempts per batch with a short backoff: a 1000-chunk file makes
+    // ~63 sequential requests, and previously ONE transient failure flipped
+    // the WHOLE index to the local-hash fallback (embedTexts catches any
+    // remote error) — silently destroying retrieval quality for users who
+    // configured a real embedding provider.
+    for (let attempt = 0; attempt < 2 && !batchRows; attempt++) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 400));
+      for (const candidate of tries) {
       try {
         const res = await fetch(`${candidate}/embeddings`, {
           method: "POST",
@@ -205,6 +212,7 @@ async function remoteEmbedOpenAiCompatible(endpoint: { baseUrl?: string; apiKey?
         lastError = new Error("Embeddings endpoint returned an unexpected shape.");
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
+      }
       }
     }
     if (!batchRows) throw lastError || new Error("Embeddings request failed.");

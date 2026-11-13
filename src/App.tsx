@@ -301,7 +301,7 @@ export function App() {
       });
     });
   };
-  const home = useHomeController(area === "home");
+  const home = useHomeController();
   const notebook = useNotebookController(area === "notebook");
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -739,8 +739,10 @@ export function App() {
     setAttachmentPreview(null);
   }, [home.activeSession?.id]);
 
-  const currentSessionUsage = getSessionUsage(activeSession);
-  const currentSessionContextUsage = getSessionContextUsage(activeSession);
+  // Memoized: each call iterates the session's ENTIRE message array, and this
+  // ran unmemoized on every App render — i.e. once per streamed token.
+  const currentSessionUsage = useMemo(() => getSessionUsage(activeSession), [activeSession]);
+  const currentSessionContextUsage = useMemo(() => getSessionContextUsage(activeSession), [activeSession]);
 
   // Electron Updater & System status
   const [updater, setUpdater] = useState<UpdaterState>({ status: "idle" });
@@ -784,7 +786,13 @@ export function App() {
     setShowSettings(true);
   }
 
-  // Keyboard Shortcuts
+  // Keyboard Shortcuts. The area-switch handlers are read through a ref:
+  // enterHome/enterCode/enterNotebook are plain (non-useCallback) functions
+  // recreated on every render of useAppController, so listing them as deps
+  // removed and re-added this window keydown listener on EVERY App render —
+  // i.e. once per streamed token.
+  const areaActionsRef = useRef({ enterHome, enterCode, enterNotebook, openSettingsSection });
+  areaActionsRef.current = { enterHome, enterCode, enterNotebook, openSettingsSection };
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       const mod = event.ctrlKey || event.metaKey;
@@ -798,21 +806,21 @@ export function App() {
         setSidebarCollapsed((v) => !v);
       } else if (key === ",") {
         event.preventDefault();
-        openSettingsSection("appearance");
+        areaActionsRef.current.openSettingsSection("appearance");
       } else if (key === "1") {
         event.preventDefault();
-        void enterHome();
+        void areaActionsRef.current.enterHome();
       } else if (key === "2") {
         event.preventDefault();
-        void enterCode();
+        void areaActionsRef.current.enterCode();
       } else if (key === "3") {
         event.preventDefault();
-        enterNotebook();
+        areaActionsRef.current.enterNotebook();
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [enterHome, enterCode, enterNotebook]);
+  }, []);
 
   // Filtered sessions for Home mode
   const filteredHomeSessions = useMemo(() => {
@@ -845,7 +853,10 @@ export function App() {
   return (
     <div className={`app-root ${isLightTheme ? "theme-light" : ""}`} data-theme={currentThemeId}>
 
-      {/* Main Collapsible Sidebar */}
+      {/* Main Collapsible Sidebar. Inline error boundary: the main view stage
+          already had one, but a crash in the sidebar previously blanked the
+          whole window (no boundary covered it). */}
+      <ErrorBoundary variant="inline" label="sidebar">
       <aside className={`app-sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
         {/* Sidebar Header */}
         <div className="sidebar-header">
@@ -969,7 +980,15 @@ export function App() {
                         <div
                           key={s.id}
                           className={`history-item ${isActive ? "active" : ""}`}
+                          role="button"
+                          tabIndex={0}
                           onClick={() => void home.selectChat(s.id)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              void home.selectChat(s.id);
+                            }
+                          }}
                         >
                           {isEditing ? (
                             <input
@@ -1115,7 +1134,15 @@ export function App() {
                                   <div
                                     key={s.id}
                                     className={`history-item ${isActive ? "active" : ""}`}
+                                    role="button"
+                                    tabIndex={0}
                                     onClick={() => void openProjectSession(p.id, s.id)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter" || e.key === " ") {
+                                        e.preventDefault();
+                                        void openProjectSession(p.id, s.id);
+                                      }
+                                    }}
                                   >
                                     <MessageSquare size={12} style={{ flexShrink: 0 }} />
                                     <span className="history-item-label">{s.title || "Untitled task"}</span>
@@ -1235,6 +1262,7 @@ export function App() {
           </div>
         )}
       </aside>
+      </ErrorBoundary>
 
       {/* Main View Area */}
       <main className="app-main">
@@ -1265,6 +1293,10 @@ export function App() {
                   sessionTitle={home.activeSession?.title}
                   onTruncateSession={(idx) => home.truncateChat(idx)}
                   onForkSession={(idx) => home.forkChat(idx)}
+                  onHandoffToCode={(text) => {
+                    void enterCode();
+                    setDraft(text);
+                  }}
                   attachedImages={home.attachedImages}
                   setAttachedImages={home.setAttachedImages}
                   attachments={home.attachments}
@@ -1397,8 +1429,8 @@ export function App() {
                         }}
                         onOpenExtensions={() => setShowSkills(true)}
                         codeRightSidebarOpen={codeRightSidebarOpen}
-                        tasksCount={Math.max(inspectorTasks.length, 31)}
-                        goalsCount={Math.max(inspectorGoals.length, 2)}
+                        tasksCount={inspectorTasks.length}
+                        goalsCount={inspectorGoals.length}
                         onOpenInspector={() => {
                           setInspectorTabOpen(true);
                           setCodeRightSidebarOpen(true);
@@ -2298,7 +2330,10 @@ export function App() {
         </div>
       </main>
 
-      {/* Global Modals & Palettes */}
+      {/* Global Modals & Palettes. Inline boundary: modals were outside every
+          error boundary, so one throw during modal render unmounted the whole
+          root to a blank window. */}
+      <ErrorBoundary variant="inline" label="modals">
       {showCommandPalette && (
         <CommandPalette
           open={showCommandPalette}
@@ -2499,7 +2534,7 @@ export function App() {
           onCancel={() => setConfirmDialog(null)}
         />
       )}
-    
+      </ErrorBoundary>
 
       {/* Top Window Controls (anchored right: 150px so header buttons receive clicks directly) */}
       <div className="window-drag-region">

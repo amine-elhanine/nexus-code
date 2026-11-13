@@ -31,7 +31,8 @@
     "dist:dir": "npm run build && electron-builder --dir",
     "cli": "node scripts/agent-cli.mjs",
     "eval:agent": "npm run build:electron && node scripts/eval-agent.mjs",
-    "eval:notebook": "npm run build:electron && node scripts/eval-notebook.mjs"
+    "eval:notebook": "npm run build:electron && node scripts/eval-notebook.mjs",
+    "test:terminal-ipc": "npm run build:electron && node test/verify-terminal-ipc.mjs"
   },
   "build": {
     "appId": "com.nexus.app",

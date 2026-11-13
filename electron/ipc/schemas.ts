@@ -331,3 +331,14 @@ export const SessionUpdateSchema = z.object({
     effort: OptionalEffort,
   }).optional(),
 }).strict();
+
+// home:sessions:update patch — the Home-lane mirror of SessionUpdateSchema.
+// Deliberately STRICT: the renderer legitimately sends only {title} (rename)
+// and {memory} (session-memory reset/roll-forward) — see useHomeController.
+// messages/usage/model are main-owned (home:run persists them, usage is
+// recomputed server-side) and a compromised renderer must not be able to
+// overwrite a Home transcript wholesale through this channel.
+export const HomeSessionUpdateSchema = z.object({
+  title: z.string().max(300).optional(),
+  memory: z.string().max(100_000).optional(),
+}).strict();

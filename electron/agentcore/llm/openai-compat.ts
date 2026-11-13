@@ -253,10 +253,12 @@ export function createOpenAICompatClient(options: OpenAiCompatOptions): ChatClie
     const calls = new Map<string, { id: string; name: string; json: string }>();
     let usage: Usage | undefined;
     let stopReason: "stop" | "tool" | "length" = "stop";
+    let sawAnyChunk = false;
 
     for await (const payload of sse.events()) {
       let data: any;
       try { data = JSON.parse(payload); } catch { continue; }
+      sawAnyChunk = true;
       const type = data?.type ?? "";
       if (type === "response.output_text.delta" && typeof data.delta === "string") {
         text += data.delta;
@@ -278,6 +280,14 @@ export function createOpenAICompatClient(options: OpenAiCompatOptions): ChatClie
         const last = resp.output?.filter((o: any) => o.type === "function_call").length;
         if (last) stopReason = "tool";
       }
+    }
+
+    if (!sawAnyChunk) {
+      // Same silent-failure guard the chat-completions path has: HTTP 200
+      // wrapping an error payload that ends the stream before ANY event
+      // (no response.completed either) must surface as a retryable error,
+      // not as a fabricated empty answer after tool work was already done.
+      throw new Error("empty response");
     }
 
     const toolCalls: ToolCall[] = [...calls.values()].filter((c) => c.name).map((c) => {

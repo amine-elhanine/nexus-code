@@ -61,10 +61,25 @@ function toBlob(vector: number[] | Float64Array): Buffer {
 }
 
 function fromBlob(blob: Uint8Array): Float64Array {
+  if (blob.byteLength % 8 !== 0) {
+    // A non-multiple-of-8 row is corrupt — fail loudly instead of silently
+    // truncating (the old constructor call would throw a confusing
+    // RangeError that broke the whole vector load).
+    throw new Error(`Corrupt vector blob: ${blob.byteLength} bytes is not a multiple of 8.`);
+  }
   const bytes = Buffer.from(blob.buffer, blob.byteOffset, blob.byteLength);
   // Zero-copy view — the whole point of the sqlite store (the old
-  // Array.from<number[]> doubled heap usage on every snapshot load).
-  return new Float64Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 8);
+  // Array.from<number[]> doubled heap usage on every snapshot load) — but
+  // ONLY when the underlying byteOffset is 8-byte aligned: pooled buffers
+  // usually are, and a misaligned view throws RangeError, which one bad row
+  // turned into a failure of the entire loadVectorsSqlite. Copy defensively
+  // in that rare case.
+  if (bytes.byteOffset % 8 === 0) {
+    return new Float64Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 8);
+  }
+  const aligned = new Float64Array(bytes.byteLength / 8);
+  for (let i = 0; i < aligned.length; i++) aligned[i] = bytes.readDoubleLE(i * 8);
+  return aligned;
 }
 
 /** node:sqlite has no transaction helper — explicit BEGIN/COMMIT/ROLLBACK. */

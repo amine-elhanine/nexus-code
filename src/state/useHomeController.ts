@@ -9,6 +9,12 @@ import type {
 } from "../types.js";
 import { getSessionUsage } from "../utils/format.js";
 import { createAgentEventSink } from "./agentEventPipeline.js";
+import { useInflightGuard } from "./useComposer.js";
+
+// Stable empty identities (same pattern as useAppController): a fresh `[]`
+// allocated per render broke effects keyed on message/event arrays.
+const EMPTY_MESSAGES: ChatItem[] = [];
+const EMPTY_EVENTS: ChatItem[] = [];
 
 export type HomeFile = { path: string; name: string; size: number; modified: string };
 export type HomeMemoryStructureView = {
@@ -28,7 +34,13 @@ export function sortHomeSessions(list: SessionRecord[]): SessionRecord[] {
   });
 }
 
-export function useHomeController(enabled = true) {
+export function useHomeController() {
+  // NOTE: this controller is mounted unconditionally (like useAppController):
+  // Home runs keep streaming events even while the user is in Code/Notebook,
+  // and the sinks filter by session ids. The old `enabled` parameter was
+  // never read — dead API that suggested gating that didn't exist. It was
+  // removed rather than implemented: real gating needs a refetch-on-reenter
+  // path (useNotebookController's pattern) to be safe.
   const api = window.nexus;
 
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
@@ -57,7 +69,7 @@ export function useHomeController(enabled = true) {
   liveEventsRef.current = liveEvents;
   // Guards re-submits within the same tick (before runningSessionIds state
   // propagates) — see submit below.
-  const submitInflightRef = useRef<Set<string>>(new Set());
+  const submitInflight = useInflightGuard();
   const activeSessionRef = useRef<SessionRecord | null>(null);
   activeSessionRef.current = activeSession;
   const sessionsRef = useRef<SessionRecord[]>([]);
@@ -342,8 +354,8 @@ export function useHomeController(enabled = true) {
       // Drop re-submits while this chat's run is still active (e.g. double
       // Enter during silent setup) — the backend rejects twins, but the
       // optimistic user message below would already corrupt the transcript.
-      if (submitInflightRef.current.has(sessionId)) return;
-      submitInflightRef.current.add(sessionId);
+      if (submitInflight.has(sessionId)) return;
+      submitInflight.start(sessionId);
       const imagesToSend = [...attachedImages];
       const attachmentsToSend = [...attachments];
 
@@ -391,8 +403,21 @@ export function useHomeController(enabled = true) {
         });
       } catch (error) {
         console.error("Home agent run failed", error);
+        const msg = error instanceof Error ? error.message : String(error || "Home agent run failed");
+        setActiveSession((curr) => {
+          if (!curr || curr.id !== sessionId) return curr;
+          const tail = curr.messages[curr.messages.length - 1] as ChatItem | undefined;
+          if (tail?.role === "event" && tail?.kind === "error" && tail?.text === msg) return curr;
+          return {
+            ...curr,
+            messages: [
+              ...curr.messages,
+              { role: "event", kind: "error", text: msg, createdAt: new Date().toISOString() },
+            ],
+          };
+        });
       } finally {
-        submitInflightRef.current.delete(sessionId);
+        submitInflight.end(sessionId);
         setRunningSessionIds((curr) => {
           const next = new Set(curr);
           next.delete(sessionId);
@@ -427,8 +452,11 @@ export function useHomeController(enabled = true) {
   }, [api]);
 
   const running = Boolean(activeSession && runningSessionIds.has(activeSession.id));
-  const currentMessages = (activeSession?.messages || []) as ChatItem[];
-  const liveEventsForActive = activeSession ? liveEvents[activeSession.id] || [] : [];
+  // Stable empty identities (same pattern as useAppController's
+  // EMPTY_MESSAGES/EMPTY_EVENTS): a fresh `[]` per render broke effects keyed
+  // on these, re-firing them spuriously while nothing changed.
+  const currentMessages = (activeSession?.messages || EMPTY_MESSAGES) as ChatItem[];
+  const liveEventsForActive = activeSession ? liveEvents[activeSession.id] || EMPTY_EVENTS : EMPTY_EVENTS;
   const currentSessionUsage = useMemo(
     () => (activeSession ? getSessionUsage(activeSession) : null),
     [activeSession]

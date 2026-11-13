@@ -71,15 +71,19 @@ function stateFor(runId: string = DEFAULT_RUN_ID): RunState {
   return state;
 }
 
+function killChild(child: ChildProcess) {
+  try {
+    if (process.platform === "win32" && child.pid) {
+      spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+    } else {
+      child.kill("SIGKILL");
+    }
+  } catch { /* child already exited */ }
+}
+
 function killChildren(state: RunState) {
   for (const child of state.children) {
-    try {
-      if (process.platform === "win32" && child.pid) {
-        spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
-      } else {
-        child.kill("SIGKILL");
-      }
-    } catch { /* child already exited */ }
+    killChild(child);
   }
   state.children.clear();
 }
@@ -103,7 +107,9 @@ export function isCommandRunCancelled(runId: string = DEFAULT_RUN_ID) {
 export function cancelCommandRun(runId?: string) {
   // No id → cancel everything (fallback for stray callers); with an id only
   // that run's flag is set and only its process trees are killed.
-  const targets = runId ? [runId] : [...runStates.keys()];
+  const targets = runId
+    ? [runId]
+    : [...new Set([...runStates.keys(), ...detachedChildren.keys()])];
   for (const id of targets) {
     const state = runStates.get(id);
     if (!state) continue;
@@ -112,9 +118,34 @@ export function cancelCommandRun(runId?: string) {
       state.abortController.abort();
     } catch { /* ignore */ }
     killChildren(state);
+    // Also terminate children the run already detached (background jobs that
+    // outlived the run) — without this, cancelling a session could never
+    // stop a run_background process from a previous, already-ended run.
+    const detached = detachedChildren.get(id);
+    if (detached) {
+      for (const child of detached) killChild(child);
+      detachedChildren.delete(id);
+    }
   }
 }
+// Background jobs (run_background) may legitimately outlive their run — a
+// started dev server should keep serving after the agent turn ends. But they
+// must remain killable: endCommandRun adopts still-live children into a
+// detached set keyed by the same run id so a later cancelCommandRun (agent:cancel
+// / home:cancel) can terminate them. Exited children remove themselves from
+// the set (see the exit handler in runProcess), so it self-cleans.
+const detachedChildren = new Map<string, Set<ChildProcess>>();
 export function endCommandRun(runId: string = DEFAULT_RUN_ID) {
+  const state = runStates.get(runId);
+  if (state?.children.size) {
+    const detached = detachedChildren.get(runId) ?? new Set();
+    for (const child of state.children) {
+      // Only adopt children still running (exitCode is null until exit).
+      if (child.exitCode == null && child.pid) detached.add(child);
+    }
+    if (detached.size) detachedChildren.set(runId, detached);
+    else detachedChildren.delete(runId);
+  }
   runStates.delete(runId);
   sessionShellState.delete(runId);
 }
@@ -151,6 +182,10 @@ function runProcess(shell: string, args: string[], options: { cwd: string; env?:
       windowsVerbatimArguments: process.platform === "win32",
     }, (error, stdout, stderr) => {
       state.children.delete(child);
+      // Detached children (adopted by endCommandRun, see below) clean
+      // themselves up too so a long-lived background job never leaks a dead
+      // reference after it exits on its own.
+      for (const detached of detachedChildren.values()) detached.delete(child);
       if (error) { (error as any).stdout = stdout; (error as any).stderr = stderr; reject(error); }
       else resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
     });

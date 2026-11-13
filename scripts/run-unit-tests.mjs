@@ -91,6 +91,7 @@ const UNIT_TESTS = [
   "test/command-sticky-cwd.test.mjs",
   "test/session-fork-truncate.test.mjs",
   "test/notebook-audio.test.mjs",
+  "test/notebook-generation-jobs.test.mjs",
   // Previously orphaned (not wired into any runner) — revived:
   "test/chart-blocks.test.mjs",
   "test/chat-deliverables-dedup.test.mjs",

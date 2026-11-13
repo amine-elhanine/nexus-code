@@ -3,7 +3,7 @@ import path from "node:path";
 import { composeContextBlock, uid } from "./notebook-text.js";
 import { collectDocumentEvidence, extractDocumentJson, fallbackTitle } from "./notebook-documents.js";
 import { assertNotebookGenerationActive, planNotebookWithLlm } from "./notebook-generation.js";
-import { notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
+import { ensureNotebookAlive, notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
 import { writeFileAtomic } from "./atomic-write.js";
 
 // Rich summary generation for Notebook Mode: an overview plus themed
@@ -128,6 +128,8 @@ export async function generateNotebookSummary(
   notebookId: string,
   input: GenerateSummaryInput
 ): Promise<NotebookSummary> {
+  // Deleted mid-run → bail instead of resurrecting the directory tree.
+  ensureNotebookAlive(notebookId);
   const status = input.onStatus || (() => {});
   const topic = (input.topic || "").trim() || "overview of the uploaded sources";
   const length = normalizeSummaryLength(input.length);

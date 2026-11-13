@@ -273,6 +273,7 @@ const nexusApi = {
   notebookGenerateSummary: (payload: { notebookId: string; topic?: string; length?: "brief" | "standard" | "detailed"; fileIds?: string[]; providerId?: string; model?: string }) => invoke("notebook:summaries:generate", payload),
   notebookDeleteSummary: (notebookId: string, summaryId: string) => invoke("notebook:summaries:delete", notebookId, summaryId),
   notebookChats: (notebookId: string) => invoke("notebook:chats", notebookId),
+  notebookGenerationJobs: (notebookId?: string) => invoke("notebook:generation-jobs:list", notebookId),
   notebookCreateChat: (notebookId: string, title?: string) => invoke("notebook:createChat", notebookId, title),
   notebookDeleteChat: (notebookId: string, chatId: string) => invoke("notebook:deleteChat", notebookId, chatId),
   notebookRetrieve: (notebookId: string, query: string, topK?: number) => invoke("notebook:retrieve", notebookId, query, topK),

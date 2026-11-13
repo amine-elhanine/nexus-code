@@ -20,6 +20,27 @@ import type { ChatItem } from "../types.js";
 
 export const THINKING_DISPLAY_CAP = 8000;
 
+// ── Shared fold rules ────────────────────────────────────────────────────────
+// The Code/Home transcript sink and the Notebook per-chat buffers follow the
+// same rules: thinking deltas fold into one block with a tail cap, consecutive
+// duplicate step lines collapse, and a tool call closes the thinking burst.
+// These helpers are the ONE implementation — the sink below and the notebook
+// controller both call them, so the rules can't drift again.
+
+/** Fold one thinking delta into the running block (tail-capped). */
+export function appendThinkingDelta(current: string, delta: string, cap: number = THINKING_DISPLAY_CAP): string {
+  const combined = (current || "") + (delta || "");
+  return combined.length > cap ? combined.slice(combined.length - cap) : combined;
+}
+
+const STEP_LINES_CAP = 16;
+
+/** Append one step/status line, collapsing exact consecutive duplicates. */
+export function appendStepLine(current: string[], line: string, cap: number = STEP_LINES_CAP): string[] {
+  if (!line || current[current.length - 1] === line) return current;
+  return [...current, line].slice(-cap);
+}
+
 export type AgentEventSinkOptions = {
   liveEventsRef: { current: Record<string, ChatItem[]> };
   thinkingAccRef: { current: Record<string, string> };
@@ -49,10 +70,7 @@ export function createAgentEventSink(options: AgentEventSinkOptions) {
       // Reasoning deltas fold into ONE live thinking step per session —
       // the block grows in place instead of flooding the feed with a row
       // per token. Capped to a tail so marathon reasoning stays renderable.
-      const combined = (thinkingAccRef.current[bucket] || "") + event.text;
-      thinkingAccRef.current[bucket] = combined.length > THINKING_DISPLAY_CAP
-        ? combined.slice(combined.length - THINKING_DISPLAY_CAP)
-        : combined;
+      thinkingAccRef.current[bucket] = appendThinkingDelta(thinkingAccRef.current[bucket], event.text);
       const text = thinkingAccRef.current[bucket];
       const log = liveEventsRef.current[bucket] || [];
       const last = log[log.length - 1];

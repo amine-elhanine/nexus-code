@@ -27,7 +27,20 @@ export function registerBrowserRoutes(ctx: MainIpcContext): void {
   agentBrowserService.setSender((msg) => {
     ctx.window()?.webContents.send("browser:agent-request", msg);
   });
+  // Renderer → main bridge reply. Shape-checked before it reaches the pending
+  // map: a compromised renderer could otherwise feed fabricated snapshots or
+  // eval results into an agent's browser tool context. Unknown ids are
+  // dropped by handleReply itself; only the envelope is validated here.
   ipcMain.on("browser:agent-reply", (_event, payload: AgentBrowserResponse) => {
+    if (
+      !payload ||
+      typeof payload !== "object" ||
+      typeof (payload as { id?: unknown }).id !== "string" ||
+      !(payload as { id?: unknown }).id ||
+      !((payload as { reply?: unknown }).reply && typeof (payload as { reply?: unknown }).reply === "object")
+    ) {
+      return;
+    }
     agentBrowserService.handleReply(payload);
   });
   ipcMain.handle("browser:headless:get", () => agentBrowserService.isHeadless());

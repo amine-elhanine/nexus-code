@@ -12,8 +12,15 @@ export type TrajectoryStep = {
   usage?: { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null };
 };
 
+// Trajectory JSONL is append-only per session and includes full tool-call
+// args, so a long-lived session grew without bound. Cap: rotate once at 10
+// MB (transcript.jsonl → transcript.1.jsonl), bounding a session at ~20 MB —
+// recent history stays in the primary file the viewer reads.
+const MAX_TRAJECTORY_BYTES = 10 * 1024 * 1024;
+
 export class TrajectoryLogger {
   private logPath: string;
+  private prevPath: string;
   private stepCount = 0;
   // Ordered, non-blocking writes: chained so the hot tool-event loop never
   // awaits disk I/O, while lines still land in step order.
@@ -23,10 +30,21 @@ export class TrajectoryLogger {
     const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
     const dir = path.join(projectRoot, ".nexus", "trajectories", safeSessionId);
     this.logPath = path.join(dir, "transcript.jsonl");
+    this.prevPath = path.join(dir, "transcript.1.jsonl");
   }
 
   async init(): Promise<void> {
     await fs.mkdir(path.dirname(this.logPath), { recursive: true });
+  }
+
+  // Serialized behind this.tail, so no rename/write race is possible.
+  private async rotateIfNeeded(): Promise<void> {
+    try {
+      const stat = await fs.stat(this.logPath);
+      if (stat.size < MAX_TRAJECTORY_BYTES) return;
+      await fs.rm(this.prevPath, { force: true });
+      await fs.rename(this.logPath, this.prevPath);
+    } catch { /* missing file — append continues either way */ }
   }
 
   log(step: Omit<TrajectoryStep, "step_index" | "timestamp">): Promise<void> {
@@ -38,7 +56,10 @@ export class TrajectoryLogger {
     };
     const logPath = this.logPath;
     this.tail = this.tail
-      .then(() => fs.appendFile(logPath, JSON.stringify(entry) + "\n", "utf8"))
+      .then(async () => {
+        await this.rotateIfNeeded();
+        await fs.appendFile(logPath, JSON.stringify(entry) + "\n", "utf8");
+      })
       .catch(() => {
         // Non-blocking log failure
       });

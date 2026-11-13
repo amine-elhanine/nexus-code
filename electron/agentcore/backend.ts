@@ -102,7 +102,12 @@ export class WorkspaceBackend implements AgentBackend {
     const normalized = `/${virtualPath.replace(/^\/+/, "")}`;
     for (const [prefix, backend] of Object.entries(this.mounts)) {
       const clean = `/${prefix.replace(/^\/+|\/+$/g, "")}`;
-      if (normalized === clean || normalized.startsWith(`${clean}/`) || normalized.startsWith(clean)) {
+      // Exact match or true path-boundary prefix only. The old bare
+      // `startsWith(clean)` clause matched anything that merely BEGINS with
+      // the prefix text ("/global-skillsfoo/x.md" routed into /global-skills),
+      // sending workspace paths to the mounted backend instead of the
+      // workspace one.
+      if (normalized === clean || normalized.startsWith(`${clean}/`)) {
         return { backend, key: normalized.slice(clean.length) || "/" };
       }
     }
@@ -369,23 +374,44 @@ export async function getAgentBackend(project: ProjectRecord, options: BackendRu
   });
 
   if (options.editPolicy === "ask" && !options.fullAccess) {
-    const gate = (action: string, original: any) => async (filePath: string, ...rest: any[]) => {
-      const decision = await requestCommandApproval({
-        runId: options.runId,
-        approvalKey: "file-edit",
-        command: `${action} ${filePath}`,
-        cwd: root,
-        reason: "Edit approval is on: file changes wait for your confirmation.",
-      });
-      if (decision === "deny") throw new Error(`Edit denied by the user: ${action} on ${filePath} was not approved. Do not retry the same change; explain what you intended instead.`);
-      return (original as (...args: any[]) => unknown)(filePath, ...rest);
-    };
-    for (const action of ["write", "edit", "delete"] as const) {
-      const original = backend[action]?.bind(backend);
-      if (original) backend[action] = gate(action, original) as any;
-    }
+    applyEditApprovalGate(backend, root, options.runId);
   }
 
+  applyPostEditDiagnostics(backend, root);
+  return { backend, workspace: root };
+}
+
+/**
+ * Edit-approval gate: wraps write/edit/delete behind the run's approval UI.
+ * Shared by BOTH backend factories (getAgentBackend and the notebook
+ * backend) — the notebook factory previously omitted it entirely, so Settings
+ * → editPolicy "ask" was silently ignored for notebook file mutations.
+ */
+export function applyEditApprovalGate(backend: WorkspaceBackend, root: string, runId?: string): void {
+  const gate = (action: string, original: any) => async (filePath: string, ...rest: any[]) => {
+    const decision = await requestCommandApproval({
+      runId,
+      approvalKey: "file-edit",
+      command: `${action} ${filePath}`,
+      cwd: root,
+      reason: "Edit approval is on: file changes wait for your confirmation.",
+    });
+    if (decision === "deny") throw new Error(`Edit denied by the user: ${action} on ${filePath} was not approved. Do not retry the same change; explain what you intended instead.`);
+    return (original as (...args: any[]) => unknown)(filePath, ...rest);
+  };
+  for (const action of ["write", "edit", "delete"] as const) {
+    const original = backend[action]?.bind(backend);
+    if (original) backend[action] = gate(action, original) as any;
+  }
+}
+
+/**
+ * LSP post-edit diagnostics: after write/edit, run the language server over
+ * the touched file and append its diagnostics to the tool result so the agent
+ * sees breakage immediately instead of discovering it at verify time.
+ * Shared by both backend factories (notebook previously had none).
+ */
+export function applyPostEditDiagnostics(backend: WorkspaceBackend, root: string): void {
   for (const action of ["write", "edit"] as const) {
     const orig = backend[action]?.bind(backend) as ((filePath: string, ...rest: any[]) => unknown) | undefined;
     if (orig) {
@@ -400,7 +426,6 @@ export async function getAgentBackend(project: ProjectRecord, options: BackendRu
       };
     }
   }
-  return { backend, workspace: root };
 }
 
 /**

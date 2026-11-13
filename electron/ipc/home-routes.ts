@@ -11,6 +11,7 @@ import { deleteSessionTelemetry } from "../artifacts-service.js";
 import { parseHomeMemory, removeMemoryFact } from "../home-memory-service.js";
 import { getArtifactVersions, restoreArtifactVersion, snapshotArtifactVersion } from "../home-artifact-service.js";
 import type { MainIpcContext } from "./context.js";
+import { assertPayload, HomeSessionUpdateSchema } from "./schemas.js";
 
 export function registerHomeRoutes(_ctx: MainIpcContext): void {
   ipcMain.handle("home:get", async () => {
@@ -20,7 +21,17 @@ export function registerHomeRoutes(_ctx: MainIpcContext): void {
   ipcMain.handle("home:sessions:list", () => listHomeSessions());
   ipcMain.handle("home:sessions:create", (_event, title?: string) => createHomeSession(title));
   ipcMain.handle("home:sessions:activate", async (_event, sessionId: string) => getHomeSession(sessionId));
-  ipcMain.handle("home:sessions:update", (_event, sessionId: string, patch: Parameters<typeof updateHomeSession>[1]) => updateHomeSession(sessionId, patch));
+  ipcMain.handle("home:sessions:update", (_event, sessionId: string, patch: Parameters<typeof updateHomeSession>[1]) => {
+    // STRICT parity with session:update (see HomeSessionUpdateSchema): the
+    // renderer may only rename and write session memory — messages/usage/
+    // model are main-owned (home:run persists them, usage is recomputed
+    // server-side). The id is bounded too, mirroring the other lanes.
+    assertPayload(HomeSessionUpdateSchema, patch ?? {}, "home session update");
+    if (typeof sessionId !== "string" || !sessionId || sessionId.length > 200) {
+      throw new Error("Invalid session id.");
+    }
+    return updateHomeSession(sessionId, patch);
+  });
   ipcMain.handle("home:sessions:delete", async (_event, sessionId: string, options?: { deleteFiles?: boolean }) => {
     const root = await ensureHomeDir();
     if (options?.deleteFiles && root) {

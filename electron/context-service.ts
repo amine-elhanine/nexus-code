@@ -51,20 +51,28 @@ export function isContextWindowError(error: unknown): boolean {
 }
 
 /** Rough token estimate of a single agent message (content + tool-call args). */
+// Flat per-image token estimate for vision blocks. Vision models consume a
+// roughly constant ~1-2k tokens per image regardless of encoded size —
+// counting the base64 data-URL's CHARACTERS (~550k "tokens" for a 2 MB
+// image) inflated estimates ~300×, triggering spurious condensation,
+// premature context relaunches, and a wrong context meter on image runs.
+const IMAGE_TOKEN_ESTIMATE = 1_600;
+
 export function estimateMessageTokens(message: any): number {
   if (!message) return 0;
   const content = message.content ?? message.text ?? "";
   let chars = 0;
+  let imageParts = 0;
   if (typeof content === "string") chars = content.length;
   else if (Array.isArray(content)) {
     for (const part of content) {
       if (typeof part === "string") chars += part.length;
       else if (part?.text) chars += String(part.text).length;
-      else if (part?.url || part?.image_url?.url) chars += String(part.url ?? part.image_url?.url).length;
+      else if (part?.url || part?.image_url?.url) imageParts += 1;
       else chars += JSON.stringify(part).length;
     }
   }
-  let tokens = Math.ceil(chars / 3.8);
+  let tokens = Math.ceil(chars / 3.8) + imageParts * IMAGE_TOKEN_ESTIMATE;
   const calls = Array.isArray(message.toolCalls) ? message.toolCalls : Array.isArray(message.tool_calls) ? message.tool_calls : [];
   for (const call of calls) {
     try { tokens += Math.ceil(JSON.stringify(call?.args ?? {}).length / 3.8) + 8; } catch { tokens += 24; }

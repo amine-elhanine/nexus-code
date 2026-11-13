@@ -5,6 +5,13 @@ interface Props {
   children: React.ReactNode;
   /** Shown in the console report so crash reports identify the subtree. */
   label?: string;
+  /**
+   * "modal" (default): full-screen crash card for the main view stage.
+   * "inline": a compact muted box that degrades just the wrapped region —
+   * used for the sidebar, modals, and individual chat messages, where one
+   * malformed message must not blank the whole window.
+   */
+  variant?: "modal" | "inline";
 }
 
 interface State {
@@ -24,6 +31,40 @@ export class ErrorBoundary extends React.Component<Props, State> {
 
   render(): React.ReactNode {
     if (!this.state.error) return this.props.children;
+    if (this.props.variant === "inline") {
+      return (
+        <div
+          role="alert"
+          className="error-boundary-inline"
+          style={{
+            margin: 8,
+            padding: "10px 12px",
+            borderRadius: 8,
+            border: "1px solid var(--border, rgba(255,255,255,0.1))",
+            color: "var(--warning)",
+            fontSize: 12,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <AlertTriangle size={13} />
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {this.props.label ? `Could not render ${this.props.label}` : "Could not render this item"}
+            {this.state.error.message ? ` — ${this.state.error.message.slice(0, 120)}` : ""}
+          </span>
+          <button
+            type="button"
+            className="secondary"
+            style={{ marginLeft: "auto", fontSize: 11, padding: "2px 8px" }}
+            onClick={() => this.setState({ error: null })}
+            title="Try rendering this item again"
+          >
+            <RotateCcw size={11} /> Retry
+          </button>
+        </div>
+      );
+    }
     return (
       <div className="modal-layer">
         <div

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type SetStateAction } from "react";
 import type { SlashCommand } from "../components/chat/SlashCommandPopup.js";
 import { nowIso } from "../utils/format.js";
 import { createAgentEventSink } from "./agentEventPipeline.js";
+import { useInflightGuard } from "./useComposer.js";
 import { isKnownBinaryFile } from "../utils/binaryFiles.js";
 import { resolveModelEfforts } from "../utils/modelEfforts.js";
 import type {
@@ -164,6 +165,12 @@ export function useAppController() {
   const thinkingAccRef = useRef<Record<string, string>>({});
   const activeSessionRef = useRef<SessionRecord | null>(null);
   activeSessionRef.current = activeSession ?? null;
+  // Same-tick double-submit guard (shared composer hook — see submit).
+  const submitInflight = useInflightGuard();
+  // Latest editor state for post-run refreshes (see loadWorkspace).
+  const activeFileRef = useRef<string | null>(null);
+  activeFileRef.current = activeFile;
+  const dirtyRef = useRef(false);
   // Same pattern for the project: the mount-only event subscription below
   // must read the current project, not the mount-time one.
   const activeProjectRef = useRef<ProjectRecord | null>(null);
@@ -198,6 +205,7 @@ export function useAppController() {
   const [undoing, setUndoing] = useState(false);
 
   const dirty = fileContent !== savedContent;
+  dirtyRef.current = dirty;
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId);
   const definition = providerDefinitions.find((provider) => provider.id === selectedProvider?.provider) || providerDefinitions[0];
   // Stable empty identities: fresh `[]` literals here would change identity on
@@ -385,6 +393,13 @@ export function useAppController() {
   }
 
   async function loadWorkspace() {
+    // activeFile/dirty are read through refs: this runs as a post-run refresh
+    // from submit's closure, where the captured state is the value from RUN
+    // START — a file opened or edits typed during a long run were invisible,
+    // and `dirty === false` from the stale closure let the reload overwrite
+    // the user's unsaved buffer. (Same ref pattern as activeSessionRef.)
+    const currentActiveFile = activeFileRef.current;
+    const currentDirty = dirtyRef.current;
     try {
       const paths = await api.listWorkspace();
       const mapped = paths.map((p) => ({
@@ -399,10 +414,10 @@ export function useAppController() {
       // nothing valid is open. Project switches reset explicitly via
       // resetWorkspace() before calling this.
       setOpenFiles((current) => current.filter((file) => mapped.some((entry) => entry.path === file && entry.kind === "file")));
-      if (activeFile && mapped.some((entry) => entry.path === activeFile && entry.kind === "file")) {
-        if (!dirty) {
+      if (currentActiveFile && mapped.some((entry) => entry.path === currentActiveFile && entry.kind === "file")) {
+        if (!currentDirty) {
           try {
-            const result = await api.readFile(activeFile);
+            const result = await api.readFile(currentActiveFile);
             setFileContent(result.content);
             setSavedContent(result.content);
           } catch { /* keep the current buffer */ }
@@ -671,6 +686,14 @@ export function useAppController() {
     const rawRequest = (overrideRequest || draft).trim();
     const hasFiles = attachedImages.length > 0 || attachments.length > 0;
     if ((!rawRequest && !hasFiles) || running) return;
+    // Same-tick double-submit guard (shared composer hook): `running` state
+    // is set asynchronously, so a double Enter inside one event tick passes
+    // the state check twice — the backend rejects the twin run, but the
+    // optimistic user message below would already duplicate in the transcript
+    // (Home and Notebook got this first; Code had the same hole).
+    const submitKey = activeSession?.id || "__new__";
+    if (submitInflight.has(submitKey)) return;
+    submitInflight.start(submitKey);
     // Attachment-only sends get a readable transcript line; the agent still
     // receives the extracted file contents via attachmentDocs.
     const request = rawRequest || `Please review the attached file${attachments.length === 1 ? "" : "s"}: ${attachments.map((a) => a.name).join(", ")}`;
@@ -793,6 +816,7 @@ export function useAppController() {
         return next;
       });
       setStreamingText("");
+      submitInflight.end(submitKey);
     }
   }
 

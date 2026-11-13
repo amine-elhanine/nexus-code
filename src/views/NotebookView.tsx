@@ -5,11 +5,13 @@ import {
   FolderArchive, MoreVertical, Workflow, Compass, AlertCircle, Clock, Cpu, UploadCloud, Headphones, Code2,
 } from "lucide-react";
 import { ModelSelect } from "./AgentView.js";
+import { useAutosizeTextarea } from "../state/useComposer.js";
 import { ActivityGroupView, CopyTextButton } from "../components/chat/ChatMessageItem.js";
 import { SlashCommandPopup, filterSlashCommands, type SlashCommand } from "../components/chat/SlashCommandPopup.js";
 import { RichMarkdown } from "../components/common/RichMarkdown.js";
 import { timeLabel } from "../utils/format.js";
 import { SourcePassageModal, type PassageAction } from "../components/notebook/SourcePassageModal.js";
+import { ChatShell } from "../components/chat/ChatShell.js";
 import { DocumentViewerModal } from "../components/notebook/DocumentViewerModal.js";
 import { QuizPlayerModal } from "../components/notebook/QuizPlayerModal.js";
 import { FlashcardPlayerModal } from "../components/notebook/FlashcardPlayerModal.js";
@@ -86,6 +88,21 @@ function getSourceIcon(filename: string) {
   return <FileText size={14} className="file-icon-text" />;
 }
 
+/**
+ * Turn registered inline [Sn] citation markers into clickable anchors that the
+ * assistant-message wrapper intercepts (deep-links to the passage). Only
+ * markers with a registered citation become anchors — a fabricated [S9]
+ * stays literal text, which keeps the honesty signal visible. The `(?!\()`
+ * guard avoids double-wrapping markers already written as markdown links.
+ */
+function linkInlineCitations(text: string, citations?: NotebookCitation[]): string {
+  if (!text || !citations?.length) return text;
+  const known = new Set(citations.map((c) => c.index));
+  return text.replace(/\[(S(\d+))\](?!\()/g, (match, label, num) =>
+    known.has(Number(num)) ? `[${label}](#cite-${label})` : match
+  );
+}
+
 function CitationHoverChip({
   citation,
   onOpenPassage,
@@ -109,6 +126,7 @@ function CitationHoverChip({
       >
         <span className="citation-tag">[S{citation.index}]</span>
         <span className="citation-name">{citation.sourceName} — {citation.heading}</span>
+        {typeof citation.page === "number" && <span className="citation-page" title="Source page/slide">· p. {citation.page}</span>}
         <span className="citation-score">{(citation.score || 1).toFixed(2)}</span>
       </button>
 
@@ -577,6 +595,8 @@ export function NotebookView({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const askTextareaRef = useRef<HTMLTextAreaElement>(null);
+  // Auto-resize ask textarea (shared composer hook, Home-tuned dimensions)
+  useAutosizeTextarea(askTextareaRef, draft, { min: 26, max: 160 });
 
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
@@ -835,22 +855,9 @@ export function NotebookView({
     setEditingName(null);
   }
 
-  // Keep the chat pinned to the latest message / streamed token.
+  // Scroll contract (stick-to-bottom, autoscroll, lazy-visual re-pin) is
+  // owned by ChatShell — one implementation for all three chat areas.
   const messageCount = activeChat?.messages.length || 0;
-  useEffect(() => {
-    const el = transcriptRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messageCount, asking, streaming]);
-
-  useEffect(() => {
-    const el = transcriptRef.current;
-    if (!el) return;
-    const handleImageLoaded = () => {
-      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-    };
-    window.addEventListener("nexus:chat-image-loaded", handleImageLoaded);
-    return () => window.removeEventListener("nexus:chat-image-loaded", handleImageLoaded);
-  }, []);
 
   const latestAnswer = [...(activeChat?.messages || [])].reverse().find((message) => message.role === "assistant" && message.text.trim());
 
@@ -1432,7 +1439,7 @@ export function NotebookView({
 
         {/* Middle: chatting interface */}
         <div className="notebook-main">
-          <div className="agent-transcript" ref={transcriptRef}>
+          <ChatShell className="agent-transcript" transcriptRef={transcriptRef} scrollKey={`${messageCount}:${asking}:${streaming}`}>
             {!activeChat && <div className="empty-pane">Starting the chat… upload sources on the left, then ask.</div>}
             {activeChat && sources.length > 0 && (
               <div className="nb-overview-card">
@@ -1536,7 +1543,25 @@ export function NotebookView({
                   <time>{timeLabel(message.createdAt)}</time>
                 </div>
                 {message.role === "assistant" ? (
-                  <RichMarkdown source={message.text} className="chat-message-text" />
+                  // Inline [Sn] markers become clickable anchors that deep-link
+                  // to the source passage (the same CitationHoverChip targets):
+                  // citations were reachable only through the collapsed list
+                  // below, so a claim's evidence took two clicks to find.
+                  <div
+                    onClickCapture={(e) => {
+                      const anchor = (e.target as HTMLElement).closest("a");
+                      const href = anchor?.getAttribute("href") || "";
+                      const match = /^#cite-S(\d+)$/.exec(href);
+                      if (!match) return;
+                      const cite = message.citations?.find((c) => c.index === Number(match[1]));
+                      if (!cite) return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onOpenPassage(cite.chunkId);
+                    }}
+                  >
+                    <RichMarkdown source={linkInlineCitations(message.text, message.citations)} className="chat-message-text" />
+                  </div>
                 ) : (
                   <div className="chat-text">{message.text}</div>
                 )}
@@ -1673,7 +1698,7 @@ export function NotebookView({
                 <span className="stream-caret">▍</span>
               </div>
             )}
-          </div>
+          </ChatShell>
           <div className="agent-input-area">
             <SlidingPlanDrawer
               plan={latestPlan?.plan}

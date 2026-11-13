@@ -19,6 +19,9 @@ import { WidgetBlock } from "../chat/WidgetBlock.js";
 
 let mermaidSequence = 0;
 let mermaidConfigured = false;
+// Track which theme mermaid was last initialized with: diagrams were
+// hardcoded to "dark" and ignored the app's light theme.
+let mermaidTheme = "";
 
 const truncate = (label: string, maxLen = 12) =>
   label.length > maxLen ? `${label.slice(0, maxLen - 1)}…` : label;
@@ -328,9 +331,13 @@ function MermaidBlock({ source }: { source: string }) {
       try {
         const { default: mermaid } = await import("mermaid");
         if (!alive) return;
-        if (!mermaidConfigured) {
-          mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "dark" });
+        // (Re)initialize when the app theme flips: light theme gets mermaid's
+        // "default" (light) palette instead of the previous hardcoded "dark".
+        const theme = document.documentElement.classList.contains("theme-light") ? "default" as const : "dark" as const;
+        if (!mermaidConfigured || mermaidTheme !== theme) {
+          mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme });
           mermaidConfigured = true;
+          mermaidTheme = theme;
         }
         const rendered = await mermaid.render(id, source.trim());
         if (alive) setSvg(rendered.svg);

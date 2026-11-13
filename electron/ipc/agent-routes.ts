@@ -21,12 +21,12 @@ import { isGitRepo, getSessionWorktree } from "../worktree-service.js";
 import { agentBrowserService } from "../browser-service.js";
 import { isProjectRunRequest } from "../task-routing.js";
 import { cancelCommandApprovals } from "../approval-service.js";
-import { resolveImageForModel, resolveAttachmentBytes } from "../attachment-utils.js";
 import { pushCheckpoint } from "../checkpoint-stack.js";
 import { isLikelyDevServerCommand, extractLocalDevServerUrl, waitForLocalServer } from "../project-preview.js";
 import { assertPayload, AgentRunSchema, AgentCancelSchema } from "./schemas.js";
 import { buildResumeNote, collectResumeContext } from "../resume-note.js";
 import { acquireRunSlot, releaseRunSlot } from "./run-guard.js";
+import { messagesToHistory, resolveModelImages, processRunAttachments, seedPreviousContextTokens, createRunTranscript, withRunSlot, collectRunResume, handleRunInterruption, persistRunSuccess, type RunLaneIo } from "./run-lane.js";
 import type { MainIpcContext } from "./context.js";
 
 // Each run collects its own transcript events so they can be persisted to the
@@ -50,13 +50,13 @@ export function registerAgentRoutes(ctx: MainIpcContext): void {
     const projectId = payload.projectId || ctx.active().projectId;
     if (!projectId || !sessionId) throw new Error("Create a session first.");
     ctx.setActive({ sessionId, projectId });
-    await acquireRunSlot(ctx.activeRunSessions, sessionId);
-    beginCommandRun(sessionId);
+    // Slot lifecycle handled by withRunSlot (shared with home:run).
+    return await withRunSlot({ ctx, sessionId }, async () => {
     const transcript: RunTranscript = { items: [] };
     // Prelude heartbeat: if the run ever wedges before the agent emits,
     // the UI shows the last reached stage instead of a mystery spinner.
     ctx.emitFor(sessionId, { type: "status", text: "Opening session…" });
-    try {
+    {
       const project = await getProject(projectId);
       const session = await getSession(projectId, sessionId);
       if (!project || !session) throw new Error("Active project/session not found.");
@@ -102,44 +102,25 @@ export function registerAgentRoutes(ctx: MainIpcContext): void {
         }
       }
 
-      const history: HistoryInput[] = (() => {
-        // Same-session memory: last user/assistant turns plus recent tool
-        // activity (with truncated results) so the run reuses prior reads
-        // instead of re-reading the project from scratch every request.
-        // Built from the PRE-APPEND snapshot so this run's own request
-        // (already persisted above) is not duplicated into history.
-        const recent = priorMessages;
-        return recent.map((message) =>
-          message.role === "event"
-            ? {
-                role: "event" as const,
-                text: message.text,
-                kind: message.kind,
-                detail: message.detail,
-                plan: message.plan,
-                subagent: message.subagent
-                  ? { role: message.subagent.role, task: message.subagent.task, status: message.subagent.status }
-                  : undefined,
-              }
-            : { role: message.role as "user" | "assistant", text: message.text }
-        );
-      })();
+      // Same-session memory: last user/assistant turns plus recent tool
+      // activity (with truncated results) so the run reuses prior reads
+      // instead of re-reading the project from scratch every request.
+      // Built from the PRE-APPEND snapshot so this run's own request
+      // (already persisted above) is not duplicated into history.
+      // Shared mapping (run-lane.ts) — identical in both lanes by contract.
+      const history: HistoryInput[] = messagesToHistory(priorMessages);
 
       // Continue-resume: a bare "continue" after an interrupt/stop must pick
       // up the prior run's tool checkpoint, plan and diff — otherwise the
       // model restarts from scratch. The checkpoint cache covers same-process
       // resume; the transcript-derived note covers app restarts.
-      const wantResume = isContinueRequest(payload.request || "");
-      // Memory first, disk second: checkpoints are mirrored to
-      // .nexus/run-checkpoints/ so "continue" survives an app restart.
-      const stored = wantResume ? getLastRunCheckpoint(sessionId) ?? await loadLastRunCheckpoint(root, sessionId) : null;
-      let resumeNote: string | null = null;
-      let lastPlan: PlanItem[] | null = null;
-      if (wantResume) {
-        const context = await collectResumeContext(session.messages, executionRoot);
-        lastPlan = context.lastPlan;
-        resumeNote = buildResumeNote(session.messages, context, stored, "IMPORTANT INSTRUCTIONS FOR RESUME:\n1. Do NOT restart from the beginning or re-create todos from scratch.\n2. Do NOT re-read or inspect files already in history.\n3. If code changes and build/tests were already completed, do NOT run more checks or tools. Update your todo list to completed using write_todos immediately and provide your final response to the user.\n4. If unfinished work remains, proceed directly with that next step.");
-      }
+      const { stored, resumeNote, lastPlan } = await collectRunResume({
+        sessionId,
+        root,
+        request: payload.request || "",
+        sessionMessages: session.messages,
+        resumeNoteSuffix: "IMPORTANT INSTRUCTIONS FOR RESUME:\n1. Do NOT restart from the beginning or re-create todos from scratch.\n2. Do NOT re-read or inspect files already in history.\n3. If code changes and build/tests were already completed, do NOT run more checks or tools. Update your todo list to completed using write_todos immediately and provide your final response to the user.\n4. If unfinished work remains, proceed directly with that next step.",
+      });
 
       const backendRecord = { ...project, root: executionRoot };
       if (mode === "full") {
@@ -189,85 +170,30 @@ export function registerAgentRoutes(ctx: MainIpcContext): void {
         ctx.emitFor(sessionId, { type: "status", text: `Undo checkpoint unavailable: ${error instanceof Error ? error.message : String(error)}` });
       }
 
-      // Renderer-only attachment URLs become inline data URLs for the model.
-      const modelImages = payload.images?.length
-        ? await Promise.all(payload.images.map((img) => resolveImageForModel(img).catch(() => img)))
-        : undefined;
-
-      // Document attachments (pdf/docx/xlsx/pptx/tex/…) are extracted to text
-      // here so the model actually sees them. Images stay vision-only; text
-      // files are decoded inline; Office/PDF go through the notebook parsers.
-      // Each file is capped so one giant spreadsheet can't eat the context.
-      const ATTACH_DOC_CHAR_CAP = 20_000;
-      const attachmentDocs: Array<{ name: string; mimeType: string; text: string; truncated: boolean }> = [];
-      if (payload.attachments?.length) {
-        const { parseToMarkdown } = await import("../notebook-parse.js");
-        for (const attachment of payload.attachments) {
-          try {
-            const isImage = (attachment.mimeType || "").toLowerCase().startsWith("image/");
-            if (isImage) continue;
-            const { buffer, fileName, mimeType } = await resolveAttachmentBytes(attachment.url);
-            const name = attachment.name || fileName;
-            const mime = attachment.mimeType || mimeType;
-            // Small text-ish files: decode directly, no parser overhead.
-            if (/^(text\/|application\/json|application\/xml)/.test(mime.toLowerCase()) || /\.(txt|tex|md|markdown|csv|tsv|json|yaml|yml|xml|html|htm|log|toml)$/i.test(name)) {
-              const text = buffer.toString("utf8").replace(/^\uFEFF/, "").replace(/\u0000/g, "");
-              if (!text.trim()) continue;
-              const truncated = text.length > ATTACH_DOC_CHAR_CAP;
-              attachmentDocs.push({ name, mimeType: mime, text: truncated ? text.slice(0, ATTACH_DOC_CHAR_CAP) : text, truncated });
-              continue;
-            }
-            try {
-              const parsed = await parseToMarkdown(buffer, name);
-              if (!parsed.markdown.trim()) continue;
-              const truncated = parsed.markdown.length > ATTACH_DOC_CHAR_CAP || parsed.truncated;
-              attachmentDocs.push({ name, mimeType: mime, text: parsed.markdown.slice(0, ATTACH_DOC_CHAR_CAP), truncated });
-            } catch {
-              // Unparseable binary (legacy .doc/.ppt/.xls, …): still tell the
-              // model the file exists so it can ask for another format.
-              attachmentDocs.push({ name, mimeType: mime, text: `[Binary file ${name} could not be text-extracted in-app. Ask the user for a .docx/.xlsx/.pptx/.pdf/.txt export if its contents are needed.]`, truncated: false });
-            }
-          } catch {
-            // One bad attachment must never fail the whole run.
-          }
-        }
-      }
-      // Import tool needs the raw bytes for every attachment (images + docs)
-      // so the agent can materialize them in the project on request.
-      const importableAttachments: string[] = [];
-      if (payload.attachments?.length) {
-        for (const attachment of payload.attachments) {
-          try {
-            const { buffer, mimeType } = await resolveAttachmentBytes(attachment.url);
-            const mime = attachment.mimeType || mimeType;
-            importableAttachments.push(`data:${mime};base64,${buffer.toString("base64")}#${encodeURIComponent(attachment.name || "attachment")}`);
-          } catch { /* skip unreadable */ }
-        }
-      } else if (modelImages?.length) {
-        importableAttachments.push(...modelImages);
-      }
+      // Shared lane helpers (run-lane.ts): attachment/image processing is
+      // owned by BOTH lanes — the private copies here and in home:run drifted
+      // (Home lost the image skip entirely) and are gone.
+      const modelImages = await resolveModelImages(payload.images);
+      const { attachmentDocs, importableAttachments } = await processRunAttachments(
+        payload.attachments,
+        modelImages
+      );
 
       const runStartMs = Date.now();
-      // Seed the meter with the session's last reported context so a new
-      // request doesn't drop the bar back to the text-only estimate.
-      const previousContextTokens = [...(session.messages || [])]
-        .reverse()
-        .find((m) => m.context?.usedTokens && m.context.usedTokens > 0)
-        ?.context?.usedTokens ?? null;
-      let accumulatedThinking = "";
-      let thinkingStartTimestamp = "";
-      const flushThinking = () => {
-        if (accumulatedThinking.trim()) {
-          transcript.items.push({
-            role: "event",
-            text: accumulatedThinking.trim(),
-            kind: "thinking",
-            createdAt: thinkingStartTimestamp || new Date().toISOString(),
-            detail: accumulatedThinking.trim(),
-          });
-          accumulatedThinking = "";
-          thinkingStartTimestamp = "";
-        }
+      const previousContextTokens = seedPreviousContextTokens(session.messages);
+      // Shared lane transcript + thinking buffer (run-lane.ts) — owned by
+      // both lanes so they can never drift again.
+      const lane = createRunTranscript();
+      const transcript = { items: lane.items };
+      const laneIo: RunLaneIo = {
+        ctx,
+        sessionId,
+        lane,
+        appendMessages: (items) => appendSessionMessages(projectId, sessionId, items as never),
+        laneLabel: "Agent run",
+        // Code reports the raw error (no checkpoint hint — the workspace
+        // checkpoint card already surfaces recoverable state in the UI).
+        buildErrorText: undefined,
       };
       let result: Awaited<ReturnType<typeof runProjectAgent>>;
       try {
@@ -295,28 +221,7 @@ export function registerAgentRoutes(ctx: MainIpcContext): void {
           onProjectMemoryUpdate: (mutate) => updateProjectFacts(projectId, mutate),
           onUserQuestion: (questions) => ctx.askUserBlocking(sessionId, questions),
           onEvent: (event) => {
-            if (event.type === "thinking") {
-              if (!thinkingStartTimestamp) thinkingStartTimestamp = event.timestamp || new Date().toISOString();
-              accumulatedThinking += event.text || "";
-            } else if (event.type === "tool" || event.type === "plan" || event.type === "status") {
-              flushThinking();
-            }
-            // Token chunks and thinking deltas stay ephemeral (streaming
-            // display only); assistant message is appended explicitly at the end.
-            if (event.type !== "token" && event.type !== "thinking" && event.type !== "assistant") {
-              transcript.items.push({
-                role: "event",
-                text: event.text,
-                kind: event.type,
-                createdAt: event.timestamp,
-                plan: event.items,
-                subagent: event.subagent,
-                artifact: event.artifact,
-                usage: event.type === "usage" ? undefined : event.usage,
-                context: event.context,
-                detail: event.detail,
-              });
-            }
+            lane.handleEvent(event);
             // Tag with the session id: the renderer buckets live events by
             // event.sessionId — bare events all landed in an "unknown" bucket
             // and Code mode never showed the agent's steps while running.
@@ -325,42 +230,14 @@ export function registerAgentRoutes(ctx: MainIpcContext): void {
           isCancelled: () => isCommandRunCancelled(sessionId),
         });
       } catch (error) {
-        flushThinking();
-        const isCancel = error instanceof RunCancelledError || isCommandRunCancelled(sessionId) || (error as any)?.name === "AbortError";
-        // Tokens burned before a cancel/failure still count: the run helper
-        // stashes finalized usage on the thrown error (see agent-service).
-        const failedUsage = (error as { usage?: AgentUsage })?.usage;
-        const usageText = failedUsage
-          ? `Token usage · ${failedUsage.totalTokens} tokens${failedUsage.estimatedCost == null ? "" : ` (~$${failedUsage.estimatedCost})`}`
-          : null;
-        if (isCancel) {
-          const stopText = "⏹️ Run stopped by user. Progress has been saved.\n\nSay **continue** to pick up from where I stopped.";
-          await appendSessionMessages(projectId, sessionId, [
-            ...transcript.items,
-            { role: "assistant", text: stopText, createdAt: new Date().toISOString(), ...(failedUsage ? { usage: failedUsage } : {}) },
-          ]);
-          ctx.emitFor(sessionId, { type: "assistant", text: stopText, ...(failedUsage ? { usage: failedUsage } : {}) });
-          if (failedUsage && usageText) ctx.emitFor(sessionId, { type: "usage", text: usageText, usage: failedUsage });
-          ctx.emitFor(sessionId, { type: "status", text: "Stopped by user. Ready to continue." });
-          return stopText;
-        }
-        const errorText = error instanceof Error ? error.message : String(error);
-        // Failed runs leave a persistent error entry so the transcript tells
-        // the truth after a reload, not just in the live view.
-        await appendSessionMessages(projectId, sessionId, [
-          ...transcript.items,
-          { role: "event", kind: "error", text: `Agent run failed: ${errorText}`, createdAt: new Date().toISOString(), ...(failedUsage ? { usage: failedUsage } : {}) },
-        ]);
-        ctx.emitFor(sessionId, { type: "error", text: `Agent run failed: ${errorText}` });
-        if (failedUsage && usageText) ctx.emitFor(sessionId, { type: "usage", text: usageText, usage: failedUsage });
-        throw error;
+        // Shared interruption tail (run-lane.ts) — one implementation for both
+        // lanes. Tokens burned before the interruption still count (usage rides
+        // on the thrown error — see agent-service).
+        return await handleRunInterruption(laneIo, error);
       }
 
-      flushThinking();
-      await appendSessionMessages(projectId, sessionId, [
-        ...transcript.items,
-        { role: "assistant", text: result.response, createdAt: new Date().toISOString(), usage: result.usage, context: result.context },
-      ]);
+      // Shared success tail: flush thinking + persist transcript + final row.
+      const responseText = await persistRunSuccess(laneIo, result);
       // Worktree-scoped auto-commit: isolated session branches get a durable
       // per-task commit (undo resets it); the user's main branch is never
       // auto-committed. Best-effort — a commit failure never fails the run.
@@ -401,11 +278,9 @@ export function registerAgentRoutes(ctx: MainIpcContext): void {
         memory: nextSessionMemory,
       });
       await updateProjectMemory(projectId, nextProjectMemory);
-      return result.response;
-    } finally {
-      releaseRunSlot(ctx.activeRunSessions, sessionId);
-      endCommandRun(sessionId);
+      return responseText;
     }
+    });
   });
 
   ipcMain.handle("agent:cancel", (_event, sessionId?: string) => {

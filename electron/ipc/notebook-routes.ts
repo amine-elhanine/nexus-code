@@ -14,6 +14,7 @@ import { enqueueIngest, retrySource, reindexSessionFromLibrary } from "../notebo
 import { sessionOutline } from "../notebook-library.js";
 import { listEmbeddingProviders, removeEmbeddingProvider, upsertEmbeddingProvider, getAppSettings, isMaskedSecret, type EmbeddingProviderConfig } from "../store.js";
 import { beginCommandRun, endCommandRun, isCommandRunCancelled } from "../command-service.js";
+import { beginGenerationJob, finishGenerationJob, listGenerationJobs, type GenerationJobKind } from "../notebook-generation-jobs.js";
 import { RunCancelledError } from "../agent-service.js";
 import {
   assertPayload, NotebookDocumentGenerateSchema, NotebookGeneratePayloadSchema, NotebookMindmapGenerateSchema,
@@ -23,14 +24,26 @@ import type { MainIpcContext } from "./context.js";
 
 // A notebook generation/chat occupies one "run" slot so cancels and
 // concurrent-run guards share the same bookkeeping as Code/Home agent runs.
-async function runNotebookGeneration<T>(ctx: MainIpcContext, runId: string, work: (isCancelled: () => boolean) => Promise<T>): Promise<T> {
+async function runNotebookGeneration<T>(
+  ctx: MainIpcContext,
+  runId: string,
+  job: { notebookId: string; kind: GenerationJobKind; topic?: string } | null,
+  work: (isCancelled: () => boolean) => Promise<T>
+): Promise<T> {
   if (ctx.activeRunSessions.has(runId)) throw new Error("A generation task is already running for this notebook output.");
   ctx.activeRunSessions.add(runId);
   beginCommandRun(runId);
+  // Persisted job record (generation-jobs.ts): a restart mid-run used to lose
+  // the work silently with no trace; the table keeps the history honest.
+  const jobId = job ? await beginGenerationJob(job.notebookId, job.kind, job.topic).catch(() => null) : null;
   try {
     const result = await work(() => isCommandRunCancelled(runId));
     if (isCommandRunCancelled(runId)) throw new RunCancelledError();
+    if (jobId) await finishGenerationJob(jobId).catch(() => {});
     return result;
+  } catch (error) {
+    if (jobId) await finishGenerationJob(jobId, error instanceof Error ? error.message : String(error)).catch(() => {});
+    throw error;
   } finally {
     ctx.activeRunSessions.delete(runId);
     endCommandRun(runId);
@@ -110,6 +123,9 @@ export function registerNotebookRoutes(ctx: MainIpcContext): void {
     if (ctx.activeRunSessions.has(runId)) throw new Error("A document is already being generated for this notebook.");
     ctx.activeRunSessions.add(runId);
     beginCommandRun(runId);
+    // Persisted job record (generation-jobs.ts) — restarts mid-document no
+    // longer lose the work silently.
+    const jobId = await beginGenerationJob(payload.notebookId, "document", payload.prompt).catch(() => null);
     try {
       const { generateNotebookDocument } = await import("../notebook-documents.js");
       const notebookSettings = await getNotebookSettings(payload.notebookId);
@@ -129,8 +145,10 @@ export function registerNotebookRoutes(ctx: MainIpcContext): void {
       });
       if (isCommandRunCancelled(runId)) throw new RunCancelledError();
       ctx.emitFor(statusKey, { type: "status", text: `Saved ${doc.filename}` });
+      if (jobId) await finishGenerationJob(jobId).catch(() => {});
       return { doc, fallbackReason };
     } catch (error) {
+      if (jobId) await finishGenerationJob(jobId, error instanceof Error ? error.message : String(error)).catch(() => {});
       if (error instanceof RunCancelledError || isCommandRunCancelled(runId)) {
         ctx.emitFor(statusKey, { type: "status", text: "Document generation cancelled." });
         throw new Error("Document generation cancelled.");
@@ -141,6 +159,7 @@ export function registerNotebookRoutes(ctx: MainIpcContext): void {
       endCommandRun(runId);
     }
   });
+  ipcMain.handle("notebook:generation-jobs:list", (_event, notebookId?: string) => listGenerationJobs(notebookId));
   ipcMain.handle("notebook:document:delete", async (_event, notebookId: string, docId: string) => {
     const { deleteNotebookDocument } = await import("../notebook-documents.js");
     return deleteNotebookDocument(notebookId, docId);
@@ -160,7 +179,7 @@ export function registerNotebookRoutes(ctx: MainIpcContext): void {
   ipcMain.handle("notebook:quiz:generate", async (_event, payload: { notebookId: string; topic?: string; count?: number; quizType?: "mcq" | "truefalse" | "mixed"; fileIds?: string[]; providerId?: string; model?: string }) => {
     assertPayload(NotebookGeneratePayloadSchema, payload, "notebook:quiz:generate");
     const statusKey = `nbquiz:${payload.notebookId}`;
-    const quiz = await runNotebookGeneration(ctx, statusKey, async (isCancelled) => {
+    const quiz = await runNotebookGeneration(ctx, statusKey, { notebookId: payload.notebookId, kind: "quiz", topic: payload.topic }, async (isCancelled) => {
       const { generateNotebookQuiz } = await import("../notebook-quiz.js");
       const notebookSettings = await getNotebookSettings(payload.notebookId);
       if (isCancelled()) throw new RunCancelledError();
@@ -192,7 +211,7 @@ export function registerNotebookRoutes(ctx: MainIpcContext): void {
   ipcMain.handle("notebook:flashcards:generate", async (_event, payload: { notebookId: string; topic?: string; count?: number; fileIds?: string[]; providerId?: string; model?: string }) => {
     assertPayload(NotebookGeneratePayloadSchema, payload, "notebook:flashcards:generate");
     const statusKey = `nbfiches:${payload.notebookId}`;
-    const set = await runNotebookGeneration(ctx, statusKey, async (isCancelled) => {
+    const set = await runNotebookGeneration(ctx, statusKey, { notebookId: payload.notebookId, kind: "flashcards", topic: payload.topic }, async (isCancelled) => {
       const { generateNotebookFlashcards } = await import("../notebook-flashcards.js");
       const notebookSettings = await getNotebookSettings(payload.notebookId);
       if (isCancelled()) throw new RunCancelledError();
@@ -223,7 +242,7 @@ export function registerNotebookRoutes(ctx: MainIpcContext): void {
   ipcMain.handle("notebook:mindmaps:generate", async (_event, payload: { notebookId: string; topic?: string; maxNodes?: number; fileIds?: string[]; providerId?: string; model?: string }) => {
     assertPayload(NotebookMindmapGenerateSchema, payload, "notebook:mindmaps:generate");
     const statusKey = `nbmap:${payload.notebookId}`;
-    const map = await runNotebookGeneration(ctx, statusKey, async (isCancelled) => {
+    const map = await runNotebookGeneration(ctx, statusKey, { notebookId: payload.notebookId, kind: "mindmap", topic: payload.topic }, async (isCancelled) => {
       const { generateNotebookMindmap } = await import("../notebook-mindmaps.js");
       const notebookSettings = await getNotebookSettings(payload.notebookId);
       if (isCancelled()) throw new RunCancelledError();
@@ -254,7 +273,7 @@ export function registerNotebookRoutes(ctx: MainIpcContext): void {
   ipcMain.handle("notebook:summaries:generate", async (_event, payload: { notebookId: string; topic?: string; length?: "brief" | "standard" | "detailed"; fileIds?: string[]; providerId?: string; model?: string }) => {
     assertPayload(NotebookSummaryGenerateSchema, payload, "notebook:summaries:generate");
     const statusKey = `nbsum:${payload.notebookId}`;
-    const summary = await runNotebookGeneration(ctx, statusKey, async (isCancelled) => {
+    const summary = await runNotebookGeneration(ctx, statusKey, { notebookId: payload.notebookId, kind: "summary", topic: payload.topic }, async (isCancelled) => {
       const { generateNotebookSummary } = await import("../notebook-summaries.js");
       const notebookSettings = await getNotebookSettings(payload.notebookId);
       if (isCancelled()) throw new RunCancelledError();
@@ -287,7 +306,7 @@ export function registerNotebookRoutes(ctx: MainIpcContext): void {
   ipcMain.handle("notebook:audio:generate", async (_event, payload: { notebookId: string; topic?: string; fileIds?: string[]; providerId?: string; model?: string }) => {
     assertPayload(NotebookGeneratePayloadSchema, payload, "notebook:audio:generate");
     const statusKey = `nbaudio:${payload.notebookId}`;
-    const audio = await runNotebookGeneration(ctx, statusKey, async (isCancelled) => {
+    const audio = await runNotebookGeneration(ctx, statusKey, { notebookId: payload.notebookId, kind: "audio", topic: payload.topic }, async (isCancelled) => {
       const { generateNotebookAudioOverview } = await import("../notebook-audio.js");
       const notebookSettings = await getNotebookSettings(payload.notebookId);
       if (isCancelled()) throw new RunCancelledError();

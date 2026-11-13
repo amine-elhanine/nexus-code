@@ -3,7 +3,7 @@ import path from "node:path";
 import { attachCitations, composeContextBlock, uid } from "./notebook-text.js";
 import { collectDocumentEvidence, extractDocumentJson, fallbackTitle } from "./notebook-documents.js";
 import { assertNotebookGenerationActive, planNotebookWithLlm } from "./notebook-generation.js";
-import { notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
+import { ensureNotebookAlive, notebookSessionDir, type NotebookSourceCitation } from "./notebook-store.js";
 import { writeFileAtomic } from "./atomic-write.js";
 
 // Grounded flashcard generation for Notebook Mode: concise Q/A cards covering
@@ -113,6 +113,8 @@ export async function generateNotebookFlashcards(
   notebookId: string,
   input: GenerateFlashcardsInput
 ): Promise<NotebookFlashcardSet> {
+  // Deleted mid-run → bail instead of resurrecting the directory tree.
+  ensureNotebookAlive(notebookId);
   const status = input.onStatus || (() => {});
   const topic = (input.topic || "").trim() || "overview of the uploaded sources";
   const count = clampFlashcardCount(input.count);

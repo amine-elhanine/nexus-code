@@ -29,11 +29,22 @@ export type TaskLedger = {
   verification: "none" | "passed" | "failed" | "interrupted";
 };
 export type RunCheckpoint = { messages: ChatMessage[]; planItems: PlanItem[] | null; ledger?: TaskLedger };
+// In-memory run checkpoints, one per session ever run (up to 100 full
+// messages each). Bounded as an LRU: sessions accumulate for the life of the
+// app and were never evicted (only an explicit session delete clears one),
+// so the main-process heap grew without limit. The on-disk mirror
+// (persistLastRunCheckpoint) still holds every session's checkpoint.
+const LAST_RUN_STORE_CAP = 20;
 const lastRunStore = new Map<string, RunCheckpoint>();
 
 export function getLastRunCheckpoint(sessionId: string | undefined): RunCheckpoint | null {
   if (!sessionId) return null;
-  return lastRunStore.get(sessionId) ?? null;
+  const hit = lastRunStore.get(sessionId);
+  if (!hit) return null;
+  // LRU refresh: re-insert so Map iteration order reflects recency.
+  lastRunStore.delete(sessionId);
+  lastRunStore.set(sessionId, hit);
+  return hit;
 }
 
 function countToolCalls(messages: ChatMessage[]): number {
@@ -80,6 +91,14 @@ export function saveLastRunCheckpoint(sessionId: string | undefined, checkpoint:
   // from the small talk instead of the interrupted task.
   const existing = lastRunStore.get(sessionId);
   if (existing && countToolCalls(messages) === 0 && countToolCalls(existing.messages) > 0) return;
+  // Evict the least-recently-used checkpoint when over cap (delete + set to
+  // move this session to the MRU end).
+  lastRunStore.delete(sessionId);
+  while (lastRunStore.size >= LAST_RUN_STORE_CAP) {
+    const oldest = lastRunStore.keys().next().value;
+    if (oldest === undefined) break;
+    lastRunStore.delete(oldest);
+  }
   lastRunStore.set(sessionId, next);
   if (telemetryRoot) {
     void persistLastRunCheckpoint(telemetryRoot, sessionId).catch(() => { /* best effort */ });

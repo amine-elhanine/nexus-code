@@ -428,12 +428,14 @@ export class DaemonService {
   }
 
   // Removes a service from the list. A still-running process is stopped
-  // first so deleting can never orphan a live child.
-  public removeDaemon(id: string): boolean {
+  // first so deleting can never orphan a live child. Async now: the stop is
+  // awaited, so "removed" can no longer be reported while the tree-kill and
+  // port cleanup are still in flight (the IPC handler awaits anyway).
+  public async removeDaemon(id: string): Promise<boolean> {
     const active = this.daemons.get(id);
     if (!active) return false;
     if (active.process?.pid) {
-      this.stopDaemon(id);
+      await this.stopDaemon(id);
     }
     active.listeners.clear();
     return this.daemons.delete(id);

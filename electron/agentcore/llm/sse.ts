@@ -72,6 +72,12 @@ export function sseFrom(response: Response): SSEResult {
   async function* events(): AsyncGenerator<string, void, unknown> {
     const decoder = new TextDecoder();
     let buffer = "";
+    // Per the SSE spec, consecutive `data:` lines belong to ONE event, joined
+    // with "\n", dispatched by the next blank line. Yielding each data line
+    // separately fragmented any payload a provider/gateway split across
+    // data: lines — the fragments failed JSON.parse and were silently
+    // dropped mid-stream by every adapter.
+    let dataLines: string[] = [];
     try {
       for (;;) {
         const { done, value } = await reader.read();
@@ -82,13 +88,28 @@ export function sseFrom(response: Response): SSEResult {
           const line = buffer.slice(0, newlineIdx).replace(/\r$/, "");
           buffer = buffer.slice(newlineIdx + 1);
           newlineIdx = buffer.indexOf("\n");
-          if (line.startsWith("data:")) {
-            yield line.slice(5).trim();
+          if (line === "") {
+            // Blank line = event dispatch.
+            if (dataLines.length) {
+              yield dataLines.join("\n");
+              dataLines = [];
+            }
+          } else if (line.startsWith("data:")) {
+            dataLines.push(line.slice(5).trim());
           } else if (line.startsWith("{")) {
             // Some gateways omit the "data:" prefix entirely.
+            if (dataLines.length) {
+              yield dataLines.join("\n");
+              dataLines = [];
+            }
             yield line;
           }
+          // event:/id:/retry: and comment lines are ignored, as before.
         }
+      }
+      if (dataLines.length) {
+        yield dataLines.join("\n");
+        dataLines = [];
       }
       const rest = buffer.trim();
       if (rest.startsWith("data:")) yield rest.slice(5).trim();

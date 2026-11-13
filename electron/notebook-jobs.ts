@@ -1,4 +1,5 @@
 import {
+  ensureNotebookAlive,
   getNotebookSource,
   listNotebookSources,
   listNotebooks,
@@ -16,9 +17,11 @@ import { contentFingerprint, parseToMarkdown } from "./notebook-parse.js";
 import {
   chunkSections,
   cleanMarkdown,
+  extractPageMap,
   extractStructure,
   keyTerms,
   oneSentenceSummary,
+  pageAt,
   sha256Hex,
   stableChunkId,
 } from "./notebook-text.js";
@@ -42,6 +45,7 @@ import { notebookFlags } from "./notebook-flags.js";
 import { getAppSettings, getNotebookParserConfig, listProviders } from "./store.js";
 import { invokeChatText } from "./agentcore/llm/invoke.js";
 import { userMsg } from "./agentcore/messages.js";
+import path from "node:path";
 
 // Asynchronous ingestion: one idempotent background job per file.
 // uploaded → parsing → chunking → indexing → ready | failed.
@@ -79,8 +83,11 @@ async function setStatus(notebookId: string, sourceId: string, status: NotebookS
   emitProgress({ notebookId, sourceId, status, chunks: source?.chunks, error: source?.error });
 }
 
-/** Enqueue a file's ingestion job. Deduplicated: already queued/running wins. */
+/** Enqueue a file's ingestion job. Deduplicated: already queued/running wins.
+ *  Jobs for a notebook deleted while queued are dropped here, so the queue
+ *  never starts work against a tombstoned (deleted) notebook. */
 export function enqueueIngest(notebookId: string, sourceId: string): void {
+  ensureNotebookAlive(notebookId);
   const key = `${notebookId}:${sourceId}`;
   if (running.has(key)) return;
   if (queued.some((j) => j.notebookId === notebookId && j.sourceId === sourceId)) return;
@@ -121,6 +128,11 @@ export class SourceDeletedError extends Error {
 }
 
 async function assertSourceExists(notebookId: string, sourceId: string): Promise<void> {
+  // Notebook tombstone check rides along with every source check: deleting a
+  // notebook mid-ingest must abort the pipeline at the same boundaries that
+  // already guard source deletion, instead of resurrecting the directory tree
+  // through the writers' defensive mkdirs.
+  ensureNotebookAlive(notebookId);
   if (!(await getNotebookSource(notebookId, sourceId))) throw new SourceDeletedError();
 }
 
@@ -160,6 +172,7 @@ async function describeNotebookImage(buffer: Buffer, filename: string, mimeType:
 /** Run one file's ingestion end to end. Re-runnable: wipes the file's
  *  derived data first, then re-derives everything with stable IDs. */
 export async function runIngestJob(notebookId: string, sourceId: string): Promise<void> {
+  ensureNotebookAlive(notebookId);
   const root = notebookSessionDir(notebookId);
   const source = await getNotebookSource(notebookId, sourceId);
   if (!source) return;
@@ -196,7 +209,12 @@ export async function runIngestJob(notebookId: string, sourceId: string): Promis
     // have been deleted mid-parse — re-check before writing anything new.)
     await assertSourceExists(notebookId, sourceId);
     await setStatus(notebookId, sourceId, "chunking");
-    const { cleaned } = cleanMarkdown(parsed.markdown);
+    // Page anchoring: parsers that know page boundaries embed \u0000P(n)\u0000
+    // markers; split them out BEFORE chunking so chunk text (and therefore
+    // stable content-hash IDs) is byte-identical to pre-anchor behavior, and
+    // keep a page map over the mark-free text for chunk→page resolution.
+    const { cleaned: cleanedWithMarks } = cleanMarkdown(parsed.markdown);
+    const { text: cleaned, pageMap } = extractPageMap(cleanedWithMarks);
     const rawSections = extractStructure(cleaned, filename.replace(/\.[^.]+$/, ""));
     const sections: LibrarySection[] = rawSections.map((s, i) => ({
       id: sectionIdFor(notebookId, sourceId, s.headingPath, i),
@@ -221,6 +239,14 @@ export async function runIngestJob(notebookId: string, sourceId: string): Promis
     if (!chunkInputs.length) throw new Error("No indexable content found after parsing.");
     const chunks: LibraryChunk[] = chunkInputs.map((input, docIndex) => {
       const contentHash = sha256Hex(input.text).slice(0, 16);
+      // Chunk → source page: locate the chunk's opening text in the mark-free
+      // cleaned markdown and read the page map. Probes shorten on whitespace
+      // mismatch; a miss just leaves page undefined (no anchoring).
+      const probe = input.text.slice(0, 140);
+      const idx = cleaned.indexOf(probe) >= 0
+        ? cleaned.indexOf(probe)
+        : cleaned.indexOf(input.text.slice(0, 60));
+      const page = idx >= 0 ? pageAt(pageMap, idx) : undefined;
       return {
         id: stableChunkId(notebookId, sourceId, input.sectionId, input.ordinalInSection, contentHash),
         sessionId: notebookId,
@@ -234,6 +260,7 @@ export async function runIngestJob(notebookId: string, sourceId: string): Promis
         structured: input.structured,
         prevId: null,
         nextId: null,
+        ...(page != null && page > 1 ? { page } : {}),
       };
     });
     chunks.forEach((chunk, i) => {
@@ -377,6 +404,16 @@ export async function recoverInterruptedJobs(): Promise<number> {
       }
     }
   }
+  // Sweep leaked document-generator work dirs: documents/.work/<id>
+  // (EVIDENCE.md + generator scripts) is removed only on SUCCESS — a crashed
+  // or exited run left it forever and nothing swept them. Safe at startup:
+  // no generation runs exist yet when this runs (main.ts boot).
+  try {
+    const fsMod = await import("node:fs/promises");
+    for (const nb of notebooks) {
+      await fsMod.rm(path.join(notebookSessionDir(nb.id), "documents", ".work"), { recursive: true, force: true }).catch(() => { /* best effort */ });
+    }
+  } catch { /* sweep is best-effort */ }
   return requeued;
 }
 

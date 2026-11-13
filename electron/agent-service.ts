@@ -11,7 +11,7 @@ import { createFilesystemTools } from "./agentcore/builtin-file-tools.js";
 import type { ChatClient } from "./agentcore/llm/types.js";
 import type { AgentMiddleware } from "./agentcore/middleware.js";
 import { normalizeToolCallArgs } from "./loop-prevention.js";
-import { createChatModel, resolveModelContextWindow, resolveModelMaxOutput, formatContextWindow, formatTokenCount } from "./providers.js";
+import { createChatModel, getProviderDefinition, resolveModelContextWindow, resolveModelMaxOutput, formatContextWindow, formatTokenCount } from "./providers.js";
 import { createCodeIntelligenceTools, pickRuntimeCodeTools } from "./code-tools.js";
 import { createEditTools, createQuestionTool } from "./edit-tools.js";
 import { createBrowserTools } from "./browser-tool.js";
@@ -34,6 +34,7 @@ import { collectDynamicPluginContext } from "./plugin-lifecycle.js";
 import type { PluginMode } from "./plugin-manifest.js";
 import { computeCompactionThreshold, compactHistory, compactHistoryWithModel, estimateTokens, estimateMessagesTokens, estimateMessageTokens, estimateToolSchemaTokens, isContextWindowError, trimRunMessages, trimRunMessagesWithRecoveryBrief } from "./context-service.js";
 import { microcompactToolResults, shrinkToBudget, shrinkWithBrief } from "./agent/compaction.js";
+import { createJournalSaver } from "./agent/journal-queue.js";
 import { saveArtifact, type ArtifactItem } from "./artifacts-service.js";
 import { TrajectoryLogger } from "./trajectory-service.js";
 import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint, errorSummary, isRateLimitError } from "./rate-limit.js";
@@ -53,10 +54,10 @@ import { createVerifyNode } from "./agent/verify-node.js";
 import { buildCodeTaskContextSummary, codeVerificationOutcome, createCodeTaskJournal, finishCodeTaskJournal, inferCodeTaskContract, loadCodeTaskJournal, parseBlockingReviewFindings, recordCodeTaskAction, recordCodeTaskPlan, saveCodeTaskJournal, shouldRunCodeReview, updateCodeTaskContextSummary, type CodeTaskContract, type CodeTaskJournal, type CodeTaskPhase } from "./code-task-service.js";
 import type { ProviderConfig } from "./store.js";
 
-import type { AgentContextBreakdownEntry, AgentEvent, AgentMemoryContext, AgentMode, AgentSettings, AgentTaskKind, AgentUsage, AttachmentDoc, HistoryInput, HomeTaskContract, PlanItem } from "./agent-types.js";
+import type { AgentContextBreakdownEntry, AgentEvent, AgentMemoryContext, AgentMode, AgentSettings, AgentTaskKind, AgentUsage, AttachmentDoc, HistoryInput, HomeTaskContract, PlanItem, RunProfile } from "./agent-types.js";
 import type { TaskComplexity } from "./task-routing.js";
 import { buildSystemPrompt, homeRequestNamesFileFormat, inferHomeOutputFormats, inferHomeTaskContract } from "./agent-prompt.js";
-import { DoomLoopError, RESEARCH_BUDGET_BASE, RESEARCH_BUDGET_WITH_RESEARCH, loopPreventionMiddleware, resolveResearchBudget } from "./loop-prevention.js";
+import { DoomLoopError, RESEARCH_BUDGET_BASE, RESEARCH_BUDGET_WITH_RESEARCH, loopPreventionMiddleware, normalizeArgAliases, resolveResearchBudget } from "./loop-prevention.js";
 import { buildVerificationBatch, classifyTaskComplexity, detectPackageManager, findTargetedTests, isContinueRequest, isNewProjectTask, isWebTask, pickAffectedPackageCommands, pickFileScopedVerification, pickVerificationCommands, readPackageJsonCached, shouldSkipMcpForTask } from "./task-routing.js";
 import { describeToolCall, extractGithubLogin, extractSkillNameFromPath, loadedSkillNamesFromMessages, toolCallSummary, toolResultExcerpt } from "./tool-describe.js";
 import { saveLastRunCheckpoint, summarizeCompletedSteps } from "./run-checkpoint.js";
@@ -153,16 +154,66 @@ export async function runProjectAgent(options: {
   const assetsEnabled = (asset: AgentPromptAsset) => !disabledAssets.has(asset);
   const taskKind: AgentTaskKind = options.taskKind ?? "code";
   const isGeneral = taskKind === "general";
+  // ── RunProfile (Phase 1 + deep migration): EVERY mode-difference decision in
+  // one declarative object — tool binding, scope naming, contract inference,
+  // journals, verify/supervisor regimes, retry/budget shapes. A third profile
+  // (notebook) becomes data, and the lanes can never disagree about scope
+  // naming, tool availability, or regime selection again.
+  const profile: RunProfile = isGeneral
+    ? {
+        scope: "home",
+        skillsMode: "home",
+        codeIntelligence: false,
+        browser: true,
+        webImageSearch: true,
+        webVideoSearch: true,
+        subagents: false,
+        homeDeliverables: true,
+        sharedMemoryTool: true,
+        applyPatch: false,
+        projectInstructions: false,
+        contract: "home",
+        journal: "home",
+        verify: "home",
+        failover: true,
+        retry: "home",
+        budget: "home",
+        memory: "home",
+      }
+    : {
+        scope: "code",
+        skillsMode: "code",
+        codeIntelligence: true,
+        // Browser is demand-gated for Code (web-flavored tasks only, see
+        // wantsBrowser below); Home always carries it. The gate at the
+        // binding site is `wantsBrowser || profile.browser`.
+        browser: false,
+        webImageSearch: false,
+        webVideoSearch: false,
+        subagents: true,
+        homeDeliverables: false,
+        sharedMemoryTool: false,
+        applyPatch: true,
+        projectInstructions: true,
+        contract: "code",
+        journal: "code",
+        verify: "code",
+        failover: false,
+        retry: "code",
+        budget: "code",
+        memory: "project",
+      };
   // Slash-command expansion: "/review 123" becomes the command's full prompt
   // template with "123" as its input. Single choke point for every run path
   // (Code IPC, Home IPC, headless CLI). Unknown commands and plain text pass
   // through untouched.
   const request = assetsEnabled("commands")
-    ? await expandSlashCommand(rawRequest || "", projectRoot, isGeneral ? "home" : "code").catch(() => rawRequest || "")
+    ? await expandSlashCommand(rawRequest || "", projectRoot, profile.skillsMode).catch(() => rawRequest || "")
     : rawRequest || "";
-  const homeTaskContract = isGeneral ? inferHomeTaskContract(request) : null;
-  const homeTaskContinuation = isGeneral && isHomeTaskContinuation(request);
-  const codeTaskContract = isGeneral ? null : inferCodeTaskContract(request);
+  // Contract inference — regime selected by the profile (deep migration).
+  const homeTaskContract = profile.contract === "home" ? inferHomeTaskContract(request) : null;
+  const homeTaskContinuation = profile.contract === "home" && isHomeTaskContinuation(request);
+  const codeTaskContract = profile.contract === "code" ? inferCodeTaskContract(request) : null;
   const targetTelemetryRoot = telemetryRoot || projectRoot;
   const signal = sessionId ? getRunAbortSignal(sessionId) : undefined;
   const emit = (type: AgentEvent["type"], text: string, items?: PlanItem[], usage?: AgentUsage, subagent?: SubagentItem, artifact?: ArtifactItem, detail?: string, context?: AgentEvent["context"]) => {
@@ -179,7 +230,10 @@ export async function runProjectAgent(options: {
     await trajectory.log({ source: "USER", type: "USER_INPUT", content: request });
   }
 
-  const provider = settings.provider ?? {
+  // `let` because mid-run provider failover re-points these at the swap
+  // target — pricing (usage.finalize) and any subagent created after the
+  // swap must use the live provider, not the dead one.
+  let provider = settings.provider ?? {
     id: "default",
     label: "OpenAI",
     provider: "openai",
@@ -187,14 +241,23 @@ export async function runProjectAgent(options: {
     baseUrl: settings.baseUrl,
     models: [settings.model || process.env.OPENAI_MODEL || "gpt-4.1-mini"],
   };
-  const modelName = settings.model || provider.models[0] || "";
+  let modelName = settings.model || provider.models[0] || "";
   if (!modelName) {
     emit("error", "No model selected for this session. Configure a provider and model first.");
     throw new Error("Missing model");
   }
   if (!provider.apiKey && provider.provider !== "ollama" && provider.provider !== "custom") {
-    emit("error", `No API key configured for ${provider.label}. Add it in Providers.`);
-    throw new Error("Missing model API key");
+    // Mirror createChatModel's env fallback (providers.ts): a provider with
+    // an empty stored key but the provider's env var set (OPENAI_API_KEY,
+    // ANTHROPIC_API_KEY, …) is fully usable — aborting here rejected runs
+    // that were about to succeed.
+    const envKey = getProviderDefinition(provider.provider).envKey;
+    if (envKey && process.env[envKey]) {
+      provider = { ...provider, apiKey: process.env[envKey] };
+    } else {
+      emit("error", `No API key configured for ${provider.label}. Add it in Providers.`);
+      throw new Error("Missing model API key");
+    }
   }
   if (!agentBackend) {
     emit("error", "No workspace backend is available for this project.");
@@ -209,7 +272,7 @@ export async function runProjectAgent(options: {
   // provider instead of pausing. The checkpointed transcript is
   // provider-agnostic, so only the chat model changes. Ordered by provider
   // list; providers without a usable key are skipped.
-  const failoverChain: FailoverTarget[] = isGeneral
+  const failoverChain: FailoverTarget[] = profile.failover
     ? await listProviders().then((all) => buildFailoverChain(provider, all)).catch(() => [])
     : [];
   let failoverIndex = 0;
@@ -231,12 +294,12 @@ export async function runProjectAgent(options: {
   // to research, collect visual evidence, and compose the full answer rather
   // than being routed through the text-only quick-lookup path. Greetings and
   // short acknowledgements remain lightweight.
-  const homeNeedsVisualResponse = isGeneral && Boolean(request.trim()) &&
+  const homeNeedsVisualResponse = profile.contract === "home" && Boolean(request.trim()) &&
     !/^(?:hi|hello|hey|thanks?|thank you|ok(?:ay)?|yes|no|good morning|good evening|who are you|what are you|what can you do|what do you do|help|what are your capabilities|introduce yourself)[!.\s]*$/i.test(request.trim());
   // A "continue" that resumes prior tool state is never a simple task: it
   // needs the full budget, todo tracking and delegation to finish the job.
   const hasResume = Boolean((resumeMessages && resumeMessages.length) || resumeNote);
-  let effectiveComplexity: TaskComplexity = hasResume || (isGeneral ? Boolean(
+  let effectiveComplexity: TaskComplexity = hasResume || (profile.contract === "home" ? Boolean(
     (homeTaskContract?.expectsOutput && homeRequestNamesFileFormat(request)) ||
     homeTaskContract?.needsResearch ||
     /\b(chart|charts|graph|graphs|diagram|diagrams|plot|plots|visual|visuals|visualization|analyze|analysis|dataset|csv|compare|benchmark|deep\s+research)\b/i.test(request)
@@ -255,7 +318,9 @@ export async function runProjectAgent(options: {
     // Rules loading: Home runs skip rules entirely; Code runs honor the
     // user-facing toggle, and simple tasks get only the project's own rules —
     // the bundled standards corpus is for real engineering work, not lookups.
-    (isGeneral || !assetsEnabled("rules")
+    // Rules are a Code-mode asset: Home scope skips them entirely (the
+    // standards corpus is for engineering work, not everyday chat).
+    (profile.scope === "home" || !assetsEnabled("rules")
       ? Promise.resolve({ hasRules: false, ruleFiles: [], combinedPromptSection: "" })
       : getRulesConfig()
           .then((config) => (config.enabled === false || effectiveComplexity === "simple"
@@ -269,7 +334,7 @@ export async function runProjectAgent(options: {
     // and one-file tasks orient with read/grep directly, and the repo map +
     // project index ride EVERY model call of the run as prompt payload.
     // Never fails the run.
-    (isGeneral || effectiveComplexity === "simple"
+    (profile.scope === "home" || effectiveComplexity === "simple"
       ? Promise.resolve("")
       : Promise.all([
         getRepoMapSection(projectRoot, request).catch(() => ""),
@@ -279,7 +344,7 @@ export async function runProjectAgent(options: {
     // instruction file loads for every Code run regardless of the rules
     // toggle or task complexity — it is project memory, not the standards
     // corpus. Never fails the run.
-    (isGeneral || !assetsEnabled("rules") ? Promise.resolve({ files: [], section: "" }) : discoverProjectInstructions(projectRoot).catch(() => ({ files: [], section: "" }))),
+    (!profile.projectInstructions || !assetsEnabled("rules") ? Promise.resolve({ files: [], section: "" }) : discoverProjectInstructions(projectRoot).catch(() => ({ files: [], section: "" }))),
   ]);
 
   let mcpTools: any[] = [];
@@ -340,27 +405,28 @@ export async function runProjectAgent(options: {
           return null;
         })()
       : Promise.resolve(null);
-  if (rulesResult.hasRules && !isGeneral) {
+  if (rulesResult.hasRules && profile.scope === "code") {
     emit("status", `Loaded ${rulesResult.ruleFiles.length} project rule file${rulesResult.ruleFiles.length === 1 ? "" : "s"} (${rulesResult.ruleFiles.map((r) => r.filename).join(", ")})`);
   }
-  if (projectInstructions.files.length && !isGeneral) {
+  if (projectInstructions.files.length && profile.scope === "code") {
     emit("status", `Loaded project instructions (${projectInstructions.files.map((f) => f.name).join(", ")})`);
   }
 
   let codeJournal: CodeTaskJournal | null = null;
-  let codeJournalWrite = Promise.resolve();
+  // Serialized journal persistence via the shared machine (journal-queue.ts)
+  // — the two lanes' private write chains were shape-identical.
+  const saveCodeJournal = createJournalSaver<CodeTaskJournal>({
+    gate: () => profile.journal === "code" && Boolean(sessionId),
+    save: (journal) => saveCodeTaskJournal(projectRoot, journal),
+  });
   const queueCodeJournalWrite = (next: CodeTaskJournal) => {
     codeJournal = updateCodeTaskContextSummary(next);
-    if (isGeneral || !sessionId) return;
-    const snapshot = codeJournal;
-    codeJournalWrite = codeJournalWrite
-      .then(() => saveCodeTaskJournal(projectRoot, snapshot))
-      .catch(() => undefined);
+    saveCodeJournal(codeJournal);
   };
   const runCommand = async (command: string) => {
     try {
       const result = await Promise.resolve((agentBackend as any)?.execute?.(command));
-      if (!isGeneral && codeJournal?.phase === "verification") {
+      if (profile.journal === "code" && codeJournal?.phase === "verification") {
         const exitCode = Number((result as any)?.exitCode);
         queueCodeJournalWrite(recordCodeTaskAction(codeJournal, {
           tool: "verification",
@@ -374,7 +440,7 @@ export async function runProjectAgent(options: {
       return result;
     } catch (error) {
       const result = { output: error instanceof Error ? error.message : String(error), exitCode: 1, truncated: false };
-      if (!isGeneral && codeJournal?.phase === "verification") {
+      if (profile.journal === "code" && codeJournal?.phase === "verification") {
         queueCodeJournalWrite(recordCodeTaskAction(codeJournal, {
           tool: "verification",
           summary: `Failed: ${command}`,
@@ -527,12 +593,12 @@ export async function runProjectAgent(options: {
           : null;
       }
     : undefined;
-  const allCodeTools = isGeneral ? [] : createCodeIntelligenceTools(projectRoot, { readOnly: mode === "plan", beforeEdit: editGate });
-  const browserTools = wantsBrowser || isGeneral
+  const allCodeTools = profile.codeIntelligence ? createCodeIntelligenceTools(projectRoot, { readOnly: mode === "plan", beforeEdit: editGate }) : [];
+  const browserTools = wantsBrowser || profile.browser
     ? createBrowserTools(projectRoot, {
         agentBrowser: {
-          inspect: (url) => agentBrowserService.inspect(url, { sessionId, scope: isGeneral ? "home" : "code" }),
-          act: (input) => agentBrowserService.act(input, projectRoot, { sessionId, scope: isGeneral ? "home" : "code", openInBrowser: input.openInBrowser }),
+          inspect: (url) => agentBrowserService.inspect(url, { sessionId, scope: profile.scope }),
+          act: (input) => agentBrowserService.act(input, projectRoot, { sessionId, scope: profile.scope, openInBrowser: input.openInBrowser }),
         },
       })
     : [];
@@ -551,24 +617,24 @@ export async function runProjectAgent(options: {
     // (Watching follows it live, otherwise the follow banner shows it).
     // Fire-and-forget: results come from the search API, never the mirror.
     onSearch: (_query, url) => {
-      void agentBrowserService.visit(url, { sessionId, scope: isGeneral ? "home" : "code" }).catch(() => {});
+      void agentBrowserService.visit(url, { sessionId, scope: profile.scope }).catch(() => {});
     },
   });
   // Home can search for illustrative image results and embed selected ones
   // in its Markdown response. Image lookups are charged to the same research
   // cap by loopPreventionMiddleware (isResearchTool).
-  const webImageSearchTools = isGeneral
+  const webImageSearchTools = profile.webImageSearch
     ? createWebImageSearchTools({
         onSearch: (_query, url) => {
-          void agentBrowserService.visit(url, { sessionId, scope: isGeneral ? "home" : "code" }).catch(() => {});
+          void agentBrowserService.visit(url, { sessionId, scope: profile.scope }).catch(() => {});
         },
       })
     : [];
-  const webVideoSearchTools = isGeneral ? createWebVideoSearchTools({}) : [];
+  const webVideoSearchTools = profile.webVideoSearch ? createWebVideoSearchTools({}) : [];
   const usage = new UsageAccumulator();
   let recursionLimit = isSimple
     ? SIMPLE_TASK_LIMIT
-    : (isGeneral && homeTaskContract?.expectsOutput)
+    : (profile.contract === "home" && homeTaskContract?.expectsOutput)
       ? HOME_DELIVERABLE_LIMIT
       : MODE_LIMITS[fullAccess ? "full" : mode];
   // Opencode core: ripgrep-like grep + range-read only for simple tasks.
@@ -577,7 +643,7 @@ export async function runProjectAgent(options: {
   // tool-registration boundary too: custom tools must not bypass the backend.
   // importableAttachments covers every file type (images + docs); the legacy
   // attachedImages alias keeps image imports working for older callers.
-  const editTools = mode === "plan" ? [] : createEditTools(projectRoot, { attachedImages: attachments, attachedFiles: importableAttachments ?? attachments, beforeEdit: editGate }).filter((t: any) => !isGeneral || t?.name !== "apply_patch");
+  const editTools = mode === "plan" ? [] : createEditTools(projectRoot, { attachedImages: attachments, attachedFiles: importableAttachments ?? attachments, beforeEdit: editGate }).filter((t: any) => profile.applyPatch || t?.name !== "apply_patch");
   // Skill helper scripts run through the workspace: plan mode stays read-only.
   const skillFilesTools = mode === "plan" || !skillsConfig.enabled ? [] : [createSkillFilesTool(eligibleSkillCatalog, projectRoot, { beforeEdit: editGate })];
   const questionTool = createQuestionTool(async (questions) => {
@@ -604,8 +670,8 @@ export async function runProjectAgent(options: {
   // the three Home validation sites below (loop gate, verify node,
   // recursion short-circuit) so a deliverable is fully parsed at most once
   // per (re)write instead of on every modify tool call.
-  const homeArtifactCache = isGeneral ? createArtifactValidationCache(projectRoot) : null;
-  if (isGeneral) {
+  const homeArtifactCache = profile.contract === "home" ? createArtifactValidationCache(projectRoot) : null;
+  if (profile.contract === "home") {
     try {
       initialHomeFiles = await snapshotHomeFiles(projectRoot);
     } catch { /* baseline is best effort */ }
@@ -618,7 +684,7 @@ export async function runProjectAgent(options: {
     mode !== "plan" &&
     effectiveComplexity === "complex" &&
     Boolean(
-      isGeneral
+      profile.contract === "home"
         ? (homeTaskContract?.expectsOutput && (homeTaskContract?.expectedFormats?.length ?? 0) > 1)
         : codeTaskContract?.expectsChanges
     );
@@ -627,7 +693,7 @@ export async function runProjectAgent(options: {
     : null;
 
   const checkDeliverableReady = async () => {
-    if (!isGeneral || !homeTaskContract?.expectsOutput || !homeArtifactCache) return null;
+    if (profile.contract !== "home" || !homeTaskContract?.expectsOutput || !homeArtifactCache) return null;
     const currentFresh = await findFreshHomeFiles(projectRoot, initialHomeFiles, runStartMs);
     if (!currentFresh.length) return null;
     const contract = await homeArtifactCache.contract(currentFresh, homeTaskContract?.expectedFormats);
@@ -663,7 +729,7 @@ export async function runProjectAgent(options: {
   // dozens of search results never flood the main conversation (the Tokyo
   // Ghoul failure class). Bound for non-simple Home runs only.
   const homeResearchTool =
-    isGeneral && !isSimple && effectiveComplexity !== "simple"
+    profile.contract === "home" && !isSimple && effectiveComplexity !== "simple"
       ? [
           createHomeResearchTool({
             projectRoot,
@@ -682,7 +748,7 @@ export async function runProjectAgent(options: {
         ]
       : [];
 
-  const homeMemoryTool = isGeneral
+  const homeMemoryTool = profile.sharedMemoryTool
     ? [
         createHomeMemoryTool({
           // The mutate callback re-reads the shared memory inside the store's
@@ -713,7 +779,7 @@ export async function runProjectAgent(options: {
   // project-facts queue; the user sees and can forget every entry in the
   // Memory tab.
   const projectMemoryTool =
-    !isGeneral && onProjectMemoryUpdate
+    profile.memory === "project" && onProjectMemoryUpdate
       ? [
           createHomeMemoryTool({
             name: "project_memory",
@@ -737,7 +803,7 @@ export async function runProjectAgent(options: {
         ]
       : [];
 
-  const activePluginMode: PluginMode = (skillsMode as PluginMode) || (isGeneral ? "home" : "code");
+  const activePluginMode: PluginMode = (skillsMode as PluginMode) || profile.skillsMode;
   const pluginTools = createPluginAgentTools({
     mode: activePluginMode,
     runId: sessionId,
@@ -769,12 +835,12 @@ export async function runProjectAgent(options: {
 
   // Hoisted so the context breakdown can measure the meta-context share (the
   // memory/rules/repo-map sections embedded inside the system prompt).
-  const promptMemory = isGeneral && memory.projectMemory
+  const promptMemory = profile.memory === "home" && memory.projectMemory
     ? { projectMemory: selectRelevantHomeMemory(memory.projectMemory, request, 4000), sessionMemory: memory.sessionMemory, facts: memory.facts }
     : memory;
   // Full role catalog only where delegate_task is actually bound — simple
   // runs drop the tool, Home runs never mention delegation.
-  const subagentCatalogText = assetsEnabled("agents") && !isGeneral && effectiveComplexity !== "simple" ? buildSubagentCatalog(projectRoot) : "";
+  const subagentCatalogText = assetsEnabled("agents") && profile.subagents && effectiveComplexity !== "simple" ? buildSubagentCatalog(projectRoot) : "";
   const systemPromptText = buildSystemPrompt(
     mode,
     projectRoot,
@@ -804,7 +870,7 @@ export async function runProjectAgent(options: {
   // Deterministic deliverable engine (Home): standard document formats render
   // from the model's Markdown CONTENT — no model-authored Python, no pip, no
   // one-shot script risk. Small models write content, not code.
-  const homeDeliverableTool = isGeneral
+  const homeDeliverableTool = profile.homeDeliverables
     ? [createDeliverableTool({
         projectRoot,
         request,
@@ -818,7 +884,7 @@ export async function runProjectAgent(options: {
   // Neural image generation (OpenAI/Imagen) — bound only when the run's
   // provider can actually serve an image endpoint.
   const imageGenTool = (() => {
-    if (!isGeneral) return [];
+    if (profile.scope !== "home") return [];
     try {
       const genTool = createImageGenTool({ projectRoot, provider, beforeEdit: editGate ? (info) => editGate(info) : undefined });
       return genTool ? [genTool] : [];
@@ -847,7 +913,7 @@ export async function runProjectAgent(options: {
   // enforcement rides wrapToolCall too.
   const agentMiddlewares: AgentMiddleware[] = [
     loopPreventionMiddleware({
-      general: isGeneral,
+      general: profile.contract === "home",
       outputRequired: Boolean(homeTaskContract?.expectsOutput),
       needsResearch: homeTaskContract?.needsResearch,
       beforeModify: beforeCodeModify,
@@ -897,7 +963,7 @@ export async function runProjectAgent(options: {
     history,
     isSimple,
     llm,
-    isGeneral,
+    isGeneral: profile.contract === "home",
     emit,
     onEvent: (e) => onEvent({
       type: "status",
@@ -932,7 +998,7 @@ export async function runProjectAgent(options: {
     ? `[Attachment imports: ${(attachmentDocs?.length || 0) + (attachments?.length || 0)} file(s) available via import_attachment (index 0..${(attachmentDocs?.length || 0) + (attachments?.length || 0) - 1}: ${[...(attachmentDocs || []).map((d) => d.name), ...(attachments || []).map((_, i) => `image-${i}`)].join(", ")}). Only import when the deliverable needs the actual file in the project; reference content above is already in context.]`
     : null;
   let homeRecoveryContext = "";
-  if (isGeneral && sessionId && homeTaskContinuation) {
+  if (profile.contract === "home" && sessionId && homeTaskContinuation) {
     const priorHomeTask = await loadHomeTaskJournal(projectRoot, sessionId);
     if (priorHomeTask && priorHomeTask.status !== "completed") {
       homeRecoveryContext = priorHomeTask.contextSummary || buildHomeTaskContextSummary(priorHomeTask);
@@ -1103,16 +1169,15 @@ export async function runProjectAgent(options: {
   // into repair mode on the previous task instead of answering.
   const runStartMs = Date.now();
   let homeJournal: HomeTaskJournal | null = null;
-  let homeJournalWrite = Promise.resolve();
+  const saveHomeJournal = createJournalSaver<HomeTaskJournal>({
+    gate: () => profile.journal === "home",
+    save: (journal) => saveHomeTaskJournal(projectRoot, journal),
+  });
   const queueHomeJournalWrite = (next: HomeTaskJournal) => {
     homeJournal = updateHomeTaskContextSummary(next);
-    if (!isGeneral) return;
-    const snapshot = homeJournal;
-    homeJournalWrite = homeJournalWrite
-      .then(() => saveHomeTaskJournal(projectRoot, snapshot))
-      .catch(() => undefined);
+    saveHomeJournal(homeJournal);
   };
-  if (isGeneral && sessionId && homeTaskContract) {
+  if (profile.journal === "home" && sessionId && homeTaskContract) {
     const previous = homeTaskContinuation ? await loadHomeTaskJournal(projectRoot, sessionId) : null;
     homeJournal = previous && previous.status !== "completed"
       ? { ...previous, status: "active", completedAt: undefined }
@@ -1132,7 +1197,7 @@ export async function runProjectAgent(options: {
     }
     queueHomeJournalWrite(homeJournal);
   }
-  if (!isGeneral && sessionId) {
+  if (profile.journal === "code" && sessionId) {
     const previous = hasResume ? await loadCodeTaskJournal(projectRoot, sessionId) : null;
     queueCodeJournalWrite(createCodeTaskJournal({ sessionId, goal: request, mode, resume: previous }));
   }
@@ -1148,11 +1213,11 @@ export async function runProjectAgent(options: {
       codeJournal = finishCodeTaskJournal(codeJournal, status);
       queueCodeJournalWrite(codeJournal);
     }
-    await Promise.all([homeJournalWrite, codeJournalWrite]).catch(() => undefined);
+    await Promise.all([saveHomeJournal.flush(), saveCodeJournal.flush()]).catch(() => undefined);
   };
   const diffFingerprint = (d: { path: string; additions: number; deletions: number }) => `${d.additions}/${d.deletions}`;
   const initialDiff = new Map<string, string>();
-  if (!isGeneral) {
+  if (profile.journal === "code") {
     try {
       const before = await getWorkspaceDiffFiles(projectRoot);
       for (const d of before) initialDiff.set(d.path, diffFingerprint(d));
@@ -1178,9 +1243,9 @@ export async function runProjectAgent(options: {
       // A Home research run must not spend several retry windows replaying the
       // same long browse sequence. Preserve the checkpoint and surface a
       // resumable failure quickly instead of silently consuming 20+ minutes.
-      maxAttempts: isGeneral ? 4 : undefined,
-      maxProgressResets: isGeneral ? 0 : undefined,
-      baseDelayMs: isGeneral ? 5_000 : undefined,
+      maxAttempts: profile.retry === "home" ? 4 : undefined,
+      maxProgressResets: profile.retry === "home" ? 0 : undefined,
+      baseDelayMs: profile.retry === "home" ? 5_000 : undefined,
       signal,
       prepareAttempt: () => {
         if (isCancelled() || signal?.aborted) throw new RunCancelledError();
@@ -1376,7 +1441,7 @@ function formatCallArgsDetail(name: string, args: unknown): string {
       if (items) {
         lastPlanItems = items;
         codePlanReady = items.length > 0;
-        if (!isGeneral && codeJournal) queueCodeJournalWrite(recordCodeTaskPlan(codeJournal, items));
+        if (profile.journal === "code" && codeJournal) queueCodeJournalWrite(recordCodeTaskPlan(codeJournal, items));
         emit("plan", "Working plan", items);
       }
       return;
@@ -1389,10 +1454,8 @@ function formatCallArgsDetail(name: string, args: unknown): string {
     // loopPreventionMiddleware intercepts and steers at repetition 2 & 3,
     // so 6x acts as the final safety circuit breaker if model persists.
     const normalizedCallArgs = { ...((call?.args as any) || {}) };
-    if (normalizedCallArgs.filePath && !normalizedCallArgs.file_path) {
-      normalizedCallArgs.file_path = normalizedCallArgs.filePath;
-      delete normalizedCallArgs.filePath;
-    }
+    // Shared alias mapping (loop-prevention) — was a third private copy.
+    normalizeArgAliases(normalizedCallArgs);
     if (typeof normalizedCallArgs.file_path === "string") {
       normalizedCallArgs.file_path = normalizedCallArgs.file_path.replace(/\\/g, "/").replace(/^\/+/, "");
     }
@@ -1406,7 +1469,7 @@ function formatCallArgsDetail(name: string, args: unknown): string {
     if (toolRepeatCount >= 6) {
       throw new DoomLoopError(name, summary || "identical arguments");
     }
-    if (isGeneral) {
+    if (profile.contract === "home") {
       const readOnlyAction = /search|browser|fetch|inspect|read|skill|outline|passage|list/i.test(name);
       if (sig === homeLastActionSig) homeActionRepeatCount++;
       else {
@@ -1442,7 +1505,7 @@ function formatCallArgsDetail(name: string, args: unknown): string {
       ? `Skill loaded: ${lastActiveToolSkill} ✓`
       : `${name} ✓`;
     emit("tool", doneLabel, undefined, undefined, undefined, undefined, detailCombined);
-    if (isGeneral && homeJournal) {
+    if (profile.journal === "home" && homeJournal) {
       const toolName = String(lastActiveToolName || "tool");
       const phase: HomeTaskPhase = /search|browser|fetch|inspect|read|skill/i.test(toolName)
         ? "research"
@@ -1461,7 +1524,7 @@ function formatCallArgsDetail(name: string, args: unknown): string {
       });
       queueHomeJournalWrite(next);
     }
-    if (!isGeneral && codeJournal) {
+    if (profile.journal === "code" && codeJournal) {
       const toolName = String(lastActiveToolName || "tool");
       const phase: CodeTaskPhase = /test|check|diagnostic|lint|build|verify|format/i.test(toolName)
         ? "verification"
@@ -1480,7 +1543,7 @@ function formatCallArgsDetail(name: string, args: unknown): string {
       }));
     }
     progress.noteToolResult();
-    if (isGeneral && sessionId) {
+    if (profile.contract === "home" && sessionId) {
       const now = Date.now();
       if (now - lastCheckpointSaveMs > 2000) {
         lastCheckpointSaveMs = now;
@@ -1542,7 +1605,7 @@ function formatCallArgsDetail(name: string, args: unknown): string {
         // of pausing the whole run. Context-window errors are excluded — they
         // are the condensation path's job and switching providers won't help
         // if the failure is payload size.
-        if (isGeneral && !relaunchRequested && !isRecursionLimitError(error) && isRateLimitError(error) && failoverIndex < failoverChain.length) {
+        if (profile.failover && !relaunchRequested && !isRecursionLimitError(error) && isRateLimitError(error) && failoverIndex < failoverChain.length) {
           const target = failoverChain[failoverIndex];
           failoverIndex++; // consumed whether or not the swap succeeds
           emit("status", `${provider.label} keeps failing after retries (${errorSummary(error).slice(0, 120)}) — failing over to ${target.config.label} / ${target.model}…`);
@@ -1551,6 +1614,11 @@ function formatCallArgsDetail(name: string, args: unknown): string {
           try {
             const nextClient = await createChatModel(target.config, target.model, { reasoningEffort: effort });
             llm = nextClient;
+            // Re-point the run's provider/model at the swap target too:
+            // final usage is priced against this config, and subagents
+            // spawned after the swap (verify node, delegation) read it.
+            provider = target.config;
+            modelName = target.model;
             swapped = true;
           } catch (swapError) {
             // Swap failed (bad key, dead base URL): fall through to the
@@ -1622,7 +1690,7 @@ function formatCallArgsDetail(name: string, args: unknown): string {
         // results first, then boundary-trim, then clip/drop tool outputs —
         // each level only runs if the previous one didn't free enough room.
         let compactLevel = "trim";
-        if (isGeneral && homeJournal) {
+        if (profile.journal === "home" && homeJournal) {
           // Keep the task ledger in context after transcript condensation. It
           // is runtime-generated from completed tool results and bounded, so
           // the model can continue without trusting an earlier assistant claim.
@@ -1633,8 +1701,8 @@ function formatCallArgsDetail(name: string, args: unknown): string {
           );
           runMessages = shrunk.messages;
           compactLevel = shrunk.level;
-        } else if (!isGeneral && codeJournal) {
-          await codeJournalWrite;
+        } else if (profile.journal === "code" && codeJournal) {
+          await saveCodeJournal.flush();
           const shrunk = shrinkWithBrief(
             runMessages,
             contextMessageBudget,
@@ -1689,7 +1757,7 @@ function formatCallArgsDetail(name: string, args: unknown): string {
   // mutated run state goes through getters so the node never sees a snapshot.
   const runVerifyNode = createVerifyNode({
     isCancelled, signal, emit, runCommand, usage,
-    isGeneral, mode, request, projectRoot, sessionId, runStartMs,
+    isGeneral: profile.verify === "home", mode, request, projectRoot, sessionId, runStartMs,
     homeTaskContract, codeTaskContract, homeArtifactCache, initialDiff, diffFingerprint,
     provider, modelName, skillDirs, skillListings,
     agentsEnabled: assetsEnabled("agents"),
@@ -1736,7 +1804,7 @@ function formatCallArgsDetail(name: string, args: unknown): string {
   // until the task finishes. Bounded by MAX_BUDGET_EXTENSIONS so a wandering
   // model cannot burn API spend forever; the doom-loop breaker and a user
   // cancel still stop the run immediately.
-  const maxBudgetExtensions = isGeneral ? MAX_BUDGET_EXTENSIONS.home : MAX_BUDGET_EXTENSIONS.code;
+  const maxBudgetExtensions = profile.budget === "home" ? MAX_BUDGET_EXTENSIONS.home : MAX_BUDGET_EXTENSIONS.code;
   let budgetExtensions = 0;
   // G9: one user-sanctioned extra extension via the structured question UI,
   // asked exactly once when the automatic budget is exhausted.
@@ -1776,7 +1844,7 @@ function formatCallArgsDetail(name: string, args: unknown): string {
       // Deliverable-ready short-circuit on recursion limit:
       // If the requested deliverable already exists on disk and passes artifact contract validation,
       // do not auto-extend another 80-150 steps of endless QA/tweaking. Complete the run cleanly.
-      if (isGeneral && homeTaskContract?.expectsOutput) {
+      if (profile.contract === "home" && homeTaskContract?.expectsOutput) {
         try {
           const fresh = await findFreshHomeFiles(projectRoot, initialHomeFiles, runStartMs);
           if (fresh.length > 0) {
@@ -1817,7 +1885,7 @@ function formatCallArgsDetail(name: string, args: unknown): string {
         // G9/G13: instead of silently pausing at the hard cap, ask once —
         // the user can sanction another extension or take over. Unavailable
         // bridge or dismiss = the checkpointed pause (previous behavior).
-        if (!budgetAskUsed && isGeneral && onUserQuestion) {
+        if (!budgetAskUsed && profile.budget === "home" && onUserQuestion) {
           budgetAskUsed = true;
           saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
           emit("status", "Step budget exhausted — asking how to proceed…");
@@ -1842,7 +1910,7 @@ function formatCallArgsDetail(name: string, args: unknown): string {
       // could wander for up to 4×150 before pausing. A consumed budget earns
       // a bounded continuation window; the deliverable-ready short-circuit
       // and the user-ask path still cover genuinely larger remaining work.
-      recursionLimit = isGeneral ? 40 : 60;
+      recursionLimit = profile.budget === "home" ? 40 : 60;
       outerLimit = Math.max(recursionLimit, 50);
       saveLastRunCheckpoint(sessionId, { messages: sanitizeResumeCheckpoint(runMessages), planItems: lastPlanItems }, targetTelemetryRoot);
       emit("status", `Step budget reached — extending automatically (${budgetExtensions}/${maxBudgetExtensions}) and continuing from where the run stopped…`);
@@ -1900,7 +1968,7 @@ function formatCallArgsDetail(name: string, args: unknown): string {
   }
   // Never let final prose override an unmet Home output contract. A failed
   // run can still be resumed, but it must be reported as incomplete.
-  const homeFreshFiles = isGeneral
+  const homeFreshFiles = profile.contract === "home"
     ? await findFreshHomeFiles(projectRoot, initialHomeFiles, runStartMs)
     : [];
 
@@ -1908,7 +1976,7 @@ function formatCallArgsDetail(name: string, args: unknown): string {
   // 1) If the model placed charts inside an unrequested .md file instead of the response, extract and embed them.
   // 2) If the model generated fresh image files (e.g. via python matplotlib chart_*.png) that are not embedded in chat,
   //    embed them directly with descriptive titles so the user sees the visual evidence alongside the answers.
-  if (isGeneral && result?.response) {
+  if (profile.contract === "home" && result?.response) {
     let hasVisualBlocks =
       /```(?:bar|hbar|line|area|pie|donut|scatter|radar|mermaid)\b/i.test(result.response) ||
       /!\[[^\]]*\]\([^)]+\.(png|jpe?g|svg|webp|gif)\)/i.test(result.response);
@@ -1976,7 +2044,7 @@ function formatCallArgsDetail(name: string, args: unknown): string {
     : await validateHomeArtifactContract(projectRoot, homeFreshFiles, homeTaskContract?.expectedFormats);
   const homeInvalidArtifacts = homeArtifactContract.invalidArtifacts;
   const homeMissingFormats = homeArtifactContract.missingFormats;
-  if (isGeneral && homeTaskContract?.expectsOutput && result?.verification === "failed") {
+  if (profile.verify === "home" && homeTaskContract?.expectsOutput && result?.verification === "failed") {
     const freshFiles = homeFreshFiles;
     if (freshFiles.length === 0 || homeInvalidArtifacts.length > 0 || homeMissingFormats.length > 0) {
       const details = [
@@ -2005,13 +2073,13 @@ function formatCallArgsDetail(name: string, args: unknown): string {
         ? "interrupted"
         : "completed";
     queueHomeJournalWrite(finishHomeTaskJournal(journalWithOutputs, status, status === "completed" ? "complete" : "blocked"));
-    await homeJournalWrite;
+    await saveHomeJournal.flush();
   }
   if (codeJournal) {
     // Repairs exhausted with verification still failing = blocked on human
     // input, not a crash. Hard failures write "failed" via finishRunJournals.
     queueCodeJournalWrite(finishCodeTaskJournal(codeJournal, result?.verification === "failed" ? "blocked" : "completed"));
-    await codeJournalWrite;
+    await saveCodeJournal.flush();
   }
   if (lastPlanItems && lastPlanItems.length > 0) {
     const hasIncomplete = lastPlanItems.some((p) => p.status !== "completed");
@@ -2052,7 +2120,7 @@ function formatCallArgsDetail(name: string, args: unknown): string {
   emit("assistant", result.response, undefined, finalUsage, undefined, undefined, undefined, finalContext);
   emit("usage", `Token usage · ${finalUsage.totalTokens} tokens${finalUsage.estimatedCost == null ? "" : ` (~$${finalUsage.estimatedCost})`}`, undefined, finalUsage);
 
-  if (isGeneral && result?.verification !== "failed") {
+  if (profile.scope === "home" && result?.verification !== "failed") {
     await cleanupHomeScratchFiles(projectRoot, homeFreshFiles).catch(() => {});
   }
   const hookEvent = result?.verification === "failed" ? "verify:fail" : "run:end";
@@ -2091,7 +2159,7 @@ function formatCallArgsDetail(name: string, args: unknown): string {
           });
           emit("artifact", `Generated Walkthrough Report`, undefined, undefined, undefined, artifact);
         }
-      } else if (isGeneral && homeFreshFiles && homeFreshFiles.length > 0) {
+      } else if (profile.contract === "home" && homeFreshFiles && homeFreshFiles.length > 0) {
         for (const file of homeFreshFiles) {
           const ext = path.extname(file).toLowerCase();
           if ([".pptx", ".xlsx", ".docx", ".pdf", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".csv", ".txt", ".md"].includes(ext)) {
@@ -2144,14 +2212,14 @@ function formatCallArgsDetail(name: string, args: unknown): string {
     ]);
     return parseCandidateFacts(raw);
   };
-  if (isGeneral && mode !== "plan" && onMemoryCandidates) {
+  if (profile.memory === "home" && mode !== "plan" && onMemoryCandidates) {
     const runIdForLog = sessionId;
     void extractMemoryCandidates()
       .then((candidates) => (candidates.length ? onMemoryCandidates(candidates) : undefined))
       .catch((error) => {
         if (runIdForLog) trajectory?.log({ source: "SYSTEM", type: "STATUS", content: `Background memory extraction skipped: ${error instanceof Error ? error.message : String(error)}` }).catch(() => {});
       });
-  } else if (isGeneral && mode !== "plan") {
+  } else if (profile.memory === "home" && mode !== "plan") {
     try {
       memoryCandidates = await extractMemoryCandidates();
     } catch { /* extraction is best-effort */ }
