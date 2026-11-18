@@ -286,12 +286,15 @@ export class WorkspaceBackend implements AgentBackend {
       try {
         const abs = backend.resolvePath(key);
         const current = await fsPromises.readFile(abs, "utf8");
-        if (!current.includes(oldString)) return { error: `String to replace not found in file: '${key}'. The file has not been modified — check the exact text (including whitespace) with read_file first.` };
+        if (!current.includes(oldString)) {
+          const hint = nearestLinesHint(current, oldString);
+          return { error: `String to replace not found in file: '${key}'. The file has not been modified — check exact whitespace/indentation.${hint}` };
+        }
         const occurrences = current.split(oldString).length - 1;
         if (occurrences > 1 && !replaceAll) {
           return { error: `Found ${occurrences} occurrences of the string to replace. Provide more surrounding context to make the match unique, or pass replace_all=true.` };
         }
-        const next = replaceAll ? current.split(oldString).join(newString) : current.replace(oldString, newString);
+        const next = replaceAll ? current.split(oldString).join(newString) : current.replace(oldString, () => newString);
         await fsPromises.writeFile(abs, next, "utf8");
         return { occurrences: replaceAll ? occurrences : 1 };
       } catch (error: any) {
@@ -317,6 +320,27 @@ export class WorkspaceBackend implements AgentBackend {
   async execute(command: string): Promise<{ output: string; exitCode: number | null; truncated?: boolean }> {
     throw new Error("Execution not available: this backend does not implement command execution. Provide an execute policy when constructing the backend.");
   }
+}
+
+function nearestLinesHint(fileText: string, needle: string): string {
+  const anchor = needle
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => l.length >= 6);
+  if (!anchor) return " Read the target range with read_file first.";
+  const fileLines = fileText.split(/\r?\n/);
+  let hitIdx = -1;
+  for (let i = 0; i < fileLines.length; i++) {
+    if (fileLines[i].trim().includes(anchor)) {
+      hitIdx = i;
+      break;
+    }
+  }
+  if (hitIdx < 0) return " Read the target range with read_file first.";
+  const start = Math.max(0, hitIdx - 2);
+  const end = Math.min(fileLines.length, hitIdx + 6);
+  const snippet = fileLines.slice(start, end).map((l, idx) => `${start + idx + 1}: ${l.slice(0, 180)}`).join("\n");
+  return `\nNearest match around line ${hitIdx + 1}:\n${snippet}`;
 }
 
 // Minimal glob matching for the patterns tools actually receive (**, *, ?).

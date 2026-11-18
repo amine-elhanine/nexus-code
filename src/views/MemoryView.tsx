@@ -1,7 +1,7 @@
 import { Brain, Check, FileText, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import type { ProjectRecord, SessionRecord } from "../types.js";
-import { parseMemorySections, parseWorkLog } from "../utils/memory-format.js";
+import { parseMemoryLessons, parseMemorySections, parseWorkLog } from "../utils/memory-format.js";
 
 function FactList({ items, emptyText, onRemove }: { items: string[]; emptyText: string; onRemove: (fact: string) => void }) {
   if (!items.length) return <div className="empty-pane" style={{ padding: "6px" }}>{emptyText}</div>;
@@ -34,7 +34,8 @@ export function MemoryView({
   onClearSessionMemory: () => void;
 }) {
   const sections = parseMemorySections(project?.facts);
-  const durableCount = sections.profile.length + sections.preferences.length + sections.facts.length + sections.context.length;
+  const lessons = parseMemoryLessons(project?.facts);
+  const durableCount = sections.profile.length + sections.preferences.length + sections.facts.length + lessons.length + sections.context.length;
   const workLog = parseWorkLog(project?.memory);
   return (
     <div className="context-tab-body">
@@ -65,6 +66,14 @@ export function MemoryView({
         <strong style={{ fontSize: "11px" }}>Remembered facts</strong>
         <div style={{ height: 4 }} />
         <FactList items={sections.facts} emptyText="No remembered facts yet." onRemove={onRemoveFact} />
+        {lessons.length > 0 && (
+          <>
+            <div style={{ height: 8 }} />
+            <strong style={{ fontSize: "11px" }}>Learned patterns &amp; lessons</strong>
+            <div style={{ height: 4 }} />
+            <FactList items={lessons} emptyText="" onRemove={onRemoveFact} />
+          </>
+        )}
         {sections.context.length > 0 && (
           <>
             <div style={{ height: 8 }} />

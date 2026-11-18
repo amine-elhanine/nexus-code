@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { X, Download, FileText, Loader2, TriangleAlert, History } from "lucide-react";
 import { safeMarkdown } from "../../markdown.js";
+import { sanitizeHtml } from "../../utils/sanitizeHtml.js";
 import type { ArtifactVersionManifest } from "../../types.js";
 import { fixPptxRenderedSlide } from "../../utils/pptx-preview.js";
 
@@ -276,7 +277,7 @@ export function FilePreviewModal({
             </div>
           )}
           {status === "ready" && kind === "xlsx" && sheets[activeSheet] && (
-            <div className="file-preview-sheet" dangerouslySetInnerHTML={{ __html: sheets[activeSheet].html }} />
+            <div className="file-preview-sheet" dangerouslySetInnerHTML={{ __html: sanitizeHtml(sheets[activeSheet].html) }} />
           )}
           {status === "ready" && kind === "unsupported" && (
             <div className="file-preview-center">

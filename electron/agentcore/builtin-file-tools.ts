@@ -33,7 +33,9 @@ function formatContentWithLineNumbers(content: string, startLine = 1): string {
   return rows.join("\n");
 }
 
-export function createFilesystemTools(backend: AgentBackend, options: { includeExecute?: boolean } = {}): AgentTool[] {
+export function createFilesystemTools(backend: AgentBackend, options: { includeExecute?: boolean; compactMode?: boolean } = {}): AgentTool[] {
+  const defaultReadLimit = options.compactMode ? 80 : DEFAULT_READ_LIMIT;
+  const defaultGrepLimit = options.compactMode ? 50 : GREP_MAX_COUNT;
   const tools: AgentTool[] = [];
 
   tools.push(defineTool({
@@ -44,7 +46,12 @@ export function createFilesystemTools(backend: AgentBackend, options: { includeE
       const result = await backend.ls(target || "/");
       if (result.error) return `Error listing files: ${result.error}`;
       if (!result.files.length) return `No files found in ${target || "/"}`;
-      const lines = result.files.map((info) => info.is_dir ? `${info.path} (directory)` : `${info.path}${info.size ? ` (${info.size} bytes)` : ""}`);
+      const cap = options.compactMode ? 120 : result.files.length;
+      const shown = result.files.slice(0, cap);
+      const lines = shown.map((info) => info.is_dir ? `${info.path} (directory)` : `${info.path}${info.size ? ` (${info.size} bytes)` : ""}`);
+      if (result.files.length > cap) {
+        lines.push(`[...${result.files.length - cap} more entries omitted; pass a narrower path]`);
+      }
       return lines.join("\n");
     },
   }));
@@ -55,10 +62,11 @@ export function createFilesystemTools(backend: AgentBackend, options: { includeE
     schema: z.object({
       file_path: z.string().describe("Absolute path to the file to read"),
       offset: z.number().optional().default(0).describe("Line offset to start reading from (0-indexed)"),
-      limit: z.number().optional().default(DEFAULT_READ_LIMIT).describe("Maximum number of lines to read"),
+      limit: z.number().optional().default(defaultReadLimit).describe("Maximum number of lines to read"),
     }),
-    execute: async ({ file_path, offset = 0, limit = DEFAULT_READ_LIMIT }: { file_path: string; offset?: number; limit?: number }) => {
-      const result = await backend.read(file_path, offset, limit);
+    execute: async ({ file_path, offset = 0, limit = defaultReadLimit }: { file_path: string; offset?: number; limit?: number }) => {
+      const effectiveLimit = options.compactMode ? Math.min(limit, 150) : limit;
+      const result = await backend.read(file_path, offset, effectiveLimit);
       if (result.error) return `Error: ${result.error}`;
       const formatted = formatContentWithLineNumbers(result.content, result.startLine ?? offset + 1);
       const remaining = result.totalLines != null && result.endLine != null && result.endLine < result.totalLines
@@ -135,7 +143,10 @@ export function createFilesystemTools(backend: AgentBackend, options: { includeE
       output_mode: z.enum(["files_with_matches", "content", "count"]).optional().default("content").describe("Output format"),
     }),
     execute: async ({ pattern, path: base, glob: globFilter, max_count, output_mode = "content" }: { pattern: string; path?: string; glob?: string | null; max_count?: number; output_mode?: "files_with_matches" | "content" | "count" }) => {
-      const result = await backend.grep(pattern, base || "/", globFilter ?? null, max_count ?? GREP_MAX_COUNT);
+      const effectiveMaxCount = options.compactMode
+        ? Math.min(max_count ?? defaultGrepLimit, defaultGrepLimit)
+        : (max_count ?? defaultGrepLimit);
+      const result = await backend.grep(pattern, base || "/", globFilter ?? null, effectiveMaxCount);
       if (result.error) return result.error;
       if (!result.matches.length) return `No matches found for pattern '${pattern}'`;
       let body: string;

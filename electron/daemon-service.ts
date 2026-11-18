@@ -113,7 +113,6 @@ export class DaemonService {
           // is unreadable as-is, and port detection can't see through escapes.
           const line = rawLine.replace(ANSI_PATTERN, "");
           active.logs.push(line);
-          if (active.logs.length > 1000) active.logs.shift();
 
           // Port detection e.g. "localhost:5173", "127.0.0.1:3000", "port 8080"
           // "Port X is in use" announces the port the server could NOT take
@@ -128,6 +127,9 @@ export class DaemonService {
               }
             }
           }
+        }
+        if (active.logs.length > 1100) {
+          active.logs = active.logs.slice(-1000);
         }
         info.logsCount = active.logs.length;
 

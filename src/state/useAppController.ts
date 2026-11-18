@@ -176,7 +176,7 @@ export function useAppController() {
   const activeProjectRef = useRef<ProjectRecord | null>(null);
   activeProjectRef.current = activeProject ?? null;
   const [view, setView] = useState<AppView>("chat");
-  const [mode, setMode] = useState("Ask");
+  const [mode, setMode] = useState("Auto");
   const [showSessions, setShowSessions] = useState(true);
   const [showContext, setShowContext] = useState(false);
   const [showProviders, setShowProviders] = useState(false);

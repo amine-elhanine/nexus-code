@@ -25,6 +25,7 @@ const UNIT_TESTS = [
   "test/checkpoint-resume.test.mjs",
   "test/checkpoint-binary.test.mjs",
   "test/widget-blocks.test.mjs",
+  "test/html-visual.test.mjs",
   "test/visual-svg.test.mjs",
   "test/loop-prevention.test.mjs",
   "test/browser-auto-open.test.mjs",
@@ -102,6 +103,10 @@ const UNIT_TESTS = [
   "test/websearch-freshness.test.mjs",
   "test/agent-backend-policy.test.mjs",
   "test/version-match.test.mjs",
+  "test/fixes-and-prompts-regression.test.mjs",
+  "test/compact-model-support.test.mjs",
+  "test/completion-continuity.test.mjs",
+  "test/autonomous-and-self-improving.test.mjs",
 ];
 
 console.log(`Running ${UNIT_TESTS.length} unit tests...\n`);

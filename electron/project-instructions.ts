@@ -74,7 +74,26 @@ export async function discoverProjectInstructions(projectRoot: string): Promise<
     }
   }
 
-  return { files, section: buildInstructionsSection(files) };
+  let section = buildInstructionsSection(files);
+  const memoryCandidates: Array<{ label: string; filePath: string }> = [
+    { label: "Workspace Memory (.nexus/MEMORY.md)", filePath: path.join(projectRoot, ".nexus", "MEMORY.md") },
+    { label: "Global Memory (~/.nexus/MEMORY.md)", filePath: path.join(globalRoot, "MEMORY.md") },
+  ];
+  const memorySections: string[] = [];
+  for (const candidate of memoryCandidates) {
+    const read = await readCapped(candidate.filePath);
+    if (read) {
+      memorySections.push(`### ${candidate.label}\n${read.content}`);
+    }
+  }
+  if (memorySections.length > 0) {
+    const memBlock = memorySections.join("\n\n");
+    section = section
+      ? `${section}\n${memBlock}\n`
+      : `\n\n## Project Instructions\n${memBlock}\n`;
+  }
+
+  return { files, section };
 }
 
 export function buildInstructionsSection(files: ProjectInstructionsFile[]): string {

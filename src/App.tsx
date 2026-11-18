@@ -20,6 +20,7 @@ import { ProjectRulesModal } from "./components/rules/ProjectRulesModal.js";
 import { CodeInspectorSidebar } from "./components/code/CodeInspectorSidebar.js";
 import { CodeOverviewCard } from "./components/code/CodeOverviewCard.js";
 import { extractLatestPlan } from "./components/chat/SlidingPlanDrawer.js";
+import { buildInspectorGoals, buildInspectorTasks } from "./utils/inspector.js";
 const MonacoDiffModal = lazy(() => import("./components/diff/MonacoDiffModal.js").then((module) => ({ default: module.MonacoDiffModal })));
 const ArtifactViewer = lazy(() => import("./components/artifacts/ArtifactViewer.js").then((module) => ({ default: module.ArtifactViewer })));
 const FilePreviewModal = lazy(() => import("./components/home/FilePreviewModal.js").then((module) => ({ default: module.FilePreviewModal })));
@@ -626,81 +627,16 @@ export function App() {
   }, []);
 
   // Assemble dynamic tasks from background daemons and executed session tool calls
-  const inspectorTasks = useMemo(() => {
-    const list: Array<{ id: string; name: string; status: "running" | "stopped" | "crashed" | "timer"; command?: string }> = [];
-
-    for (const d of inspectorDaemons) {
-      list.push({
-        id: d.id,
-        name: d.name || d.command,
-        status: d.status === "running" ? "running" : d.status === "crashed" ? "crashed" : "stopped",
-        command: d.command,
-      });
-    }
-
-    for (const msg of currentMessages) {
-      // Tool-call payloads ride on event messages; the ChatItem type doesn't
-      // model `toolCalls`, so read it through a loose shape.
-      const loose = msg as unknown as { toolCalls?: Array<{ id?: string; name?: string; args?: Record<string, unknown> }> };
-      if (msg.kind === "tool" || (loose.toolCalls && loose.toolCalls.length > 0)) {
-        for (const tc of loose.toolCalls || []) {
-          if (tc.name === "run_command" || tc.name === "bash") {
-            const cmd = (tc.args?.toolSummary as string) || (tc.args?.CommandLine as string) || (tc.args?.command as string);
-            if (cmd && !list.some((item) => item.name === cmd)) {
-              list.push({
-                id: `tool-${tc.id || list.length}`,
-                name: (tc.args?.toolSummary as string) || `Run ${cmd.slice(0, 30)}`,
-                status: "stopped",
-                command: cmd,
-              });
-            }
-          } else if (tc.name === "schedule") {
-            list.push({
-              id: `sched-${tc.id || list.length}`,
-              name: (tc.args?.Prompt as string) || "10s timer",
-              status: "timer",
-              command: "schedule",
-            });
-          }
-        }
-      }
-    }
-
-    return list;
-  }, [inspectorDaemons, currentMessages]);
+  const inspectorTasks = useMemo(
+    () => buildInspectorTasks(inspectorDaemons, currentMessages),
+    [inspectorDaemons, currentMessages]
+  );
 
   // Assemble goals from plan steps or user conversation checkpoints
-  const inspectorGoals = useMemo(() => {
-    const goals: Array<{ id: string; text: string; status: "completed" | "in_progress" | "pending" }> = [];
-
-    const plan = extractLatestPlan(liveEvents, currentMessages, running);
-    if (plan?.plan && plan.plan.length > 0) {
-      for (let i = 0; i < plan.plan.length; i++) {
-        const step = plan.plan[i];
-        goals.push({
-          id: `step-${i}`,
-          text: step.content,
-          status: step.status === "completed" ? "completed" : step.status === "in_progress" ? "in_progress" : "pending",
-        });
-      }
-    } else {
-      const userMsgs = currentMessages.filter((m) => m.role === "user");
-      for (let i = 0; i < userMsgs.length; i++) {
-        const u = userMsgs[i];
-        const text = (u.text || "").replace(/^\/goal\s+/i, "").trim();
-        if (text) {
-          const isLatest = i === userMsgs.length - 1;
-          goals.push({
-            id: `goal-${i}`,
-            text: text.length > 60 ? `${text.slice(0, 60)}...` : text,
-            status: isLatest && running ? "in_progress" : "completed",
-          });
-        }
-      }
-    }
-
-    return goals;
-  }, [liveEvents, currentMessages, running]);
+  const inspectorGoals = useMemo(
+    () => buildInspectorGoals(liveEvents, currentMessages, running),
+    [liveEvents, currentMessages, running]
+  );
 
   useEffect(() => {
     if (typeof api?.onBrowserAgentActivity === "function") {
@@ -1308,6 +1244,13 @@ export function App() {
                   customCommands={customCommands}
                   skills={installedSkills}
                   onRefreshSkills={refreshSkills}
+                  daemons={inspectorDaemons}
+                  onOpenAllDaemons={() => setShowDaemonsModal(true)}
+                  homeMemory={home.homeMemory}
+                  homeStructure={home.homeStructure}
+                  activeSession={home.activeSession}
+                  onRemoveHomeFact={(category, fact) => void home.removeFact(category, fact)}
+                  onClearSessionMemory={() => void home.clearSessionMemory()}
                 />
               )}
 

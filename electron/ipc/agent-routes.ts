@@ -61,7 +61,7 @@ export function registerAgentRoutes(ctx: MainIpcContext): void {
       const session = await getSession(projectId, sessionId);
       if (!project || !session) throw new Error("Active project/session not found.");
 
-      const mode: AgentMode = payload.mode === "plan" || payload.mode === "auto" || payload.mode === "full" ? payload.mode : "ask";
+      const mode: AgentMode = payload.mode === "plan" || payload.mode === "ask" || payload.mode === "full" ? payload.mode : "auto";
       const configured = payload.providerId ? (await listProviders()).find((provider) => provider.id === payload.providerId) : undefined;
       const provider = configured || (await listProviders())[0];
       const modelName = payload.model || session.model?.model;

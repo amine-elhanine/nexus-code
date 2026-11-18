@@ -175,11 +175,29 @@ export const BUILTIN_COMMANDS: CustomSlashCommand[] = [
     promptTemplate: "Design a modular architecture and blueprint for: {{input}}. Detail component boundaries, data contracts, state management, migration strategy, and technical trade-offs.",
     source: "builtin",
   },
+  {
+    command: "/goal",
+    name: "Autonomous Goal",
+    description: "Execute a goal autonomously from end to end until fully verified",
+    mode: "auto",
+    promptTemplate: "AUTONOMOUS GOAL MODE: Complete the following goal end to end without stopping early, narrating next steps, or leaving pending work. Plan multi-step work with write_todos, gather all needed facts/code context, implement or build the complete deliverable, verify everything passes, and save any useful reusable lessons or skills before concluding.\n\nGoal: {{input}}",
+    source: "builtin",
+    scope: "all",
+  },
+  {
+    command: "/learn",
+    name: "Self-Improve & Learn",
+    description: "Reflect on recent work and save reusable lessons or skills",
+    mode: "auto",
+    promptTemplate: "SELF-IMPROVEMENT & MEMORY CONSOLIDATION: Review recent work, errors resolved, conventions, and workflows for: {{input}}. Save durable facts, preferences, or operational lessons into long-term memory (using project_memory or manage_memory with category 'lesson'/'fact'/'preference'), and synthesize or update a reusable SKILL.md via learn_skill if a repeatable multi-step workflow was discovered.",
+    source: "builtin",
+    scope: "all",
+  },
 ];
 
 // Hardcoded mode-switch and code-action commands only make sense in the Code
-// area — Home/Notebook get their scoped system commands instead.
-BUILTIN_COMMANDS.forEach((c) => { c.scope = "code"; });
+// area — Home/Notebook get their scoped system commands (and explicit "all" commands) instead.
+BUILTIN_COMMANDS.forEach((c) => { if (!c.scope) c.scope = "code"; });
 
 export async function discoverCustomCommands(projectRoot?: string, scope?: Exclude<CommandScope, "all">): Promise<CustomSlashCommand[]> {
   const commands = [...BUILTIN_COMMANDS];

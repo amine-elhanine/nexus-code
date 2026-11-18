@@ -90,6 +90,173 @@ function extractUsage(payload: any): Usage | undefined {
   };
 }
 
+/** Repairs common small-model JSON quirks only when strict JSON.parse fails. */
+export function parseToolArgsSafely(rawJson: string): unknown {
+  const trimmed = (rawJson || "").trim();
+  if (!trimmed) return {};
+  try {
+    return JSON.parse(trimmed);
+  } catch { /* fall through to repair */ }
+
+  let candidate = trimmed;
+  const fenced = candidate.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced) candidate = fenced[1].trim();
+
+  // Escape literal newlines/tabs inside JSON string literals before removing trailing commas.
+  let inString = false;
+  let escaped = false;
+  let fixed = "";
+  for (let i = 0; i < candidate.length; i++) {
+    const ch = candidate[i];
+    if (escaped) {
+      fixed += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\" && inString) {
+      fixed += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      fixed += ch;
+      continue;
+    }
+    if (inString) {
+      if (ch === "\n") { fixed += "\\n"; continue; }
+      if (ch === "\r") { fixed += "\\r"; continue; }
+      if (ch === "\t") { fixed += "\\t"; continue; }
+    }
+    fixed += ch;
+  }
+  fixed = fixed.replace(/,\s*([}\]])/g, "$1");
+
+  try {
+    return JSON.parse(fixed);
+  } catch {
+    return { _raw: rawJson };
+  }
+}
+
+/**
+ * Fallback parser for local models that emit `<tool_call>...</tool_call>` or
+ * `<function=name>{...}</function>` in text instead of structured `delta.tool_calls`.
+ * Fenced code blocks are shielded so code examples in prose are never misparsed.
+ */
+export function extractTextToolCalls(rawText: string): { text: string; calls: ToolCall[] } {
+  if (!rawText || (!rawText.includes("<tool_call>") && !rawText.includes("<function="))) {
+    return { text: rawText, calls: [] };
+  }
+  const codeBlocks: string[] = [];
+  const shielded = rawText.replace(/```[\s\S]*?```/g, (block) => {
+    const idx = codeBlocks.length;
+    codeBlocks.push(block);
+    return `\u0000NEXUS_CODE_BLOCK_${idx}\u0000`;
+  });
+
+  const extracted: ToolCall[] = [];
+  let stripped = shielded.replace(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi, (full, inner: string) => {
+    const parsed = parseToolArgsSafely(inner);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof (parsed as any).name === "string" && !("_raw" in (parsed as any))) {
+      const name = String((parsed as any).name).trim();
+      const rawArgs = (parsed as any).arguments ?? (parsed as any).args ?? {};
+      const args = typeof rawArgs === "string" ? parseToolArgsSafely(rawArgs) : (rawArgs && typeof rawArgs === "object" ? rawArgs : {});
+      if (name) {
+        extracted.push({ id: `call_${name}_${extracted.length}`, name, args });
+        return "";
+      }
+    }
+    return full;
+  });
+
+  stripped = stripped.replace(/<function=([a-zA-Z0-9_.:-]+)>\s*([\s\S]*?)\s*<\/function>/gi, (full, name: string, inner: string) => {
+    const parsed = parseToolArgsSafely(inner);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && !("_raw" in (parsed as any))) {
+      extracted.push({ id: `call_${name}_${extracted.length}`, name, args: parsed });
+      return "";
+    }
+    return full;
+  });
+
+  const restored = stripped.replace(/\u0000NEXUS_CODE_BLOCK_(\d+)\u0000/g, (_m, i) => codeBlocks[Number(i)] ?? "");
+  return { text: restored.trim(), calls: extracted };
+}
+
+/**
+ * Splits a leading `<think>...</think>` reasoning span emitted inline by local
+ * models (DeepSeek-R1/Qwen3/QwQ) into `thinking` events while leaving normal
+ * text and code untouched (passthrough activates immediately if stream doesn't start with `<think>`).
+ */
+export function createLeadingThinkSplitter() {
+  let state: "detect" | "inside" | "passthrough" = "detect";
+  let buf = "";
+  const OPEN_TAG = "<think>";
+  const CLOSE_TAG = "</think>";
+
+  const push = (chunk: string): { textDeltas: string[]; thinkingDeltas: string[] } => {
+    const textDeltas: string[] = [];
+    const thinkingDeltas: string[] = [];
+    if (!chunk) return { textDeltas, thinkingDeltas };
+
+    if (state === "passthrough") {
+      textDeltas.push(chunk);
+      return { textDeltas, thinkingDeltas };
+    }
+
+    buf += chunk;
+    if (state === "detect") {
+      const trimmedStart = buf.replace(/^\s+/, "");
+      if (!trimmedStart) return { textDeltas, thinkingDeltas };
+      if (OPEN_TAG.startsWith(trimmedStart) && trimmedStart.length < OPEN_TAG.length) {
+        return { textDeltas, thinkingDeltas };
+      }
+      if (!trimmedStart.startsWith(OPEN_TAG)) {
+        state = "passthrough";
+        textDeltas.push(buf);
+        buf = "";
+        return { textDeltas, thinkingDeltas };
+      }
+      buf = trimmedStart.slice(OPEN_TAG.length);
+      state = "inside";
+    }
+
+    if (state === "inside") {
+      const closeIdx = buf.indexOf(CLOSE_TAG);
+      if (closeIdx >= 0) {
+        const thought = buf.slice(0, closeIdx);
+        if (thought) thinkingDeltas.push(thought);
+        const rest = buf.slice(closeIdx + CLOSE_TAG.length).replace(/^\s+/, "");
+        buf = "";
+        state = "passthrough";
+        if (rest) textDeltas.push(rest);
+        return { textDeltas, thinkingDeltas };
+      }
+      // Retain possible partial suffix of `</think>` at buffer end.
+      const keepSuffix = Math.min(buf.length, CLOSE_TAG.length - 1);
+      const safeEnd = buf.length - keepSuffix;
+      if (safeEnd > 0) {
+        thinkingDeltas.push(buf.slice(0, safeEnd));
+        buf = buf.slice(safeEnd);
+      }
+    }
+    return { textDeltas, thinkingDeltas };
+  };
+
+  const flush = (): { textDeltas: string[]; thinkingDeltas: string[] } => {
+    const textDeltas: string[] = [];
+    const thinkingDeltas: string[] = [];
+    if (!buf) return { textDeltas, thinkingDeltas };
+    if (state === "inside") thinkingDeltas.push(buf);
+    else textDeltas.push(buf);
+    buf = "";
+    state = "passthrough";
+    return { textDeltas, thinkingDeltas };
+  };
+
+  return { push, flush };
+}
+
 function azureUrl(options: OpenAiCompatOptions, path: string): string {
   const az = options.azure!;
   if (az.isFullUrl) {
@@ -146,6 +313,7 @@ export function createOpenAICompatClient(options: OpenAiCompatOptions): ChatClie
     let usage: Usage | undefined;
     let stopReason: "stop" | "tool" | "length" = "stop";
     let sawAnyChunk = false;
+    const thinkSplitter = createLeadingThinkSplitter();
 
     for await (const payload of sse.events()) {
       if (payload === "[DONE]") break;
@@ -169,8 +337,12 @@ export function createOpenAICompatClient(options: OpenAiCompatOptions): ChatClie
           }).join("");
         }
         if (deltaText) {
-          text += deltaText;
-          yield { type: "text", delta: deltaText };
+          const split = thinkSplitter.push(deltaText);
+          for (const t of split.thinkingDeltas) yield { type: "thinking", delta: t };
+          for (const out of split.textDeltas) {
+            text += out;
+            yield { type: "text", delta: out };
+          }
         }
         const reasoning = delta.reasoning_content ?? (typeof delta.reasoning === "string" ? delta.reasoning : delta.reasoning?.content);
         if (typeof reasoning === "string" && reasoning) yield { type: "thinking", delta: reasoning };
@@ -194,19 +366,34 @@ export function createOpenAICompatClient(options: OpenAiCompatOptions): ChatClie
       if (data?.usage) usage = extractUsage(data);
     }
 
+    const tail = thinkSplitter.flush();
+    for (const t of tail.thinkingDeltas) yield { type: "thinking", delta: t };
+    for (const out of tail.textDeltas) {
+      text += out;
+      yield { type: "text", delta: out };
+    }
+
     if (!sawAnyChunk) {
       // Silent SSE failure (OpenRouter quirk): HTTP 200 wrapping an error
       // payload that ends the stream before any output — raise as transient.
       throw new Error("empty response");
     }
 
-    const toolCalls: ToolCall[] = [...calls.values()]
+    let toolCalls: ToolCall[] = [...calls.values()]
       .filter((c) => c.name)
-      .map((c) => {
-        let args: unknown = {};
-        try { args = c.json ? JSON.parse(c.json) : {}; } catch { args = { _raw: c.json }; }
-        return { id: c.id || `call_${c.name}_${c.json.slice(0, 8)}`, name: c.name, args };
-      });
+      .map((c) => ({
+        id: c.id || `call_${c.name}_${c.json.slice(0, 8)}`,
+        name: c.name,
+        args: parseToolArgsSafely(c.json),
+      }));
+    if (toolCalls.length === 0 && request.tools?.length && text) {
+      const fallback = extractTextToolCalls(text);
+      if (fallback.calls.length > 0) {
+        text = fallback.text;
+        toolCalls = fallback.calls;
+        stopReason = "tool";
+      }
+    }
     yield { type: "done", text, toolCalls, usage, stopReason };
   }
 
@@ -290,11 +477,19 @@ export function createOpenAICompatClient(options: OpenAiCompatOptions): ChatClie
       throw new Error("empty response");
     }
 
-    const toolCalls: ToolCall[] = [...calls.values()].filter((c) => c.name).map((c) => {
-      let args: unknown = {};
-      try { args = c.json ? JSON.parse(c.json) : {}; } catch { args = { _raw: c.json }; }
-      return { id: c.id, name: c.name, args };
-    });
+    let toolCalls: ToolCall[] = [...calls.values()].filter((c) => c.name).map((c) => ({
+      id: c.id,
+      name: c.name,
+      args: parseToolArgsSafely(c.json),
+    }));
+    if (toolCalls.length === 0 && request.tools?.length && text) {
+      const fallback = extractTextToolCalls(text);
+      if (fallback.calls.length > 0) {
+        text = fallback.text;
+        toolCalls = fallback.calls;
+        stopReason = "tool";
+      }
+    }
     yield { type: "done", text, toolCalls, usage, stopReason };
   }
 
@@ -315,7 +510,8 @@ export function createOpenAICompatClient(options: OpenAiCompatOptions): ChatClie
           toolCalls = event.toolCalls;
           usage = event.usage;
           stopReason = event.stopReason;
-          if (event.text && !text) text = event.text;
+          if (event.toolCalls?.length && typeof event.text === "string") text = event.text;
+          else if (event.text && !text) text = event.text;
         }
       }
       result = { text, toolCalls, usage, stopReason };

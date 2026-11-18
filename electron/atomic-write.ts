@@ -29,6 +29,9 @@ export function withFileLock<T>(file: string, fn: () => Promise<T>): Promise<T> 
   const key = path.resolve(file);
   const previous = fileLocks.get(key) || Promise.resolve();
   const run = previous.then(fn, fn);
-  fileLocks.set(key, run.then(() => undefined, () => undefined));
+  const tail = run.then(() => undefined, () => undefined).finally(() => {
+    if (fileLocks.get(key) === tail) fileLocks.delete(key);
+  });
+  fileLocks.set(key, tail);
   return run;
 }

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { X, ZoomIn, ZoomOut, RotateCcw } from "lucide-react";
 import { WidgetBlock } from "../chat/WidgetBlock.js";
+import { HtmlVisualBlock } from "../chat/HtmlVisualBlock.js";
 import { normalizeSvgForFullscreen } from "../../utils/visual-svg.js";
 
 /**
@@ -13,7 +14,8 @@ import { normalizeSvgForFullscreen } from "../../utils/visual-svg.js";
  */
 export type VisualFullscreenDetail =
   | { kind: "svg"; svg: string; title?: string }
-  | { kind: "widget"; source: string; title?: string };
+  | { kind: "widget"; source: string; title?: string }
+  | { kind: "html"; source: string; title?: string };
 
 export const VISUAL_FULLSCREEN_EVENT = "nexus:visual-fullscreen";
 
@@ -145,6 +147,10 @@ export function VisualFullscreenLayer() {
         >
           {detail.kind === "svg" ? (
             <div className="visual-fullscreen-svg" dangerouslySetInnerHTML={{ __html: detail.svg }} />
+          ) : detail.kind === "html" ? (
+            <div className="visual-fullscreen-html" onClick={(event) => event.stopPropagation()}>
+              <HtmlVisualBlock source={detail.source} fullscreen />
+            </div>
           ) : (
             <div className="visual-fullscreen-widget" onClick={(event) => event.stopPropagation()}>
               <WidgetBlock source={detail.source} />

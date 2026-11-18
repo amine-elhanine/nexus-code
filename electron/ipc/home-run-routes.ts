@@ -191,16 +191,16 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
             await mutateHomeMemory((latest) => {
               const current = parseHomeMemory(latest);
               const known = new Set(
-                [...current.profile, ...current.preferences, ...current.facts, ...current.context].map((f) => f.toLowerCase())
+                [...current.profile, ...current.preferences, ...current.facts, ...(current.lessons ?? []), ...current.context].map((f) => f.toLowerCase())
               );
-              const validCats = ["profile", "preference", "fact", "context"];
+              const validCats = ["profile", "preference", "fact", "context", "lesson"];
               let merged = latest;
               applied = [];
-              for (const cand of candidates.slice(0, 3)) {
+              for (const cand of candidates.slice(0, 4)) {
                 const fact = String(cand.fact || "").trim().slice(0, 200);
                 if (!fact || known.has(fact.toLowerCase())) continue;
                 const cat = validCats.includes(cand.category) ? cand.category : "fact";
-                merged = addMemoryFact(merged, cat as "profile" | "preference" | "fact" | "context", fact);
+                merged = addMemoryFact(merged, cat as "profile" | "preference" | "fact" | "context" | "lesson", fact);
                 known.add(fact.toLowerCase());
                 applied.push(fact);
               }
@@ -220,7 +220,7 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
       }
 
       // Shared success tail: flush thinking + persist transcript + final row.
-      return await persistRunSuccess(laneIo, result);
+      const responseText = await persistRunSuccess(laneIo, result);
 
       let deletedScripts: string[] = [];
       try {
@@ -252,7 +252,7 @@ export function registerHomeRunRoutes(ctx: MainIpcContext): void {
         }
       } catch { /* memory is best-effort */ }
 
-      return result.response;
+      return responseText;
     });
   });
 

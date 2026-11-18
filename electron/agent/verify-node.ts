@@ -14,8 +14,10 @@ import path from "node:path";
 import { RunCancelledError } from "../command-service.js";
 import { MAX_REPAIRS } from "./loop-limits.js";
 import { getWorkspaceDiffFiles } from "../diff-service.js";
-import { inspectDeliverables, type DeliverableInspection } from "../deliverable-inspect.js";
+import { inspectDeliverable, inspectDeliverables, type DeliverableInspection } from "../deliverable-inspect.js";
+import { validateHomeArtifact } from "../home-artifact-service.js";
 import { decideHomeVerification, responseHasVisualBlocks, hasChartFences, matchChartFences } from "./verify-home.js";
+import { detectIncompleteAgentTurn } from "./completion-guard.js";
 import { codeVerificationOutcome, parseBlockingReviewFindings, recordCodeTaskAction, shouldRunCodeReview, type CodeTaskContract, type CodeTaskJournal } from "../code-task-service.js";
 import { homeRequestNamesFileFormat } from "../agent-prompt.js";
 import { pickAffectedPackageCommands, pickFileScopedVerification, pickVerificationCommands, buildVerificationBatch, findTargetedTests, readPackageJsonCached, detectPackageManager } from "../task-routing.js";
@@ -33,7 +35,7 @@ import type { CommandResult } from "../command-service.js";
 import type { ArtifactValidationCache } from "../home-artifact-service.js";
 import type { ArtifactItem } from "../artifacts-service.js";
 
-export type VerifyNodeOutcome = { verification?: string; repairs?: number; verifyFeedback?: string };
+export type VerifyNodeOutcome = { verification?: string; repairs?: number; continued?: boolean; verifyFeedback?: string };
 
 export type VerifyNodeDeps = {
   // Control + transport
@@ -74,6 +76,10 @@ export type VerifyNodeDeps = {
   getCodeReviewsDone: () => number;
   bumpCodeReviewsDone: () => void;
   assignDiffFiles: (files: unknown[]) => void;
+  getContinuationsUsed?: () => number;
+  getMaxContinuations?: () => number;
+  getToolCallCount?: () => number;
+  getLastStopReason?: () => string;
 };
 
 export function createVerifyNode(deps: VerifyNodeDeps) {
@@ -86,7 +92,14 @@ export function createVerifyNode(deps: VerifyNodeDeps) {
     getIsSimple, getCodeJournal, getHomeJournal, getInitialHomeFiles,
     getRunMessages, getLastPlanItems, getHomeReadOnlyStreak,
     getCompositeBackend, getCodeReviewsDone, bumpCodeReviewsDone, assignDiffFiles,
+    getContinuationsUsed, getMaxContinuations, getToolCallCount, getLastStopReason,
   } = deps;
+  const continuationsUsed = () => getContinuationsUsed?.() ?? 0;
+  const maxContinuations = () => getMaxContinuations?.() ?? Infinity;
+  let consecutiveNoProgressContinuations = 0;
+  let lastContinuationToolCount: number | null = null;
+  const continuationsLeft = () => continuationsUsed() < maxContinuations() && consecutiveNoProgressContinuations < 3;
+  const effectiveMaxContinuations = () => (consecutiveNoProgressContinuations >= 3 ? continuationsUsed() : maxContinuations());
   // The code journal is live run state: snapshot it under the caller's guard,
   // since TS cannot narrow through the getter across a callback boundary.
   const recordJournal = (action: Parameters<typeof recordCodeTaskAction>[1]): void => {
@@ -96,6 +109,13 @@ export function createVerifyNode(deps: VerifyNodeDeps) {
   return async (stateResponse: string, stateRepairs: number): Promise<VerifyNodeOutcome> => {
 
   if (isCancelled() || signal?.aborted) throw new RunCancelledError();
+
+  const currentTools = getToolCallCount?.();
+  if (typeof currentTools === "number" && lastContinuationToolCount !== null && currentTools > lastContinuationToolCount) {
+    consecutiveNoProgressContinuations = 0;
+  }
+
+  const evaluate = async (): Promise<VerifyNodeOutcome> => {
 
   if (!isGeneral) recordJournal({
       tool: "supervisor",
@@ -112,7 +132,7 @@ export function createVerifyNode(deps: VerifyNodeDeps) {
   // chart-dump cleanup, event emission.
   if (isGeneral) {
     const currentRepairs = Number(stateRepairs) || 0;
-    const maxRepairs = MAX_REPAIRS[mode] ?? 1;
+    const maxRepairs = mode === "plan" ? 0 : Math.max(MAX_REPAIRS[mode] ?? 2, 6);
     const wantsDeliverable = Boolean(homeTaskContract?.expectsOutput);
     const freshFiles = wantsDeliverable
       ? await findFreshHomeFiles(projectRoot, getInitialHomeFiles(), runStartMs)
@@ -149,12 +169,14 @@ export function createVerifyNode(deps: VerifyNodeDeps) {
         }
       }
     }
+    const currentPlanItems = getLastPlanItems();
+    const unfinishedHomePlan = Boolean(currentPlanItems?.some((item) => item && item.status !== "completed"));
     const decision = decideHomeVerification({
       request,
       response: String(stateResponse || ""),
       currentRepairs,
       maxRepairs,
-      wantsDeliverable: (wantsDeliverable && !homeRequestNamesFileFormat(request) && !(homeTaskContract?.expectedFormats?.length) && !requestWantsVisuals && !createdDeliverable && !/:\s*$/s.test(responseTextTrimmed) && responseTextTrimmed.length >= 40) ? false : wantsDeliverable,
+      wantsDeliverable: (wantsDeliverable && !homeRequestNamesFileFormat(request) && !(homeTaskContract?.expectedFormats?.length) && !requestWantsVisuals && !createdDeliverable && !unfinishedHomePlan && !/:\s*$/s.test(responseTextTrimmed) && responseTextTrimmed.length >= 250) ? false : wantsDeliverable,
       freshFiles,
       createdDeliverable,
       artifactValid: artifactContract.valid,
@@ -162,7 +184,7 @@ export function createVerifyNode(deps: VerifyNodeDeps) {
       missingFormats: artifactContract.missingFormats,
       contentInspections,
       mdFilesWithCharts,
-      planItems: getLastPlanItems(),
+      planItems: currentPlanItems,
       evidenceActions: [
         ...(getHomeJournal()?.actions ?? []).filter((action) => action.progressed).map((action) => `${action.summary} ${action.result ?? ""}`),
         // Deliverable CONTENT is the strongest plan evidence: an item whose
@@ -175,6 +197,20 @@ export function createVerifyNode(deps: VerifyNodeDeps) {
       failedSkillNames: loadedSkillNamesFromMessages(getRunMessages()),
     });
     emit("tool", decision.telemetry);
+    const checkHomeCompleteness = () => detectIncompleteAgentTurn({
+      response: String(stateResponse || ""),
+      stopReason: getLastStopReason?.(),
+      mode,
+      isGeneral: true,
+      expectsChanges: false,
+      expectsOutput: wantsDeliverable,
+      changedFilesCount: freshFiles.length,
+      createdDeliverable,
+      planItems: currentPlanItems,
+      toolCallCount: getToolCallCount?.(),
+      continuationsUsed: continuationsUsed(),
+      maxContinuations: effectiveMaxContinuations(),
+    });
     switch (decision.outcome) {
       case "chat-answer": {
         if (decision.hasVisualBlocks) {
@@ -198,11 +234,20 @@ export function createVerifyNode(deps: VerifyNodeDeps) {
             }
           }
         }
+        const turnCheck = checkHomeCompleteness();
+        if (turnCheck.incomplete) {
+          emit("tool", "Verification · continuing incomplete work");
+          return { verification: "failed", continued: true, verifyFeedback: turnCheck.nudge };
+        }
         return { verification: "none" };
       }
       case "failed-charts":
       case "failed-content":
+        return { verification: "failed", repairs: decision.repairs, verifyFeedback: decision.verifyFeedback };
       case "failed-plan":
+        if (continuationsLeft()) {
+          return { verification: "failed", continued: true, verifyFeedback: decision.verifyFeedback };
+        }
         return { verification: "failed", repairs: decision.repairs, verifyFeedback: decision.verifyFeedback };
       case "failed-structure":
         // Structure failures increment repairs like every other failure:
@@ -212,17 +257,30 @@ export function createVerifyNode(deps: VerifyNodeDeps) {
         // falls through to failed-terminal and the run ends honestly.
         return { verification: "failed", repairs: decision.repairs, verifyFeedback: decision.verifyFeedback };
       case "passed":
-      case "passed-with-warnings":
+      case "passed-with-warnings": {
+        const turnCheck = checkHomeCompleteness();
+        if (turnCheck.incomplete) {
+          emit("tool", "Verification · continuing incomplete work");
+          return { verification: "failed", continued: true, verifyFeedback: turnCheck.nudge };
+        }
+        if (unfinishedHomePlan) return { verification: "failed" };
         return { verification: "passed" };
+      }
       case "failed-terminal":
         return { verification: "failed" };
-      case "none":
+      case "none": {
+        const turnCheck = checkHomeCompleteness();
+        if (turnCheck.incomplete) {
+          emit("tool", "Verification · continuing incomplete work");
+          return { verification: "failed", continued: true, verifyFeedback: turnCheck.nudge };
+        }
         return { verification: "none" };
+      }
     }
   }
 
   const currentRepairs = Number(stateRepairs) || 0;
-  const maxRepairs = MAX_REPAIRS[mode] ?? 1;
+  const maxRepairs = mode === "plan" ? 0 : Math.max(MAX_REPAIRS[mode] ?? 2, 6);
 
   // A denied or timed-out approval is a UI permission decision, not a
   // code problem: report skipped checks instead of sending the model
@@ -236,6 +294,50 @@ export function createVerifyNode(deps: VerifyNodeDeps) {
     return true;
   };
 
+  const checkCodeCompleteness = (changedFilesCount: number) => detectIncompleteAgentTurn({
+    response: String(stateResponse || ""),
+    stopReason: getLastStopReason?.(),
+    mode,
+    isGeneral: false,
+    expectsChanges: Boolean(codeTaskContract?.expectsChanges),
+    expectsOutput: false,
+    changedFilesCount,
+    createdDeliverable: false,
+    planItems: getLastPlanItems(),
+    toolCallCount: getToolCallCount?.(),
+    continuationsUsed: continuationsUsed(),
+    maxContinuations: effectiveMaxContinuations(),
+  });
+
+  const ARTIFACT_VERIFY_EXT = /\.(pptx|docx|xlsx|pdf|tex|svg|csv|png|jpe?g|webp)$/i;
+  const verifyChangedArtifacts = async (paths: string[]): Promise<VerifyNodeOutcome | null> => {
+    const targets = paths.filter((p) => ARTIFACT_VERIFY_EXT.test(p)).slice(0, 10);
+    if (!targets.length || mode === "plan") return null;
+    const issues: string[] = [];
+    for (const rel of targets) {
+      const structural = await validateHomeArtifact(projectRoot, rel);
+      if (!structural.valid) {
+        issues.push(`- ${rel} (structure): ${structural.error || "invalid artifact"}`);
+      }
+      const inspection = await inspectDeliverable(projectRoot, rel, "");
+      if (!inspection.ok) {
+        for (const p of inspection.problems) {
+          issues.push(`- ${rel}: ${p}`);
+        }
+      }
+    }
+    if (!issues.length) return null;
+    emit("tool", `Verification · detected ${issues.length} artifact problem${issues.length === 1 ? "" : "s"}`);
+    if (currentRepairs < maxRepairs) {
+      return {
+        verification: "failed",
+        repairs: currentRepairs + 1,
+        verifyFeedback: `Generated artifact verification found problems (self-healing repair attempt ${currentRepairs + 1} of ${maxRepairs}):\n\n${issues.slice(0, 12).join("\n")}\n\nFix these problems directly (or call \`inspect_artifact\` after regenerating) before finishing.`,
+      };
+    }
+    return { verification: "failed" };
+  };
+
   // Diff-first, scoped to THIS run: compare against the baseline taken
   // before the agent worked. Files the run didn't touch (e.g. broken
   // edits left by an earlier interrupted run) must not trigger a
@@ -245,6 +347,11 @@ export function createVerifyNode(deps: VerifyNodeDeps) {
   assignDiffFiles(diffFiles);
   const runDiff = diffFiles.filter((d) => initialDiff.get(d.path) !== diffFingerprint(d));
   if (runDiff.length === 0) {
+    const turnCheck = checkCodeCompleteness(0);
+    if (turnCheck.incomplete) {
+      emit("tool", "Verification · continuing incomplete work");
+      return { verification: "failed", continued: true, verifyFeedback: turnCheck.nudge };
+    }
     if (codeTaskContract?.expectsChanges && mode !== "plan" && currentRepairs < 1 && currentRepairs < maxRepairs) {
       emit("tool", "Verification · implementation required before completion");
       recordJournal({
@@ -270,12 +377,31 @@ export function createVerifyNode(deps: VerifyNodeDeps) {
   // `npm run check` for a README edit is pure "takes time, does nothing".
   const CODE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|py|go|rs|java|kt|c|cpp|h|hpp|cs|rb|php|swift|vue|svelte)$/i;
   if (!changedPaths.some((p) => CODE_EXT.test(p))) {
-    if (planGateActive && unfinishedPlan && currentRepairs < maxRepairs) {
-      return {
-        verification: "failed",
-        repairs: currentRepairs + 1,
-        verifyFeedback: "The current work unit changed files successfully, but the execution plan still has unfinished items. Continue with the next planned unit and update the todo plan before finishing.",
-      };
+    const artifactFailure = await verifyChangedArtifacts(changedPaths);
+    if (artifactFailure) return artifactFailure;
+
+    if (planGateActive && unfinishedPlan) {
+      if (continuationsLeft()) {
+        emit("tool", "Verification · work remains in the execution plan");
+        return {
+          verification: "failed",
+          continued: true,
+          verifyFeedback: "The current work unit changed files successfully, but the execution plan still has unfinished items. Continue with the next planned unit and update the todo plan before finishing.",
+        };
+      }
+      if (currentRepairs < maxRepairs) {
+        return {
+          verification: "failed",
+          repairs: currentRepairs + 1,
+          verifyFeedback: "The current work unit changed files successfully, but the execution plan still has unfinished items. Continue with the next planned unit and update the todo plan before finishing.",
+        };
+      }
+      return { verification: "failed" };
+    }
+    const turnCheck = checkCodeCompleteness(changedPaths.length);
+    if (turnCheck.incomplete) {
+      emit("tool", "Verification · continuing incomplete work");
+      return { verification: "failed", continued: true, verifyFeedback: turnCheck.nudge };
     }
     return { verification: "passed" };
   }
@@ -290,6 +416,7 @@ export function createVerifyNode(deps: VerifyNodeDeps) {
   const changedFilesNote = changedPaths.length
     ? `\n\nFiles changed in this run: ${changedPaths.slice(0, 12).join(", ")}${changedPaths.length > 12 ? ` (+${changedPaths.length - 12} more)` : ""}. Fix the failures in these files (or in what they import) — do not restart exploration.`
     : "";
+  let skipHeavyVerify = false;
   if (scoped) {
     emit("status", `Verifying changed files with \`${scoped}\``);
     const scopedResult = await runCommand(scoped);
@@ -308,10 +435,13 @@ export function createVerifyNode(deps: VerifyNodeDeps) {
     if (!(scopedResult as any)?.approvalDenied) {
       anyVerificationCheckPassed = true;
       emit("tool", `Verification passed · ${scoped}`);
-      if (getIsSimple()) return { verification: "passed" };
+      // Simple scoped checks skip the slow repo-wide build/check cascade,
+      // but still fall through to targeted tests + plan/completeness checks.
+      if (getIsSimple()) skipHeavyVerify = true;
     }
   }
 
+  if (!skipHeavyVerify) {
   // Fresh scaffold: package.json appeared and dependencies were never
   // installed. Install once, then verify with the production build
   // instead of a bare typecheck — a new app must compile before handoff.
@@ -427,6 +557,7 @@ export function createVerifyNode(deps: VerifyNodeDeps) {
     emit("status", `Verification incomplete — approval was denied for required checks: ${requiredDeniedCommands.join(", ")}`);
     return { verification: "none" };
   }
+  }
 
   // 2. Targeted test detection for modified files (reuse the diff above)
   const targetTestCmd = findTargetedTests(projectRoot, changedPaths);
@@ -510,7 +641,10 @@ export function createVerifyNode(deps: VerifyNodeDeps) {
     }
   }
 
-  if (planGateActive && unfinishedPlan && currentRepairs < maxRepairs) {
+  const artifactFailure = await verifyChangedArtifacts(changedPaths);
+  if (artifactFailure) return artifactFailure;
+
+  if (planGateActive && unfinishedPlan) {
     const remaining = getLastPlanItems()!
       .filter((item) => item.status !== "completed")
       .slice(0, 8)
@@ -523,11 +657,26 @@ export function createVerifyNode(deps: VerifyNodeDeps) {
         progressed: true,
         phase: "implementation",
       });
-    return {
-      verification: "failed",
-      repairs: currentRepairs + 1,
-      verifyFeedback: `The current work unit passed verification, but the execution plan is not complete. Continue with the next unfinished work unit instead of finishing early. Remaining plan items:\n${remaining}\n\nUpdate the todo plan as each unit is completed, then verify again.`,
-    };
+    if (continuationsLeft()) {
+      return {
+        verification: "failed",
+        continued: true,
+        verifyFeedback: `The current work unit passed verification, but the execution plan is not complete. Continue with the next unfinished work unit instead of finishing early. Remaining plan items:\n${remaining}\n\nUpdate the todo plan as each unit is completed, then verify again.`,
+      };
+    }
+    if (currentRepairs < maxRepairs) {
+      return {
+        verification: "failed",
+        repairs: currentRepairs + 1,
+        verifyFeedback: `The current work unit passed verification, but the execution plan is not complete. Continue with the next unfinished work unit instead of finishing early. Remaining plan items:\n${remaining}\n\nUpdate the todo plan as each unit is completed, then verify again.`,
+      };
+    }
+    return { verification: "failed" };
+  }
+  const turnCheck = checkCodeCompleteness(changedPaths.length);
+  if (turnCheck.incomplete) {
+    emit("tool", "Verification · continuing incomplete work");
+    return { verification: "failed", continued: true, verifyFeedback: turnCheck.nudge };
   }
   return {
     verification: codeVerificationOutcome({
@@ -535,5 +684,22 @@ export function createVerifyNode(deps: VerifyNodeDeps) {
       requiredCheckDenied: requiredDeniedCommands.length > 0,
     }),
   };
+  };
+
+  const outcome = await evaluate();
+  if (outcome.continued) {
+    if (typeof currentTools === "number") {
+      if (lastContinuationToolCount !== null && currentTools <= lastContinuationToolCount) {
+        consecutiveNoProgressContinuations++;
+      } else {
+        consecutiveNoProgressContinuations = 0;
+      }
+      lastContinuationToolCount = currentTools;
+    }
+  } else {
+    consecutiveNoProgressContinuations = 0;
+    lastContinuationToolCount = null;
+  }
+  return outcome;
     };
 }

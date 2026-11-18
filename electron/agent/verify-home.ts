@@ -51,9 +51,9 @@ export type HomeVerifyDecision =
   | { outcome: "failed-terminal"; telemetry: string }
   | { outcome: "none"; telemetry: string };
 
-const VISUAL_FENCE = /```(?:bar|hbar|line|area|pie|donut|scatter|radar|mermaid)\b/i;
+const VISUAL_FENCE = /```(?:bar|hbar|line|area|pie|donut|scatter|radar|mermaid|widget|visual|html-visual|interactive)\b/i;
 const VISUAL_IMAGE = /!\[[^\]]*\]\([^)]+\.(png|jpe?g|svg|webp|gif)\)/i;
-const CHART_FENCE_GLOBAL = /```(?:bar|hbar|line|area|pie|donut|scatter|radar|mermaid)[\s\S]*?```/gi;
+const CHART_FENCE_GLOBAL = /```(?:bar|hbar|line|area|pie|donut|scatter|radar|mermaid|widget|visual|html-visual|interactive)[\s\S]*?```/gi;
 /** Cheap pre-scan helper shared with the node's chart-dump cleanup. */
 export function hasChartFences(content: string): boolean {
   return VISUAL_FENCE.test(content || "");
@@ -91,9 +91,12 @@ export function decideHomeVerification(input: HomeVerifyDecisionInput): HomeVeri
 
   // 1. Chat-answer escape: a genuinely chat-shaped request (poem,
   // explanation, email text) that names no file format may be answered
-  // directly in chat, marked with [[answer-in-chat]].
+  // directly in chat, marked with [[answer-in-chat]] — unless an active
+  // todo plan still has unfinished steps that can continue.
+  const hasPendingPlan = Boolean((planItems || []).some((p) => p && p.status !== "completed"));
   const chatAnswerDeclared =
     wantsDeliverable &&
+    !(hasPendingPlan && repairsLeft) &&
     !homeRequestNamesFileFormat(request) &&
     (hasVisualBlocks || (!createdDeliverable && responseTextTrimmed.length >= 200 && /\[\[answer-in-chat\]\]\s*$/i.test(responseTextTrimmed)));
   if (chatAnswerDeclared) {

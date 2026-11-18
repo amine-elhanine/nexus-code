@@ -21,6 +21,7 @@ export type HomeMemoryStructureView = {
   profile: string[];
   preferences: string[];
   facts: string[];
+  lessons?: string[];
   context: string[];
   recentDeliverables: Array<{ date: string; summary: string; sessionId?: string }>;
   customNotes?: string;

@@ -20,7 +20,7 @@ export interface DeliverableItem {
   sessionId?: string;
 }
 
-export type SemanticCategory = "profile" | "preference" | "context" | "fact";
+export type SemanticCategory = "profile" | "preference" | "context" | "fact" | "lesson";
 
 export interface MemoryCandidate {
   category: SemanticCategory;
@@ -38,6 +38,8 @@ export interface HomeMemoryStructure {
   preferences: string[];
   /** Durable remembered facts (semantic). Distinct from ongoing project context. */
   facts: string[];
+  /** Self-improved operational lessons, patterns, and verified workflows. */
+  lessons?: string[];
   context: string[];
   recentDeliverables: DeliverableItem[];
   customNotes?: string;
@@ -64,6 +66,7 @@ export function parseHomeMemory(raw: string): HomeMemoryStructure {
     profile: [],
     preferences: [],
     facts: [],
+    lessons: [],
     context: [],
     recentDeliverables: [],
     customNotes: "",
@@ -72,7 +75,7 @@ export function parseHomeMemory(raw: string): HomeMemoryStructure {
   if (!raw || !raw.trim()) return result;
 
   const lines = raw.split("\n");
-  type Section = "profile" | "preferences" | "facts" | "context" | "deliverables" | "custom" | "unknown";
+  type Section = "profile" | "preferences" | "facts" | "lessons" | "context" | "deliverables" | "custom" | "unknown";
   let currentSection: Section = "unknown";
   const unparsedLines: string[] = [];
 
@@ -92,6 +95,9 @@ export function parseHomeMemory(raw: string): HomeMemoryStructure {
         continue;
       } else if (/remembered facts|remembered|facts(?!.*deliverable)/i.test(title)) {
         currentSection = "facts";
+        continue;
+      } else if (/lesson|learned|pattern|workflow|gotcha|self-improvement/i.test(title)) {
+        currentSection = "lessons";
         continue;
       } else if (/context|project|topics|ongoing/i.test(title)) {
         currentSection = "context";
@@ -146,6 +152,14 @@ export function parseHomeMemory(raw: string): HomeMemoryStructure {
         currentSection = "custom";
         unparsedLines.push(line);
       }
+    } else if (currentSection === "lessons") {
+      if (isBullet(trimmed)) {
+        const item = cleanBullet(trimmed);
+        if (item) result.lessons!.push(item);
+      } else {
+        currentSection = "custom";
+        unparsedLines.push(line);
+      }
     } else if (currentSection === "deliverables") {
       if (isBullet(trimmed)) {
         const cleaned = cleanBullet(trimmed);
@@ -180,6 +194,7 @@ export function parseHomeMemory(raw: string): HomeMemoryStructure {
   result.profile = Array.from(new Set(result.profile));
   result.preferences = Array.from(new Set(result.preferences));
   result.facts = Array.from(new Set(result.facts));
+  result.lessons = Array.from(new Set(result.lessons || []));
   result.context = Array.from(new Set(result.context));
 
   // Cap recent deliverables
@@ -211,6 +226,10 @@ export function formatHomeMemory(struct: HomeMemoryStructure): string {
 
   if (struct.facts.length > 0) {
     sections.push(`## Remembered Facts\n${struct.facts.map((f) => `- ${f}`).join("\n")}`);
+  }
+
+  if (struct.lessons && struct.lessons.length > 0) {
+    sections.push(`## Learned Patterns & Lessons\n${struct.lessons.map((l) => `- ${l}`).join("\n")}`);
   }
 
   if (struct.context.length > 0) {
@@ -250,6 +269,9 @@ export function addMemoryFact(
     if (!existsIn(struct.preferences)) struct.preferences.push(cleaned);
   } else if (category === "fact") {
     if (!existsIn(struct.facts)) struct.facts.push(cleaned);
+  } else if (category === "lesson") {
+    struct.lessons = struct.lessons || [];
+    if (!existsIn(struct.lessons)) struct.lessons.push(cleaned);
   } else {
     if (!existsIn(struct.context)) struct.context.push(cleaned);
   }
@@ -270,15 +292,18 @@ export function removeMemoryFactWithCount(raw: string, query: string): { memory:
   if (!target) return { memory: raw, removed: 0 };
 
   const isTarget = (item: string) => item.toLowerCase().trim() === target;
+  const lessons = struct.lessons || [];
   const removed =
     struct.profile.filter(isTarget).length +
     struct.preferences.filter(isTarget).length +
     struct.facts.filter(isTarget).length +
+    lessons.filter(isTarget).length +
     struct.context.filter(isTarget).length +
     struct.recentDeliverables.filter((d) => isTarget(d.summary)).length;
   struct.profile = struct.profile.filter((p) => !isTarget(p));
   struct.preferences = struct.preferences.filter((p) => !isTarget(p));
   struct.facts = struct.facts.filter((f) => !isTarget(f));
+  struct.lessons = lessons.filter((l) => !isTarget(l));
   struct.context = struct.context.filter((c) => !isTarget(c));
   struct.recentDeliverables = struct.recentDeliverables.filter((d) => !isTarget(d.summary));
 
@@ -292,17 +317,26 @@ export function removeMemoryFact(raw: string, query: string): string {
 /**
  * Hard cap on tracked memory items across all sections (agent-recorded facts
  * grow without bound over months). Evicts the OLDEST items from the least
- * durable sections first (context → facts → preferences → profile) and
+ * durable sections first (context → facts → lessons → preferences → profile) and
  * re-formats. No-op under the cap.
  */
 export function capMemoryItems(raw: string, maxItems: number): string {
   const struct = parseHomeMemory(raw);
-  let over = struct.profile.length + struct.preferences.length + struct.facts.length + struct.context.length - maxItems;
-  for (const key of ["context", "facts", "preferences", "profile"] as const) {
+  const lessons = struct.lessons || [];
+  struct.lessons = lessons;
+  let over =
+    struct.profile.length +
+    struct.preferences.length +
+    struct.facts.length +
+    lessons.length +
+    struct.context.length -
+    maxItems;
+  for (const key of ["context", "facts", "lessons", "preferences", "profile"] as const) {
     if (over <= 0) break;
-    const drop = Math.min(over, struct[key].length);
+    const list = struct[key] ?? [];
+    const drop = Math.min(over, list.length);
     if (drop > 0) {
-      struct[key] = struct[key].slice(drop);
+      struct[key] = list.slice(drop);
       over -= drop;
     }
   }
@@ -389,6 +423,24 @@ export function selectRelevantHomeMemory(raw: string, request: string, budgetCha
   const shownFacts = [...topFacts, ...fallbackFacts].slice(0, 10);
   push("## Remembered Facts", shownFacts);
 
+  const lessons = struct.lessons ?? [];
+  const rankedLessons = lessons
+    .map((l, idx) => ({ text: l, score: score(l), idx }))
+    .sort((a, b) => b.score - a.score || b.idx - a.idx);
+  const matchingLessons = rankedLessons.filter((l) => l.score > 0).map((l) => l.text);
+  const recentLessons = lessons.slice(-3).reverse();
+  const shownLessons: string[] = [];
+  const seenLessons = new Set<string>();
+  for (const item of [...matchingLessons, ...recentLessons]) {
+    const key = item.toLowerCase();
+    if (!seenLessons.has(key)) {
+      seenLessons.add(key);
+      shownLessons.push(`- ${item}`);
+    }
+    if (shownLessons.length >= 6) break;
+  }
+  push("## Learned Patterns & Lessons", shownLessons);
+
   const rankedDeliverables = struct.recentDeliverables
     .map((d) => ({ d, score: score(d.summary) }))
     .sort((a, b) => b.score - a.score);
@@ -400,17 +452,53 @@ export function selectRelevantHomeMemory(raw: string, request: string, budgetCha
 
   // Count only tracked categories as hidden: profile/preference bullets also
   // render as "- " lines and previously inflated the "[+N more]" figure.
-  const totalFacts = struct.facts.length + struct.context.length;
-  const hidden = Math.max(0, totalFacts - shownFacts.length + struct.recentDeliverables.length - topDeliverables.length);
+  const totalFacts = struct.facts.length + struct.context.length + lessons.length;
+  const hidden = Math.max(0, totalFacts - shownFacts.length - shownLessons.length + struct.recentDeliverables.length - topDeliverables.length);
   const out = sections.join("\n\n").trim();
   if (!out) return "";
   return hidden > 0 ? `${out}\n\n[+${hidden} more memorized item(s) not shown — ask to recall a specific topic]` : out;
 }
 
 /**
+ * Searches or lists structured long-term memory entries so the agent can actively
+ * inspect stored facts, preferences, lessons, and deliverables on demand.
+ */
+export function searchMemoryFacts(raw: string, query?: string): string {
+  if (!raw || !raw.trim()) return "Memory is currently empty.";
+  const struct = parseHomeMemory(raw);
+  const q = (query || "").trim();
+  if (!q) {
+    const formatted = formatHomeMemory(struct);
+    return formatted || "Memory is currently empty.";
+  }
+  const lower = q.toLowerCase();
+  const keywords = memoryKeywords(q);
+  const matches = (text: string) => {
+    const t = text.toLowerCase();
+    if (t.includes(lower)) return true;
+    if (!keywords.size) return false;
+    const itemWords = memoryKeywords(text);
+    for (const kw of keywords) {
+      if (itemWords.has(kw)) return true;
+    }
+    return false;
+  };
+  const filtered: HomeMemoryStructure = {
+    profile: struct.profile.filter(matches),
+    preferences: struct.preferences.filter(matches),
+    facts: struct.facts.filter(matches),
+    lessons: (struct.lessons ?? []).filter(matches),
+    context: struct.context.filter(matches),
+    recentDeliverables: struct.recentDeliverables.filter((d) => matches(d.summary)),
+  };
+  const out = formatHomeMemory(filtered);
+  return out || `No memory entries matched "${q}".`;
+}
+
+/**
  * Parses LLM-produced memory candidates. Accepts raw JSON or fenced JSON of
- * the form { "candidates": [{ "category": "profile|preference|fact|context", "fact": "..." }] }.
- * Invalid entries are dropped; at most 3 candidates returned.
+ * the form { "candidates": [{ "category": "profile|preference|fact|context|lesson", "fact": "..." }] }.
+ * Invalid entries are dropped; at most 4 candidates returned.
  */
 export function parseCandidateFacts(text: string): MemoryCandidate[] {
   if (!text || !text.trim()) return [];
@@ -422,7 +510,7 @@ export function parseCandidateFacts(text: string): MemoryCandidate[] {
     if (start < 0 || end <= start) return [];
     const parsed = JSON.parse(raw.slice(start, end + 1)) as { candidates?: Array<{ category?: string; fact?: string }> };
     const list = Array.isArray(parsed.candidates) ? parsed.candidates : [];
-    const validCategories: SemanticCategory[] = ["profile", "preference", "fact", "context"];
+    const validCategories: SemanticCategory[] = ["profile", "preference", "fact", "context", "lesson"];
     const out: MemoryCandidate[] = [];
     for (const item of list) {
       const cat = String(item?.category || "").toLowerCase().trim();
@@ -433,7 +521,7 @@ export function parseCandidateFacts(text: string): MemoryCandidate[] {
       const category = (validCategories.includes(cat as SemanticCategory) ? cat : "fact") as SemanticCategory;
       if (out.some((c) => c.fact.toLowerCase() === fact.toLowerCase())) continue;
       out.push({ category, fact });
-      if (out.length >= 3) break;
+      if (out.length >= 4) break;
     }
     return out;
   } catch {
@@ -512,22 +600,31 @@ export function createHomeMemoryTool(options: {
   onRemember: (category: SemanticCategory, fact: string) => Promise<void> | void;
   /** Returns how many entries were removed, so "forget" can't claim success for a no-op. */
   onForget: (query: string) => Promise<number | void> | number | void;
+  /** Optional live memory reader enabling active `search` and `list` recall. */
+  onRead?: () => Promise<string> | string;
   name?: string;
   description?: string;
 }) {
   return tool(
-    async ({ action, category, fact }: { action: "remember" | "forget"; category?: SemanticCategory; fact: string }) => {
+    async ({ action, category, fact }: { action: "remember" | "forget" | "search" | "list"; category?: SemanticCategory; fact?: string }) => {
       try {
-        if (action === "remember") {
-          const cat = category || "preference";
-          await options.onRemember(cat, fact);
-          return `Successfully saved to long-term memory under [${cat}]: "${fact}".`;
+        const text = String(fact || "").trim();
+        if (action === "list" || action === "search") {
+          const raw = options.onRead ? await options.onRead() : "";
+          return searchMemoryFacts(raw, action === "search" ? text : undefined);
         }
-        const removed = await options.onForget(fact);
+        if (action === "remember") {
+          if (!text) return "A non-empty fact is required when action='remember'.";
+          const cat = category || "preference";
+          await options.onRemember(cat, text);
+          return `Successfully saved to long-term memory under [${cat}]: "${text}".`;
+        }
+        if (!text) return "The exact wording of the fact is required when action='forget'.";
+        const removed = await options.onForget(text);
         if (typeof removed === "number" && removed > 0) {
           return `Removed ${removed} item(s) from long-term memory.`;
         }
-        return `No exact match found in memory for "${fact}" — nothing was removed. Retry with the exact wording shown in the Memory tab.`;
+        return `No exact match found in memory for "${text}" — nothing was removed. Retry with the exact wording shown in the Memory tab.`;
       } catch (err) {
         return `Failed to update memory: ${err instanceof Error ? err.message : String(err)}`;
       }
@@ -536,11 +633,11 @@ export function createHomeMemoryTool(options: {
       name: options.name || "manage_memory",
       description:
         options.description ||
-        "Manage long-term memory shared across all Home chats. Call this tool when the user asks you to remember something, states an enduring personal preference (e.g. tone, language, tools, formatting), shares their background/role, or asks to forget a past preference. Do NOT call this tool for temporary conversational details. For action='forget', pass the item's EXACT current wording — paraphrases do not match.",
+        "Manage long-term memory shared across all Home chats. Call this tool to remember enduring user details, preferences, or reusable self-improvement lessons, search or list past memory, or forget outdated items. Do NOT call this tool for temporary conversational details. For action='forget', pass the item's EXACT current wording — paraphrases do not match (use action='search' or 'list' first to find exact wording).",
       schema: z.object({
-        action: z.enum(["remember", "forget"]).describe("Whether to remember a new fact/preference or forget an existing one."),
-        category: z.enum(["profile", "preference", "fact", "context"]).optional().describe("Category: 'profile' (role, background, identity), 'preference' (output formats, style, language), 'fact' (durable personal facts), or 'context' (ongoing project goals). Defaults to 'preference'."),
-        fact: z.string().describe("The concise fact, preference, or query to remember or forget."),
+        action: z.enum(["remember", "forget", "search", "list"]).describe("Whether to remember a new fact/lesson, forget an existing one, search memory by keyword, or list all stored memory."),
+        category: z.enum(["profile", "preference", "fact", "context", "lesson"]).optional().describe("Category: 'profile' (role, background, identity), 'preference' (output formats, style, language), 'fact' (durable personal facts), 'lesson' (reusable workflow/self-improvement lessons and pitfalls), or 'context' (ongoing project goals). Defaults to 'preference'."),
+        fact: z.string().optional().default("").describe("The concise fact, preference, lesson, or search/forget query (optional for action='list')."),
       }),
     }
   );

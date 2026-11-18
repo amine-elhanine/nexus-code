@@ -101,7 +101,7 @@ export type ProjectRecord = { id: string; name: string; root: string; createdAt:
 export type AgentUsage = { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost: number | null; /** Prompt-cache totals for the run (provider-reported when available). */ cacheReadTokens?: number; cacheCreationTokens?: number };
 export type ChatAttachment = { url: string; name: string; mimeType: string; size: number };
 export type SessionRecord = { id: string; title: string; createdAt: string; updatedAt: string; memory: string; checkpointId?: string; checkpointIds?: string[]; usage?: AgentUsage; messages: Array<{ role: "user" | "assistant" | "event"; text: string; images?: string[]; attachments?: ChatAttachment[]; kind?: "status" | "tool" | "token" | "assistant" | "plan" | "error" | "usage" | "context" | "subagent" | "artifact" | "thinking" | "stream-reset"; createdAt: string; plan?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>; usage?: AgentUsage; context?: { usedTokens: number; contextWindow: number; compactionThreshold: number; estimated: boolean }; subagent?: SubagentItem; artifact?: unknown; detail?: string }>; model?: { providerId: string; model: string; effort?: string } };
-type PersistedState = { stateVersion?: number; projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; hooks?: HooksConfig; rules?: RulesConfig; appSettings?: AppSettings; pluginRegistry?: PluginRegistryConfig; notebookParser?: NotebookParserConfig; homeSessions?: SessionRecord[]; homeMemory?: string };
+type PersistedState = { stateVersion?: number; projects: ProjectRecord[]; providers: ProviderConfig[]; embeddingProviders?: EmbeddingProviderConfig[]; mcpServers?: McpServerConfig[]; skills?: SkillsConfig; hooks?: HooksConfig; trustedHookHashes?: Record<string, string>; rules?: RulesConfig; appSettings?: AppSettings; pluginRegistry?: PluginRegistryConfig; notebookParser?: NotebookParserConfig; homeSessions?: SessionRecord[]; homeMemory?: string };
 
 let cache: PersistedState | null = null;
 
@@ -1158,6 +1158,16 @@ export async function getSkillsConfig(): Promise<SkillsConfig> { return { enable
 export async function saveSkillsConfig(input: SkillsConfig) { const state = await ensureLoaded(); state.skills = { enabled: input.enabled !== false }; await persist(); return state.skills; }
 export async function getHooksConfig(): Promise<HooksConfig> { return { enabled: (await ensureLoaded()).hooks?.enabled !== false }; }
 export async function saveHooksConfig(input: HooksConfig) { const state = await ensureLoaded(); state.hooks = { enabled: input.enabled !== false }; await persist(); return state.hooks; }
+export async function getTrustedHookHash(projectRoot: string): Promise<string | undefined> {
+  const key = path.resolve(projectRoot);
+  return (await ensureLoaded()).trustedHookHashes?.[key];
+}
+export async function setTrustedHookHash(projectRoot: string, hash: string): Promise<void> {
+  const state = await ensureLoaded();
+  const key = path.resolve(projectRoot);
+  state.trustedHookHashes = { ...(state.trustedHookHashes || {}), [key]: hash };
+  await persist();
+}
 export async function getRulesConfig(): Promise<RulesConfig> { return { enabled: (await ensureLoaded()).rules?.enabled !== false }; }
 export async function saveRulesConfig(input: RulesConfig) { const state = await ensureLoaded(); state.rules = { enabled: input.enabled !== false }; await persist(); return state.rules; }
 export async function getAppSettings(): Promise<AppSettings> { return { ...(await ensureLoaded()).appSettings }; }

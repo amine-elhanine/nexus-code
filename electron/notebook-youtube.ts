@@ -6,7 +6,7 @@
  * captions (or private/region-blocked ones) fail with a friendly error.
  */
 
-import { assertPublicHttpUrl } from "./net-guard.js";
+import { safePublicFetch } from "./net-guard.js";
 
 export interface YouTubeTranscript {
   videoId: string;
@@ -211,12 +211,11 @@ function pickTrack(tracks: CaptionTrack[], preferred = "en"): CaptionTrack | nul
 }
 
 async function fetchText(url: string): Promise<string> {
-  await assertPublicHttpUrl(url);
-  const res = await fetch(url, {
+  const res = await safePublicFetch(url, {
     // A hung connection previously blocked the notebook:importYouTube IPC
     // forever (the renderer's spinner never cleared). 20s bounds every
     // YouTube fetch like the rest of the app's net-guarded calls.
-    signal: AbortSignal.timeout(20_000),
+    timeoutMs: 20_000,
     headers: {
       "User-Agent": WATCH_UA,
       "Accept-Language": "en-US,en;q=0.9",
@@ -243,9 +242,9 @@ interface InnertubePlayer {
  */
 async function tryInnertubeTranscript(videoId: string, language: string): Promise<YouTubeTranscript | null> {
   try {
-    await assertPublicHttpUrl("https://www.youtube.com/youtubei/v1/player");
-    const res = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${INNERTUBE_KEY}`, {
+    const res = await safePublicFetch(`https://www.youtube.com/youtubei/v1/player?key=${INNERTUBE_KEY}`, {
       method: "POST",
+      timeoutMs: 20_000,
       headers: { "User-Agent": WATCH_UA, "Content-Type": "application/json" },
       body: JSON.stringify({
         videoId,
@@ -258,7 +257,8 @@ async function tryInnertubeTranscript(videoId: string, language: string): Promis
     const tracks = (player.captions?.playerCaptionsTracklistRenderer?.captionTracks || []).filter((t) => t.baseUrl);
     const track = pickTrack(tracks, language);
     if (!track?.baseUrl) return null;
-    const capRes = await fetch(track.baseUrl + "&fmt=vtt", {
+    const capRes = await safePublicFetch(track.baseUrl + "&fmt=vtt", {
+      timeoutMs: 20_000,
       headers: { "User-Agent": WATCH_UA, "Accept-Language": "en-US,en;q=0.9" },
     });
     if (!capRes.ok) return null;

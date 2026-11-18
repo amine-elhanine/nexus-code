@@ -70,7 +70,11 @@ export function parseLspFrames(buffer: Buffer): { frames: any[]; rest: Buffer } 
     if (headerEnd === -1) break;
     const header = work.slice(0, headerEnd).toString("utf8");
     const match = header.match(/Content-Length:\s*(\d+)/i);
-    if (!match) break;
+    if (!match) {
+      // Discard malformed header instead of wedging the frame parser forever.
+      work = work.slice(headerEnd + 4);
+      continue;
+    }
     const length = Number(match[1]);
     const start = headerEnd + 4;
     if (work.length < start + length) break;

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Download, FileText, Loader2, TriangleAlert, X } from "lucide-react";
-import { renderMarkdown } from "../../markdown.js";
+import { safeMarkdown } from "../../markdown.js";
+import { sanitizeHtml } from "../../utils/sanitizeHtml.js";
 import { attachmentKind, formatAttachmentSize, loadAttachmentBytes } from "../../utils/attachments.js";
 import { fixPptxRenderedSlide } from "../../utils/pptx-preview.js";
 import type { ChatAttachment } from "../../types.js";
@@ -167,7 +168,7 @@ export function AttachmentPreviewModal({
             </div>
           )}
           {status === "ready" && kind === "markdown" && (
-            <div className="md file-preview-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }} />
+            <div className="md file-preview-md" dangerouslySetInnerHTML={{ __html: safeMarkdown(text) }} />
           )}
           {status === "ready" && kind === "text" && (
             <pre className="file-preview-text">{text}</pre>
@@ -176,7 +177,7 @@ export function AttachmentPreviewModal({
             <iframe src={blobUrl} title={attachment.name} className="file-preview-frame" />
           )}
           {status === "ready" && kind === "xlsx" && sheets[activeSheet] && (
-            <div className="file-preview-sheet" dangerouslySetInnerHTML={{ __html: sheets[activeSheet].html }} />
+            <div className="file-preview-sheet" dangerouslySetInnerHTML={{ __html: sanitizeHtml(sheets[activeSheet].html) }} />
           )}
           {status === "ready" && kind === "unsupported" && (
             <div className="file-preview-center">

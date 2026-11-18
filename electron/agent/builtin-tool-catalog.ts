@@ -53,8 +53,10 @@ const CATALOG: BuiltinToolEntry[] = [
   // agent/background-jobs.ts
   { name: "run_background", description: "Start a background job (dev server etc.)", modes: ["code"] },
   { name: "job_status", description: "Inspect a background job's status/logs", modes: ["code"] },
-  // agent-service.ts project memory helper
+  // agent-service.ts project memory helper & self-improvement / artifact inspection
   { name: "project_memory", description: "Manage durable project memory facts", modes: ["code"] },
+  { name: "learn_skill", description: "Create or update a reusable SKILL.md workflow from learned patterns", modes: ["home", "code"] },
+  { name: "inspect_artifact", description: "Inspect a generated artifact's structure and content for problems", modes: ["home", "code"] },
   // notebook-rag.ts grounded retrieval
   { name: "search_notebook_sources", description: "Hybrid vector/BM25 retrieval over notebook sources", modes: ["notebook"] },
   { name: "inspect_notebook_outline", description: "Outline of ingested notebook sources", modes: ["notebook"] },

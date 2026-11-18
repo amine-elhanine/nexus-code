@@ -342,3 +342,33 @@ export const HomeSessionUpdateSchema = z.object({
   title: z.string().max(300).optional(),
   memory: z.string().max(100_000).optional(),
 }).strict();
+
+// --------------------------------------------------------- terminal & daemons
+
+export const TerminalCreateSchema = z.looseObject({
+  id: IdString,
+  cwd: z.string().max(2_048).optional(),
+  cols: z.number().int().min(10).max(500).optional(),
+  rows: z.number().int().min(4).max(200).optional(),
+});
+
+export const TerminalWriteSchema = z.looseObject({
+  id: IdString,
+  data: z.string().max(65_536),
+});
+
+export const TerminalResizeSchema = z.looseObject({
+  id: IdString,
+  cols: z.number().int().min(10).max(500).optional(),
+  rows: z.number().int().min(4).max(200).optional(),
+});
+
+export const TerminalIdSchema = z.tuple([IdString]);
+
+export const DaemonStartSchema = z.looseObject({
+  name: z.string().min(1).max(200),
+  command: z.string().min(1).max(4_000),
+  cwd: z.string().max(2_048).optional(),
+});
+
+export const DaemonIdSchema = z.tuple([IdString]);

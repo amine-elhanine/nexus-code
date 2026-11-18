@@ -31,9 +31,9 @@ export interface InspectorGoal {
 export interface CodeInspectorSidebarProps {
   tasks: InspectorTask[];
   goals: InspectorGoal[];
-  onOpenDiff: () => void;
-  onOpenEditor: () => void;
-  onOpenTerminal: () => void;
+  onOpenDiff?: () => void;
+  onOpenEditor?: () => void;
+  onOpenTerminal?: () => void;
   onOpenBrowser: () => void;
   onOpenMemory?: () => void;
   onNavigateUrl: (url: string) => void;
@@ -108,35 +108,41 @@ export const CodeInspectorSidebar: React.FC<CodeInspectorSidebarProps> = ({
 
       {/* Quick Action Navigation Buttons */}
       <div className="inspector-actions-group">
-        <button
-          type="button"
-          className="inspector-action-item"
-          onClick={onOpenDiff}
-          title="Review code diff"
-        >
-          <GitBranch size={14} className="inspector-action-icon" />
-          <span>Review</span>
-        </button>
+        {onOpenDiff && (
+          <button
+            type="button"
+            className="inspector-action-item"
+            onClick={onOpenDiff}
+            title="Review code diff"
+          >
+            <GitBranch size={14} className="inspector-action-icon" />
+            <span>Review</span>
+          </button>
+        )}
 
-        <button
-          type="button"
-          className="inspector-action-item"
-          onClick={onOpenEditor}
-          title="Open files & editor"
-        >
-          <FileCode2 size={14} className="inspector-action-icon" />
-          <span>Open File</span>
-        </button>
+        {onOpenEditor && (
+          <button
+            type="button"
+            className="inspector-action-item"
+            onClick={onOpenEditor}
+            title="Open files & editor"
+          >
+            <FileCode2 size={14} className="inspector-action-icon" />
+            <span>Open File</span>
+          </button>
+        )}
 
-        <button
-          type="button"
-          className="inspector-action-item"
-          onClick={onOpenTerminal}
-          title="Open terminal console"
-        >
-          <Terminal size={14} className="inspector-action-icon" />
-          <span>Terminal</span>
-        </button>
+        {onOpenTerminal && (
+          <button
+            type="button"
+            className="inspector-action-item"
+            onClick={onOpenTerminal}
+            title="Open terminal console"
+          >
+            <Terminal size={14} className="inspector-action-icon" />
+            <span>Terminal</span>
+          </button>
+        )}
 
         <button
           type="button"

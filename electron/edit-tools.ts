@@ -170,7 +170,7 @@ export function applySearchReplaceBlocks(original: string, updateBody: string): 
 
     // 1. Exact match
     if (result.includes(search)) {
-      result = result.replace(search, replace);
+      result = result.replace(search, () => replace);
       continue;
     }
 

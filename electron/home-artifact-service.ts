@@ -48,6 +48,18 @@ function validateHeader(filePath: string, bytes: Buffer): string | null {
   }
   if ([".png"].includes(ext) && bytes.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") return "invalid PNG header";
   if ([".jpg", ".jpeg"].includes(ext) && !(bytes[0] === 0xff && bytes[1] === 0xd8)) return "invalid JPEG header";
+  if (ext === ".webp" && (bytes.length < 12 || bytes.subarray(0, 4).toString("ascii") !== "RIFF" || bytes.subarray(8, 12).toString("ascii") !== "WEBP")) return "invalid WebP header";
+  if (ext === ".svg") {
+    const svgText = bytes.toString("utf8");
+    if (!/<svg[\s>]/i.test(svgText) || !/<\/svg>/i.test(svgText)) return "SVG is missing valid <svg>...</svg> structure";
+  }
+  if (ext === ".json") {
+    try {
+      JSON.parse(bytes.toString("utf8"));
+    } catch {
+      return "invalid JSON syntax";
+    }
+  }
   return null;
 }
 

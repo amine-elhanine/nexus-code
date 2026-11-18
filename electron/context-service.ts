@@ -114,7 +114,12 @@ function runMessageGroupStarts(messages: any[]): number[] {
   const starts: number[] = [];
   for (let i = 0; i < messages.length; i++) {
     const kind = messageKind(messages[i]);
-    const extendsPrior = kind === "tool" || (kind === "assistant" && Array.isArray(messages[i]?.toolCalls) && messages[i].toolCalls.length > 0);
+    // Keep tool responses attached to their calling assistant message, and keep
+    // the initial assistant exchange (i === 1 after the opening user message)
+    // grouped with the opening request so trimming starts after turn 1 rather
+    // than stripping only the user prompt into a longer condensation header.
+    const extendsOpeningTurn = i === 1 && starts.length === 1 && kind === "assistant" && messageKind(messages[0]) === "user";
+    const extendsPrior = kind === "tool" || extendsOpeningTurn;
     if (!extendsPrior) starts.push(i);
   }
   if (starts[0] !== 0) starts.unshift(0);

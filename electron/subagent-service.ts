@@ -8,6 +8,7 @@ import { getAgentBackend, getRunAbortSignal } from "./command-service.js";
 import { createFilesystemTools } from "./agentcore/builtin-file-tools.js";
 import { withRateLimitRetry, createProgressTracker, sanitizeResumeCheckpoint } from "./rate-limit.js";
 import { StreamUsageTracker } from "./context-service.js";
+import { loopPreventionMiddleware } from "./loop-prevention.js";
 import type { ProviderConfig } from "./store.js";
 import type { AgentUsage } from "./agent-service.js";
 
@@ -579,10 +580,9 @@ export async function executeSubagentTask(options: {
     const fileTools = createFilesystemTools(skillsBackend || backend);
     const tools: AgentTool[] = [...fileTools, ...codeTools, ...(mcpTools || [])];
 
-    // Loop step budget: the old recursionLimit counted LangGraph supersteps
-    // where one tool call cost several supersteps; the self-built loop counts
-    // model invocations, so the same ceiling maps to roughly half.
-    const stepBudget = Math.max(8, Math.ceil(config.recursionLimit / 2));
+    // Autonomous execution: subagents work until the delegated subtask finishes
+    // without an arbitrary step-count cutoff. Loop prevention still stops identical repeats.
+    const stepBudget = Infinity;
     const usage = new StreamUsageTracker();
 
     // Mirrors the main agent: a provider 429 or dropped connection during a
@@ -615,6 +615,7 @@ export async function executeSubagentTask(options: {
         system: `${config.systemPrompt(projectRoot)}\n${SUBAGENT_TOOL_NOTES}${buildSkillsSection(skillListings, skills)}`,
         messages: runMessages,
         tools,
+        middleware: [loopPreventionMiddleware({ autonomous: true })],
         stepBudget,
         signal,
         runId,

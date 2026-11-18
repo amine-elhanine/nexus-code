@@ -136,7 +136,7 @@ const MAX_SAFE_REDIRECTS = 5;
  */
 export async function safePublicFetch(
   raw: string,
-  options: { headers?: Record<string, string>; timeoutMs?: number; resolve?: DnsResolver; method?: string } = {}
+  options: { headers?: Record<string, string>; timeoutMs?: number; resolve?: DnsResolver; method?: string; body?: string } = {}
 ): Promise<Response> {
   const { fetch: undiciFetch, Agent } = await import("undici");
   const resolver = options.resolve ?? defaultResolver;
@@ -170,6 +170,7 @@ export async function safePublicFetch(
     const response = await undiciFetch(current, {
       method: options.method ?? "GET",
       headers: options.headers,
+      body: options.body,
       redirect: "manual",
       dispatcher: agent,
       signal: timeoutSignal,
