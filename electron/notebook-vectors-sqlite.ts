@@ -26,6 +26,19 @@ function vectorsJsonPath(root: string) {
 }
 
 let availability: boolean | null = null;
+const initializedPaths = new Set<string>();
+const partitionCache = new Map<string, VectorPartition>();
+
+function cacheKey(root: string, sessionId: string): string {
+  return `${path.resolve(root)}::${sessionId}`;
+}
+
+function invalidateRootCache(root: string): void {
+  const prefix = `${path.resolve(root)}::`;
+  for (const key of partitionCache.keys()) {
+    if (key.startsWith(prefix)) partitionCache.delete(key);
+  }
+}
 
 /** True when node:sqlite can be loaded (old runtimes fall back to JSON). */
 export async function sqliteVectorsAvailable(): Promise<boolean> {
@@ -45,11 +58,15 @@ export async function sqliteVectorsAvailable(): Promise<boolean> {
 async function openDb(root: string): Promise<any> {
   const mod: any = await import("node:sqlite");
   await fs.mkdir(root, { recursive: true });
-  const db = new mod.DatabaseSync(sqlitePath(root));
-  db.exec("PRAGMA journal_mode=WAL");
+  const file = sqlitePath(root);
+  const db = new mod.DatabaseSync(file);
   db.exec("PRAGMA busy_timeout=5000");
-  db.exec("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)");
-  db.exec("CREATE TABLE IF NOT EXISTS chunks(chunk_id TEXT PRIMARY KEY, embedding BLOB NOT NULL)");
+  if (!initializedPaths.has(file)) {
+    db.exec("PRAGMA journal_mode=WAL");
+    db.exec("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)");
+    db.exec("CREATE TABLE IF NOT EXISTS chunks(chunk_id TEXT PRIMARY KEY, embedding BLOB NOT NULL)");
+    initializedPaths.add(file);
+  }
   return db;
 }
 
@@ -142,6 +159,7 @@ export async function migrateJsonVectors(root: string, sessionId: string): Promi
     db.close();
   }
   await fs.unlink(vectorsJsonPath(root)).catch(() => {});
+  invalidateRootCache(root);
   return true;
 }
 
@@ -155,6 +173,9 @@ async function sqliteExists(root: string): Promise<boolean> {
 }
 
 export async function loadVectorsSqlite(root: string, sessionId: string): Promise<VectorPartition> {
+  const key = cacheKey(root, sessionId);
+  const cached = partitionCache.get(key);
+  if (cached) return cached;
   if (!(await sqliteExists(root))) return emptyPartition(sessionId);
   const db = await openDb(root);
   try {
@@ -163,13 +184,15 @@ export async function loadVectorsSqlite(root: string, sessionId: string): Promis
     for (const row of db.prepare("SELECT chunk_id, embedding FROM chunks").all() as Array<{ chunk_id: string; embedding: Uint8Array }>) {
       vectors[row.chunk_id] = fromBlob(row.embedding);
     }
-    return {
+    const loaded: VectorPartition = {
       sessionId,
       embeddingModel: readMeta(db, "embedding_model"),
       dims: Number(readMeta(db, "dims")) || 0,
       updatedAt: new Date().toISOString(),
       vectors,
     };
+    partitionCache.set(key, loaded);
+    return loaded;
   } finally {
     db.close();
   }
@@ -186,6 +209,7 @@ export async function saveVectorsSqlite(root: string, partition: VectorPartition
       db.prepare("INSERT OR REPLACE INTO meta(k, v) VALUES ('embedding_model', ?)").run(partition.embeddingModel || "");
       db.prepare("INSERT OR REPLACE INTO meta(k, v) VALUES ('dims', ?)").run(String(partition.dims || 0));
     });
+    invalidateRootCache(root);
   } finally {
     db.close();
   }
@@ -213,6 +237,7 @@ export async function upsertFileVectorsSqlite(
       db.prepare("INSERT OR REPLACE INTO meta(k, v) VALUES ('embedding_model', ?)").run(embeddingModel);
       db.prepare("INSERT OR REPLACE INTO meta(k, v) VALUES ('dims', ?)").run(String(dims));
     });
+    invalidateRootCache(root);
   } finally {
     db.close();
   }
@@ -228,6 +253,7 @@ export async function removeFileVectorsSqlite(root: string, sessionId: string, c
       const stmt = db.prepare("DELETE FROM chunks WHERE chunk_id = ?");
       for (const id of chunkIds) stmt.run(id);
     });
+    invalidateRootCache(root);
   } finally {
     db.close();
   }
@@ -240,6 +266,7 @@ export async function clearVectorsSqlite(root: string, sessionId: string): Promi
     db.exec("DELETE FROM chunks");
     db.prepare("INSERT OR REPLACE INTO meta(k, v) VALUES ('embedding_model', '')").run();
     db.prepare("INSERT OR REPLACE INTO meta(k, v) VALUES ('dims', '0')").run();
+    invalidateRootCache(root);
   } finally {
     db.close();
   }
@@ -247,6 +274,8 @@ export async function clearVectorsSqlite(root: string, sessionId: string): Promi
 
 /** Removes sqlite artifacts (main file + WAL sidecars). */
 export async function deleteSqliteVectors(root: string): Promise<void> {
+  initializedPaths.delete(sqlitePath(root));
+  invalidateRootCache(root);
   for (const suffix of ["", "-wal", "-shm", "-journal"]) {
     try {
       await fs.unlink(sqlitePath(root) + suffix);

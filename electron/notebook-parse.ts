@@ -75,7 +75,7 @@ async function parseImage(buffer: Buffer, filename: string, describeImage?: Imag
 // ---- Plain formats ----
 
 function parseCsv(buffer: Buffer, delimiter: string): ParsedDocument {
-  const text = decodeText(buffer);
+  const text = decodeText(buffer).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const rows: string[][] = [];
   let field = "";
   let row: string[] = [];

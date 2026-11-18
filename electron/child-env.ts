@@ -4,7 +4,7 @@
 // variables so user tooling still works but API keys never reach a shell.
 
 const SECRET_KEY_PATTERN =
-  /(?:api[_-]?key|api[_-]?token|token|secret|password|passwd|private[_-]?key|access[_-]?key|client[_-]?id|credentials|bearer)/i;
+  /(?:api[_-]?key|api[_-]?token|auth[_-]?token|session[_-]?token|refresh[_-]?token|token|secret|password|passwd|private[_-]?key|signing[_-]?key|encryption[_-]?key|access[_-]?key|client[_-]?secret|client[_-]?id|credentials?|pat|bearer|cookie)/i;
 
 export function scrubSecretEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out: Record<string, string> = {};

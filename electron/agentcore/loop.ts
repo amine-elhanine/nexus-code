@@ -15,7 +15,7 @@
 // - write_todos tool available for plan tracking (todoListMiddleware parity).
 import type { ChatClient, ChatRequest } from "./llm/types.js";
 import type { ChatMessage, ToolCall } from "./messages.js";
-import { assistantMsg, toolMsg } from "./messages.js";
+import { assistantMsg, toolMsg, userMsg } from "./messages.js";
 import type { AgentTool } from "./tools.js";
 import { runToolMiddleware, type AgentMiddleware, type ToolCallRequest } from "./middleware.js";
 import { normalizeArgAliases } from "../loop-prevention.js";
@@ -35,7 +35,7 @@ export type AgentLoopEvent =
   | { type: "tool_result"; call: ToolCall; result: string; isError: boolean }
   | { type: "usage"; usage: { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheCreationTokens?: number } }
   | { type: "step"; messages: ChatMessage[] }
-  | { type: "done"; messages: ChatMessage[]; answer: string; toolCallCount: number };
+  | { type: "done"; messages: ChatMessage[]; answer: string; toolCallCount: number; stopReason: "stop" | "tool" | "length" };
 
 export interface SkillListing {
   name: string;
@@ -50,8 +50,8 @@ export interface RunAgentLoopOptions {
   messages: ChatMessage[];
   tools: AgentTool[];
   middleware?: AgentMiddleware[];
-  /** Max MODEL invocations for this loop segment (not tool calls). */
-  stepBudget: number;
+  /** Optional max MODEL invocations for this loop segment (omitted / <= 0 / Infinity = unbounded until complete). */
+  stepBudget?: number;
   signal?: AbortSignal;
   onEvent?: (event: AgentLoopEvent) => void;
   /** Virtual skill listings appended to the system prompt (deepagents parity). */
@@ -62,6 +62,9 @@ export interface RunAgentLoopOptions {
   /** Strip hallucinated host/project-root prefixes from path args. */
   normalizeArgs?: (call: ToolCall) => void;
   runId?: string;
+  /** Optional in-loop continuation hook: when the model stops without tool calls,
+   *  returning a non-empty string injects it as a steering note and continues the loop. */
+  shouldContinue?: (info: { text: string; stopReason: "stop" | "tool" | "length"; toolCallCount: number; messages: ChatMessage[] }) => string | null;
 }
 
 const SKILL_READ_LINE_LIMIT = 250;
@@ -139,14 +142,17 @@ function normalizeToolArgs(call: ToolCall, normalizeArgs?: (call: ToolCall) => v
   normalizeArgs?.(call);
 }
 
-export async function* runAgentLoop(options: RunAgentLoopOptions): AsyncGenerator<AgentLoopEvent, { messages: ChatMessage[]; answer: string }, unknown> {
+export async function* runAgentLoop(options: RunAgentLoopOptions): AsyncGenerator<AgentLoopEvent, { messages: ChatMessage[]; answer: string; stopReason?: "stop" | "tool" | "length" }, unknown> {
   const { client, messages, tools, middleware = [], stepBudget, signal, onEvent } = options;
   if (signal?.aborted) throw new Error("Run cancelled");
+  const maxSteps = typeof stepBudget === "number" && Number.isFinite(stepBudget) && stepBudget > 0 ? stepBudget : Infinity;
   const toolByName = new Map(tools.map((t) => [t.name, t]));
   let toolCallCount = 0;
   let answer = "";
+  let lengthContinuations = 0;
+  let inLoopContinuations = 0;
 
-  for (let step = 0; step < stepBudget; step++) {
+  for (let step = 0; step < maxSteps; step++) {
     if (signal?.aborted) throw new Error("Run cancelled");
 
     const request: ChatRequest = {
@@ -181,7 +187,8 @@ export async function* runAgentLoop(options: RunAgentLoopOptions): AsyncGenerato
       } else if (event.type === "done") {
         usage = event.usage;
         stopReason = event.stopReason;
-        if (event.text && !text) text = event.text;
+        if (event.toolCalls?.length && typeof event.text === "string") text = event.text;
+        else if (event.text && !text) text = event.text;
         pendingCalls = event.toolCalls;
       }
     }
@@ -203,11 +210,32 @@ export async function* runAgentLoop(options: RunAgentLoopOptions): AsyncGenerato
     messages.push(assistant);
 
     if (!calls.length) {
+      if (stopReason === "length" && step + 1 < maxSteps && lengthContinuations < 15) {
+        lengthContinuations++;
+        onEvent?.({ type: "step", messages: [...messages] });
+        messages.push(
+          userMsg(
+            "[System Note: Your previous response hit the max output token limit (`length`) before finishing or emitting complete tool calls. Continue immediately from where output stopped — emit your next tool call or finish the remaining response without repeating earlier text.]"
+          )
+        );
+        continue;
+      }
+      if (options.shouldContinue && step + 1 < maxSteps && inLoopContinuations < 3) {
+        const nudge = options.shouldContinue({ text, stopReason, toolCallCount, messages });
+        if (nudge) {
+          inLoopContinuations++;
+          onEvent?.({ type: "step", messages: [...messages] });
+          messages.push(userMsg(nudge));
+          continue;
+        }
+      }
       answer = text;
       onEvent?.({ type: "step", messages: [...messages] });
-      onEvent?.({ type: "done", messages: [...messages], answer, toolCallCount });
-      return { messages, answer };
+      onEvent?.({ type: "done", messages: [...messages], answer, toolCallCount, stopReason });
+      return { messages, answer, stopReason };
     }
+    lengthContinuations = 0;
+    inLoopContinuations = 0;
 
     for (const call of calls) {
       if (signal?.aborted) throw new Error("Run cancelled");
@@ -238,5 +266,8 @@ export async function* runAgentLoop(options: RunAgentLoopOptions): AsyncGenerato
     onEvent?.({ type: "step", messages: [...messages] });
   }
 
-  throw new StepBudgetExceededError(stepBudget);
+  if (Number.isFinite(maxSteps)) {
+    throw new StepBudgetExceededError(maxSteps);
+  }
+  return { messages, answer, stopReason: "stop" };
 }

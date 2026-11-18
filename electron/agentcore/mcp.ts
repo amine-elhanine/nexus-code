@@ -136,7 +136,12 @@ export async function getMcpTools(): Promise<{ tools: AgentTool[]; serverNames: 
       warnings.push(`${server.name || server.id}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  if (clients.length) cache = { fingerprint: mark, clients, tools, serverNames: healthy };
+  if (clients.length) {
+    // Only reuse the cached pool across runs when every enabled server
+    // connected cleanly; partial failures keep client refs for disposal while
+    // forcing a retry on the next turn.
+    cache = { fingerprint: warnings.length ? "" : mark, clients, tools, serverNames: healthy };
+  }
   return { tools, serverNames: healthy, warnings: warnings.length ? warnings : undefined };
 }
 

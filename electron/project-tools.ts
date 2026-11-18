@@ -2,6 +2,7 @@ import { boundedExecFile } from "./shell-subprocess.js";
 import { promises as fs } from "node:fs";
 import { realpathSync } from "node:fs";
 import path from "node:path";
+import { isLegacyStatePath, LEGACY_STATE_REJECTION } from "./state-guard.js";
 
 const execFileAsync = boundedExecFile;
 
@@ -113,6 +114,7 @@ export async function readWorkspaceFileBase64(projectRoot: string, file: string)
 }
 
 export async function writeWorkspaceFile(projectRoot: string, file: string, content: string) {
+  if (isLegacyStatePath(file, projectRoot)) throw new Error(LEGACY_STATE_REJECTION);
   const target = safePath(projectRoot, file);
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.writeFile(target, content, "utf8");

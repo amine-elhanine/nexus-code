@@ -19,6 +19,7 @@ import {
   FileCode,
 } from "lucide-react";
 import { safeMarkdown } from "../../markdown.js";
+import { sanitizeHtml } from "../../utils/sanitizeHtml.js";
 import { fixPptxRenderedSlide } from "../../utils/pptx-preview.js";
 
 type PreviewKind =
@@ -539,7 +540,7 @@ export function HomeCanvasDrawer({
               </div>
             )}
             {kind === "xlsx" && sheets[activeSheet] && (
-              <div className="file-preview-sheet" dangerouslySetInnerHTML={{ __html: sheets[activeSheet].html }} />
+              <div className="file-preview-sheet" dangerouslySetInnerHTML={{ __html: sanitizeHtml(sheets[activeSheet].html) }} />
             )}
             {kind === "unsupported" && (
               <div className="canvas-state-center">

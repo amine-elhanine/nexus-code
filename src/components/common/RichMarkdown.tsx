@@ -16,6 +16,8 @@ import {
   type CategoryChartEntry,
 } from "../../utils/chart-blocks.js";
 import { WidgetBlock } from "../chat/WidgetBlock.js";
+import { HtmlVisualBlock } from "../chat/HtmlVisualBlock.js";
+import { isVisualHtmlFence } from "../../utils/html-visual.js";
 
 let mermaidSequence = 0;
 let mermaidConfigured = false;
@@ -1778,6 +1780,8 @@ function buildRichPieces(source: string): { pieces: React.ReactNode[]; citationL
 
       if (kind === "widget") {
         pieces.push(<WidgetBlock key={`widget-${match.index}`} source={blockSource} />);
+      } else if (isVisualHtmlFence(kind)) {
+        pieces.push(<HtmlVisualBlock key={`html-visual-${match.index}`} source={blockSource} />);
       } else {
         // Known kind renders directly; a missing or unrecognized language tag
         // gets sniffed against the chart spec / mermaid grammar — the model

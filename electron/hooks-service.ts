@@ -5,6 +5,7 @@
 // nexus-state.json (SkillsConfig pattern). Hook failures never break a run —
 // dispatch errors are reported through the activity feed only.
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { AgentMiddleware, ToolCallRequest, ToolResult } from "./agentcore/middleware.js";
@@ -12,6 +13,7 @@ import { scrubSecretEnv } from "./child-env.js";
 import { pluginHookFilesWithModes, type PluginMode } from "./plugins-service.js";
 import { evaluatePolicyHooks, emitPluginEvent, listenerCount } from "./plugin-events.js";
 import { listCapabilities } from "./capability-registry.js";
+import { getTrustedHookHash, setTrustedHookHash } from "./store.js";
 
 export type HookEventName = "run:start" | "run:end" | "tool:before" | "tool:after" | "verify:fail";
 
@@ -71,6 +73,46 @@ export async function discoverHooks(projectRoot: string, mode?: PluginMode): Pro
     } catch { /* missing or malformed file contributes nothing */ }
   }
   return hooks;
+}
+
+/**
+ * Trust-gated hook discovery for runtime execution. User-installed plugin hooks
+ * load normally, while workspace-local `.nexus/hooks.json` commands only load
+ * once the file's SHA-256 hash matches a user-approved workspace entry.
+ */
+export async function discoverTrustedHooks(
+  projectRoot: string,
+  mode?: PluginMode,
+  confirmProjectHooks?: (info: { commands: string[]; hash: string }) => Promise<boolean>,
+): Promise<{ hooks: HookConfig[]; blockedUntrusted: boolean }> {
+  const hooks: HookConfig[] = [];
+  let blockedUntrusted = false;
+
+  const projectHooksFile = path.join(path.resolve(projectRoot), HOOKS_FILE);
+  try {
+    const raw = await readFile(projectHooksFile, "utf8");
+    const parsed = parseHooksConfig(raw);
+    if (parsed.length > 0) {
+      const hash = crypto.createHash("sha256").update(raw, "utf8").digest("hex");
+      const trustedHash = await getTrustedHookHash(projectRoot).catch(() => undefined);
+      if (trustedHash === hash) {
+        hooks.push(...parsed);
+      } else if (confirmProjectHooks && await confirmProjectHooks({ commands: parsed.map((h) => h.command), hash })) {
+        await setTrustedHookHash(projectRoot, hash).catch(() => {});
+        hooks.push(...parsed);
+      } else {
+        blockedUntrusted = true;
+      }
+    }
+  } catch { /* missing or malformed project hooks.json contributes nothing */ }
+
+  for (const entry of await pluginHookFilesWithModes(projectRoot).catch(() => [] as Array<{ file: string; modes: PluginMode[] }>)) {
+    if (mode && entry.modes.length && !entry.modes.includes(mode)) continue;
+    try {
+      hooks.push(...parseHooksConfig(await readFile(entry.file, "utf8")));
+    } catch { /* ignore malformed plugin hook */ }
+  }
+  return { hooks, blockedUntrusted };
 }
 
 export type HookOutcome = { ok: boolean; exitCode: number | null; output: string; timedOut: boolean };

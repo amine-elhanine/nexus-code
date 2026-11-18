@@ -70,13 +70,24 @@ function replacedToolMessage(original: any, content: string): ChatMessage {
  */
 function microcompactBoundary(messages: any[], keepUserTurns: number): number {
   const userStarts: number[] = [];
+  const assistantStarts: number[] = [];
   for (let i = 0; i < messages.length; i++) {
-    if (kindOf(messages[i]) === "user") userStarts.push(i);
+    const kind = kindOf(messages[i]);
+    if (kind === "user") userStarts.push(i);
+    else if (kind === "assistant") assistantStarts.push(i);
   }
   // Boundary = start of the keep window: tool results at or after it stay
-  // verbatim. Fewer user turns than the window → nothing is stale.
-  if (userStarts.length <= keepUserTurns) return 0;
-  return userStarts[userStarts.length - keepUserTurns];
+  // verbatim. When there are enough user turns, keep the newest `keepUserTurns`;
+  // on long single-prompt agent runs fall back to keeping the newest assistant
+  // exchanges so old tool outputs still get cleared.
+  if (userStarts.length > keepUserTurns) {
+    return userStarts[userStarts.length - keepUserTurns];
+  }
+  const keepExchanges = Math.max(keepUserTurns * 2, 4);
+  if (userStarts.length <= 1 && assistantStarts.length > keepExchanges) {
+    return assistantStarts[assistantStarts.length - keepExchanges];
+  }
+  return 0;
 }
 
 export type MicrocompactResult = { messages: any[]; cleared: number; charsFreed: number };
@@ -148,7 +159,11 @@ function forceClipAll(messages: any[], capChars: number): { messages: any[]; tou
     const text = textOf(message);
     if (text.length > capChars) {
       touched++;
-      return replacedToolMessage(message, `${text.slice(0, capChars)}…[clipped]`);
+      const clipped = `${text.slice(0, capChars)}…[clipped]`;
+      if (kindOf(message) === "tool") {
+        return replacedToolMessage(message, clipped);
+      }
+      return { ...message, content: clipped };
     }
     return message;
   });

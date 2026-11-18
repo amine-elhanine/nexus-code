@@ -79,3 +79,23 @@ export function parseWorkLog(raw: string | undefined | null): WorkLogEntry[] {
   }
   return out;
 }
+
+export function parseMemoryLessons(raw: string | undefined | null): string[] {
+  if (!raw || !raw.trim()) return [];
+  const lessons: string[] = [];
+  let inLessons = false;
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    const header = trimmed.match(/^#{1,3}\s+(.+)$/);
+    if (header) {
+      inLessons = /lesson|learned|pattern|workflow|gotcha|self-improvement/i.test(header[1]);
+      continue;
+    }
+    if (!inLessons || !trimmed || !isBullet(trimmed)) continue;
+    const item = cleanBullet(trimmed);
+    if (item && !lessons.some((existing) => existing.toLowerCase() === item.toLowerCase())) {
+      lessons.push(item);
+    }
+  }
+  return lessons;
+}

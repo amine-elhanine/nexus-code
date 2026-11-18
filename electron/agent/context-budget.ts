@@ -32,6 +32,8 @@ export type ContextBudgetInput = {
   /** Chat client used to summarize history when compaction is needed. */
   llm: ChatClient;
   isGeneral: boolean;
+  /** Small/local model profile: tighter output reserve and deterministic compaction. */
+  compactModel?: boolean;
   emit: (type: "status", text: string) => void;
   onEvent: (event: { type: "status"; sessionId: string; text: string; usage: { inputTokens: number; outputTokens: number; totalTokens: number } }) => void;
   sessionId?: string;
@@ -59,11 +61,13 @@ export async function prepareContextBudget(input: ContextBudgetInput): Promise<C
   const {
     modelContextWindow, modelMaxOutput, systemPromptText, mcpTools, pluginTools,
     boundTools, mountedSkillCatalog, metaContextInputs, history, isSimple, llm,
-    isGeneral, emit, onEvent, sessionId,
+    isGeneral, compactModel = false, emit, onEvent, sessionId,
   } = input;
 
   const compactionThreshold = computeCompactionThreshold(modelContextWindow, modelMaxOutput);
-  const outputReserve = Math.min(Math.max(modelMaxOutput || 8192, 2048), 32_000);
+  const outputReserve = compactModel
+    ? Math.min(Math.max(modelMaxOutput || 3072, 1536), Math.max(1536, Math.floor(modelContextWindow * 0.25)))
+    : Math.min(Math.max(modelMaxOutput || 8192, 2048), 32_000);
   const systemPromptTokens = Math.ceil((systemPromptText || "").length / 3.8);
   // Prompt composition for the context breakdown (hover card) and budget math:
   // tool schemas and the skill manifest ride along with every model call but
@@ -75,7 +79,11 @@ export async function prepareContextBudget(input: ContextBudgetInput): Promise<C
   const pluginToolsTokens = estimateToolSchemaTokens(pluginTools as any[]);
   const mcpToolSet = new Set<unknown>(mcpTools);
   const pluginToolSet = new Set<unknown>(pluginTools);
-  const systemToolsTokens = estimateToolSchemaTokens(boundTools.filter((t) => !mcpToolSet.has(t) && !pluginToolSet.has(t)) as any[]);
+  const mcpToolNames = new Set<string>(mcpTools.map((t: any) => String(t?.name || "")).filter(Boolean));
+  const pluginToolNames = new Set<string>(pluginTools.map((t: any) => String(t?.name || "")).filter(Boolean));
+  const systemToolsTokens = estimateToolSchemaTokens(
+    boundTools.filter((t: any) => !mcpToolSet.has(t) && !pluginToolSet.has(t) && !mcpToolNames.has(String(t?.name || "")) && !pluginToolNames.has(String(t?.name || ""))) as any[]
+  );
   const skillsTokens = mountedSkillCatalog.length
     ? estimateTokens(mountedSkillCatalog.map((s) => `${s.name}\n${s.description}\n${skillDirVirtualPath(s)}`).join("\n")) + mountedSkillCatalog.length * 24
     : 0;
@@ -99,23 +107,25 @@ export async function prepareContextBudget(input: ContextBudgetInput): Promise<C
     compactedHistory = compactHistory(history, Math.min(3000, historyBudget));
   } else {
     const pct = Math.round((projectedHistoryTokens / modelContextWindow) * 100);
-    emit("status", `Auto-compacting context (${formatTokenCount(estimatedHistoryTokens)} / ${formatContextWindow(modelContextWindow)} tokens, ~${pct}% capacity) — summarizing history…`);
+    emit("status", `Auto-compacting context (${formatTokenCount(estimatedHistoryTokens)} / ${formatContextWindow(modelContextWindow)} tokens, ~${pct}% capacity) — condensing history…`);
 
-    compactedHistory = await compactHistoryWithModel(
-      history,
-      async (prompt) => {
-        try {
-          const taskAwarePrompt = isGeneral
-            ? prompt.replace("coding-session history", "general Home task history").replace("files changed, errors seen", "research findings, decisions, outputs created, errors seen")
-            : prompt;
-          const res = await llm.complete({ messages: [userMsg(taskAwarePrompt)], temperature: 0.1 });
-          return res.text;
-        } catch {
-          throw new Error("summarizer failed");
-        }
-      },
-      historyBudget
-    ).catch(() => compactHistory(history, historyBudget));
+    compactedHistory = compactModel
+      ? compactHistory(history, historyBudget)
+      : await compactHistoryWithModel(
+          history,
+          async (prompt) => {
+            try {
+              const taskAwarePrompt = isGeneral
+                ? prompt.replace("coding-session history", "general Home task history").replace("files changed, errors seen", "research findings, decisions, outputs created, errors seen")
+                : prompt;
+              const res = await llm.complete({ messages: [userMsg(taskAwarePrompt)], temperature: 0.1 });
+              return res.text;
+            } catch {
+              throw new Error("summarizer failed");
+            }
+          },
+          historyBudget
+        ).catch(() => compactHistory(history, historyBudget));
 
     const compactedTokens = compactedHistory.reduce((sum, t) => sum + estimateTokens(t.text), 0);
     const freedTokens = Math.max(0, estimatedHistoryTokens - compactedTokens);

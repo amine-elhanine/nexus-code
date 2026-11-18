@@ -117,17 +117,14 @@
   padding-left: 16px !important;
 }
 
-/* ── 4b. Completed activity rows hug their content (ChatGPT-style):
-        the chevron sits next to the title instead of being pushed to the
-        far edge of a full-width row. Running rows keep the wide layout. ── */
-.app-root .activity-group.completed .activity-group-summary,
-.app-root .activity-group.error .activity-group-summary {
+/* ── 4b. Activity rows hug their content (Antigravity / Codex / Claude Code):
+        the chevron sits right next to the title instead of at the far edge. ── */
+.app-root .activity-group .activity-group-summary {
   width: fit-content;
   max-width: 100%;
 }
 
-.app-root .activity-group.completed .activity-group-title,
-.app-root .activity-group.error .activity-group-title {
+.app-root .activity-group .activity-group-title {
   flex: 0 1 auto;
 }
 
@@ -3911,108 +3908,105 @@ body.sidebar-resizing-active webview {
   color: #ffffff !important;
 }
 
-/* ── Agent Activity Group & Steps Redesign (High Contrast & Visible) ── */
+/* ── Working Plan (uniform width collapsed and expanded across all modes) ── */
 
-.app-root .activity-group {
-  margin: 10px 0 !important;
+.app-root .sliding-plan-drawer,
+.app-root .sliding-plan-collapsed {
   width: 100% !important;
   max-width: 100% !important;
-  border: 1px solid rgba(255, 255, 255, 0.08) !important;
-  background: rgba(18, 24, 34, 0.6) !important;
-  border-radius: 8px !important;
-  overflow: hidden !important;
-  transition: all 0.15s ease !important;
+  margin: 0 0 8px 0 !important;
+  box-sizing: border-box !important;
+  border-radius: 10px !important;
 }
 
-.app-root .activity-group.completed {
-  border-color: rgba(255, 255, 255, 0.07) !important;
-  background: rgba(18, 24, 34, 0.45) !important;
+.app-root .sliding-plan-drawer {
+  padding: 0 !important;
 }
 
-.app-root .activity-group.running {
-  border-color: rgba(99, 102, 241, 0.35) !important;
-  background: rgba(20, 26, 40, 0.8) !important;
-  box-shadow: 0 0 16px -2px rgba(99, 102, 241, 0.15) !important;
+.app-root .sliding-plan-collapsed {
+  padding: 6px 12px !important;
 }
 
+/* ── Agent Activity Group & Steps Redesign (Antigravity / Codex / Claude Code) ── */
+
+.app-root .activity-group {
+  margin: 6px 0 10px !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+  transition: none !important;
+}
+
+.app-root .activity-group.completed,
+.app-root .activity-group.running,
 .app-root .activity-group.error {
-  border-color: rgba(244, 63, 94, 0.35) !important;
-  background: rgba(35, 18, 24, 0.6) !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
 .app-root .activity-group-summary {
-  width: 100% !important;
-  display: flex !important;
+  width: fit-content !important;
+  max-width: 100% !important;
+  display: inline-flex !important;
   align-items: center !important;
-  gap: 8px !important;
-  padding: 8px 12px !important;
+  gap: 5px !important;
+  padding: 2px 6px 2px 2px !important;
   background: transparent !important;
   border: 0 !important;
+  border-radius: 5px !important;
   cursor: pointer !important;
   user-select: none !important;
   text-align: left !important;
+  color: var(--text-tertiary, #8b949e) !important;
 }
 
 .app-root .activity-group-summary:hover {
-  background: rgba(255, 255, 255, 0.04) !important;
+  background: var(--bg-surface-hover, rgba(255, 255, 255, 0.04)) !important;
+  color: var(--text-primary, #f0f6fc) !important;
 }
 
 .app-root .activity-group-icon {
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
-  width: 18px !important;
-  height: 18px !important;
-  border-radius: 4px !important;
+  width: auto !important;
+  height: auto !important;
+  background: transparent !important;
+  border: 0 !important;
   flex-shrink: 0 !important;
-  color: #10b981 !important;
-}
-
-.app-root .activity-group.running .activity-group-icon {
-  color: #818cf8 !important;
+  color: var(--text-secondary, #9ca3af) !important;
 }
 
 .app-root .activity-group.error .activity-group-icon {
-  color: #fb7185 !important;
+  color: var(--danger, #f87171) !important;
+}
+
+.app-root .activity-group-spinner {
+  color: var(--text-secondary, #9ca3af) !important;
+  flex-shrink: 0 !important;
 }
 
 .app-root .activity-group-title {
-  flex: 1 !important;
+  flex: 0 1 auto !important;
   min-width: 0 !important;
   font-size: 12.5px !important;
   font-weight: 500 !important;
-  color: #d1d5db !important;
+  color: var(--text-tertiary, #8b949e) !important;
   white-space: nowrap !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
 }
 
+.app-root .activity-group.running .activity-group-title,
 .app-root .activity-group-title .running-label {
-  color: #a5b4fc !important;
-  font-weight: 600 !important;
-}
-
-.app-root .activity-group-count {
-  display: inline-flex !important;
-  align-items: center !important;
-  gap: 5px !important;
-  padding: 2px 8px !important;
-  border-radius: 9999px !important;
-  background: rgba(255, 255, 255, 0.06) !important;
-  color: #9ca3af !important;
-  font-size: 11px !important;
+  color: var(--text-primary, #e5e7eb) !important;
   font-weight: 500 !important;
-  flex-shrink: 0 !important;
-}
-
-.app-root .activity-group-count.quiet {
-  background: rgba(255, 255, 255, 0.04) !important;
-  color: #9ca3af !important;
-}
-
-.app-root .activity-group.running .activity-group-count {
-  background: rgba(99, 102, 241, 0.15) !important;
-  color: #a5b4fc !important;
 }
 
 .app-root .activity-group-chevron {
@@ -4020,8 +4014,8 @@ body.sidebar-resizing-active webview {
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
-  transition: transform 0.18s ease !important;
-  color: #9ca3af !important;
+  transition: transform 0.15s ease !important;
+  color: var(--text-tertiary, #8b949e) !important;
 }
 
 .app-root .activity-group-chevron.open {
@@ -4029,160 +4023,271 @@ body.sidebar-resizing-active webview {
 }
 
 .app-root .activity-group-body {
-  border-top: 1px solid rgba(255, 255, 255, 0.06) !important;
-  padding: 8px 12px 10px !important;
-  background: rgba(0, 0, 0, 0.22) !important;
+  border-top: 0 !important;
+  border: 0 !important;
+  padding: 2px 0 2px 2px !important;
+  background: transparent !important;
   display: flex !important;
   flex-direction: column !important;
-  gap: 4px !important;
+  gap: 2px !important;
 }
 
-/* Step timeline and cards */
+/* Flat borderless step timeline & rows */
 .app-root .agent-stepper-timeline {
   display: flex !important;
   flex-direction: column !important;
-  gap: 4px !important;
+  gap: 1px !important;
   padding: 2px 0 !important;
+  max-height: 260px !important;
+  overflow-y: auto !important;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(140, 140, 150, 0.3) transparent;
+}
+
+.app-root .agent-stepper-timeline::-webkit-scrollbar {
+  width: 5px;
+}
+
+.app-root .agent-stepper-timeline::-webkit-scrollbar-thumb {
+  background: rgba(140, 140, 150, 0.25);
+  border-radius: 999px;
+}
+
+.app-root .agent-stepper-timeline::before,
+.app-root .step-timeline-node {
+  display: none !important;
 }
 
 .app-root .agent-timeline-step {
   display: flex !important;
   align-items: flex-start !important;
-  gap: 8px !important;
   width: 100% !important;
 }
 
 .app-root .step-card {
   flex: 1 !important;
   min-width: 0 !important;
-  border-radius: 6px !important;
-  background: rgba(255, 255, 255, 0.02) !important;
-  border: 1px solid rgba(255, 255, 255, 0.05) !important;
-  transition: background 0.12s ease !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+}
+
+.app-root .step-card.running::after {
+  display: none !important;
 }
 
 .app-root .step-card:hover {
-  background: rgba(255, 255, 255, 0.05) !important;
-  border-color: rgba(255, 255, 255, 0.08) !important;
+  background: transparent !important;
+  border: 0 !important;
 }
 
 .app-root .step-card-header {
-  display: flex !important;
+  display: inline-flex !important;
+  width: auto !important;
+  max-width: 100% !important;
   align-items: center !important;
-  justify-content: space-between !important;
-  padding: 5px 10px !important;
-  min-height: 28px !important;
+  justify-content: flex-start !important;
+  gap: 6px !important;
+  padding: 2.5px 6px 2.5px 4px !important;
+  min-height: 22px !important;
+  border-radius: 5px !important;
   cursor: pointer !important;
+  background: transparent !important;
+}
+
+.app-root .step-card-header:not(.static):hover {
+  background: var(--bg-surface-hover, rgba(255, 255, 255, 0.05)) !important;
 }
 
 .app-root .step-card-header.static {
   cursor: default !important;
 }
 
-.app-root .step-badge-and-title {
-  display: flex !important;
-  align-items: center !important;
-  gap: 8px !important;
-  min-width: 0 !important;
-  flex: 1 !important;
-}
-
-.app-root .step-category-pill {
-  display: inline-flex !important;
-  align-items: center !important;
-  gap: 4px !important;
-  padding: 2px 6px !important;
-  border-radius: 4px !important;
-  font-size: 10px !important;
-  font-weight: 600 !important;
-  font-family: var(--font-mono) !important;
-  letter-spacing: 0.03em !important;
-  background: rgba(255, 255, 255, 0.08) !important;
-  color: #c9d1d9 !important;
-  flex-shrink: 0 !important;
-}
-
-.app-root .step-category-pill span {
-  display: inline !important;
-}
-
-.app-root .step-category-pill.run {
-  background: rgba(234, 179, 8, 0.15) !important;
-  color: #facc15 !important;
-}
-
-.app-root .step-category-pill.read {
-  background: rgba(59, 130, 246, 0.15) !important;
-  color: #60a5fa !important;
-}
-
-.app-root .step-category-pill.write {
-  background: rgba(16, 185, 129, 0.15) !important;
-  color: #34d399 !important;
-}
-
-.app-root .step-category-pill.search {
-  background: rgba(168, 85, 247, 0.15) !important;
-  color: #c084fc !important;
-}
-
-.app-root .step-category-pill.thinking {
-  background: rgba(99, 102, 241, 0.15) !important;
-  color: #a5b4fc !important;
-}
-
-.app-root .step-category-pill.error {
-  background: rgba(239, 68, 68, 0.15) !important;
-  color: #f87171 !important;
-}
-
 .app-root .step-title-text {
-  display: flex !important;
+  display: inline-flex !important;
   align-items: center !important;
   gap: 6px !important;
   min-width: 0 !important;
-  flex: 1 !important;
-  font-size: 11.5px !important;
-  color: #e5e7eb !important;
+  flex: 0 1 auto !important;
+  font-size: 12px !important;
+  color: var(--text-secondary, #c9d1d9) !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
   white-space: nowrap !important;
 }
 
 .app-root .step-verb {
-  font-weight: 500 !important;
-  color: #ffffff !important;
+  font-weight: 400 !important;
+  color: var(--text-tertiary, #8b949e) !important;
+  flex-shrink: 0 !important;
 }
 
-.app-root .step-code-target,
-.app-root .step-command-target {
+.app-root .step-verb.running {
+  color: var(--text-primary, #f0f6fc) !important;
+  font-weight: 500 !important;
+}
+
+.app-root .step-card.error .step-verb {
+  color: var(--danger, #f87171) !important;
+}
+
+.app-root .step-file-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 1.5px 4px !important;
+  border-radius: 3px !important;
+  font-family: var(--font-mono) !important;
+  font-size: 9.5px !important;
+  font-weight: 700 !important;
+  line-height: 1.2 !important;
+  letter-spacing: 0.02em !important;
+  flex-shrink: 0 !important;
+  background: rgba(148, 163, 184, 0.14) !important;
+  color: var(--text-secondary, #c9d1d9) !important;
+}
+
+.app-root .step-file-badge.ext-ts {
+  color: #38bdf8 !important;
+  background: rgba(56, 189, 248, 0.14) !important;
+}
+
+.app-root .step-file-badge.ext-js {
+  color: #fb923c !important;
+  background: rgba(251, 146, 60, 0.14) !important;
+}
+
+.app-root .step-file-badge.ext-json {
+  color: #eab308 !important;
+  background: rgba(234, 179, 8, 0.14) !important;
+}
+
+.app-root .step-file-badge.ext-py {
+  color: #60a5fa !important;
+  background: rgba(96, 165, 250, 0.14) !important;
+}
+
+.app-root .step-file-badge.ext-css {
+  color: #a78bfa !important;
+  background: rgba(167, 139, 250, 0.14) !important;
+}
+
+.app-root .step-file-badge.ext-html {
+  color: #f87171 !important;
+  background: rgba(248, 113, 113, 0.14) !important;
+}
+
+.app-root .step-file-badge.ext-md {
+  color: #34d399 !important;
+  background: rgba(52, 211, 153, 0.14) !important;
+}
+
+.app-root .step-file-badge.ext-doc {
+  color: #2dd4bf !important;
+  background: rgba(45, 212, 191, 0.14) !important;
+}
+
+.app-root .step-target-name {
+  color: var(--text-secondary, #c9d1d9) !important;
+  font-size: 12px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.app-root .step-line-range {
+  font-family: var(--font-mono) !important;
+  font-size: 11.5px !important;
+  color: var(--text-tertiary, #6e7681) !important;
+  flex-shrink: 0 !important;
+}
+
+.app-root .step-diff-stats {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
   font-family: var(--font-mono) !important;
   font-size: 11px !important;
-  color: #93c5fd !important;
-  background: rgba(0, 0, 0, 0.25) !important;
-  padding: 1px 5px !important;
-  border-radius: 4px !important;
+  flex-shrink: 0 !important;
+}
+
+.app-root .step-diff-stats .add {
+  color: #3fb950 !important;
+}
+
+.app-root .step-diff-stats .del {
+  color: #f85149 !important;
+}
+
+.app-root .step-command-inline,
+.app-root .step-query-inline,
+.app-root .step-skill-inline {
+  font-family: var(--font-mono) !important;
+  font-size: 11.5px !important;
+  color: var(--text-secondary, #c9d1d9) !important;
+  background: transparent !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  max-width: 440px !important;
+}
+
+.app-root .step-expand-icon {
+  display: inline-flex !important;
+  align-items: center !important;
+  color: var(--text-tertiary, #6e7681) !important;
+  flex-shrink: 0 !important;
+  transition: transform 0.15s ease !important;
+}
+
+.app-root .step-expand-icon.open {
+  transform: rotate(90deg) !important;
 }
 
 .app-root .step-card-details {
-  padding: 6px 10px 8px !important;
-  border-top: 1px solid rgba(255, 255, 255, 0.05) !important;
+  margin: 2px 0 6px 10px !important;
+  padding: 4px 0 4px 10px !important;
+  border-top: 0 !important;
+  border-left: 1.5px solid var(--border-subtle, rgba(255, 255, 255, 0.1)) !important;
+  background: transparent !important;
   font-size: 11px !important;
+}
+
+.app-root .step-detail-container {
+  background: transparent !important;
+  border: 0 !important;
+}
+
+.app-root .step-detail-header {
+  border-bottom: 0 !important;
+  color: var(--text-tertiary, #8b949e) !important;
 }
 
 .app-root .step-detail-pre,
 .app-root .thinking-detail-pre {
-  background: rgba(0, 0, 0, 0.35) !important;
-  border-radius: 4px !important;
+  background: var(--bg-surface, rgba(0, 0, 0, 0.25)) !important;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08)) !important;
+  border-radius: 5px !important;
   padding: 8px !important;
   font-family: var(--font-mono) !important;
   font-size: 11px !important;
-  color: #d1d5db !important;
+  color: var(--text-secondary, #d1d5db) !important;
   max-height: 220px !important;
   overflow: auto !important;
   white-space: pre-wrap !important;
   word-break: break-word !important;
   margin: 0 !important;
+}
+
+.app-root .agent-working-bar {
+  background: transparent !important;
+  border: 0 !important;
+  padding: 3px 4px !important;
+  font-size: 11.5px !important;
+  color: var(--text-tertiary, #8b949e) !important;
 }
 
 

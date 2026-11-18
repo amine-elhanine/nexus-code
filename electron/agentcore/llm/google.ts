@@ -49,7 +49,7 @@ function sanitizeSchema(schema: unknown): Record<string, unknown> | undefined {
     out.properties = props;
     const required = Array.isArray(src.required)
       ? src.required.filter((r) => props[String(r)])
-      : Object.keys(props);
+      : [];
     if (required.length) out.required = required;
   }
   return Object.keys(out).length ? out : undefined;

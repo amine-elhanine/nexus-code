@@ -11,7 +11,7 @@
  * checked against the SSRF guard — local/private addresses are never fetched.
  */
 
-import { assertPublicHttpUrl, isPublicHttpUrl } from "./net-guard.js";
+import { assertPublicHttpUrl, isPublicHttpUrl, safePublicFetch } from "./net-guard.js";
 import { decodeHtmlEntities, htmlToText } from "./html-text.js";
 
 export interface CrawledPage {
@@ -204,12 +204,9 @@ export function extractSiteLinks(html: string, base: string): string[] {
 }
 
 async function fetchHtml(url: string, timeoutMs: number): Promise<{ html: string; finalUrl: string } | null> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(url, {
-      signal: ctrl.signal,
-      redirect: "follow",
+    const res = await safePublicFetch(url, {
+      timeoutMs,
       headers: { "User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9", Accept: "text/html,application/xhtml+xml" },
     });
     if (!res.ok) return null;
@@ -220,8 +217,6 @@ async function fetchHtml(url: string, timeoutMs: number): Promise<{ html: string
     return { html, finalUrl: res.url || url };
   } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 

@@ -1,6 +1,7 @@
 import { tool } from "./agentcore/tools.js";
 import { z } from "zod";
 import { decodeHtmlEntities } from "./html-text.js";
+import { assertPublicHttpUrl } from "./net-guard.js";
 
 function cleanHtmlToText(html: string): string {
   // Strip script and style blocks
@@ -119,24 +120,40 @@ export function createBrowserTools(_projectRoot?: string, opts?: { renderedInspe
   // every hop re-checked against the same policy.
   const MAX_REDIRECTS = 5;
 
+  const isLoopbackHostname = (rawHost: string): boolean => {
+    const host = rawHost.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+    if (host === "localhost" || host.endsWith(".localhost") || host === "::1") return true;
+    return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+  };
+
   const fetchWithRedirectControl = async (targetUrl: string, init: RequestInit): Promise<Response> => {
-    let url = targetUrl;
+    const initial = new URL(targetUrl);
+    const initialIsLoopback = isLoopbackHostname(initial.hostname);
+    let current = initial;
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      const response = await fetch(url, { ...init, redirect: "manual" });
-      // fetch types opaque/opaqueredirect only occur in browser contexts; here
-      // a 3xx with a Location header is the redirect case to follow.
+      if (!isLoopbackHostname(current.hostname)) {
+        await assertPublicHttpUrl(current.toString());
+      } else if (hop > 0 && !initialIsLoopback) {
+        throw new Error("Redirect from a public host to a loopback address is refused.");
+      }
+      const headers = new Headers(init.headers);
+      if (current.origin !== initial.origin) {
+        headers.delete("authorization");
+        headers.delete("cookie");
+      }
+      const response = await fetch(current.toString(), { ...init, headers, redirect: "manual" });
       const status = response.status;
       if (status < 300 || status >= 400) return response;
       const location = response.headers.get("location");
       if (!location) return response;
       let next: URL;
       try {
-        next = new URL(location, url);
+        next = new URL(location, current);
       } catch {
         return response;
       }
       await response.body?.cancel().catch(() => {});
-      url = next.toString();
+      current = next;
     }
     throw new Error(`Too many redirects (>${MAX_REDIRECTS}) following ${targetUrl}`);
   };

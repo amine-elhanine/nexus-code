@@ -11,6 +11,8 @@ import {
   type ChatEndpointKind, type McpServerConfig, type ProviderConfig,
 } from "../store.js";
 import { testMcpServer } from "../mcp-service.js";
+import { classifyCommand } from "../permissions.js";
+import { requestCommandApproval } from "../approval-service.js";
 import {
   assertPayload, ProviderCreateSchema, ProviderUpdateMetaSchema, ProviderUpdateKeySchema, ProviderSetEnabledSchema,
   ProviderModelsAddSchema, ProviderModelsUpdateSchema, ProviderModelDetectSchema, ProviderModelsRemoveSchema,
@@ -183,8 +185,23 @@ export function registerProviderRoutes(_ctx: MainIpcContext): void {
     assertPayload(McpRemoveSchema, [serverId], "mcp:remove");
     return removeMcpServer(serverId);
   });
-  ipcMain.handle("mcp:test", (_event, input: Omit<McpServerConfig, "id" | "enabled">) => {
+  ipcMain.handle("mcp:test", async (_event, input: Omit<McpServerConfig, "id" | "enabled">) => {
     assertPayload(McpTestSchema, input, "mcp:test");
+    if (input.transport === "stdio" && input.command) {
+      const cmd = [input.command, ...(input.args || [])].join(" ").trim();
+      if (classifyCommand(cmd) === "deny") {
+        throw new Error("Blocked by safety policy: MCP stdio command is not permitted.");
+      }
+      const decision = await requestCommandApproval({
+        approvalKey: `mcp-test:${cmd}`,
+        command: cmd,
+        cwd: process.cwd(),
+        reason: "Testing a stdio MCP server executes a local command.",
+      });
+      if (decision === "deny") {
+        throw new Error("MCP server test cancelled: command execution not approved.");
+      }
+    }
     return testMcpServer(input);
   });
 }

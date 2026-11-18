@@ -21,6 +21,7 @@ import type { ProviderConfig } from "./store.js";
 import { getAgentBackend, getRunAbortSignal } from "./command-service.js";
 import { StreamUsageTracker } from "./context-service.js";
 import { createProgressTracker, withRateLimitRetry, errorSummary } from "./rate-limit.js";
+import { loopPreventionMiddleware } from "./loop-prevention.js";
 import type { AgentUsage } from "./agent-types.js";
 import { calculateAgentUsage, type SubagentEventHandler } from "./subagent-service.js";
 
@@ -74,9 +75,9 @@ export function createHomeResearchTool(options: {
         const progress = createProgressTracker();
         const usage = new StreamUsageTracker();
         const isCancelled = () => Boolean(options.isCancelled?.());
-        // Loop step budget: the old LangGraph recursionLimit of 24 supersteps
-        // ≈ 12 model iterations (model node + tool node per step).
-        const stepBudget = 12;
+        // Autonomous research: work until the question is thoroughly answered
+        // without arbitrary step caps; per-target ban stops retrying broken links.
+        const stepBudget = Infinity;
         const consumeStream = async () => {
           progress.beginAttempt(1);
           const messages = [userMsg(trimmed)];
@@ -86,6 +87,7 @@ export function createHomeResearchTool(options: {
             system: RESEARCH_SYSTEM_PROMPT,
             messages,
             tools: options.researchTools,
+            middleware: [loopPreventionMiddleware({ general: true, autonomous: true })],
             stepBudget,
             signal,
             onEvent: (event) => {

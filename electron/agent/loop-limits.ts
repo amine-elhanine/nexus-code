@@ -21,9 +21,12 @@ export const MODE_LIMITS: Record<AgentMode, number> = { plan: 40, ask: 100, auto
 // Home document deliverable tasks get a focused budget of 80 steps
 // (more than enough for research + 1 generator write + execute + cleanup).
 export const HOME_DELIVERABLE_LIMIT = 80;
-// Maximum recursion limit budget extensions per mode: Home gets max 2 auto-extensions;
-// Code gets max 3 auto-extensions before asking user or pausing.
-export const MAX_BUDGET_EXTENSIONS: { home: number; code: number } = { home: 2, code: 3 };
+// Maximum recursion limit budget extensions per mode: Home gets max 4 auto-extensions;
+// Code gets max 6 auto-extensions before asking user or pausing.
+export const MAX_BUDGET_EXTENSIONS: { home: number; code: number } = { home: 4, code: 6 };
+// Separate continuation budget for unfinished plans, deferred work, or forward
+// narration so advancing through multi-step tasks never consumes repair slots.
+export const MAX_CONTINUATIONS: Record<AgentMode, number> = { plan: 0, ask: 4, auto: 8, full: 12 };
 // Fast-path budget for single-lookup / single-edit tasks: enough to
 // read 1-2 files and write. Note this feeds LangGraph's recursionLimit,
 // where one tool call costs several supersteps — keep it >= 50 or trivial

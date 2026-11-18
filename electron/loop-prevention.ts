@@ -123,13 +123,18 @@ export function loopPreventionMiddleware(options: {
   general?: boolean;
   outputRequired?: boolean;
   needsResearch?: boolean;
+  autonomous?: boolean;
   beforeModify?: () => string | null;
   checkDeliverableReady?: DeliverableReadyCheck;
+  hasPendingPlan?: () => boolean;
 } = {}): AgentMiddleware {
   let lastReadSig: string | null = null;
   let consecutiveCount = 0;
   let researchCallCount = 0;
-  const researchBudget = options.general ? resolveResearchBudget(options) : null;
+  // Autonomous runs are never cut off by an arbitrary total research lookup cap;
+  // per-target repeat bans still stop retrying the exact same broken URL/query.
+  const researchBudget = options.autonomous ? null : (options.general ? resolveResearchBudget(options) : null);
+  const churnThreshold = options.autonomous ? 25 : 5;
   const inspectionCounts = new Map<string, number>();
   const modifyTargetCounts = new Map<string, number>();
   let postDeliverableModifyCount = 0;
@@ -141,7 +146,7 @@ export function loopPreventionMiddleware(options: {
   const loadedSkills = new Set<string>();
 
   const isModifying = (name: string) => /^(write_file|edit_file|delete|apply_patch|execute)$/i.test(name);
-  const isInspection = (name: string) => /^(read_file|read_file_range|grep_search|glob|ls|view_file|search_code|code_structure|code_symbol)$/i.test(name);
+  const isInspection = (name: string) => /^(read_file|read_file_range|grep|grep_search|glob|ls|view_file|search_code|code_structure|code_symbol)$/i.test(name);
   const isFileRead = (name: string) => /^(read_file|read_file_range)$/i.test(name);
   const isResearchTool = (name: string, args?: any) => {
     if (/^(web_search|web_image_search|web_video_search|browser_fetch_api|browser_inspect|search_web|fetch_url)$/i.test(name)) return true;
@@ -202,6 +207,26 @@ export function loopPreventionMiddleware(options: {
     return p.replace(/\\/g, "/").replace(/^\/+/, "").trim();
   };
 
+  const inspectionSignature = (toolName: string, args: any) => {
+    const target = normalizePath(args);
+    if (!args || typeof args !== "object") return `${toolName}:${target}`;
+    if (/^(read_file|read_file_range|view_file)$/i.test(toolName)) {
+      const start = args.offset ?? args.start_line ?? args.startLine;
+      const span = args.limit ?? args.end_line ?? args.endLine;
+      if (start !== undefined || span !== undefined) {
+        return `${toolName}:${target}@${start ?? 0}:${span ?? ""}`;
+      }
+    }
+    if (/^(grep|grep_search|search_code|glob)$/i.test(toolName)) {
+      const q = String(args.pattern || args.query || "").trim();
+      const base = String(args.path || args.file_path || args.filePath || "").replace(/\\/g, "/").replace(/^\/+/, "").trim();
+      if (q && base && q !== base) {
+        return `${toolName}:${base}|${q}`;
+      }
+    }
+    return `${toolName}:${target}`;
+  };
+
   return {
     name: "loopPreventionMiddleware",
     wrapToolCall: async (request: ToolCallRequest, next: (req: ToolCallRequest) => Promise<ToolResult>): Promise<ToolResult> => {
@@ -216,9 +241,9 @@ export function loopPreventionMiddleware(options: {
         }
 
         // Post-deliverable completion gate for Home deliverable runs:
-        // Once the requested deliverable is already verified on disk, allow at most 1
-        // rebuild. Block subsequent QA/diagnostic scripts or endless generator tweaking.
-        if (options.general && options.outputRequired && options.checkDeliverableReady) {
+        // Once the requested deliverable is already verified on disk and no plan items remain,
+        // allow at most 1 rebuild. Block subsequent QA/diagnostic scripts or endless generator tweaking.
+        if (options.general && options.outputRequired && options.checkDeliverableReady && !options.hasPendingPlan?.()) {
           try {
             const readyInfo = await options.checkDeliverableReady();
             if (readyInfo && readyInfo.ready) {
@@ -237,7 +262,7 @@ export function loopPreventionMiddleware(options: {
         if (modTarget) {
           const modCount = (modifyTargetCounts.get(modTarget) ?? 0) + 1;
           modifyTargetCounts.set(modTarget, modCount);
-          if (modCount >= 5 && options.general) {
+          if (modCount >= churnThreshold && options.general) {
             return blocked(`[EDIT/EXECUTION CHURN DETECTED]: Target '${modTarget}' has been modified or executed ${modCount} times without concluding the task. Stop tweaking minor parameters. If the deliverable exists, verify it with 'ls' and present your result immediately.`);
           }
         }
@@ -312,7 +337,7 @@ export function loopPreventionMiddleware(options: {
 
       if (isInspection(toolName)) {
         const target = normalizePath(args);
-        const sig = `${toolName}:${target}`;
+        const sig = inspectionSignature(toolName, args);
         const totalCount = (inspectionCounts.get(sig) ?? 0) + 1;
         inspectionCounts.set(sig, totalCount);
 
@@ -323,18 +348,18 @@ export function loopPreventionMiddleware(options: {
           consecutiveCount = 1;
         }
 
-        // 3rd+ consecutive repetition or 4th total inspection without modifying actions:
-        // Intervene and short-circuit! Do NOT re-execute the tool.
-        if (consecutiveCount >= 3 || totalCount >= 4) {
-          return blocked(`[LOOP PREVENTION NOTICE]: You have already inspected '${target || toolName}' multiple times (${totalCount}x) without making any workspace edits or code changes. The file content has not changed.\n\nCRITICAL INSTRUCTIONS:\n1. Stop inspecting or re-reading files.\n2. If build or tests already passed and required changes are in place, call write_todos to mark remaining in-progress todos as completed.\n3. Output your final response to the user immediately detailing the changes made.`);
+        // 3rd+ consecutive identical repetition or 5th total identical inspection without modifying actions:
+        // Intervene and short-circuit! Do NOT re-execute the identical call.
+        if (consecutiveCount >= 3 || totalCount >= 5) {
+          return blocked(`[LOOP PREVENTION NOTICE]: You have already inspected '${target || toolName}' the same way multiple times (${totalCount}x) without making any workspace edits or code changes. The file content has not changed.\n\nCRITICAL INSTRUCTIONS:\n1. Stop inspecting or re-reading files with the exact same query/range.\n2. Switch to another action: read a different file/offset, make your edit, or run a command.\n3. Only when every requirement is finished and verified, call write_todos to mark remaining items completed and present your final response.`);
         }
 
         const result = await next(request);
 
-        // 2nd consecutive repetition or 2nd total inspection of the same target:
+        // 2nd consecutive repetition or 2nd total identical inspection:
         // Append proactive steering notice to guide the model before a hard block.
         if (consecutiveCount === 2 || totalCount === 2) {
-          const nudge = `\n\n[Notice: You already inspected '${target || toolName}'. The content has not changed. Do NOT re-read or inspect this again. If your build or verification passed, update your todo list to completed with write_todos and present your final response now.]`;
+          const nudge = `\n\n[Notice: You already inspected '${target || toolName}' with this same query/range. Do NOT repeat the exact same inspection—read another section/file, perform the needed edit, or only if all work and verification are complete, update write_todos to completed and present your final response.]`;
           return withText(result, resultText(result) + nudge);
         }
 

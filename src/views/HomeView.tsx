@@ -1,7 +1,9 @@
-import React, { useRef, useState, useEffect, useMemo, useCallback, KeyboardEvent, type ReactNode } from "react";
+import React, { lazy, Suspense, useRef, useState, useEffect, useMemo, useCallback, KeyboardEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   Sparkles, Paperclip, ArrowUp, Square, Search, BarChart3, FileText,
-  X, Presentation, Table2, Globe, Code2
+  X, Presentation, Table2, Globe, Code2, PanelRight, Plus, Terminal, Brain, Bot,
+  Maximize2, Minimize2
 } from "lucide-react";
 import { suggestsCodeMode } from "../utils/modeSuggestion.js";
 import { ChatItemView, StreamingAssistantMessage, ActivityGroupView } from "../components/chat/ChatMessageItem.js";
@@ -10,11 +12,17 @@ import { ATTACHMENT_ACCEPT } from "../utils/attachments.js";
 import { insertAtCursor } from "../utils/textarea.js";
 import { useAutosizeTextarea } from "../state/useComposer.js";
 import { ChatShell } from "../components/chat/ChatShell.js";
-import type { ChatItem, ProviderConfig, ProviderDefinition, ChatAttachment, SkillInfo, AgentUsage, AgentContextUsageSnapshot, ArtifactItem } from "../types.js";
+import type { ChatItem, ProviderConfig, ProviderDefinition, ChatAttachment, SkillInfo, AgentUsage, AgentContextUsageSnapshot, ArtifactItem, SessionRecord } from "../types.js";
+import type { HomeMemoryStructureView } from "../state/useHomeController.js";
 import { SlidingPlanDrawer, extractLatestPlan } from "../components/chat/SlidingPlanDrawer.js";
 import { HomeCanvasDrawer } from "../components/home/HomeCanvasDrawer.js";
 import { SidebarBrowser } from "../components/browser/SidebarBrowser.js";
+import { CodeInspectorSidebar } from "../components/code/CodeInspectorSidebar.js";
+import { MemoryView } from "./MemoryView.js";
+import { buildInspectorGoals, buildInspectorTasks } from "../utils/inspector.js";
 import { ModelSelect } from "./AgentView.js";
+
+const XTermView = lazy(() => import("../components/terminal/XTermView.js").then((module) => ({ default: module.XTermView })));
 
 type RenderBlock =
   | { kind: "message"; message: ChatItem; index: number; artifacts?: ArtifactItem[] }
@@ -61,6 +69,13 @@ export interface HomeViewProps {
   /** Phase 5 mode routing: hands the current draft to Code mode (App switches
    *  the area and seeds the Code composer). */
   onHandoffToCode?: (draft: string) => void;
+  daemons?: Array<{ id: string; name?: string; command: string; status: string }>;
+  onOpenAllDaemons?: () => void;
+  homeMemory?: string;
+  homeStructure?: HomeMemoryStructureView | null;
+  activeSession?: SessionRecord | null;
+  onRemoveHomeFact?: (category: string, fact: string) => void;
+  onClearSessionMemory?: () => void;
 }
 
 const TOOL_PILLS = [
@@ -132,6 +147,13 @@ export function HomeView({
   onTruncateSession,
   onForkSession,
   onHandoffToCode,
+  daemons = [],
+  onOpenAllDaemons,
+  homeMemory = "",
+  homeStructure,
+  activeSession = null,
+  onRemoveHomeFact,
+  onClearSessionMemory,
 }: HomeViewProps) {
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -139,9 +161,22 @@ export function HomeView({
 
   const [activePill, setActivePill] = useState<string | null>(null);
   const [selectedCanvasFile, setSelectedCanvasFile] = useState<string | null>(null);
-  const [browserActive, setBrowserActive] = useState(false);
-  const [browserLatestUrl, setBrowserLatestUrl] = useState<string | null>(null);
-  const [rightSidebarTab, setRightSidebarTab] = useState<"artifact" | "browser">("artifact");
+  const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
+  const [rightSidebarTab, setRightSidebarTab] = useState<string>("inspector");
+  const [inspectorTabOpen, setInspectorTabOpen] = useState(true);
+  const [terminalTabOpen, setTerminalTabOpen] = useState(false);
+  const [memoryTabOpen, setMemoryTabOpen] = useState(false);
+  const [browserTabs, setBrowserTabs] = useState<Array<{ id: string; url: string; title: string }>>([]);
+  const [agentBrowserTab, setAgentBrowserTab] = useState<{ active: boolean; url: string; title: string }>({
+    active: false,
+    url: "",
+    title: "",
+  });
+  const [showAddTabMenu, setShowAddTabMenu] = useState(false);
+  const tabsScrollRef = useRef<HTMLDivElement | null>(null);
+  const addBtnRef = useRef<HTMLButtonElement | null>(null);
+  const addTabWrapperRef = useRef<HTMLDivElement | null>(null);
+  const [menuPositionStyle, setMenuPositionStyle] = useState<React.CSSProperties>({});
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [slashIndex, setSlashIndex] = useState(0);
@@ -201,24 +236,204 @@ export function HomeView({
   useEffect(() => {
     setSelectedCanvasFile(null);
     setIsSidebarExpanded(false);
-    setRightSidebarTab("browser");
+    setRightSidebarOpen(false);
+    setRightSidebarTab("inspector");
   }, [activeSessionId]);
 
-  // Automatically follow browser agent activity in Watching mode (autoFollow === true)
+  const handleToggleAddMenu = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    if (showAddTabMenu) {
+      setShowAddTabMenu(false);
+      return;
+    }
+    const btn = addBtnRef.current || (e?.currentTarget as HTMLElement | null);
+    if (btn) {
+      const rect = btn.getBoundingClientRect();
+      const top = Math.round(rect.bottom + 6);
+      const left = Math.round(Math.max(10, Math.min(rect.right - 160, window.innerWidth - 175)));
+      setMenuPositionStyle({
+        top: `${top}px`,
+        left: `${left}px`,
+      });
+    }
+    setShowAddTabMenu(true);
+  };
+
+  const handleTabsWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (e.deltaY !== 0 && tabsScrollRef.current) {
+      tabsScrollRef.current.scrollLeft += e.deltaY;
+    }
+  };
+
+  useEffect(() => {
+    const activeEl = tabsScrollRef.current?.querySelector(".sidebar-tab.active");
+    if (activeEl) {
+      activeEl.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+    }
+  }, [rightSidebarTab]);
+
+  useEffect(() => {
+    if (!showAddTabMenu) return;
+    const handleOutsideClick = (e: PointerEvent | MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target?.closest(".sidebar-tab-add-btn") ||
+        target?.closest(".sidebar-tab-add-wrapper") ||
+        target?.closest(".sidebar-tab-add-menu")
+      ) {
+        return;
+      }
+      setShowAddTabMenu(false);
+    };
+    const handleClose = () => {
+      setShowAddTabMenu(false);
+    };
+    window.addEventListener("pointerdown", handleOutsideClick);
+    window.addEventListener("resize", handleClose);
+    return () => {
+      window.removeEventListener("pointerdown", handleOutsideClick);
+      window.removeEventListener("resize", handleClose);
+    };
+  }, [showAddTabMenu]);
+
+  const addUserBrowserTab = useCallback((initialUrl?: string) => {
+    const newId = `browser-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const targetUrl = initialUrl || "https://www.google.com";
+    let hostTitle = "google.com";
+    try {
+      const parsed = new URL(targetUrl);
+      hostTitle = parsed.hostname.replace(/^www\./, "");
+    } catch {
+      hostTitle = "Browser";
+    }
+    setBrowserTabs((prev) => [...prev, { id: newId, url: targetUrl, title: hostTitle || "Browser" }]);
+    setRightSidebarTab(newId);
+    setRightSidebarOpen(true);
+    setShowAddTabMenu(false);
+    return newId;
+  }, []);
+
+  const closeAgentBrowserTab = useCallback(() => {
+    setAgentBrowserTab((prev) => ({ ...prev, active: false }));
+    if (rightSidebarTab === "agent-browser") {
+      if (browserTabs.length > 0) {
+        setRightSidebarTab(browserTabs[browserTabs.length - 1].id);
+      } else if (inspectorTabOpen) {
+        setRightSidebarTab("inspector");
+      } else if (terminalTabOpen) {
+        setRightSidebarTab("terminal");
+      } else if (memoryTabOpen) {
+        setRightSidebarTab("memory");
+      } else if (selectedCanvasFile) {
+        setRightSidebarTab("artifact");
+      } else {
+        setRightSidebarOpen(false);
+      }
+    }
+  }, [rightSidebarTab, browserTabs, inspectorTabOpen, terminalTabOpen, memoryTabOpen, selectedCanvasFile]);
+
+  const closeSidebarTab = useCallback(
+    (tab: string) => {
+      let nextInspector = inspectorTabOpen;
+      let nextTerminal = terminalTabOpen;
+      let nextUserTabs = browserTabs;
+      let nextAgentBrowser = agentBrowserTab.active;
+      let nextArtifact = Boolean(selectedCanvasFile);
+      let nextMemory = memoryTabOpen;
+
+      if (tab === "inspector") {
+        nextInspector = false;
+        setInspectorTabOpen(false);
+      } else if (tab === "terminal") {
+        nextTerminal = false;
+        setTerminalTabOpen(false);
+      } else if (tab === "agent-browser") {
+        nextAgentBrowser = false;
+        setAgentBrowserTab((prev) => ({ ...prev, active: false }));
+      } else if (tab.startsWith("browser-") || browserTabs.some((t) => t.id === tab)) {
+        nextUserTabs = browserTabs.filter((t) => t.id !== tab);
+        setBrowserTabs(nextUserTabs);
+      } else if (tab === "artifact") {
+        nextArtifact = false;
+        setSelectedCanvasFile(null);
+      } else if (tab === "memory") {
+        nextMemory = false;
+        setMemoryTabOpen(false);
+      }
+
+      if (rightSidebarTab === tab) {
+        if (nextInspector) {
+          setRightSidebarTab("inspector");
+        } else if (nextTerminal) {
+          setRightSidebarTab("terminal");
+        } else if (nextUserTabs.length > 0) {
+          setRightSidebarTab(nextUserTabs[nextUserTabs.length - 1].id);
+        } else if (nextAgentBrowser) {
+          setRightSidebarTab("agent-browser");
+        } else if (nextMemory) {
+          setRightSidebarTab("memory");
+        } else if (nextArtifact) {
+          setRightSidebarTab("artifact");
+        } else {
+          setRightSidebarOpen(false);
+        }
+      }
+    },
+    [inspectorTabOpen, terminalTabOpen, browserTabs, agentBrowserTab.active, selectedCanvasFile, memoryTabOpen, rightSidebarTab]
+  );
+
+  // Automatically follow browser agent activity in Watching mode
   useEffect(() => {
     const api = window.nexus;
     if (typeof api?.onBrowserAgentActivity === "function") {
       const unsub = api.onBrowserAgentActivity((payload) => {
         if (!payload?.url) return;
-        if (payload.autoFollow) {
-          setBrowserLatestUrl(payload.url);
-          setBrowserActive(true);
-          setRightSidebarTab("browser");
+        if (payload.autoFollow !== false) {
+          let hostTitle = "Agent";
+          try {
+            const parsed = new URL(payload.url);
+            hostTitle = parsed.hostname.replace(/^www\./, "");
+          } catch {
+            hostTitle = "Agent";
+          }
+          setAgentBrowserTab({
+            active: true,
+            url: payload.url,
+            title: hostTitle || "Agent",
+          });
+          setRightSidebarOpen(true);
+          setRightSidebarTab("agent-browser");
         }
       });
       return unsub;
     }
   }, []);
+
+  const inspectorTasks = useMemo(
+    () => buildInspectorTasks(daemons, messages),
+    [daemons, messages]
+  );
+
+  const inspectorGoals = useMemo(
+    () => buildInspectorGoals(liveEvents, messages, running),
+    [liveEvents, messages, running]
+  );
+
+  const handleRemoveHomeFact = useCallback(
+    (fact: string) => {
+      if (!onRemoveHomeFact) return;
+      let category = "Remembered Facts";
+      if (homeStructure) {
+        if (homeStructure.profile.includes(fact)) category = "User Profile";
+        else if (homeStructure.preferences.includes(fact)) category = "Preferences";
+        else if (homeStructure.lessons?.includes(fact)) category = "Learned Patterns & Lessons";
+        else if (homeStructure.context.includes(fact)) category = "Project Context";
+        else if (homeStructure.facts.includes(fact)) category = "Remembered Facts";
+      }
+      onRemoveHomeFact(category, fact);
+    },
+    [onRemoveHomeFact, homeStructure]
+  );
 
   // Group messages & events into RenderBlocks so tool runs collapse cleanly into ActivityGroupView
   const renderBlocks = useMemo<RenderBlock[]>(() => {
@@ -414,6 +629,25 @@ export function HomeView({
 
         <div className="home-topbar-right">
           {panelMenu}
+          <button
+            type="button"
+            className={`btn btn-icon-sm btn-ghost code-action-btn ${rightSidebarOpen ? "active" : ""}`}
+            onClick={() => {
+              setRightSidebarOpen((prev) => {
+                const next = !prev;
+                if (next) {
+                  if (!inspectorTabOpen && !terminalTabOpen && browserTabs.length === 0 && !agentBrowserTab.active && !selectedCanvasFile && !memoryTabOpen) {
+                    setInspectorTabOpen(true);
+                    setRightSidebarTab("inspector");
+                  }
+                }
+                return next;
+              });
+            }}
+            title="Toggle Right Sidebar"
+          >
+            <PanelRight size={14} />
+          </button>
         </div>
       </header>
 
@@ -468,6 +702,7 @@ export function HomeView({
                     onOpenArtifact={(art) => {
                       setSelectedCanvasFile(art.path || art.filename || art.name);
                       setRightSidebarTab("artifact");
+                      setRightSidebarOpen(true);
                     }}
                     onOpenImage={onOpenImage}
                   />
@@ -482,6 +717,7 @@ export function HomeView({
                     onOpenArtifact={(art) => {
                       setSelectedCanvasFile(art.path || art.filename || art.name);
                       setRightSidebarTab("artifact");
+                      setRightSidebarOpen(true);
                     }}
                     onEditMessage={
                       onTruncateSession && block.message.role === "user" && !running
@@ -524,6 +760,7 @@ export function HomeView({
                   onOpenArtifact={(art) => {
                     setSelectedCanvasFile(art.path || art.filename || art.name);
                     setRightSidebarTab("artifact");
+                    setRightSidebarOpen(true);
                   }}
                   onOpenImage={onOpenImage}
                 />
@@ -536,6 +773,7 @@ export function HomeView({
                   onOpenArtifact={(art) => {
                     setSelectedCanvasFile(art.path || art.filename || art.name);
                     setRightSidebarTab("artifact");
+                    setRightSidebarOpen(true);
                   }}
                 />
               )}
@@ -543,16 +781,6 @@ export function HomeView({
             </div>
           )}
         </ChatShell>
-
-        {/* Sliding Plan Drawer if an agent task is active */}
-        {latestPlan && (
-          <SlidingPlanDrawer
-            plan={latestPlan.plan}
-            running={running}
-            isInterrupted={latestPlan.isInterrupted}
-            onContinue={() => submit("continue")}
-          />
-        )}
 
         {/* Phase 5 mode routing: repo-work drafts get a one-click handoff to
             Code mode (workspace + LSP + verification tools) instead of Home
@@ -601,6 +829,16 @@ export function HomeView({
               customCommands={customCommands}
               selectedIndex={slashIndex}
               onSelect={handleSlashSelect}
+            />
+          )}
+
+          {/* Sliding Plan Drawer aligned identically with the composer box */}
+          {latestPlan && (
+            <SlidingPlanDrawer
+              plan={latestPlan.plan}
+              running={running}
+              isInterrupted={latestPlan.isInterrupted}
+              onContinue={() => submit("continue")}
             />
           )}
 
@@ -727,12 +965,12 @@ export function HomeView({
         </div>
       </div>
 
-      {/* Right Sidebar: Artifact Canvas and/or Live Browser */}
-      {(selectedCanvasFile || browserActive) && (
+      {/* Right Sidebar: Inspector, Terminal, Browser, Artifact Canvas, Memory */}
+      {rightSidebarOpen && (
         <aside
           className={`workbench-right-sidebar ${isResizingRightSidebar ? "resizing" : ""}`}
           style={{
-            width: isSidebarExpanded ? Math.max(rightSidebarWidth, 780) : rightSidebarWidth,
+            width: isSidebarExpanded ? Math.max(rightSidebarWidth, 840) : rightSidebarWidth,
             maxWidth: "85%",
             height: "100%",
             borderLeft: "1px solid var(--border-default)",
@@ -751,96 +989,447 @@ export function HomeView({
             onPointerDown={handleResizePointerDown}
             title="Drag to resize sidebar"
           />
-          {/* Top tab switcher when both artifact & browser are open */}
-          {selectedCanvasFile && browserActive && (
-            <div className="sidebar-tab-strip">
+
+          {/* Workbench Tools Tab Strip */}
+          <div className="sidebar-tab-strip">
+            <div
+              className="sidebar-tabs-scroll-container"
+              ref={tabsScrollRef}
+              onWheel={handleTabsWheel}
+            >
+              {inspectorTabOpen && (
+                <div
+                  role="button"
+                  tabIndex={0}
+                  className={`sidebar-tab ${rightSidebarTab === "inspector" ? "active" : ""}`}
+                  onClick={() => setRightSidebarTab("inspector")}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") setRightSidebarTab("inspector");
+                  }}
+                  title="Inspector"
+                >
+                  <PanelRight size={12} />
+                  <span className="sidebar-tab-text">Inspector</span>
+                  <button
+                    type="button"
+                    className="sidebar-tab-close-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeSidebarTab("inspector");
+                    }}
+                    title="Close Inspector"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              )}
+
+              {terminalTabOpen && (
+                <div
+                  role="button"
+                  tabIndex={0}
+                  className={`sidebar-tab ${rightSidebarTab === "terminal" ? "active" : ""}`}
+                  onClick={() => setRightSidebarTab("terminal")}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") setRightSidebarTab("terminal");
+                  }}
+                  title="Terminal"
+                >
+                  <Terminal size={12} />
+                  <span className="sidebar-tab-text">Terminal</span>
+                  <button
+                    type="button"
+                    className="sidebar-tab-close-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeSidebarTab("terminal");
+                    }}
+                    title="Close Terminal"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              )}
+
+              {browserTabs.map((tab) => (
+                <div
+                  key={tab.id}
+                  role="button"
+                  tabIndex={0}
+                  className={`sidebar-tab ${rightSidebarTab === tab.id ? "active" : ""}`}
+                  onClick={() => setRightSidebarTab(tab.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") setRightSidebarTab(tab.id);
+                  }}
+                  title={tab.title}
+                >
+                  <Globe size={12} />
+                  <span className="sidebar-tab-text">{tab.title}</span>
+                  <button
+                    type="button"
+                    className="sidebar-tab-close-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeSidebarTab(tab.id);
+                    }}
+                    title={`Close ${tab.title}`}
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              ))}
+
+              {agentBrowserTab.active && (
+                <div
+                  role="button"
+                  tabIndex={0}
+                  className={`sidebar-tab ${rightSidebarTab === "agent-browser" ? "active" : ""}`}
+                  onClick={() => setRightSidebarTab("agent-browser")}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") setRightSidebarTab("agent-browser");
+                  }}
+                  title={`Agent Browser — ${agentBrowserTab.title}`}
+                >
+                  <Bot size={12} style={{ color: "var(--accent-code, #38bdf8)" }} />
+                  <span className="sidebar-tab-text">
+                    {agentBrowserTab.title ? `Agent: ${agentBrowserTab.title}` : "Agent Browser"}
+                  </span>
+                  <button
+                    type="button"
+                    className="sidebar-tab-close-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeAgentBrowserTab();
+                    }}
+                    title="Close Agent Browser"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              )}
+
+              {selectedCanvasFile && (
+                <div
+                  role="button"
+                  tabIndex={0}
+                  className={`sidebar-tab ${rightSidebarTab === "artifact" ? "active" : ""}`}
+                  onClick={() => setRightSidebarTab("artifact")}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") setRightSidebarTab("artifact");
+                  }}
+                  title={selectedCanvasFile}
+                >
+                  <FileText size={12} />
+                  <span className="sidebar-tab-text">{selectedCanvasFile.split("/").pop() || "Artifact"}</span>
+                  <button
+                    type="button"
+                    className="sidebar-tab-close-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeSidebarTab("artifact");
+                    }}
+                    title="Close Artifact"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              )}
+
+              {memoryTabOpen && (
+                <div
+                  role="button"
+                  tabIndex={0}
+                  className={`sidebar-tab ${rightSidebarTab === "memory" ? "active" : ""}`}
+                  onClick={() => setRightSidebarTab("memory")}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") setRightSidebarTab("memory");
+                  }}
+                  title="Home & Session Memory"
+                >
+                  <Brain size={12} />
+                  <span className="sidebar-tab-text">Memory</span>
+                  <button
+                    type="button"
+                    className="sidebar-tab-close-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeSidebarTab("memory");
+                    }}
+                    title="Close Memory"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              )}
+
+              {/* + Add Tab Button with Dropdown */}
+              <div className="sidebar-tab-add-wrapper" ref={addTabWrapperRef}>
+                <button
+                  type="button"
+                  className="sidebar-tab-add-btn"
+                  ref={addBtnRef}
+                  onClick={handleToggleAddMenu}
+                  title="Open interface..."
+                >
+                  <Plus size={13} />
+                </button>
+                {showAddTabMenu && typeof document !== "undefined" && createPortal(
+                  <div
+                    className="sidebar-tab-add-menu"
+                    style={menuPositionStyle}
+                  >
+                    <button
+                      type="button"
+                      className="sidebar-tab-add-item"
+                      onClick={() => {
+                        setInspectorTabOpen(true);
+                        setRightSidebarTab("inspector");
+                        setRightSidebarOpen(true);
+                        setShowAddTabMenu(false);
+                      }}
+                    >
+                      <PanelRight size={13} />
+                      <span>Inspector</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="sidebar-tab-add-item"
+                      onClick={() => {
+                        setTerminalTabOpen(true);
+                        setRightSidebarTab("terminal");
+                        setRightSidebarOpen(true);
+                        setShowAddTabMenu(false);
+                      }}
+                    >
+                      <Terminal size={13} />
+                      <span>Terminal</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="sidebar-tab-add-item"
+                      onClick={() => {
+                        addUserBrowserTab();
+                      }}
+                    >
+                      <Globe size={13} />
+                      <span>Browser</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="sidebar-tab-add-item"
+                      onClick={() => {
+                        setMemoryTabOpen(true);
+                        setRightSidebarTab("memory");
+                        setRightSidebarOpen(true);
+                        setShowAddTabMenu(false);
+                      }}
+                    >
+                      <Brain size={13} />
+                      <span>Memory</span>
+                    </button>
+                  </div>,
+                  document.body
+                )}
+              </div>
+            </div>
+
+            <div style={{ flex: 1 }} />
+
+            {/* Expand/Collapse sidebar width and Close */}
+            <div className="sidebar-tab-actions">
               <button
                 type="button"
-                className={`sidebar-tab ${rightSidebarTab === "artifact" ? "active" : ""}`}
-                onClick={() => setRightSidebarTab("artifact")}
-                title={selectedCanvasFile}
+                className="sidebar-tab-btn"
+                onClick={() => setIsSidebarExpanded((prev) => !prev)}
+                title={isSidebarExpanded ? "Collapse width" : "Expand width"}
               >
-                <FileText size={12} />
-                <span className="sidebar-tab-text">{selectedCanvasFile.split("/").pop() || "Artifact"}</span>
+                {isSidebarExpanded ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
               </button>
-              <button
-                type="button"
-                className={`sidebar-tab ${rightSidebarTab === "browser" ? "active" : ""}`}
-                onClick={() => setRightSidebarTab("browser")}
-                title="Agent Browser"
-              >
-                <Globe size={12} />
-                <span className="sidebar-tab-text">Browser</span>
-              </button>
-              <div style={{ flex: 1 }} />
+
               <button
                 type="button"
                 className="sidebar-tab-close"
-                onClick={() => {
-                  if (rightSidebarTab === "artifact") {
-                    setSelectedCanvasFile(null);
-                    setRightSidebarTab("browser");
-                  } else {
-                    setBrowserActive(false);
-                    setRightSidebarTab("artifact");
-                  }
-                }}
-                title="Close active tab"
+                onClick={() => setRightSidebarOpen(false)}
+                title="Close sidebar"
               >
                 <X size={13} />
               </button>
             </div>
-          )}
+          </div>
 
-          {/* Artifact Preview */}
-          {rightSidebarTab === "artifact" && selectedCanvasFile && (
-            <div style={{ display: "flex", flex: 1, minHeight: 0, width: "100%", height: "100%" }}>
-              <HomeCanvasDrawer
-                filePath={selectedCanvasFile}
-                scope="home"
-                width="100%"
-                isExpanded={isSidebarExpanded}
-                onToggleExpand={() => setIsSidebarExpanded((prev) => !prev)}
-                refreshToken={running ? "running" : `${messages.length}`}
-                onClose={() => {
-                  setSelectedCanvasFile(null);
-                  if (browserActive) setRightSidebarTab("browser");
+          {/* Preserved tab panels: keeps mounted views alive across tab switches */}
+          <div style={{ display: "flex", flex: 1, minHeight: 0, width: "100%", height: "100%", position: "relative" }}>
+            {/* Sidebar Tab 1: Inspector */}
+            <div
+              style={{
+                display: rightSidebarTab === "inspector" ? "flex" : "none",
+                flex: 1,
+                minHeight: 0,
+                width: "100%",
+                height: "100%",
+              }}
+            >
+              <CodeInspectorSidebar
+                tasks={inspectorTasks}
+                goals={inspectorGoals}
+                onOpenTerminal={() => {
+                  setTerminalTabOpen(true);
+                  setRightSidebarTab("terminal");
                 }}
-                onDownload={(path: string) => onDownloadFile?.(path)}
-                onRefine={(prompt: string) => submit(prompt)}
+                onOpenBrowser={() => {
+                  addUserBrowserTab();
+                }}
+                onOpenMemory={() => {
+                  setMemoryTabOpen(true);
+                  setRightSidebarTab("memory");
+                }}
+                onNavigateUrl={(url) => {
+                  addUserBrowserTab(url);
+                }}
+                onOpenAllDaemons={() => onOpenAllDaemons?.()}
               />
             </div>
-          )}
 
-          {/* Live Browser Pane */}
-          {rightSidebarTab === "browser" && browserActive && (
-            <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%", height: "100%", position: "relative" }}>
-              {!selectedCanvasFile && (
-                <div className="sidebar-single-header">
-                  <div className="sidebar-single-title">
-                    <Globe size={13} style={{ color: "#38bdf8" }} />
-                    <span>Agent Browser</span>
-                  </div>
-                  <button
-                    type="button"
-                    className="icon-plain"
-                    onClick={() => setBrowserActive(false)}
-                    title="Close Browser Sidebar"
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-              )}
-              <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+            {/* Sidebar Tab 2: Terminal */}
+            {terminalTabOpen && (
+              <div
+                style={{
+                  display: rightSidebarTab === "terminal" ? "flex" : "none",
+                  flex: 1,
+                  minHeight: 0,
+                  width: "100%",
+                  height: "100%",
+                  overflow: "hidden",
+                }}
+              >
+                <Suspense fallback={<div className="empty-pane">Loading terminal…</div>}>
+                  <XTermView isVisible={rightSidebarTab === "terminal"} />
+                </Suspense>
+              </div>
+            )}
+
+            {/* Sidebar Tab: User Browser Tabs */}
+            {browserTabs.map((tab) => (
+              <div
+                key={tab.id}
+                style={{
+                  display: rightSidebarTab === tab.id ? "flex" : "none",
+                  flexDirection: "column",
+                  flex: 1,
+                  minHeight: 0,
+                  width: "100%",
+                  height: "100%",
+                  position: "relative",
+                }}
+              >
                 <SidebarBrowser
                   sessionId={activeSessionId || null}
                   browserScope="home"
-                  initialUrl={browserLatestUrl || undefined}
+                  tabId={tab.id}
+                  initialUrl={tab.url}
+                  hideTabBar={true}
+                  isAgentOnly={false}
                   onSendToAgent={(prompt) => submit(prompt)}
+                  onTitleChange={(title, url) => {
+                    setBrowserTabs((prev) =>
+                      prev.map((t) => (t.id === tab.id ? { ...t, title: title || t.title, url: url || t.url } : t))
+                    );
+                  }}
                 />
               </div>
-            </div>
-          )}
+            ))}
+
+            {/* Sidebar Tab: Agent Browser (controlled by agent) */}
+            {agentBrowserTab.active && (
+              <div
+                key="home-agent-browser-panel"
+                style={{
+                  display: rightSidebarTab === "agent-browser" ? "flex" : "none",
+                  flexDirection: "column",
+                  flex: 1,
+                  minHeight: 0,
+                  width: "100%",
+                  height: "100%",
+                  position: "relative",
+                }}
+              >
+                <SidebarBrowser
+                  sessionId={activeSessionId || null}
+                  browserScope="home"
+                  tabId="agent-browser"
+                  initialUrl={agentBrowserTab.url}
+                  hideTabBar={true}
+                  isAgentOnly={true}
+                  onSendToAgent={(prompt) => submit(prompt)}
+                  onTitleChange={(title, url) => {
+                    setAgentBrowserTab((prev) => ({
+                      ...prev,
+                      title: title || prev.title,
+                      url: url || prev.url,
+                    }));
+                  }}
+                />
+              </div>
+            )}
+
+            {/* Sidebar Tab: Artifact Preview */}
+            {selectedCanvasFile && (
+              <div
+                style={{
+                  display: rightSidebarTab === "artifact" ? "flex" : "none",
+                  flex: 1,
+                  minHeight: 0,
+                  width: "100%",
+                  height: "100%",
+                }}
+              >
+                <HomeCanvasDrawer
+                  filePath={selectedCanvasFile}
+                  scope="home"
+                  width="100%"
+                  isExpanded={isSidebarExpanded}
+                  onToggleExpand={() => setIsSidebarExpanded((prev) => !prev)}
+                  refreshToken={running ? "running" : `${messages.length}`}
+                  onClose={() => {
+                    closeSidebarTab("artifact");
+                  }}
+                  onDownload={(path: string) => onDownloadFile?.(path)}
+                  onRefine={(prompt: string) => submit(prompt)}
+                />
+              </div>
+            )}
+
+            {/* Sidebar Tab: Memory */}
+            {memoryTabOpen && (
+              <div
+                style={{
+                  display: rightSidebarTab === "memory" ? "flex" : "none",
+                  flexDirection: "column",
+                  flex: 1,
+                  minHeight: 0,
+                  width: "100%",
+                  height: "100%",
+                  overflowY: "auto",
+                }}
+              >
+                <MemoryView
+                  project={{
+                    id: "home",
+                    name: "Home",
+                    root: "",
+                    facts: homeMemory,
+                    memory: homeMemory,
+                    createdAt: "",
+                    updatedAt: "",
+                    sessions: [],
+                  }}
+                  session={activeSession}
+                  onRemoveFact={handleRemoveHomeFact}
+                  onClearSessionMemory={() => onClearSessionMemory?.()}
+                />
+              </div>
+            )}
+          </div>
         </aside>
       )}
       </div>

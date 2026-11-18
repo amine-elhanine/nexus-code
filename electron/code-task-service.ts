@@ -37,11 +37,15 @@ export function codeVerificationOutcome(input: { passedCheck: boolean; requiredC
   return input.passedCheck && !input.requiredCheckDenied ? "passed" : "none";
 }
 
-/** Require edits only for clear change requests, not reviews or explanations. */
+/** Require edits only for clear change requests, not pure reviews or explanations. */
 export function inferCodeTaskContract(request: string): CodeTaskContract {
   const text = (request || "").trim();
-  const asksForChanges = /\b(add|build|change|create|develop|fix|implement|migrate|modify|refactor|remove|replace|scaffold|set\s+up|update|write)\b/i.test(text);
-  const isReadOnlyIntent = /^\s*(explain|describe|how|why|what|where|review|audit|inspect|analy[sz]e|find|locate|list|show|check|test|run)\b/i.test(text);
+  const asksForChanges = /\b(add|build|change|clean\s*up|complete|convert|create|develop|finish|fix|implement|integrate|migrate|modify|optimize|patch|polish|port|refactor|remove|repair|replace|resolve|scaffold|set\s+up|update|wire|write)\b/i.test(text);
+  const isReadOnlyStarter = /^\s*(explain|describe|how|why|what|where|review|audit|inspect|analy[sz]e|find|locate|list|show|check|test|run)\b/i.test(text);
+  // Compound instructions like "check why X fails and fix it" or "review auth.ts and update tests"
+  // start with an investigative verb but explicitly request code changes.
+  const compoundChangeAction = /\b(?:and\s+(?:fix|implement|update|refactor|add|change|patch|resolve|repair|modify|clean\s*up|complete|finish|write)|then\s+(?:fix|update|implement|refactor|patch)|(?:please|also)\s+(?:fix|implement|update|patch)|so\s+that\s+it)\b/i.test(text);
+  const isReadOnlyIntent = isReadOnlyStarter && !compoundChangeAction;
   const expectsChanges = asksForChanges && !isReadOnlyIntent;
   return { expectsChanges, needsVerification: expectsChanges || /\b(test|verify|check|build|compile|lint)\b/i.test(text) };
 }

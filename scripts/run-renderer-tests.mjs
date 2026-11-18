@@ -21,6 +21,7 @@ const root = path.join(here, "..");
 // DOM and belong to the Electron snapshot harness (test/renderer-snapshot).
 const RENDERER_TESTS = [
   "test/renderer/agent-event-pipeline.test.mjs",
+  "test/renderer/sanitize-html.test.mjs",
 ];
 
 async function bundle(entry) {

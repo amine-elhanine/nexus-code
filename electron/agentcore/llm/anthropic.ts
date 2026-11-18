@@ -67,16 +67,28 @@ function toWireMessages(messages: ChatMessage[]): { system: string; wire: Array<
       }
       if (content.length) wire.push({ role: "assistant", content });
     } else {
-      // tool result → user message with tool_result block.
-      wire.push({
-        role: "user",
-        content: [{
-          type: "tool_result",
-          tool_use_id: message.toolCallId,
-          content: message.content,
-          ...(message.isError ? { is_error: true } : {}),
-        }],
-      });
+      // tool result → user message with tool_result block. Coalesce consecutive
+      // tool results into one user turn because Anthropic rejects adjacent user messages.
+      const block = {
+        type: "tool_result" as const,
+        tool_use_id: message.toolCallId,
+        content: message.content,
+        ...(message.isError ? { is_error: true } : {}),
+      };
+      const prev = wire[wire.length - 1];
+      if (
+        prev &&
+        prev.role === "user" &&
+        Array.isArray(prev.content) &&
+        prev.content.every((part: any) => part?.type === "tool_result")
+      ) {
+        prev.content.push(block);
+      } else {
+        wire.push({
+          role: "user",
+          content: [block],
+        });
+      }
     }
   }
   return { system: systemText, wire };

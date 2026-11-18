@@ -1,4 +1,4 @@
-import React, { useRef, useState, useMemo } from "react";
+import React, { useEffect, useRef, useState, useMemo } from "react";
 import {
   Bot,
   Terminal,
@@ -185,10 +185,15 @@ export interface ParsedStepMeta {
   category: StepCategory;
   badgeLabel: string;
   title: string;
+  toolName?: string;
   target?: string;
+  displayFile?: string;
+  fileExt?: string;
+  lineRange?: string;
   command?: string;
   query?: string;
   skill?: string;
+  diffStats?: { add: number; del: number };
 }
 
 export interface NormalizedStep {
@@ -196,7 +201,12 @@ export interface NormalizedStep {
   category: StepCategory;
   badgeLabel: string;
   title: string;
+  toolName?: string;
   target?: string;
+  displayFile?: string;
+  fileExt?: string;
+  lineRange?: string;
+  diffStats?: { add: number; del: number };
   command?: string;
   query?: string;
   skill?: string;
@@ -206,6 +216,150 @@ export interface NormalizedStep {
   plan?: PlanItem[];
   subagent?: SubagentItem;
   artifact?: ArtifactItem;
+}
+
+function parseFileTarget(rawTarget: string): {
+  cleanPath: string;
+  displayFile: string;
+  fileExt?: string;
+  lineRange?: string;
+} {
+  let cleanPath = String(rawTarget || "").trim();
+  let lineRange: string | undefined;
+
+  const rangeMatch = cleanPath.match(/^(.*?):(\d+)-(\d+)$/);
+  if (rangeMatch && rangeMatch[1]) {
+    cleanPath = rangeMatch[1];
+    lineRange = `#L${rangeMatch[2]}-${rangeMatch[3]}`;
+  } else {
+    const offsetMatch = cleanPath.match(/^(.*?):(\d+)\+(\d+)$/);
+    if (offsetMatch && offsetMatch[1]) {
+      const start = Number(offsetMatch[2]) + 1;
+      const limit = Number(offsetMatch[3]);
+      const end = limit > 0 ? start + limit - 1 : start;
+      cleanPath = offsetMatch[1];
+      lineRange = `#L${start}-${end}`;
+    }
+  }
+
+  const normalized = cleanPath.replace(/\\/g, "/").replace(/\/+$/, "");
+  const baseName = normalized.split("/").pop() || normalized || cleanPath;
+  const extMatch = baseName.match(/\.([a-zA-Z0-9]+)$/);
+  const fileExt = extMatch ? extMatch[1].toLowerCase() : undefined;
+
+  return {
+    cleanPath,
+    displayFile: baseName,
+    fileExt,
+    lineRange,
+  };
+}
+
+function getFileBadge(ext?: string): { label: string; className: string } | null {
+  if (!ext) return null;
+  switch (ext.toLowerCase()) {
+    case "ts":
+      return { label: "TS", className: "ext-ts" };
+    case "tsx":
+      return { label: "TSX", className: "ext-ts" };
+    case "js":
+    case "mjs":
+    case "cjs":
+      return { label: "JS", className: "ext-js" };
+    case "jsx":
+      return { label: "JSX", className: "ext-js" };
+    case "json":
+    case "jsonc":
+      return { label: "{}", className: "ext-json" };
+    case "py":
+      return { label: "PY", className: "ext-py" };
+    case "css":
+    case "scss":
+    case "less":
+      return { label: "CSS", className: "ext-css" };
+    case "html":
+    case "htm":
+      return { label: "HTML", className: "ext-html" };
+    case "md":
+    case "markdown":
+      return { label: "MD", className: "ext-md" };
+    case "pptx":
+    case "docx":
+    case "xlsx":
+    case "pdf":
+    case "tex":
+    case "svg":
+    case "csv":
+      return { label: ext.toUpperCase(), className: "ext-doc" };
+    default:
+      return null;
+  }
+}
+
+function computeLineDiffCounts(before: string, after: string): { add: number; del: number } {
+  const oldLines = before === "" ? [] : before.split(/\r?\n/);
+  const newLines = after === "" ? [] : after.split(/\r?\n/);
+  if (oldLines.length === 0) return { add: newLines.length, del: 0 };
+  if (newLines.length === 0) return { add: 0, del: oldLines.length };
+  if (oldLines.length * newLines.length <= 40000) {
+    const m = oldLines.length;
+    const n = newLines.length;
+    let prev = new Uint16Array(n + 1);
+    let curr = new Uint16Array(n + 1);
+    for (let i = 1; i <= m; i++) {
+      curr.fill(0);
+      for (let j = 1; j <= n; j++) {
+        curr[j] = oldLines[i - 1] === newLines[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], curr[j - 1]);
+      }
+      [prev, curr] = [curr, prev];
+    }
+    const common = prev[n];
+    return { add: n - common, del: m - common };
+  }
+  const counts = new Map<string, number>();
+  for (const line of oldLines) counts.set(line, (counts.get(line) || 0) + 1);
+  let common = 0;
+  for (const line of newLines) {
+    const c = counts.get(line) || 0;
+    if (c > 0) {
+      common++;
+      counts.set(line, c - 1);
+    }
+  }
+  return { add: newLines.length - common, del: oldLines.length - common };
+}
+
+function computeDiffStatsFromDetail(
+  detail?: string,
+  category?: StepCategory,
+  title?: string,
+  toolName?: string
+): { add: number; del: number } | undefined {
+  if (!detail) return undefined;
+  const editMatch = detail.match(
+    /\[Target to replace\]:\r?\n([\s\S]*?)\r?\n\r?\n\[Replacement\]:\r?\n([\s\S]*?)(?:\r?\n\r?\n\[(?:Output|Error Output)\]:|$)/
+  );
+  if (editMatch) {
+    return computeLineDiffCounts(editMatch[1], editMatch[2]);
+  }
+  if (category === "write" || title === "Create file" || toolName === "write_file") {
+    const contentMatch = detail.match(/\[Content\]:\r?\n([\s\S]*?)(?:\r?\n\r?\n\[(?:Output|Error Output)\]:|$)/);
+    if (contentMatch) {
+      const lineCount = contentMatch[1] === "" ? 0 : contentMatch[1].split(/\r?\n/).length;
+      return { add: lineCount, del: 0 };
+    }
+  }
+  return undefined;
+}
+
+const TRANSIENT_STATUS_PATTERN =
+  /^(?:starting (?:home assistant|the (?:notebook )?agent|agent\b)|expanded slash command\b|connected to mcp\b|loaded \d+ plugin tools\b|loaded create_deliverable\b|preparing context\b|(?:agent is )?working on the task\b|writing response\b|synthesizing (?:final )?response\b|entering verification phase\b|saved to memory\b)/i;
+
+function isTransientBoilerplateStatus(text: string, kind?: string): boolean {
+  if (kind === "tool" || kind === "thinking" || kind === "error" || kind === "subagent" || kind === "artifact") {
+    return false;
+  }
+  return TRANSIENT_STATUS_PATTERN.test((text || "").trim());
 }
 
 export function parseEventText(text: string, kind?: string): ParsedStepMeta {
@@ -241,39 +395,86 @@ export function parseEventText(text: string, kind?: string): ParsedStepMeta {
 
     switch (tool) {
       case "read_file":
-      case "read_file_range":
+      case "read_file_range": {
+        const fileInfo = parseFileTarget(arg);
         return {
           category: "read",
           badgeLabel: "READ",
           title: "Read file",
-          target: arg,
+          toolName: tool,
+          target: fileInfo.cleanPath,
+          displayFile: fileInfo.displayFile,
+          fileExt: fileInfo.fileExt,
+          lineRange: fileInfo.lineRange,
         };
+      }
+      case "inspect_artifact": {
+        const fileInfo = parseFileTarget(arg);
+        return {
+          category: "read",
+          badgeLabel: "INSPECT",
+          title: "Inspect artifact",
+          toolName: tool,
+          target: fileInfo.cleanPath,
+          displayFile: fileInfo.displayFile,
+          fileExt: fileInfo.fileExt,
+        };
+      }
       case "write_file":
+      case "create_deliverable": {
+        const fileInfo = parseFileTarget(arg);
         return {
           category: "write",
-          badgeLabel: "WRITE",
+          badgeLabel: tool === "create_deliverable" ? "CREATE" : "WRITE",
           title: "Create file",
-          target: arg,
+          toolName: tool,
+          target: fileInfo.cleanPath,
+          displayFile: fileInfo.displayFile,
+          fileExt: fileInfo.fileExt,
         };
-      case "edit_file":
+      }
+      case "edit_file": {
+        const fileInfo = parseFileTarget(arg);
         return {
           category: "write",
           badgeLabel: "EDIT",
           title: "Edit file",
-          target: arg,
+          toolName: tool,
+          target: fileInfo.cleanPath,
+          displayFile: fileInfo.displayFile,
+          fileExt: fileInfo.fileExt,
         };
-      case "apply_patch":
+      }
+      case "apply_patch": {
+        const fileInfo = parseFileTarget(arg);
         return {
           category: "write",
           badgeLabel: "PATCH",
           title: "Apply patch",
+          toolName: tool,
           target: arg,
+          displayFile: arg.includes(",") ? arg : fileInfo.displayFile,
+          fileExt: arg.includes(",") ? undefined : fileInfo.fileExt,
         };
+      }
+      case "delete": {
+        const fileInfo = parseFileTarget(arg);
+        return {
+          category: "write",
+          badgeLabel: "DEL",
+          title: "Delete file",
+          toolName: tool,
+          target: fileInfo.cleanPath,
+          displayFile: fileInfo.displayFile,
+          fileExt: fileInfo.fileExt,
+        };
+      }
       case "execute":
         return {
           category: "run",
           badgeLabel: "BASH",
           title: "Execute command",
+          toolName: tool,
           command: arg,
         };
       case "grep":
@@ -282,6 +483,7 @@ export function parseEventText(text: string, kind?: string): ParsedStepMeta {
           category: "search",
           badgeLabel: "GREP",
           title: "Search code",
+          toolName: tool,
           query: arg,
         };
       case "glob":
@@ -289,6 +491,7 @@ export function parseEventText(text: string, kind?: string): ParsedStepMeta {
           category: "search",
           badgeLabel: "GLOB",
           title: "Find files",
+          toolName: tool,
           query: arg,
         };
       case "ls":
@@ -296,22 +499,30 @@ export function parseEventText(text: string, kind?: string): ParsedStepMeta {
           category: "search",
           badgeLabel: "LIST",
           title: "List directory",
+          toolName: tool,
           target: arg,
         };
       case "find_symbol_definition":
       case "find_symbol_references":
-      case "get_symbol_outline":
+      case "get_symbol_outline": {
+        const isFile = tool === "get_symbol_outline";
+        const fileInfo = isFile ? parseFileTarget(arg) : null;
         return {
           category: "search",
           badgeLabel: "LSP",
           title: "Inspect symbol",
-          target: arg,
+          toolName: tool,
+          target: fileInfo ? fileInfo.cleanPath : arg,
+          displayFile: fileInfo?.displayFile,
+          fileExt: fileInfo?.fileExt,
         };
+      }
       case "web_search":
         return {
           category: "browse",
           badgeLabel: "WEB",
           title: "Web search",
+          toolName: tool,
           query: arg,
         };
       case "browser_inspect":
@@ -320,13 +531,31 @@ export function parseEventText(text: string, kind?: string): ParsedStepMeta {
           category: "browse",
           badgeLabel: "BROWSE",
           title: "Inspect page",
+          toolName: tool,
           target: arg,
+        };
+      case "learn_skill":
+        return {
+          category: "skill",
+          badgeLabel: "SKILL",
+          title: "Learn skill",
+          toolName: tool,
+          skill: arg,
+        };
+      case "home_memory":
+        return {
+          category: "status",
+          badgeLabel: "MEM",
+          title: "Update memory",
+          toolName: tool,
+          query: arg,
         };
       case "ask_user":
         return {
           category: "status",
           badgeLabel: "ASK",
           title: "Ask user",
+          toolName: tool,
           query: arg.replace(/^needs input:\s*/i, ""),
         };
       case "delegate_task": {
@@ -335,16 +564,24 @@ export function parseEventText(text: string, kind?: string): ParsedStepMeta {
           category: "subagent",
           badgeLabel: "AGENT",
           title: roleMatch ? `Subagent [${roleMatch[1]}]` : "Subagent task",
+          toolName: tool,
           query: roleMatch ? roleMatch[2] : arg,
         };
       }
-      default:
+      default: {
+        const looksLikeFile = !/^https?:\/\//i.test(arg) && /\.[a-zA-Z0-9]{1,8}(?::\d+(?:[-+]\d+)?)?$/.test(arg);
+        const fileInfo = looksLikeFile ? parseFileTarget(arg) : null;
         return {
           category: "run",
           badgeLabel: tool.toUpperCase().slice(0, 7),
           title: tool,
-          target: arg,
+          toolName: tool,
+          target: fileInfo ? fileInfo.cleanPath : arg,
+          displayFile: fileInfo?.displayFile,
+          fileExt: fileInfo?.fileExt,
+          lineRange: fileInfo?.lineRange,
         };
+      }
     }
   }
 
@@ -516,29 +753,36 @@ function getActionVerb(title: string, isRunning: boolean): string {
   if (!isRunning) {
     switch (title) {
       case "Execute command":
-        return "Executed command";
+        return "Ran";
       case "Read file":
-        return "Read file";
+        return "Analyzed";
+      case "Inspect artifact":
+        return "Inspected";
       case "Create file":
-        return "Created file";
+        return "Created";
       case "Edit file":
-        return "Edited file";
       case "Apply patch":
-        return "Applied patch";
+        return "Edited";
+      case "Delete file":
+        return "Deleted";
       case "Search code":
-        return "Searched code";
+        return "Searched";
       case "Find files":
         return "Found files";
       case "List directory":
-        return "Listed directory";
+        return "Listed";
       case "Inspect symbol":
-        return "Inspected symbol";
+        return "Inspected";
       case "Web search":
-        return "Web search";
+        return "Searched web";
       case "Inspect page":
-        return "Inspected page";
+        return "Browsed";
       case "Consult skill":
         return "Consulted skill";
+      case "Learn skill":
+        return "Learned skill";
+      case "Update memory":
+        return "Updated memory";
       case "Thinking":
         return "Thought";
       default:
@@ -548,29 +792,36 @@ function getActionVerb(title: string, isRunning: boolean): string {
 
   switch (title) {
     case "Execute command":
-      return "Executing command";
+      return "Running";
     case "Read file":
-      return "Reading file";
+      return "Analyzing";
+    case "Inspect artifact":
+      return "Inspecting";
     case "Create file":
-      return "Creating file";
+      return "Creating";
     case "Edit file":
-      return "Editing file";
     case "Apply patch":
-      return "Applying patch";
+      return "Editing";
+    case "Delete file":
+      return "Deleting";
     case "Search code":
-      return "Searching code";
+      return "Searching";
     case "Find files":
       return "Finding files";
     case "List directory":
-      return "Listing directory";
+      return "Listing";
     case "Inspect symbol":
-      return "Inspecting symbol";
+      return "Inspecting";
     case "Web search":
       return "Searching web";
     case "Inspect page":
-      return "Inspecting page";
+      return "Browsing";
     case "Consult skill":
       return "Consulting skill";
+    case "Learn skill":
+      return "Learning skill";
+    case "Update memory":
+      return "Updating memory";
     case "Thinking":
       return "Thinking";
     default:
@@ -623,6 +874,12 @@ function normalizeActivityEvents(
     if (event.kind === "context" || event.kind === "usage" || event.kind === "stream-reset" || event.kind === "assistant") {
       continue;
     }
+    // Filter noisy internal startup / plumbing status rows from the step timeline;
+    // their active phase is reflected in the group header while running.
+    if (isTransientBoilerplateStatus(event.text || "", event.kind)) {
+      continue;
+    }
+
     const isError = event.kind === "error";
     const isSubagent = event.kind === "subagent" && Boolean(event.subagent);
     const isArtifact = Boolean(event.artifact);
@@ -637,6 +894,7 @@ function normalizeActivityEvents(
         if (candidate.category === "thinking") continue;
         const matches =
           (Boolean(doneTool) && (
+            (candidate.toolName && candidate.toolName.toLowerCase() === doneTool.toLowerCase()) ||
             candidate.title.toLowerCase().includes(doneTool.toLowerCase()) ||
             candidate.badgeLabel.toLowerCase() === doneTool.toLowerCase() ||
             (candidate.command && doneTool === "execute")
@@ -655,6 +913,9 @@ function normalizeActivityEvents(
         targetStep.status = "completed";
         if (event.detail) {
           targetStep.detail = event.detail;
+          targetStep.diffStats =
+            computeDiffStatsFromDetail(event.detail, targetStep.category, targetStep.title, targetStep.toolName) ??
+            targetStep.diffStats;
         } else if (!targetStep.detail && event.text) {
           targetStep.detail = event.text;
         }
@@ -682,15 +943,27 @@ function normalizeActivityEvents(
 
     let category: StepCategory = parsed.category;
     let badgeLabel = parsed.badgeLabel;
+    let title = parsed.title;
+    let target = parsed.target;
+    let displayFile = parsed.displayFile;
+    let fileExt = parsed.fileExt;
     if (isError) {
       category = "error";
       badgeLabel = "ERROR";
     } else if (isSubagent) {
       category = "subagent";
       badgeLabel = "AGENT";
-    } else if (isArtifact) {
+    } else if (isArtifact && event.artifact) {
       category = "artifact";
       badgeLabel = "ARTIFACT";
+      const artPath = event.artifact.path || event.artifact.filename || event.artifact.name || "";
+      if (artPath && !target) {
+        const fileInfo = parseFileTarget(artPath);
+        target = fileInfo.cleanPath;
+        displayFile = fileInfo.displayFile;
+        fileExt = fileInfo.fileExt;
+        title = "Created";
+      }
     }
 
     const isLastEvent = i === events.length - 1;
@@ -710,20 +983,39 @@ function normalizeActivityEvents(
     const structuredDetail = rawDetail && rawDetail !== cleanText ? event.detail : undefined;
     const fallbackDetail = parsed.command
       ? `$ ${parsed.command}`
-      : parsed.target
-        ? `Path: ${parsed.target}`
+      : target
+        ? `Path: ${target}`
         : parsed.query
           ? `Query: ${parsed.query}`
           : cleanText || undefined;
     const initialDetail = structuredDetail ?? (category === "thinking" || isError || isArtifact ? cleanText : fallbackDetail);
-
     const eventTimestamp = event.createdAt || new Date().toISOString();
+
+    // Merge consecutive thinking steps (e.g. when filtered status events separated deltas)
+    if (category === "thinking" && steps.length > 0 && steps[steps.length - 1].category === "thinking") {
+      const prev = steps[steps.length - 1];
+      const nextDetail = (initialDetail || "").trim();
+      if (nextDetail && prev.detail !== nextDetail) {
+        prev.detail = prev.detail ? `${prev.detail}\n\n${nextDetail}` : nextDetail;
+      }
+      prev.status = status;
+      prev.timestamp = eventTimestamp;
+      continue;
+    }
+
+    const diffStats = computeDiffStatsFromDetail(initialDetail, category, title, parsed.toolName);
+
     steps.push({
       id: `${eventTimestamp}-${i}`,
       category,
       badgeLabel,
-      title: parsed.title,
-      target: parsed.target,
+      title,
+      toolName: parsed.toolName,
+      target,
+      displayFile,
+      fileExt,
+      lineRange: parsed.lineRange,
+      diffStats,
       command: parsed.command,
       query: parsed.query,
       skill: parsed.skill,
@@ -733,19 +1025,6 @@ function normalizeActivityEvents(
       plan: event.plan,
       subagent: event.subagent,
       artifact: event.artifact,
-    });
-  }
-
-  // If running and no events arrived yet, provide an initial active thinking step
-  if (running && steps.length === 0) {
-    steps.push({
-      id: "initial-working-step",
-      category: "status",
-      badgeLabel: "INIT",
-      title: "Starting the agent",
-      query: currentText || "Preparing workspace context and tools…",
-      status: "running",
-      timestamp: new Date().toISOString(),
     });
   }
 
@@ -766,6 +1045,7 @@ function StepItemView({
   const isRunning = step.status === "running";
   const isError = step.status === "error";
   const displayTitle = getActionVerb(step.title, isRunning);
+  const fileBadge = step.fileExt ? getFileBadge(step.fileExt) : null;
 
   const detailText = useMemo(() => {
     if (step.detail && step.detail.trim().length > 0) {
@@ -786,20 +1066,8 @@ function StepItemView({
     return lines.join("\n");
   }, [step.detail, step.command, step.target, step.query, step.skill, step.title, isRunning]);
 
-  const hasDetail = true;
-
   return (
     <div className={`agent-timeline-step ${step.status}`}>
-      <div className={`step-timeline-node ${step.status}`}>
-        {isRunning ? (
-          <Loader2 size={10} className="spin" />
-        ) : isError ? (
-          <X size={10} />
-        ) : (
-          <Check size={9} />
-        )}
-      </div>
-
       <div className={`step-card ${step.status} ${isExpanded ? "expanded" : ""}`}>
         <div
           className="step-card-header"
@@ -813,57 +1081,54 @@ function StepItemView({
               onToggle();
             }
           }}
-          title={isExpanded ? "Click to collapse" : "Click to view output"}
+          title={isExpanded ? "Click to collapse" : "Click to inspect"}
         >
-          <div className="step-badge-and-title">
-            <span className={`step-category-pill ${step.category}`}>
-              {getCategoryIcon(step.category, 9)}
-              <span>{step.badgeLabel}</span>
-            </span>
+          <span className={`step-title-text ${isRunning ? "running" : ""} ${isError ? "error" : ""}`}>
+            <span className={`step-verb ${isRunning ? "running" : ""}`}>{displayTitle}</span>
 
-            <span className="step-title-text">
-              <span className="step-verb">{displayTitle}</span>
+            {fileBadge && (
+              <span className={`step-file-badge ${fileBadge.className}`}>{fileBadge.label}</span>
+            )}
 
-              {step.target && (
-                <code className="step-code-target" title={step.target}>
-                  {formatTarget(step.target)}
-                </code>
-              )}
-
-              {step.command && (
-                <code className="step-command-target" title={step.command}>
-                  $ {step.command}
-                </code>
-              )}
-
-              {step.query && (
-                <span className="step-query-target" title={step.query}>
-                  "{step.query}"
-                </span>
-              )}
-
-              {step.skill && (
-                <span className="step-skill-target" title={step.skill}>
-                  {step.skill}
-                </span>
-              )}
-            </span>
-          </div>
-
-          <div className="step-meta">
-            {isRunning && (
-              <span className="step-live-pill">
-                <span className="live-dot" />
-                Working
+            {(step.displayFile || step.target) && (
+              <span className="step-target-name" title={step.target || step.displayFile}>
+                {step.displayFile || formatTarget(step.target!)}
               </span>
             )}
 
-            <time className="step-time">{timeLabel(step.timestamp)}</time>
+            {step.lineRange && (
+              <span className="step-line-range">{step.lineRange}</span>
+            )}
 
-            <span className={`step-expand-icon ${isExpanded ? "open" : ""}`}>
-              <ChevronRight size={12} />
-            </span>
-          </div>
+            {step.diffStats && (
+              <span className="step-diff-stats">
+                <span className="add">+{step.diffStats.add}</span>
+                <span className="del">-{step.diffStats.del}</span>
+              </span>
+            )}
+
+            {step.command && (
+              <code className="step-command-inline" title={step.command}>
+                {step.command}
+              </code>
+            )}
+
+            {step.query && (
+              <span className="step-query-inline" title={step.query}>
+                {step.query}
+              </span>
+            )}
+
+            {step.skill && (
+              <span className="step-skill-inline" title={step.skill}>
+                {step.skill}
+              </span>
+            )}
+          </span>
+
+          <span className={`step-expand-icon ${isExpanded ? "open" : ""}`}>
+            <ChevronRight size={11} />
+          </span>
         </div>
 
         {isExpanded && (
@@ -941,10 +1206,26 @@ export function ActivityGroupView({
     [events, steps]
   );
 
+  const latestStatusText = useMemo(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i];
+      if (ev.kind === "status" && ev.text?.trim()) {
+        return ev.text.trim().replace(/\s*·.*$/, "").trim();
+      }
+    }
+    return "";
+  }, [events]);
+
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
   const isGroupExpanded = userExpanded !== null ? userExpanded : (running || hasError);
 
   const [expandedStepIds, setExpandedStepIds] = useState<Record<string, boolean>>({});
+  const timelineRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!running || !isGroupExpanded || !timelineRef.current) return;
+    timelineRef.current.scrollTop = timelineRef.current.scrollHeight;
+  }, [running, isGroupExpanded, steps.length]);
 
   const toggleStep = (id: string) => {
     setExpandedStepIds((prev) => ({
@@ -955,50 +1236,57 @@ export function ActivityGroupView({
 
   const activeStep = steps.find((s) => s.status === "running") || steps[steps.length - 1];
 
-  // ZCode-style collapsed summary: "Worked for 2m 36s" computed from the
-  // first to last step timestamps. Detailed counts stay in the tooltip.
   const workedLabel = useMemo(() => {
     if (running || !steps.length) return null;
     const start = Date.parse(steps[0].timestamp);
     const end = Date.parse(steps[steps.length - 1].timestamp);
-    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-    const totalSeconds = Math.max(0, Math.round((end - start) / 1000));
-    if (totalSeconds < 8) return "Worked for a few seconds";
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return "Worked for a moment";
+    const totalSeconds = Math.max(1, Math.round((end - start) / 1000));
+    if (totalSeconds < 60) return `Worked for ${totalSeconds}s`;
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
-    return minutes > 0 ? `Worked for ${minutes}m ${seconds}s` : `Worked for ${seconds}s`;
+    return seconds > 0 ? `Worked for ${minutes}m ${seconds}s` : `Worked for ${minutes}m`;
   }, [running, steps]);
 
-  let headerTitle = "Completed agent activity";
+  // Never render a "Completed 0 agent steps" ghost row when a block had only
+  // context/plan/transient-plumbing events and zero real agent steps.
+  if (!running && steps.length === 0 && !hasError) {
+    return null;
+  }
+
+  let headerTitle = "Worked for a moment";
   if (running) {
     if (currentText) {
       headerTitle = currentText;
     } else if (activeStep) {
       const verb = getActionVerb(activeStep.title, true);
-      const target = activeStep.target || activeStep.command || activeStep.skill || activeStep.query;
-      headerTitle = target ? `${verb}: ${formatTarget(target)}` : verb;
+      const target = activeStep.displayFile || activeStep.target || activeStep.command || activeStep.skill || activeStep.query;
+      headerTitle = target ? `${verb} ${formatTarget(target)}` : `${verb}…`;
+    } else if (latestStatusText) {
+      headerTitle = latestStatusText;
     } else {
-      headerTitle = "Agent working on task…";
+      headerTitle = "Working…";
     }
+  } else if (hasError) {
+    headerTitle = workedLabel ? `${workedLabel} · issue detected` : "Agent encountered an issue";
   } else if (workedLabel) {
     headerTitle = workedLabel;
-  } else if (hasError) {
-    headerTitle = "Agent encountered an issue";
   } else {
     const summarySuffix = computeStepsSummary(steps);
     const count = steps.length;
-    headerTitle = `Completed ${count} agent ${count === 1 ? "step" : "steps"}${
+    headerTitle = `Completed ${count} ${count === 1 ? "step" : "steps"}${
       summarySuffix ? ` (${summarySuffix})` : ""
     }`;
   }
 
-  // NOTE: no "return null when steps are empty" — parsed-zero groups (which
-  // happened in Code mode) must still render their raw-event fallback below.
-  if (events.length === 0 && !running) {
-    return null;
-  }
-
   const isWritingResponse = running && Boolean(currentText?.startsWith("Writing response"));
+  const showBody = isGroupExpanded && (steps.length > 0 || isWritingResponse);
+  const summaryTooltip = running
+    ? undefined
+    : (() => {
+        const summarySuffix = computeStepsSummary(steps);
+        return summarySuffix ? `${steps.length} steps — ${summarySuffix}` : `${steps.length} steps`;
+      })();
 
   return (
     <div
@@ -1010,60 +1298,35 @@ export function ActivityGroupView({
         type="button"
         className="activity-group-summary"
         onClick={() => setUserExpanded(!isGroupExpanded)}
-        title={
-          running
-            ? undefined
-            : (() => {
-                const summarySuffix = computeStepsSummary(steps);
-                return summarySuffix ? `${steps.length} steps — ${summarySuffix}` : `${steps.length} steps`;
-              })()
-        }
+        title={summaryTooltip}
       >
-        <span className="activity-group-icon">
-          {running ? (
-            <div className="step-beacon-wrap">
-              <span className="step-beacon-core" />
-              <span className="step-beacon-ring" />
-            </div>
-          ) : hasError ? (
-            <AlertCircle size={13} />
-          ) : (
-            <Check size={13} />
-          )}
-        </span>
+        {running && steps.length === 0 && (
+          <Loader2 size={11} className="spin activity-group-spinner" />
+        )}
+
+        {hasError && !running && (
+          <span className="activity-group-icon">
+            <AlertCircle size={12} />
+          </span>
+        )}
 
         <span className="activity-group-title">
           <span className={running ? "running-label" : ""}>{headerTitle}</span>
         </span>
 
-        {running ? (
-          <span className="activity-group-count">
-            <span className="beacon-live-dot" />
-            {steps.length ? `${steps.length} step${steps.length === 1 ? "" : "s"}` : "Working"}
+        {(steps.length > 0 || isWritingResponse) && (
+          <span className={`activity-group-chevron ${isGroupExpanded ? "open" : ""}`}>
+            <ChevronRight size={12} />
           </span>
-        ) : steps.length > 0 ? (
-          <span className="activity-group-count quiet">
-            {steps.length} step{steps.length === 1 ? "" : "s"}
-          </span>
-        ) : null}
-
-        <span className={`activity-group-chevron ${isGroupExpanded ? "open" : ""}`}>
-          <ChevronRight size={13} />
-        </span>
+        )}
       </button>
 
-      {isGroupExpanded && (
+      {showBody && (
         <div className="activity-group-body">
-          <div className="agent-stepper-timeline">
-            {steps.length > 0 ? (
-              steps.map((step) => {
-                // All steps start COLLAPSED — the user opens exactly what they
-                // want to inspect (Claude-Code-style). The explicit boolean
-                // fallback below also makes the first click reliably toggle:
-                // previously auto-opened steps needed two clicks to close
-                // because the toggle flipped an undefined default.
+          {steps.length > 0 && (
+            <div className="agent-stepper-timeline" ref={timelineRef}>
+              {steps.map((step) => {
                 const isStepExpanded = Boolean(expandedStepIds[step.id]);
-
                 return (
                   <StepItemView
                     key={step.id}
@@ -1073,41 +1336,14 @@ export function ActivityGroupView({
                     onOpenArtifact={onOpenArtifact}
                   />
                 );
-              })
-            ) : (
-              /* Raw-event fallback: if the parser yields no steps (e.g. Code
-                 mode event shapes it doesn't recognize) the group still shows
-                 every event as a plain row instead of disappearing. */
-              events.map((event, index) => (
-                <div className="activity-step static" key={`${event.createdAt}-${index}`}>
-                  <div className="activity-step-row">
-                    <span className={`activity-step-dot ${event.kind || "status"}`}>
-                      {event.kind === "tool" ? (
-                        <Terminal size={11} />
-                      ) : event.kind === "error" ? (
-                        <X size={11} />
-                      ) : event.kind === "plan" ? (
-                        <Brain size={11} />
-                      ) : event.kind === "subagent" ? (
-                        <Bot size={11} />
-                      ) : (
-                        <Activity size={11} />
-                      )}
-                    </span>
-                    <span title={event.text || event.kind || "Agent action"}>
-                      {event.text || event.kind || "Agent action"}
-                    </span>
-                    <time>{timeLabel(event.createdAt)}</time>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
+              })}
+            </div>
+          )}
 
           {isWritingResponse && (
             <div className="agent-working-bar">
-              <Loader2 size={12} className="spin" />
-              <span>Synthesizing final response…</span>
+              <Loader2 size={11} className="spin" />
+              <span>Writing response…</span>
             </div>
           )}
         </div>
